@@ -17,6 +17,32 @@ risky, and (when you opt in) unattended commits of routine green work on a
 feature branch. Built generic and reusable for any kind of application; the
 first consumer repo is a .NET / React / Postgres app.
 
+## Spec-driven development with gspec
+
+**[gspec](https://github.com/gballer77/gspec)** (MIT, © Baller Software) is the
+spec-driven development tool this plugin targets. `/gaffer:new-project` installs it
+(`npx gspec@2.7.0 --target claude`), `/gaffer:migrate` retrofits older repos onto its
+current layout, and the guided loop's default backlog is the gspec one:
+`gspec/tasks/<slug>.md` task lines (with `deps:`) plus `gspec/features/<slug>.md`
+capability checkboxes.
+
+The seam is deliberate ([ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md)):
+**gspec owns *what to build and in what order*; gaffer owns *how a unit of work is
+safely executed*** — guardrail, autonomy, branch isolation, checkpointing, and
+measurement. Every gspec read goes through the single adapter
+`scripts/gspec-backlog.sh`; nothing else in the plugin parses `gspec/`, so an upstream
+format change lands in one file. Because gspec does not stamp its version into a
+project, the pin has two axes: the **tool** pin (`GSPEC_PINNED_VERSION`, currently
+**2.7.0**) and the **artifact** pin (`spec-version`, asserted by
+`gspec-backlog.sh check`, which fails loudly rather than guessing).
+
+**gspec is optional.** Four and a half of the five pillars — the guardrail, the
+autonomy dial, the pause/resume checkpointing, worktree-isolated parallelism, and
+run-metrics — have no spec dependency at all. A backlog may equally come from
+`.agents/run-state.yaml` or from an explicit argument to `/gaffer:run-loop`, and a repo
+with no `gspec/` directory loses only the spec-derived backlog, not the execution
+layer.
+
 ## Components
 
 | Path | What it is |
@@ -147,7 +173,7 @@ A semi-attended run looks like:
 cd ~/workspace/your-app
 ORCH_AUTONOMY=supervised claude
 #   ...then inside the session:
-#   /gaffer:run-loop        # drive the backlog (gspec roadmap/.plan.md or run-state)
+#   /gaffer:run-loop        # drive the backlog (gspec/tasks/<slug>.md or run-state)
 #   /gaffer:pause           # stop at a safe green checkpoint, any time
 #   /gaffer:resume          # pick the run back up in a later session
 ```
@@ -372,23 +398,22 @@ plugin.
 
 ## Attribution
 
-During development this plugin briefly vendored three engineering-craft skills
-(`test-driven-development`, `systematic-debugging`, `verification-before-completion`)
-adapted from the **[superpowers](https://github.com/obra/superpowers)** project
-(MIT, © 2025 Jesse Vincent). They were **removed**
-([ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md) D7): testing method
-belongs to the consumer project (gspec's `practices.md` owns it, with a validator
-and an enforcement block), and general debugging method is not orchestration
-mechanism. The evidence-before-claims habit they encouraged is restated in this
-plugin's own words in `skills/run-loop/SKILL.md` and `agents/implementer.md`.
-
-No upstream code or text remains in this repository; the credit is offered because
-the influence was real.
+**[gspec](https://github.com/gballer77/gspec)** — MIT, © Baller Software — is the
+spec-driven development tool this plugin targets. It is an independent upstream
+project: gaffer neither vendors nor forks any of its code or text, and installs it
+(`npx gspec@<pinned> --target claude`) as a normal dependency of `/gaffer:new-project`.
+The credit is offered because gaffer's backlog model — features, PRD capability
+checkboxes, task lines with `deps:` — is gspec's design, and this plugin's job of
+*executing* a backlog only makes sense on top of someone else's answer to *what to
+build and in what order*. See
+[Spec-driven development with gspec](#spec-driven-development-with-gspec) and
+[ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md).
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE) (© 2026 Arron Hocking).
-Previously-vendored MIT content is noted under [Attribution](#attribution).
+Third-party tools it integrates with are noted under [Attribution](#attribution) and
+carry their own licenses.
 
 ## Secrets
 

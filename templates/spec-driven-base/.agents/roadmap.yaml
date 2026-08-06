@@ -1,0 +1,48 @@
+# {{PROJECT_NAME}} — feature sequencing (plugin ADR 0020 D2)
+# ---------------------------------------------------------------------------
+# gspec owns WHAT to build: the PRDs (`gspec/features/<slug>.md`) and the ordered
+# per-feature task plans (`gspec/tasks/<slug>.md`). It has no CROSS-feature
+# ordering, so this file supplies it.
+#
+# It lives here and NOT under `gspec/` on purpose: gspec's spec-integrity floor
+# governs every `.md` under `gspec/` and would flag a file gspec does not own.
+#
+# It is an OVERRIDE, not a prerequisite. With `features: []` the orchestration
+# loop simply orders by dependency, then slug — so leave it empty until the order
+# actually matters, and add an entry only where you want to overrule that.
+#
+# Read through the adapter, never by hand:
+#   ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next
+#   ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh features
+
+schema: 1
+
+# Four fields, and only four:
+#   slug        must match gspec/features/<slug>.md
+#   order       lower runs first; unlisted features sort after all listed ones
+#   why         REQUIRED — one line of sequencing rationale. This is the whole
+#               reason the file exists: it is where a human records why this
+#               order, so the next person can re-sequence with the context.
+#   depends_on  INTERIM. A hard build-order dependency. Moves into the PRD's own
+#               frontmatter once gspec adopts it (upstream proposal U5); until
+#               then it lives here. The PRD field WINS when both exist — they are
+#               never merged.
+#
+# DO NOT add `status` or `parallel_group`. Both are DERIVED, and storing them is
+# how they drift:
+#   completion  -> every capability checkbox in the PRD is `[x]`
+#   concurrency -> computed per run by scripts/packet-graph.sh
+#
+features: []
+
+# Example, once you have features to sequence:
+#
+# features:
+#   - slug: user-auth
+#     order: 10
+#     why: "every authenticated surface depends on it; nothing ships without login"
+#     depends_on: []
+#   - slug: checkout
+#     order: 20
+#     why: "first revenue path; needs an account to charge"
+#     depends_on: [user-auth]

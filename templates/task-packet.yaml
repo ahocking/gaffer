@@ -1,0 +1,127 @@
+# Task packet template
+# -----------------------------------------------------------------------------
+# A task packet is the contract handed to a specialist agent (usually the
+# `implementer`). It scopes the work so the agent gets a narrow, auditable
+# assignment instead of the whole repo. The Chief Engineer fills this in and
+# hands it over. Copy this file, replace the angle-bracket placeholders, and
+# delete the guidance comments as needed.
+
+# Stable identifier for this unit of work (kebab-case).
+task_id: <feature-000-scope>            # e.g. feature-004-backend
+
+# Which agent runs this packet.
+role: <implementer | architect | reviewer>
+
+# Where the work happens: normally the SINGLE local checkout, on the packet's
+# `orch/<task_id>` feature branch cut from the integration base
+# (`.agents/project-overrides.yaml` → `integration_branch`, default `develop`).
+# The Chief Engineer runs `git switch -c orch/<task_id> <base>` before delegating.
+# There is no separate worktree (ADR 0009) — EXCEPT in parallel mode
+# (`/gaffer:run-loop --parallel`, ADR 0016), where this packet runs as one
+# concurrent LANE in its own git worktree at `../<repo>-worktrees/<task_id>` on the
+# same `orch/<task_id>` branch. Either way the packet targets that one branch.
+
+# How much the Chief Engineer may do without a human on this packet. See ADR 0004
+# and ADR 0006. Precedence at runtime: env ORCH_AUTONOMY > .agents/autonomy > this
+# default, then clamped DOWN to `autonomy_ceiling` in .agents/project-overrides.yaml.
+#   interactive (default) — human approves every mutation gate
+#   supervised            — CE may auto-commit on a feature branch when green
+#   autonomous            — CE drives the loop across packets; hard gates only
+#   full-autonomy         — same, plus merge/rebase/push onto NON-main branches
+#                           (main / releases / deploys / danger floor stay human)
+autonomy: interactive
+
+# One sentence: what this task must accomplish.
+goal: <e.g. Add recurring transaction detection service>
+
+# ROUTING (ADR 0019). ONE decision, made HERE, at scope time — it then propagates
+# deterministically and you never restate it:
+#
+#     tier (this field)  ->  agent (who you dispatch)  ->  model (agent frontmatter)
+#
+#   mechanical    fully-specified, one file, no design left   -> implementer  (sonnet)
+#   integration   multi-file / wiring, design already settled -> implementer  (sonnet)
+#   design-heavy  the design emerges while editing            -> architect, then
+#                                                                implementer (sonnet);
+#                                                                inline-on-opus only
+#                                                                with `tier_reason`
+#   docs          prose, changelogs, summarization only       -> doc-writer   (haiku)
+#
+# You do NOT pass a `model` when dispatching: each agent declares its own `model:`
+# in frontmatter, and that frontmatter IS the routing policy. Passing `model`
+# OVERRIDES the policy — only do it to deliberately deviate, and record why in
+# `tier_reason`. The metrics audit reads the effective model per role, so an
+# override that escalates a cheap agent to opus is visible and will be flagged.
+#
+# REQUIRED. This value is copied verbatim into the commit's `[orch tier:<tier>]`
+# trailer, which is how a run's routing becomes measurable. An unset tier means
+# the packet is unmeasurable and the audit flags it.
+tier: <mechanical | integration | design-heavy | docs>
+
+# Why this tier — REQUIRED for `design-heavy`, and for ANY packet where you pass
+# an explicit `model` override or intend to implement inline instead of
+# dispatching. One sentence. Omit for a plain mechanical/integration packet.
+tier_reason: <e.g. schema shape is unresolved until the query paths are written>
+
+# Implementation method. `tdd` = every behavior starts as a failing test seen to
+# fail first (RED → GREEN → REFACTOR). The reviewer checks that each acceptance
+# criterion below has a test that was watched to fail before the code existed.
+# Use `tdd` for product logic; relax to `direct` only for throwaway/generated code
+# or pure config, and say why. Testing STANDARDS (framework, coverage, structure)
+# are the project's to declare — follow `gspec/practices.md` where it exists; this
+# plugin does not ship a testing method of its own (ADR 0020 D7).
+method: <tdd | direct>
+
+# The ONLY files this task may create or edit. Keep this as narrow as possible.
+# Globs allowed. Anything outside this list requires escalation, not self-widening.
+allowed_files:
+  - <src/api/Transactions/**>
+  - <tests/api/Transactions/**>
+
+# Read-only context the agent should load before starting (specs, docs, code).
+context:
+  - <gspec/features/recurring-transactions.md>
+  - <docs/architecture.md#transaction-domain>
+  - <src/api/Transactions/Transaction.cs>
+
+# Concrete, checkable conditions. The reviewer verifies each of these.
+acceptance_criteria:
+  - <detects monthly recurring transactions>
+  - <supports merchant normalization>
+  - <includes unit tests>
+  - <does not alter auth behavior>
+
+# Interface contract with neighboring packets. A fresh implementer sees ONLY this
+# packet, so name the exact signatures it may rely on and must expose — this is how
+# sequential (or, when safely separable, parallel) packets stay wire-compatible
+# without sharing context. Copy signatures verbatim; don't paraphrase.
+interfaces:
+  consumes:                              # exact signatures produced by earlier packets
+    - <ITransactionRepository.GetByAccount(Guid accountId): IReadOnlyList<Transaction>>
+  produces:                              # exact signatures later packets may rely on
+    - <RecurringDetector.Detect(IEnumerable<Transaction>): IReadOnlyList<RecurringSeries>>
+
+# Hard boundaries. Doing any of these requires stopping and escalating.
+forbidden:
+  - modify auth or authorization logic
+  - change database schema or run migrations without approval
+  - touch secrets, .env, credentials, or CI/deploy config
+  - install or upgrade dependencies without approval
+  - <touch a domain-critical module declared in .agents/domain-rules.md>
+                                # e.g. money movement / banking for a financial app
+  - <touch frontend>            # task-specific extras
+
+# Commands the agent runs to verify its work. Output must be reported verbatim.
+commands:
+  build: <dotnet build>
+  test: <dotnet test>
+
+# Actions that must NOT happen without explicit human approval first.
+approval_required_before:
+  - commit
+  - push
+  - merge
+  - migration
+  - schema change
+  - dependency upgrade
+  - deploy

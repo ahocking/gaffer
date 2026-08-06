@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# {{PROJECT_NAME}} — .gitignore
+# Stack-agnostic baseline. Add stack-specific ignores once gspec/stack.md is set
+# (the gspec `stack` skill decides the stack).
+# ---------------------------------------------------------------------------
+
+# Environment / secrets — never commit credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+secrets.json
+
+# Logs
+*.log
+logs/
+
+# Orchestration run-state — local guided-loop session bookkeeping, not product
+# history. Gitignored so the single-checkout discard (`git stash -u`) and
+# `git add -A` never sweep or commit it, and so it never dirties the tree that
+# `runstate.sh reconcile` inspects (ADR 0009). Persists on local disk.
+.agents/run-state.yaml
+
+# Orchestration run-metrics — the event spine + assembled per-run metrics packets
+# (plugin ADR 0019 Tier 1). Local run bookkeeping, NOT product history; gitignored
+# for the same ADR 0009 reasons as run-state above. The assembled run-metrics.json
+# is a portable single file — archive a run by copying it out, not by committing
+# this live directory.
+.agents/metrics/
+
+# Orchestration pause sentinel(s) — the cooperative-pause REQUEST channel (ADR
+# 0017). Transient, machine-local, and NOT product history: a running loop/lanes
+# poll `.agents/pause` (all) or `.agents/pause.<task-id>` (one lane) at safe
+# checkpoints and wrap up to a green commit. Gitignored so a request never dirties
+# a lane's tree or gets committed.
+.agents/pause
+.agents/pause.*
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+
+# Common build / dependency output (harmless if unused)
+node_modules/
+dist/
+build/
+out/
+target/
+bin/
+obj/
+__pycache__/
+*.py[cod]
+.venv/
+coverage/

@@ -1,0 +1,23 @@
+# Extra sensitive-path patterns for {{PROJECT_NAME}} — ENFORCED by the
+# gaffer guardrail (hooks/guard.sh loads this file at runtime and appends
+# these to its built-in SENSITIVE_PATH_PATTERNS). Mirror the "Sensitive paths"
+# you list in .agents/domain-rules.md here so writes to them are actually blocked
+# — both via the Edit/Write tools and via shell writes (cat >, sed -i, cp, tee).
+#
+# Format: one POSIX extended-regex (grep -E, case-insensitive) per line, matched
+# against the target file path. Blank lines and `#` comments are ignored. A match
+# DENIES the write (exit 2) until a human approves it.
+#
+# The plugin covers only GENERIC risk — auth/authz, secrets/.env/credentials,
+# CI/deploy config, and cert/key files. It does NOT cover domain risk. Add THIS
+# repo's domain-critical paths here (e.g. money movement for a financial app).
+#
+# Scope patterns to real MODULE paths, not bare keywords — a rule on the word
+# "transfer" or "balance" false-positives on a load balancer or a DTO. Anchor to a
+# directory or namespace you actually own.
+#
+# Examples (uncomment / adapt to this repo):
+# (^|/)src/(payments|ledger|banking)/            # financial app: money movement
+# (^|/)src/[^/]*/(pricing|billing|invoicing)/
+# (^|/)core/(compliance|audit)/
+# tenant[^/]*\.(cs|ts|py|go)$

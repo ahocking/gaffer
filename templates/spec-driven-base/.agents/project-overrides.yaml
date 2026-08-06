@@ -1,0 +1,127 @@
+# Per-project orchestration overrides for {{PROJECT_NAME}}
+# -----------------------------------------------------------------------------
+# The `gaffer` plugin ships sensible defaults (opus for reasoning/review,
+# sonnet for implementation, an approval guardrail for risk common to any codebase
+# — auth, secrets, migrations, deps, deploys, git history).
+# This file lets THIS repo tune that behavior without editing the plugin.
+# Everything here is optional — delete what you don't override.
+
+project:
+  name: {{PROJECT_NAME}}
+  # One line; the chief-engineer uses this to frame requests.
+  summary: {{PROJECT_PURPOSE}}
+
+# Commands the implementer/reviewer run to verify work. Fill these in once the
+# stack is chosen (see gspec/stack.md). Left blank, the agents will ask.
+commands:
+  build: ""        # e.g. "dotnet build", "npm run build", "cargo build"
+  test: ""         # e.g. "dotnet test", "npm test", "pytest"
+  lint: ""         # e.g. "npm run lint", "ruff check ."
+
+# Conventional write scopes for scoped task packets. Narrow is better.
+# Adjust to match this repo's real layout once it exists.
+allowed_paths:
+  backend:
+    - "src/**"
+    - "tests/**"
+  frontend:
+    - "web/**"
+  docs:
+    - "docs/**"
+    - "gspec/**"
+  specs:
+    - "gspec/features/**"
+    - "gspec/tasks/**"
+    - ".agents/roadmap.yaml"
+
+# ── UX preview loop ──────────────────────────────────────────────────────────
+# How the ux-designer SEES the rendered UI. Omit this block entirely to
+# auto-detect (Unity if ProjectSettings/ProjectVersion.txt or a Unity-style
+# Packages/manifest.json exists; web if .claude/launch.json or a package.json dev
+# script exists) with a **web** fallback — so existing web repos need no change.
+# ux:
+#   preview_mode: web        # web | unity | none  (web is the fallback default)
+#   #   web   — boot the dev server (.claude/launch.json) + drive the DOM via the
+#   #           Claude_Preview MCP.
+#   #   unity — drive the ALREADY-OPEN Unity Editor via the Unity MCP; it cannot
+#   #           boot the Editor itself.
+#   #   none  — no rendered surface; work from source + pasted screenshots.
+#   unity_mcp_server: ai-game-developer   # Unity only; must match .mcp.json. Leave
+#                                         # as this default — the agent's generic
+#                                         # tool grant (mcp__ai-game-developer__*)
+#                                         # assumes this server name.
+
+# Model-routing overrides (optional). Only list tasks whose default tier you want
+# to change. Tiers: opus (reasoning/architecture/review/security),
+# sonnet (implementation), haiku (summarization/docs).
+model_routing: {}
+  # example:
+  # implementation: sonnet
+  # security_review: opus
+
+# Extra escalation triggers specific to this project, on top of the plugin's
+# generic defaults (auth, secrets, DB schema/migrations, deps, deploys, git history).
+# This is where domain risk lives — e.g. money movement for a financial app.
+escalate_to_human_on: []
+  # example:
+  # - "changes to <domain-critical module>"
+
+# Highest autonomy this repo will EVER allow the Chief Engineer to reach, no
+# matter what a session env var or .agents/autonomy requests (ADR 0004 / 0006). The
+# guardrail clamps the resolved level DOWN to this ceiling. Omit for no cap.
+#   interactive   — every commit is human-gated here (most conservative)
+#   supervised    — CE may auto-commit green work on a feature branch
+#   autonomous    — CE may drive the loop across packets
+#   full-autonomy — CE may also merge/rebase/push onto NON-main branches
+# autonomy_ceiling: supervised
+
+# Opt this repo OUT of the guardrail's ASK tier (ADR 0015). Default false.
+# When true, the guard SKIPS all one-click "ask" prompts — routine-but-notable bash
+# (dependency installs, migrations, deploys) AND review-worthy writes (auth CODE,
+# CI/deploy config, appsettings) run WITHOUT interruption. The hard-deny floors are
+# unaffected: secrets/.env/key material, `rm -rf`, history rewrite, and the git
+# soft gates (commit/merge/push to main) still block exactly as before. Use this
+# only in a repo where the reviewer + PR gate are your review boundary and the ask
+# prompts are pure friction. Resolved restrictively — in a nested/multi-repo tree,
+# EVERY discovered `.agents/` root must set it true or the prompts stay on.
+# bypass-ask-tier: false
+
+# The non-main integration branch for the single-checkout feature-branch workflow
+# (ADR 0009). The guided loop cuts each packet's `orch/<task-id>` branch FROM this
+# base, and at `full-autonomy` merges/rebases those branches back INTO it and pushes
+# it for CI (ADR 0006). If unset, the loop falls back to `develop`, then
+# `main`/`master`. main/master merges, releases, and the danger floor ALWAYS stay
+# human, whatever this says. Recommended default for develop-flow repos:
+integration_branch: develop
+
+# Auto-pause the loop just before a Claude Code ROLLING USAGE LIMIT is hit — the
+# 5-hour AND the 7-day (weekly) window (ADR 0018). The plugin ships a status-line
+# SENSOR (scripts/statusline-pause-sensor.sh) that reads both windows' usage
+# percentages (the only place they are exposed) and, when EITHER crosses its
+# threshold, writes the SAME cooperative-pause sentinel a human/frontend would —
+# so a long unattended run drains to a green checkpoint instead of a lane dying
+# mid-packet when the server cuts it off. Everything after the write is ADR 0017.
+#
+# Requires BOTH a Pro/Max account (no rate_limits payload under API-key auth) AND a
+# `statusLine` entry in your user settings.json pointing at the installed sensor —
+# a plugin cannot set that for you. Turn it on (which wires settings.json for you)
+# with `/gaffer:rate-limit-pause on`; this block is the per-repo gate the
+# sensor reads at runtime, so `enabled: false` (or the `off` sub-command) keeps the
+# status line rendering percentages while NOT arming the pause for this repo.
+# Resolution (each knob): env -> this block -> default.  Best-effort early-warning,
+# never a hard stop — both cutoffs are enforced server-side.
+# rate_limit_pause:
+#   enabled: true               # env ORCH_RATE_PAUSE=off overrides; default true
+#   five_hour_threshold_pct: 90 # env ORCH_RATE_PAUSE_PCT;    arm at/above this 5h %
+#   seven_day_threshold_pct: 85 # env ORCH_RATE_PAUSE_7D_PCT; arm at/above this 7d %.
+#                               # Lower than the 5h default ON PURPOSE: the weekly
+#                               # ceiling is slower-moving and far costlier to
+#                               # exhaust (days stranded, not a couple of hours).
+
+# Max concurrent packet lanes for PARALLEL mode (`/gaffer:run-loop --parallel`,
+# ADR 0016). The scheduler runs at most this many file-disjoint packets at once, each
+# in its own git worktree, capped further by the harness's own subagent limit and your
+# account limits. Default 5 if unset. Raise it on a big, wide backlog with plenty of
+# independent features; lower it to be gentle on machine/account resources. Sequential
+# mode (the default) ignores this.
+max_parallel_packets: 5

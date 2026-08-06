@@ -1,0 +1,52 @@
+# Secrets & local environment — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+credentials/
+*.local
+
+# Claude Code local, machine-specific settings
+.claude/settings.local.json
+
+# Local-only working docs kept out of the published repo (original PRD/design
+# notes, internal roadmaps/migration runbooks, WIP handoffs). Retained on disk
+# for the author's reference; never published.
+scratch/
+
+# Orchestration run-state — local session bookkeeping, not product history.
+# Gitignored so the guided loop's single-checkout discard (`git stash -u`) and
+# `git add -A` never sweep or commit it, and so it never dirties the tree that
+# reconcile inspects (ADR 0009). It persists on local disk across sessions.
+.agents/run-state.yaml
+
+# Orchestration run-metrics — the event spine + assembled run packets (ADR 0019
+# Tier 1). Local run bookkeeping, NOT product history; gitignored for the same
+# ADR 0009 reasons as run-state (the loop's `git add -A` / `git stash -u` must
+# never sweep or commit it, and it must not dirty the tree reconcile inspects).
+# The assembled run-metrics.json is a portable single file — archive a run by
+# copying it out, not by committing this live directory.
+.agents/metrics/
+
+# OS cruft
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# Editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Node / tooling (present if we later add JS-based scripts)
+node_modules/

@@ -1,0 +1,16 @@
+# Extra risky-Bash patterns for {{PROJECT_NAME}} — ENFORCED by the orchestration
+# guardrail (hooks/guard.sh loads this file at runtime and appends these to its
+# built-in RISKY_BASH_PATTERNS). This is how a per-repo risk declared in
+# .agents/domain-rules.md becomes actually enforced, not just voluntarily honored.
+#
+# Format: one POSIX extended-regex (grep -E) per line, matched against the Bash
+# command string. Blank lines and lines starting with `#` are ignored. A match
+# DENIES the command (exit 2) until a human approves it.
+#
+# The plugin already covers git commit/push, rm -rf, dependency installs, DB
+# migrations, and deploys — do NOT restate those. Add only project-specific ones.
+#
+# Examples (uncomment / adapt to this repo):
+# (^|[^[:alnum:]])make[[:space:]]+(deploy|release|publish)([^[:alnum:]]|$)
+# (^|[^[:alnum:]])(psql|mysql)[[:space:]]+.*(drop|truncate|delete)
+# (^|[^[:alnum:]])stripe[[:space:]]+.*(charge|refund|payout)

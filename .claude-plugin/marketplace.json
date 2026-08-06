@@ -1,0 +1,17 @@
+{
+  "name": "gaffer-marketplace",
+  "owner": {
+    "name": "ahocking",
+    "url": "https://github.com/ahocking"
+  },
+  "metadata": {
+    "description": "Single-plugin marketplace for gaffer. Add it from GitHub (claude plugin marketplace add ahocking/gaffer) or from a local clone by path, then install by name so a consumer repo can enable the plugin from a committed .claude/settings.json instead of a per-session --plugin-dir flag."
+  },
+  "plugins": [
+    {
+      "name": "gaffer",
+      "source": "./",
+      "description": "Reusable, domain-agnostic orchestration layer: chief-engineer/architect/reviewer/implementer subagents, spec-driven chains, single-checkout feature-branch workflow (develop + orch/* branches), graduated-autonomy guided loop, task-packet template, and an approval guardrail with generic risk defaults plus per-repo extensions."
+    }
+  ]
+}

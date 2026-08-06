@@ -1,0 +1,37 @@
+# brooks-lint — optional design-decay review lens for this repo.
+#
+# This file declares that the repo opts into brooks-lint as an *advisory*
+# maintainability lens inside the orchestration review chain
+# (/gaffer:review-change). It grades a diff against engineering
+# "decay risks" (cognitive overload, change propagation, knowledge
+# duplication, accidental complexity, dependency disorder, domain-model
+# distortion) with book-cited, Symptom→Source→Consequence→Remedy findings.
+#
+# It complements — does not replace — the orchestration reviewer, which stays
+# authoritative on security and correctness, and the guardrail hook, which
+# gates irreversible actions. brooks-lint findings are advisory input to the
+# human's merge decision, never an auto-fix (the loop does not run
+# /brooks-sweep on your behalf).
+#
+# To activate, enable the plugin once (human, interactive):
+#   /plugin marketplace add hyhmrright/brooks-lint
+#   /plugin install brooks-lint@brooks-lint-marketplace
+# If it is not installed, the review chain silently skips this lens.
+#
+# All settings below are optional; delete this file entirely for defaults.
+
+strictness: balanced        # strict | balanced | legacy-friendly
+
+# Skip generated / vendored code so findings stay actionable.
+ignore:
+  - "**/*.generated.*"
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/bin/**"
+  - "**/obj/**"
+
+# Optional: silence specific risk codes (R1–R6 source, T1–T6 test).
+# disable: [T5]
+
+# Optional: override a code's default severity.
+# severity: { R1: suggestion }

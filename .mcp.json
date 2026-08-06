@@ -1,0 +1,27 @@
+{
+  "_comment": "MCP server stubs for the orchestration plugin. Anything needing a token references an environment variable — NEVER hardcode secrets here. Env vars are expanded as ${VAR}. This file is committed, so it must stay secret-free. NOTE: only real server definitions may live under \"mcpServers\" — per-server notes are kept in \"_serverNotes\" below, because any key inside \"mcpServers\" (including \"//\"-prefixed ones) is parsed as a server, and a string value there fails validation and marks the whole plugin as failed to load.",
+
+  "_serverNotes": {
+    "git": "Local git operations over MCP. No token required. Requires the uvx-installed mcp-server-git (https://github.com/modelcontextprotocol/servers).",
+    "github": "GitHub API access (PRs, issues, repo metadata). Requires a Personal Access Token supplied via the GITHUB_PERSONAL_ACCESS_TOKEN environment variable — do NOT paste a token here. Set it in your shell/.env (which is gitignored) before starting Claude Code.",
+    "filesystem": "Scoped filesystem access. No token required. Replace ${PWD} or the args with the specific directory you want to expose; keep the scope as narrow as the work needs."
+  },
+
+  "mcpServers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${PWD}"]
+    }
+  }
+}

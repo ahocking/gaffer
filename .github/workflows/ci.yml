@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guardrail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guardrail regression sweep
+        run: bash scripts/test-guard.sh
+
+      - name: Pause/resume run-state sweep
+        run: bash scripts/test-runstate.sh
+
+      - name: Packet dependency-graph sweep (ADR 0016)
+        run: bash scripts/test-packet-graph.sh
+
+      - name: Worktree lane sweep (ADR 0016)
+        run: bash scripts/test-worktree.sh
+
+      - name: Cooperative-pause signal sweep (ADR 0017)
+        run: bash scripts/test-pause.sh
+
+      - name: Parallel cooperative-pause e2e choreography (ADR 0017)
+        run: bash scripts/test-parallel-pause-e2e.sh
+
+      - name: Run-metrics assembly sweep (ADR 0019)
+        run: bash scripts/test-metrics.sh
+
+      - name: Validate plugin manifest & structure (best-effort)
+        run: |
+          if command -v claude >/dev/null 2>&1; then
+            claude plugin validate .
+          else
+            echo "claude CLI not present on runner; skipping 'claude plugin validate'."
+          fi

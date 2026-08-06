@@ -232,8 +232,28 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   PreToolUse `permissionDecision:"ask"` for a one-click native prompt; and
   **`DENY_BASH_PATTERNS`** + `BASH_WRITE_PATTERNS` hard-deny (exit 2, matched rule
   on stderr) the irreversible bash surface at every autonomy level. Extend coverage
-  in those arrays; the code below them is mechanism. It fails open only when it
-  cannot parse the tool envelope, and fails closed on any hard-deny match.
+  in those arrays; the code below them is mechanism. **It fails CLOSED when it
+  cannot READ its input (ADR 0021)** — the hook only ever runs for the five
+  mutating tools, and every one of those calls carries a command or a path, so an
+  empty extraction is a parse failure, never a legitimate absence; the one
+  remaining allow-on-ignorance is an entirely empty stdin. That inverts the old
+  `[ -z "$CMD" ] && exit 0` behavior, under which any parsing failure silently
+  disabled **every** path rule while the guard still blocked simple ASCII bash and
+  so looked healthy. Four things keep it readable, and each is load-bearing:
+  parsers are probed by **execution, not `command -v`** (Windows `python3` is
+  usually the Microsoft Store alias — on PATH, exits 49); the regex fallback
+  **decodes JSON escapes** or refuses (an *encoded* `C:\\Users\\…` cannot match a
+  pattern written for one separator — and hand-built single-backslash payloads are
+  invalid JSON that the broken fallback matched *correctly*, so manual probing
+  said "healthy"; build probe payloads with `jq -n`); path matching is
+  **separator-normalized** (`(^|/)\.env(\.|$)` had no `/` to bite on in
+  `C:\repo\.env`, so the top SECRET rule was inert on Windows *with* a working
+  `jq`); and no helper returns non-zero for an absent value, since under
+  `set -euo pipefail` that exits 1, which Claude Code reads as a non-blocking
+  error — the same fail-open by another road. `hooks/guard.sh --selftest` answers
+  "is this guard actually enforcing?" without a live tool call. `jq` is strongly
+  recommended but NOT required: stock Git Bash ships neither it nor a real
+  `python3`, so a decoding fallback beats bricking the plugin there.
   **Path writes are their own two tiers (ADR 0014):** `SECRET_PATH_PATTERNS`
   (`.env`, key material, secret/credential stores) **hard-deny** — exposure is
   irreversible; `REVIEW_PATH_PATTERNS` (auth *code*, CI/deploy/infra config,

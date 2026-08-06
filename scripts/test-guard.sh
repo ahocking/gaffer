@@ -565,6 +565,140 @@ R_BYP_NESTED="$R_BYP_OUTER/nested"; mkdir -p "$R_BYP_NESTED/.agents"   # declare
 check_ask "bypass vetoed by nested root without the flag -> still asks" \
   "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"npm install left-pad"}}' "$R_BYP_NESTED")"
 
+echo "== payload parsing: the guard must fail CLOSED when it cannot READ its input =="
+# Regression sweep for the "guard.sh fails open" report. Three independent
+# defects each disabled path enforcement while the guard still looked healthy
+# (it kept blocking simple ASCII bash, which is what made it invisible):
+#   1. `command -v python3` is TRUE for the Microsoft Store App Execution Alias,
+#      which is on PATH, prints "Python was not found…" and exits 49.
+#   2. the grep/sed fallback never UNESCAPED, so a Windows path arrived as
+#      `C:\\Users\\…` and could not match a rule written for one separator.
+#   3. json_field returned 1 for an absent key, which `set -euo pipefail` turned
+#      into exit 1 — a non-blocking error, i.e. the same fail-open.
+# Every case here is run with a hobbled PATH so the FALLBACK is what's under test.
+PARSE_TMPS=""
+NOJQ_DIR="$(mktemp -d)"; PARSE_TMPS="$PARSE_TMPS $NOJQ_DIR"
+printf '#!/bin/sh\nexit 49\n' > "$NOJQ_DIR/python3"   # the Store stub, exactly
+chmod +x "$NOJQ_DIR/python3"
+# A PATH with the stub first and no jq. Keep the real coreutils dirs so grep/sed
+# still work — the fallback IS the code under test.
+NOJQ_PATH="$NOJQ_DIR:/usr/bin:/bin"
+
+# check_nojq <expected-exit> <description> <payload>
+check_nojq() {
+  local want="$1" desc="$2" payload="$3" got
+  printf '%s' "$payload" | env PATH="$NOJQ_PATH" "$GUARD" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want %s, got %s) %s\n' "$want" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+
+R_PARSE="$(mktemp -d)"; PARSE_TMPS="$PARSE_TMPS $R_PARSE"
+mkdir -p "$R_PARSE/.agents"
+printf '(^|[/\\])src[/\\]App[/\\]Journal[/\\]\n' > "$R_PARSE/.agents/guard-extra-paths"
+
+# (1+2) The headline bug: a VALID payload naming a hard-floor path with Windows
+# separators. `\\` is how that path is spelled in real JSON; before the fix the
+# fallback matched the ENCODED form and allowed the write (verified exit 0).
+check_nojq 2 "no parser: JSON-escaped Windows path still hits guard-extra-paths" \
+  "$(printf '{"cwd":"%s","tool_name":"Write","tool_input":{"file_path":"C:\\\\Users\\\\me\\\\src\\\\App\\\\Journal\\\\x.cs","content":"//"}}' "$R_PARSE")"
+check_nojq 2 "no parser: JSON-escaped Windows path still hits the SECRET floor (.env)" \
+  '{"tool_name":"Write","tool_input":{"file_path":"C:\\Users\\me\\repo\\.env","content":"x"}}'
+# Auth code is the ASK tier (ADR 0014), so this also proves json_string's own
+# parser-free fallback still emits a well-formed permissionDecision.
+check_nojq_ask() {
+  local desc="$1" payload="$2" out got
+  out="$(printf '%s' "$payload" | env PATH="$NOJQ_PATH" "$GUARD" 2>/dev/null)"; got=$?
+  if [ "$got" = 0 ] && printf '%s' "$out" | grep -q '"permissionDecision":[[:space:]]*"ask"'; then
+    printf 'ok   (ask)     %s\n' "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want ask, got exit %s) %s\n' "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+check_nojq_ask "no parser: escaped Windows path to auth code still ASKs" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\src\\Auth\\Login.cs"}}'
+# ...and the same path with forward slashes never regressed; pin it too.
+check_nojq 2 "no parser: forward-slash path still hits guard-extra-paths" \
+  "$(printf '{"cwd":"%s","tool_name":"Write","tool_input":{"file_path":"src/App/Journal/x.cs"}}' "$R_PARSE")"
+check_nojq 0 "no parser: ordinary path still allowed (no over-blocking)" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\src\\util.ts"}}'
+check_nojq 2 "no parser: hard-deny bash still enforced" \
+  '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}'
+check_nojq 0 "no parser: read-only bash still allowed" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rn foo src/"}}'
+# A command carrying JSON escapes must decode before matching, or the deny misses.
+check_nojq 2 "no parser: escaped shell write to .env still denied" \
+  '{"tool_name":"Bash","tool_input":{"command":"cp secrets.txt C:\\repo\\.env"}}'
+
+# (3) An ABSENT optional key must not kill the hook. `cwd` is optional; before
+# the fix this exited 1 (fail-open) whenever no parser could answer.
+check_nojq 2 "no parser: absent optional key (cwd) does not kill the hook" \
+  '{"tool_name":"Write","tool_input":{"file_path":".env","content":"x"}}'
+# Same hazard via an all-comments autonomy file (leading `grep -v` exits 1).
+R_ALLCOMMENT="$(mktemp -d)"; PARSE_TMPS="$PARSE_TMPS $R_ALLCOMMENT"
+mkdir -p "$R_ALLCOMMENT/.agents"
+printf '# just a header\n#\n\n' > "$R_ALLCOMMENT/.agents/autonomy"
+check 2 "autonomy file of only comments does not kill the hook (falls back to interactive)" \
+  "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' "$R_ALLCOMMENT")"
+
+# Fail CLOSED on an unreadable payload, at every level of the envelope.
+check 2 "malformed JSON payload -> DENY (cannot judge => must not allow)" \
+  '{"tool_name":"Write","cwd":"/tmp","tool_input":{not valid json'
+check 2 "payload with no tool_name -> DENY" \
+  '{"cwd":"/tmp","tool_input":{"file_path":"src/x.ts"}}'
+check 2 "Bash payload with no command -> DENY" \
+  '{"tool_name":"Bash","cwd":"/tmp","tool_input":{}}'
+check 2 "Edit payload with no path -> DENY" \
+  '{"tool_name":"Edit","cwd":"/tmp","tool_input":{"old_string":"a"}}'
+# ...but a completely EMPTY stdin is not a tool call at all -> allow.
+check 0 "empty stdin is not a tool call -> allow" ''
+
+echo "== path separators: Windows-style paths must hit the same rules as POSIX ones =="
+# Found while writing the cases above, and INDEPENDENT of parsing: every pattern
+# in this file spells segments with `/`, so on Windows `C:\Users\me\repo\.env`
+# gave `(^|/)\.env(\.|$)` no `/` to anchor on and the single most important
+# SECRET rule was inert — with a perfectly working jq (verified exit 0). Paths
+# are now matched separator-normalized, which can only ever ADD matches.
+# NOTE: these payloads MUST be built so `\\` survives into the JSON. Writing
+# them by hand through a layer that collapses `\\` to `\` yields INVALID JSON,
+# which the guard now (correctly) denies as unreadable — and a deny for the
+# wrong reason reads as a pass. Each case below is paired with an allow case so
+# a spurious deny cannot hide.
+check 2   "backslash .env hits the SECRET floor" \
+  '{"tool_name":"Write","tool_input":{"file_path":"C:\\Users\\me\\repo\\.env","content":"x"}}'
+check 2   "backslash key material (.pem) hits the SECRET floor" \
+  '{"tool_name":"Write","tool_input":{"file_path":"C:\\repo\\certs\\server.pem"}}'
+check_ask "backslash auth code asks (ADR 0014)" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\src\\Auth\\Login.cs"}}'
+check_ask "backslash .github/workflows asks" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"repo\\.github\\workflows\\ci.yml"}}'
+check_ask "backslash infra/*.tf asks" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\infra\\main.tf"}}'
+check_ask "shell write to a backslash auth path asks" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ C:\\repo\\src\\Auth\\Login.cs"}}'
+# ...and normalization must not start blocking innocent things.
+check 0   "ordinary backslash path still allowed" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\src\\util.ts"}}'
+check 0   "docs under a backslash auth dir still allowed (extension rule holds)" \
+  '{"tool_name":"Edit","tool_input":{"file_path":"C:\\repo\\docs\\auth\\overview.md"}}'
+check 0   "grep whose pattern contains a backslash still fast-paths" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rn \"a\\\\|b\" src/"}}'
+
+# --selftest reports readability without needing a live tool call.
+if "$GUARD" --selftest >/dev/null 2>&1; then
+  printf 'ok   (exit 0) --selftest passes with a real parser on PATH\n'; pass=$((pass + 1))
+else
+  printf 'FAIL (want 0) --selftest passes with a real parser on PATH\n'; fail=$((fail + 1))
+fi
+if env PATH="$NOJQ_PATH" "$GUARD" --selftest >/dev/null 2>&1; then
+  printf 'ok   (exit 0) --selftest passes on the decoding fallback (no jq, stubbed python3)\n'; pass=$((pass + 1))
+else
+  printf 'FAIL (want 0) --selftest passes on the decoding fallback (no jq, stubbed python3)\n'; fail=$((fail + 1))
+fi
+
 echo "== parallel lanes: guard behavior INSIDE a git worktree (ADR 0016) =="
 # A lane runs in its own worktree on orch/<id>. The worktree checks out the
 # COMMITTED .agents/ (project-overrides, guard-extra), but a session-written

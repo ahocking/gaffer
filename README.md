@@ -130,6 +130,25 @@ Everything else is allowed (exit 0). The built-in patterns live in labeled array
 `SENSITIVE_PATH_PATTERNS`) at the top of `guard.sh` — **edit there to extend
 coverage.** (It gates *writes* to sensitive paths, not *reads*.)
 
+**It fails closed when it cannot read its input (ADR 0021).** The hook runs only
+for the five mutating tools, and each of those calls carries a command or a path
+— so if the payload cannot be parsed, the call is **denied** (`payload-unreadable`)
+rather than allowed. Previously a parsing failure silently disabled every path
+rule while the guard kept blocking simple ASCII bash, so it still looked healthy.
+`jq` is **strongly recommended** — install it and this never comes up. It is not
+required (stock Git Bash ships neither `jq` nor a real `python3`, so there is a
+decoding regex fallback), but note that on Windows `python3` is usually the
+Microsoft Store alias: on `PATH`, not a parser. To check a guard's health at any
+time, without a live tool call:
+
+```bash
+"$CLAUDE_PLUGIN_ROOT/hooks/guard.sh" --selftest
+```
+
+It reports the parser in use and proves a JSON-escaped Windows path still matches
+the rules. Exit 0 = enforcing; exit 1 = it would deny everything until a parser is
+on `PATH`.
+
 **Per-project rules without editing the plugin.** A consumer repo can add its own
 regexes in `.agents/guard-extra-bash` and `.agents/guard-extra-paths` (one
 `grep -E` regex per line, `#` comments allowed). The hook loads them from the

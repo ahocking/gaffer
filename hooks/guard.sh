@@ -26,12 +26,23 @@
 #   REVIEW  -> ASK. Reversible, review-worthy code/config (auth code, CI/deploy).
 #
 # Design notes:
-#   - No jq dependency required: uses jq if present, else python3, else a
+#   - No jq dependency required: uses jq if present, else python3/python, else a
 #     best-effort grep/sed fallback. Matching is done on the extracted command
-#     / file path so it works even without a JSON parser.
-#   - Fails OPEN (exit 0) only if it cannot determine the tool at all, so a
-#     malformed payload never bricks normal use. Risk matching itself fails
-#     CLOSED: if a pattern matches, we always deny.
+#     / file path so it works even without a JSON parser. Parsers are probed by
+#     EXECUTION, never by `command -v` (see detect_json_parser).
+#   - Fails CLOSED when it cannot READ its input. This hook is registered only
+#     for Bash/Edit/Write/MultiEdit/NotebookEdit, and every one of those calls
+#     carries a target — a command or a path. So an empty extraction is never a
+#     legitimate absence; it means the payload could not be read, and a control
+#     that cannot read its input must deny (exit 2), not allow. The one
+#     remaining allow-on-ignorance is a completely EMPTY stdin, which is not a
+#     tool call at all. Risk matching also fails CLOSED: if a pattern matches,
+#     we always deny.
+#   - `set -euo pipefail` is in force, so no helper may return non-zero on a
+#     merely-absent value: a non-zero return from a `VAR="$(helper …)"`
+#     assignment kills the hook, and Claude Code treats any non-zero-other-than-2
+#     exit as a NON-BLOCKING error — i.e. another silent fail-open. json_field
+#     and read_autonomy_file therefore always return 0.
 #   - Coverage is defense-in-depth, not a sandbox: it closes the obvious holes
 #     (writes to sensitive paths via the shell, git flags before the subcommand)
 #     but a determined shell can still evade it. Treat it as a backstop.
@@ -241,20 +252,111 @@ autonomy_rank() {   # interactive < supervised < autonomous < full-autonomy; unk
 # Below this line is mechanism, not policy. Prefer editing the blocks above.
 # -----------------------------------------------------------------------------
 
-INPUT="$(cat)"
+# `--selftest` answers the question the reported bug made unanswerable: is this
+# guard actually reading payloads, or has it quietly degraded? It takes no stdin.
+if [ "${1:-}" = "--selftest" ]; then
+  INPUT=""
+else
+  INPUT="$(cat)"
+fi
 
-# --- extract a JSON string field, best-effort (jq -> python3 -> grep/sed) ---
+# --- JSON parsing -------------------------------------------------------------
+# Which parser this invocation will use: "jq", "python3", "python", or "none".
+# Probed ONCE, by EXECUTION rather than by `command -v`, because presence is not
+# capability: on Windows `python3` routinely resolves to
+# %LOCALAPPDATA%\Microsoft\WindowsApps\python3, an App Execution Alias that is on
+# PATH, prints "Python was not found…" and exits 49. `command -v` calls that a
+# hit, so the old code entered the python branch, got nothing, and fell through
+# to the regex fallback — the first step of the reported fail-open.
+JSON_PARSER=""
+detect_json_parser() {
+  [ -n "$JSON_PARSER" ] && return 0
+  if printf '{"_p":"ok"}' | jq -er '._p' 2>/dev/null | grep -q '^ok$'; then
+    JSON_PARSER="jq"
+  elif printf '{"_p":"ok"}' | python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["_p"])' 2>/dev/null | grep -q '^ok$'; then
+    JSON_PARSER="python3"
+  elif printf '{"_p":"ok"}' | python  -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["_p"])' 2>/dev/null | grep -q '^ok$'; then
+    JSON_PARSER="python"
+  else
+    JSON_PARSER="none"
+  fi
+  return 0
+}
+
+# Decode JSON string escapes in a value pulled out by the regex fallback.
+# WITHOUT this the fallback compares an ENCODED string against the patterns: a
+# Windows path arrives as `C:\\Users\\me\\src\\Auth\\x.cs` (doubled separators)
+# and cannot match a rule written for a single one, so EVERY path rule silently
+# misses — the second step of the reported fail-open, and a nasty diagnostic
+# inversion too (a hand-built payload with single backslashes is invalid JSON,
+# matches fine, and makes the guard look healthy).
+# Returns 1 — "this value cannot be trusted" — on any escape it cannot faithfully
+# decode, so the caller denies rather than matching against a wrong string.
+# Pure bash (no parser exists by definition here) and bash-3.2 safe.
+_json_unescape() {
+  local s="$1"
+  case "$s" in
+    *'\'*) ;;                         # has escapes -> decode below
+    *) printf '%s' "$s"; return 0 ;;  # fast path: nothing to decode
+  esac
+  local out='' i=0 n=${#s} c d hex cp
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    if [ "$c" != '\' ]; then out="${out}${c}"; i=$((i + 1)); continue; fi
+    i=$((i + 1)); d="${s:$i:1}"; i=$((i + 1))
+    case "$d" in
+      '\'|'"'|/) out="${out}${d}" ;;
+      n) out="${out}"$'\n' ;;
+      t) out="${out}"$'\t' ;;
+      r) out="${out}"$'\r' ;;
+      b) out="${out}"$'\b' ;;
+      f) out="${out}"$'\f' ;;
+      u)
+        hex="${s:$i:4}"; i=$((i + 4))
+        case "$hex" in
+          [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]) ;;
+          *) return 1 ;;
+        esac
+        cp=$((16#$hex))
+        case "$cp" in
+          9)  out="${out}"$'\t' ;;
+          10) out="${out}"$'\n' ;;
+          13) out="${out}"$'\r' ;;
+          *)
+            # Only ASCII is faithfully decodable without a parser. Anything else
+            # (NUL, non-ASCII) is UNTRUSTED -> tell the caller to deny.
+            [ "$cp" -gt 0 ] && [ "$cp" -lt 128 ] || return 1
+            out="${out}$(printf "\\$(printf '%03o' "$cp")")"
+            ;;
+        esac
+        ;;
+      *) return 1 ;;                  # not a legal JSON escape -> untrusted
+    esac
+  done
+  printf '%s' "$out"
+  return 0
+}
+
+# --- extract a JSON string field (jq -> python3 -> python -> grep/sed) --------
+# ALWAYS returns 0. An absent key and an unreadable payload both yield the empty
+# string; the caller decides what emptiness means for its tool (for every tool
+# this hook guards, it means "deny"). Returning non-zero here used to kill the
+# whole hook under `set -euo pipefail` — e.g. `SHELL_CWD="$(json_field "$INPUT"
+# cwd)"` on a payload with no `cwd` exited 1, which Claude Code reports as a
+# non-blocking error and the guard is bypassed. Verified: exit=1, guard inert.
 json_field() {
   # $1 = raw json, $2..$n = key path (e.g. tool_input command)
   local raw="$1"; shift
-  if command -v jq >/dev/null 2>&1; then
-    local filter="."
-    local k
-    for k in "$@"; do filter="${filter}[\"${k}\"]?"; done
-    printf '%s' "$raw" | jq -r "${filter} // empty" 2>/dev/null && return 0
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$raw" | KEYS="$*" python3 -c '
+  detect_json_parser
+  case "$JSON_PARSER" in
+    jq)
+      local filter="." k
+      for k in "$@"; do filter="${filter}[\"${k}\"]?"; done
+      printf '%s' "$raw" | jq -r "${filter} // empty" 2>/dev/null || true
+      return 0
+      ;;
+    python3|python)
+      printf '%s' "$raw" | KEYS="$*" "$JSON_PARSER" -c '
 import json, os, sys
 try:
     d = json.load(sys.stdin)
@@ -267,15 +369,55 @@ for k in os.environ.get("KEYS","").split():
         sys.exit(0)
 if isinstance(d, (str, int, float)):
     print(d)
-' 2>/dev/null && return 0
-  fi
-  # Fallback: grab the last key in the path via grep/sed (shallow, best-effort).
-  local last="${!#}"
-  printf '%s' "$raw" \
+' 2>/dev/null || true
+      return 0
+      ;;
+  esac
+  # Fallback: grab the last key in the path via grep/sed (shallow, best-effort),
+  # then DECODE it — matching an encoded value against the patterns is the bug.
+  local last="${!#}" enc
+  enc="$(printf '%s' "$raw" \
     | grep -oE "\"${last}\"[[:space:]]*:[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" \
     | head -n1 \
-    | sed -E "s/^\"${last}\"[[:space:]]*:[[:space:]]*\"//; s/\"$//"
+    | sed -E "s/^\"${last}\"[[:space:]]*:[[:space:]]*\"//; s/\"\$//" || true)"
+  [ -n "$enc" ] || return 0
+  _json_unescape "$enc" || return 0    # undecodable -> empty -> caller denies
+  return 0
 }
+
+# Detect EAGERLY, in the main shell. json_field is always called as
+# `VAR="$(json_field …)"`, i.e. in a subshell, so a JSON_PARSER memoized in
+# there is discarded on return: every call re-probed (three spawns per
+# invocation instead of one) and the parent never learned the answer, so
+# deny_unreadable could only report "unknown". One probe here fixes both.
+detect_json_parser
+
+# --- selftest -----------------------------------------------------------------
+# `hooks/guard.sh --selftest` — prove the guard can READ a payload. Feeds itself
+# a canary Write whose path is a JSON-escaped Windows path (the exact shape that
+# silently defeated the old regex fallback) and reports the parser in use.
+# Exit 0 = the guard can read its input; exit 1 = it cannot, and would deny.
+if [ -z "${INPUT}" ] && [ "${1:-}" = "--selftest" ]; then
+  detect_json_parser
+  _canary='{"tool_name":"Write","cwd":"/tmp","tool_input":{"file_path":"C:\\Users\\me\\repo\\src\\Auth\\Login.cs"}}'
+  _want='C:\Users\me\repo\src\Auth\Login.cs'
+  _got_tool="$(json_field "$_canary" tool_name)"
+  _got_path="$(json_field "$_canary" tool_input file_path)"
+  echo "guard.sh selftest"
+  echo "  json parser : ${JSON_PARSER}$([ "$JSON_PARSER" = none ] && printf ' (regex fallback — install jq)')"
+  echo "  tool_name   : ${_got_tool:-<UNREADABLE>}"
+  echo "  file_path   : ${_got_path:-<UNREADABLE>}"
+  echo "  expected    : ${_want}"
+  if [ "$_got_tool" = "Write" ] && [ "$_got_path" = "$_want" ]; then
+    echo "  result      : OK — payloads are readable, path rules will match."
+    exit 0
+  fi
+  echo "  result      : BROKEN — the guard cannot read its input and will DENY" >&2
+  echo "                every guarded tool call until a JSON parser is on PATH." >&2
+  echo "                Install jq. On Windows/Git Bash 'python3' is usually the" >&2
+  echo "                Microsoft Store stub: on PATH, but not a parser." >&2
+  exit 1
+fi
 
 # --- where the command RUNS vs where the CONFIG lives (two different things) --
 # SHELL_CWD is the payload `cwd`: where the harness thinks the shell is. It is the
@@ -391,12 +533,16 @@ read_autonomy_ceiling() {   # $1 = a config root
 # explanatory `#` header above the bare level, and stripping whitespace from the
 # whole file would fold that header into the token and never parse (a silent
 # fallback-to-interactive bug). Strip any inline `# comment`, then whitespace.
+# Always returns 0: an autonomy file that is entirely comments makes the leading
+# `grep -v` exit 1, which `pipefail` propagates and `set -e` turns into a dead
+# hook (exit 1 = a non-blocking error to Claude Code = the guard is bypassed).
 read_autonomy_file() {   # $1 = a config root
   local f="${1}/.agents/autonomy"
   [ -f "$f" ] || return 0
   grep -vE '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
     | tail -n1 | sed -E 's/[[:space:]]*#.*$//' \
-    | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+    | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true
+  return 0
 }
 
 # Precedence: env ORCH_AUTONOMY > the discovered `.agents/autonomy` files > default.
@@ -497,8 +643,11 @@ ensure_bypass() {
 
 TOOL="$(json_field "$INPUT" tool_name)"
 
-# Can't tell what tool this is -> allow (fail open on unparseable envelope).
-if [ -z "${TOOL:-}" ]; then
+# Nothing on stdin at all is not a tool call (a manual probe, a harness glitch):
+# there is nothing to judge, so allow. This is the ONE remaining
+# allow-on-ignorance. A NON-EMPTY payload whose tool_name cannot be read is a
+# different case entirely and fails CLOSED — see the deny just below deny().
+if [ -z "${INPUT//[[:space:]]/}" ]; then
   exit 0
 fi
 
@@ -510,14 +659,20 @@ MATCHED_SENSITIVE=""
 # pattern's anchors so a path embedded mid-command still matches.
 cmd_hits_path() {
   local cmd="$1"; shift
-  local pat rpat
+  # Match against BOTH the raw command and a separator-normalized copy. A Windows
+  # path embedded in a command (`cp x C:\repo\src\Auth\y.cs`) offers no `/` for a
+  # pattern's segment anchors to bite on, so multi-segment rules silently miss it.
+  # Testing both keeps every escape-sensitive match intact and can only ADD hits
+  # (the fail-closed direction). Anchors still apply per line.
+  local haystack="$cmd" pat rpat
+  case "$cmd" in *'\'*) haystack="${cmd}"$'\n'"${cmd//\\//}" ;; esac
   for pat in "$@"; do
     # Relax a leading `(^|/)` anchor to any word boundary (a path token in a
     # command is preceded by whitespace/quote/`=`, not just `/`), and relax a
     # trailing `$` anchor so a path followed by more command text still matches.
     rpat="${pat/#(^|\/)/(^|[^[:alnum:]])}"
     rpat="${rpat/%\$/($|[^[:alnum:]])}"
-    if printf '%s' "$cmd" | grep -Eiq "$rpat"; then
+    if printf '%s' "$haystack" | grep -Eiq "$rpat"; then
       MATCHED_SENSITIVE="$pat"
       return 0
     fi
@@ -545,21 +700,45 @@ deny() {
       echo "  hint     : merging/pushing to main/master (or remote main) ALWAYS requires the human, at every level. Target a non-main integration/feature branch, or run it yourself." >&2 ;;
     commit-gate:secret-path|merge-gate:secret-path)
       echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor holds at every autonomy level — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
+    payload-unreadable)
+      echo "  hint     : the guardrail could not read this tool call's payload, so it cannot judge it — and a control that cannot read its input must DENY, not allow. Install a working JSON parser on PATH: 'jq' is the reliable one. On Windows/Git Bash, 'python3' is usually the Microsoft Store App Execution Alias, which is on PATH but is NOT a parser. Check with: hooks/guard.sh --selftest" >&2 ;;
   esac
   echo "If this is intended, approve it explicitly (or run it yourself)." >&2
   exit 2
 }
 
+# Every tool this hook is registered for (Bash|Edit|Write|MultiEdit|NotebookEdit)
+# carries a target — a command or a path. So an EMPTY extraction is never a
+# legitimate absence; it means the payload could not be read. The branches below
+# used to `exit 0` here, which meant ANY parsing failure — a stubbed python3, a
+# JSON-escaped Windows path, a missing parser — silently disabled the guard with
+# no banner, no stderr and no denial, while it kept blocking simple ASCII bash
+# commands and so looked healthy.
+deny_unreadable() {   # $1 = the field that could not be extracted
+  local head
+  head="$(printf '%s' "$INPUT" | tr '\n\r\t' '   ' | cut -c1-200 || true)"
+  deny "payload-unreadable" \
+       "cannot extract '$1' from the tool payload (json parser: ${JSON_PARSER:-unknown})" \
+       "${head:-<empty>}"
+}
+
+# A payload arrived, but we cannot tell which tool it is. Since this hook only
+# runs for the five guarded tools, "unreadable" here means an unjudged guarded
+# call -> fail closed. (Truly empty stdin already returned 0 above.)
+if [ -z "${TOOL:-}" ]; then
+  TOOL="(unreadable)"
+  deny_unreadable "tool_name"
+fi
+
 # JSON-encode a string (for permissionDecisionReason). jq -> python3 -> minimal
 # fallback, mirroring json_field's dependency ladder.
 json_string() {
   local s="$1"
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s' "$s" | jq -Rs . && return 0
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$s" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' && return 0
-  fi
+  detect_json_parser
+  case "$JSON_PARSER" in
+    jq)             printf '%s' "$s" | jq -Rs . && return 0 ;;
+    python3|python) printf '%s' "$s" | "$JSON_PARSER" -c 'import json,sys; print(json.dumps(sys.stdin.read()))' && return 0 ;;
+  esac
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"
   printf '"%s"' "$s"
 }
@@ -864,7 +1043,8 @@ resolve_git_dir() {
 case "$TOOL" in
   Bash)
     CMD="$(json_field "$INPUT" tool_input command)"
-    [ -z "${CMD:-}" ] && exit 0
+    # A Bash call always has a command -> empty means unreadable, not absent.
+    [ -n "${CMD:-}" ] || deny_unreadable "tool_input.command"
     # (0) read-only fast-path: allow unambiguous searches/inspection immediately,
     #     so grepping FOR a risky string isn't mistaken for RUNNING it. Runs BEFORE
     #     any config-root discovery or autonomy resolution (the expensive per-call
@@ -934,20 +1114,29 @@ case "$TOOL" in
     PATH_VAL="$(json_field "$INPUT" tool_input file_path)"
     [ -z "${PATH_VAL:-}" ] && PATH_VAL="$(json_field "$INPUT" tool_input notebook_path)"
     [ -z "${PATH_VAL:-}" ] && PATH_VAL="$(json_field "$INPUT" tool_input path)"
-    [ -z "${PATH_VAL:-}" ] && exit 0
+    # An edit tool always names a target -> empty means unreadable, not absent.
+    [ -n "${PATH_VAL:-}" ] || deny_unreadable "tool_input.file_path"
     # Path writes need the guard-extra SECRET/REVIEW unions (autonomy is irrelevant
     # here — SECRET hard-denies and REVIEW asks at every level), so resolve config
     # but not autonomy.
     discover_config
+    # Match on a SEPARATOR-NORMALIZED copy. Every pattern here — built-in and
+    # per-repo alike — spells path segments with `/`, but on Windows the harness
+    # hands us `C:\Users\me\repo\.env`, where `(^|/)\.env(\.|$)` has no `/` to
+    # anchor on and simply does not match: the single most important SECRET rule
+    # was inert on Windows even with a perfectly working jq (verified exit 0).
+    # Normalizing can only ever ADD matches, so it fails closed. The ORIGINAL
+    # spelling is what gets reported, so the message still names the real target.
+    PATH_MATCH="${PATH_VAL//\\//}"
     # SECRET first -> HARD DENY (irreversible exposure); else REVIEW -> ASK
     # (one-click prompt for reversible, review-worthy code/config). ADR 0014.
     for pat in "${SECRET_PATH_PATTERNS[@]}"; do
-      if printf '%s' "$PATH_VAL" | grep -Eiq "$pat"; then
+      if printf '%s' "$PATH_MATCH" | grep -Eiq "$pat"; then
         deny "secret-path" "$pat" "$PATH_VAL"
       fi
     done
     for pat in "${REVIEW_PATH_PATTERNS[@]}"; do
-      if printf '%s' "$PATH_VAL" | grep -Eiq "$pat"; then
+      if printf '%s' "$PATH_MATCH" | grep -Eiq "$pat"; then
         ask "review-path" "$pat" "$PATH_VAL"
       fi
     done

@@ -169,6 +169,64 @@ check "tokens zeroed"            "0"    "$(jq -r '.totals.tokens.input' "$OUT2")
 check "no-transcript per-packet tokens null" "null" "$(jq -r '.packets[0].tokens' "$OUT2")"
 check "no-transcript by_model empty"         "{}"   "$(jq -c '.totals.by_model' "$OUT2")"
 
+echo "== ADR 0019 v3.1: a CRLF-emitting jq (native Windows build) must not break the join =="
+# The native Windows jq opens stdout in TEXT mode, so EVERY line ends \r\n — on pipes
+# too, not just consoles. `$(jq …)` hides it (MSYS bash strips a trailing \r\n) but
+# `read` keeps the \r, so the session-id list handed the transcript globs a value one
+# byte too long: `<uuid>\r.jsonl` matched nothing and collect stamped token_source=none
+# on EVERY Windows run while every structural number stayed correct.
+#
+# Reproduce that build on ANY platform with a shim that CRLF-ifies jq's stdout. It uses
+# awk, NOT `sed 's/$/\r/'` — BSD/macOS sed does not interpret \r in the RHS and would
+# insert a literal 'r', so the sed form would silently test nothing on macOS. On a
+# machine whose real jq ALREADY emits CRLF the shim doubles it (\r\r\n), which the
+# `tr -d '\r'` fix also handles — a strictly harsher test, so the case is meaningful
+# on Windows and POSIX alike.
+SHIM="$ROOT/shim"; mkdir -p "$SHIM"
+REAL_JQ="$(command -v jq)"                      # resolve BEFORE the shim is on PATH
+cat > "$SHIM/jq" <<SHIMEOF
+#!/usr/bin/env bash
+"$REAL_JQ" "\$@" | awk '{ printf "%s\r\n", \$0 }'
+exit "\${PIPESTATUS[0]}"
+SHIMEOF
+chmod +x "$SHIM/jq"
+# Sanity: the shim must actually emit a CR, else everything below proves nothing.
+# 'ab' + CR + LF = 4 bytes (5 if the real jq already CRLFs and the shim doubled it).
+crlf_probe="$(PATH="$SHIM:$PATH" jq -rn '"ab","cd"' 2>/dev/null | head -1 | wc -c | tr -d ' ')"
+if [ "${crlf_probe:-0}" -gt 3 ]; then ok "shim emits CR (${crlf_probe} bytes for 'ab')"
+else bad "shim emits CR" "got ${crlf_probe} bytes; shim is not simulating Windows jq"; fi
+
+CRLFOUT="$ROOT/crlf.json"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$REPO" --projects-dir "$PROJ" --out "$CRLFOUT" >/dev/null 2>&1
+jq -e . "$CRLFOUT" >/dev/null 2>&1 && ok "CRLF-jq packet valid JSON" || bad "CRLF-jq packet valid JSON"
+check "CRLF-jq: token_source"          "transcript" "$(jq -r '.token_source' "$CRLFOUT")"
+check "CRLF-jq: tokens.input"          "540"        "$(jq -r '.totals.tokens.input' "$CRLFOUT")"
+check "CRLF-jq: tokens.output"         "270"        "$(jq -r '.totals.tokens.output' "$CRLFOUT")"
+check "CRLF-jq: transcripts matched"   "3"          "$(jq -r '.token_diagnostics.transcript_files_matched' "$CRLFOUT")"
+check "CRLF-jq: structural unchanged"  "2"          "$(jq -r '.totals.packets' "$CRLFOUT")"
+# Strongest form: a CRLF jq must produce a BYTE-IDENTICAL packet (bar the timestamp).
+check "CRLF-jq: packet identical to clean run" "same" \
+  "$(if [ "$(jq -S 'del(.generated_at)' "$OUT")" = "$(jq -S 'del(.generated_at)' "$CRLFOUT")" ]; then echo same; else echo differs; fi)"
+
+echo "== ADR 0019 v3.1: token_source=none says WHICH failure it was =="
+# `none` used to conflate "nothing on disk" with "files exist but none opened", and the
+# note asserted "no transcript found" in both — the wording that made the CRLF bug cost
+# a half-hour bisect while 29 transcripts sat on disk.
+check "diag: dir absent"        "absent" "$(jq -r '.token_diagnostics.transcript_dir' "$OUT2")"
+check "diag: nothing matched"   "0"      "$(jq -r '.token_diagnostics.transcript_files_matched' "$OUT2")"
+# The CRLF signature exactly: transcripts present, none matching this run's session ids.
+PROJ2="$ROOT/projects2"; mkdir -p "$PROJ2/proj"
+cp "$PROJ/proj/S1.jsonl" "$PROJ2/proj/OTHERSESSION.jsonl"
+LKOUT="$ROOT/lookup.json"
+"$METRICS" collect --main-root "$REPO" --projects-dir "$PROJ2" --out "$LKOUT" >/dev/null 2>&1
+check "diag: files present"     "1"    "$(jq -r '.token_diagnostics.transcript_files_present' "$LKOUT")"
+check "diag: files matched"     "0"    "$(jq -r '.token_diagnostics.transcript_files_matched' "$LKOUT")"
+check "diag: token_source"      "none" "$(jq -r '.token_source' "$LKOUT")"
+check "diag: note names the LOOKUP failure" "1" \
+  "$(jq -r '[.notes[]|select(contains("LOOKUP FAILURE"))]|length' "$LKOUT")"
+check "diag: note does NOT claim an empty disk" "0" \
+  "$(jq -r '[.notes[]|select(contains("no transcript files on disk"))]|length' "$LKOUT")"
+
 echo "== active/idle: an inter-event gap > idle_gap counts as IDLE, not active =="
 IREPO="$ROOT/irepo"; mkdir -p "$IREPO"; git -C "$IREPO" init -q
 IEV="$IREPO/.agents/metrics/events"; mkdir -p "$IEV"
@@ -262,8 +320,11 @@ for tp in Task Read; do
   printf '%s' "{\"session_id\":\"W1\",\"tool_name\":\"$tp\",\"agent_id\":\"\",\"agent_type\":\"main\"}" \
     | ORCH_METRICS_DIR="$WEV" "$HOOK" >/dev/null 2>&1
 done
+# `tr -d '\r'`: jq emits multi-line raw output, and the native Windows build CRLFs it.
+# Command substitution strips only the LAST \r, so the joined value would carry an
+# interior CR ("Read\r Task") — the harness-side twin of the collector bug fixed above.
 check "Task + Read both logged" "Read Task" \
-  "$(jq -r '.tool' "$WEV/W1.jsonl" 2>/dev/null | sort | paste -sd' ' - | sed 's/ *$//')"
+  "$(jq -r '.tool' "$WEV/W1.jsonl" 2>/dev/null | tr -d '\r' | sort | paste -sd' ' - | sed 's/ *$//')"
 
 echo "== PARALLEL: a lane event resolves to the MAIN checkout's metrics dir =="
 # The hook must resolve <main>/.agents/metrics via git-common-dir even when it fires

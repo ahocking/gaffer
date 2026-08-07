@@ -468,6 +468,59 @@ the event log deliberately carries no file paths, so main-vs-implementer edit *o
 within a packet — correction versus division of labor — cannot be distinguished. Both are
 prerequisites for measuring rework rate by editor role.
 
+## v3.1 revision (2026-08-07) — the collector was blind on Windows
+
+`collect` stamped `token_source: none` on **every** run on Windows — empty `by_role`,
+empty `by_model`, `-` in every per-packet `out-tok` — while transcripts sat on disk,
+correctly named, full of valid `usage` blocks. Across 7 sessions on the affected machine
+all 7 were blank; one of them alone held 211 usage turns and 28.4M tokens. Everything
+structural (wall/active/idle, `by_tool`, `by_skill`, `by_command_class`, packet
+boundaries, the routing audit) was correct and unaffected, which is exactly what made the
+packet look healthy. `/gaffer:metrics analyze` — the stated end goal of this ADR — could
+only ever produce structural advice on that platform.
+
+**1. Root cause: the native Windows jq build writes CRLF, and one line list is read with
+`read`.** That build opens stdout in text mode, so *every* jq line ends `\r\n`, on pipes
+as well as consoles (`jq -rn '"abc"' | od -c` ⇒ `a b c \r \n`). Command substitution
+hides this — MSYS bash strips a **trailing** `\r\n` — which is why all seven `$(jq -r …)`
+captures in the collector are clean, and why the bug had exactly one site instead of a
+dozen. But `read` strips only the `\n`. The distinct-session-id list is the one
+jq-written line list consumed by a `while read` loop, and its values build **globs**:
+`$sid` came out 37 characters instead of 36, `…/<uuid>\r.jsonl` matched nothing,
+`[ -e "$mf" ] || continue` skipped every file, and `turns.ndjson` stayed empty — so
+`token_source` never moved off its `none` initialiser. The failure routed through the
+legitimate fail-soft path, which is why it was silent.
+
+Fixed at the source (`… | tr -d '\r' > sids.txt`, a no-op on POSIX where jq emits `\n`)
+and again at the consumer, and the rule is now stated in the script header: **any future
+`jq -r … > file` consumed by a `read` loop must be `tr -d '\r'`-piped.** The regression
+case installs a shim on `PATH` that CRLF-ifies jq's stdout, so the Windows build is
+simulated on any platform; it asserts the assembled packet is byte-identical to a clean
+run. The shim uses `awk`, not `sed 's/$/\r/'` — BSD/macOS sed does not interpret `\r` in
+the replacement and would insert a literal `r`, making the test silently vacuous on the
+one platform most likely to regress differently. The same one-line defect existed in
+`test-metrics.sh` itself (a jq list joined with `paste`), and is fixed the same way.
+
+**2. `token_source: none` was undiagnosable, and its note actively lied.** A single
+`none` covered four unrelated failures, and the emitted note asserted "no transcript
+found" in all of them — false while 29 transcripts sat on disk, and the direct cause of a
+half-hour bisect. Every packet now carries `token_diagnostics` (counts only, no paths, so
+it stays safe to hand to Claude): `transcript_dir`, `transcript_files_present`,
+`transcript_files_matched`, `usage_turns`, `usage_turns_in_window`. Those separate
+*nothing on disk* from *lookup failure* (files present, none matched — the exact CRLF
+signature) from *format drift* (matched, none parsed — the version-fragility this ADR
+already anticipated) from *window miss* (parsed, none in range). The note names which one,
+and `show` prints the line whenever `token_source != transcript`. The enum itself is
+unchanged, so consumers comparing against `none`/`transcript`/`transcript-degraded` are
+unaffected.
+
+Still open from the report and **not** addressed here: per-session collection double-counts
+packets when two sessions overlap in wall-clock, since `--session` bounds the trailer scan
+to that session's event window plus the 1h grace. Tool counts and timings stay correct;
+only `packets[]` rows go non-disjoint. This is inherent to deriving boundaries from commit
+trailers rather than run-state, and closing it means either narrowing the grace or
+intersecting overlapping windows — a semantics decision, not a bug fix.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

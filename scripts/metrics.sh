@@ -518,6 +518,28 @@ cmd_collect() {
     > "$tmp/waves.json" 2>/dev/null || echo '{}' > "$tmp/waves.json"
   fi
 
+  # --- 3b. ATTESTED packet outcomes (ADR 0019 v3.4) --------------------------
+  # Optional, append-only, written by the loop via `runstate.sh record-outcome` at each
+  # packet boundary — including the boundaries that do NOT produce a commit, which is
+  # the entire point. The collector cannot observe outcome: it reconstructs packets from
+  # green-commit trailers, so a rolled-back packet leaves no trace to find.
+  #
+  # Deliberately NOT run-state: run-state has a single writer (the driver) and this must
+  # be writable from a lane without contending for it — the same reasoning that kept
+  # packet boundaries on commit trailers rather than migrating run-state's schema.
+  #
+  # LAST record per packet id wins: a packet that failed, was fixed and then landed
+  # green is green now. Absent file or absent id -> null, never an assumed "green".
+  echo '{}' > "$tmp/outcomes.json"
+  if [ -d "${agents}/metrics/outcomes" ]; then
+    cat "${agents}/metrics/outcomes"/*.jsonl 2>/dev/null \
+      | jq -s 'map(select(.packet != null and .outcome != null))
+               | group_by(.packet)
+               | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
+               | from_entries' \
+      > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+  fi
+
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------
   # Emit ONE record per assistant turn: {role, ts, model, tok}. Per-turn `ts` lets us
   # bucket tokens into packet windows (per-packet split); `model` enables per-model
@@ -597,16 +619,42 @@ cmd_collect() {
                  or ((.ts[0:19] >= ($ws[0:19])) and ($we == "" or .ts[0:19] <= ($we[0:19])))))
   ' "$tmp/turns_raw.json" > "$tmp/turns.json" 2>/dev/null || cp "$tmp/turns_raw.json" "$tmp/turns.json"
 
-  # per-role totals + per-model split within role
+  # per-role totals + per-model split within role, PLUS the cache-creation shape.
+  #
+  # cc_shape exists because the totals are too noisy to steer by. Measured across four
+  # untouched same-regime sessions, coordinator cacheCreation-per-packet spans 1.76x
+  # (9x across all sessions) — so a change that trims ~150k of standing context is
+  # invisible underneath ordinary run-to-run variation.
+  #
+  # The shape is not noisy, because it separates the two things the total conflates.
+  # A coordinator turn is either steady-state (a small delta appended to a warm cache)
+  # or a full re-cache of everything it is holding. Measured per session, the MEDIAN
+  # turn is flat everywhere — 1,893 / 2,105 / 2,130 / 3,500 / 4,683 — while `max`
+  # separates cleanly by regime: 24,190 on the cheap July session against 147,817 /
+  # 198,397 / 221,962 / 239,851 on the expensive ones. `max`/`p90` therefore read the
+  # size of the standing context itself, which is the thing a read-list or run-state
+  # diet actually changes, and they move by more than their own spread when it does.
+  #
+  # Read them as: median = incremental cost of one more turn; p90/max = what it costs
+  # to rebuild this role's context once. A high max with a flat median is not "an
+  # expensive agent" — it is a large payload being re-cached.
   jq '
     def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
                     cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
+    def pctl(s; p): if (s|length) == 0 then null else s[((s|length) * p | floor) | if . >= (s|length) then (s|length)-1 else . end] end;
     group_by(.role) | map({
       key: .[0].role,
       value: {
         tokens: (map(.tok) | sumtok(.)),
         models: (group_by(.model) | map(select(.[0].model != null))
-                 | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries)
+                 | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries),
+        cc_shape: ((map(.tok.cache_creation) | sort) as $s
+                   | { turns: ($s|length),
+                       median: pctl($s; 0.5), p90: pctl($s; 0.9), max: ($s|max),
+                       # how concentrated the spend is: a coordinator re-caching a large
+                       # payload puts ~87% of a dispatch above 50k in <10% of its turns.
+                       turns_over_50k: ($s | map(select(. > 50000)) | length),
+                       cc_over_50k:    ($s | map(select(. > 50000)) | add // 0) })
       }}) | from_entries
   ' "$tmp/turns.json" > "$tmp/roletokens.json" 2>/dev/null || echo '{}' > "$tmp/roletokens.json"
 
@@ -718,6 +766,7 @@ cmd_collect() {
   jq \
      --slurpfile ev "$tmp/events.json" \
      --slurpfile waves "$tmp/waves.json" \
+     --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
@@ -729,6 +778,7 @@ cmd_collect() {
      | ($ev[0] // []) as $events
      | ($turns[0] // []) as $turns
      | ($waves[0] // {}) as $wavemap
+     | ($outc[0] // {}) as $outcomes
      | ($have_ts=="true") as $ts_ok
      # Does this run use the tier/impl convention at ALL? A run where NO packet
      # carries a label predates the convention (or ran with it off) — flagging
@@ -774,7 +824,20 @@ cmd_collect() {
          | $acc + [{
              id: $p.id,
              wave: ($wavemap[$p.id]),
-             outcome: "green",
+             # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
+             # This read "green" unconditionally. It was not a measurement: a packet
+             # EXISTS here only because a `[orch packet:]` trailer was found, and that
+             # trailer is written on a green commit — so failed, abandoned and
+             # rolled-back work has no trailer and never becomes a row at all. "42 of
+             # 42 green" was survivorship restated as quality, and the more work a run
+             # threw away the healthier it looked.
+             #
+             # Emitting null is the honest floor: an analysis can then say "unknown"
+             # instead of inferring a success rate from a filter. Attesting it needs a
+             # writer at the packet boundary (the loop knows the outcome; the collector
+             # never can), which is why this reads an OPTIONAL outcomes log rather than
+             # guessing — absent log, absent claim.
+             outcome: ($outcomes[$p.id] // null),
              tier: $p.tier,
              impl: $p.impl,
              start: $start,
@@ -784,6 +847,29 @@ cmd_collect() {
              duration_ms: ($win|map(.duration_ms//0)|add),
              by_agent: ($win|group_by(.agent_type)|map({key:(.[0].agent_type),value:length})|from_entries),
              by_tool: ($win|group_by(.tool)|map({key:(.[0].tool),value:length})|from_entries),
+             # EDIT OVERLAP (ADR 0019 v3.4). Counting edits per role cannot tell
+             # correction from division of labour: "implementer 34, main 3" is either
+             # the orchestrator fixing the implementer or the two working on separate
+             # files, and those have opposite meanings for a rework rate. Overlap on
+             # the SAME file is what separates them.
+             #
+             # Values are opaque hashes from the hook (never paths), so this reports
+             # SHAPE only — how many distinct files, how many were touched by more than
+             # one role, and by which roles. `contended_files` is the rework signal;
+             # `files_touched` is its denominator. Both null when no edit in this packet
+             # carried a hash, i.e. a run predating the field — never 0, which would
+             # read as "measured, no overlap".
+             edits: (($win | map(select(.file_hash != null))) as $fe
+                     | if ($fe|length) == 0 then null
+                       else ($fe | group_by(.file_hash)
+                             | map({roles: (map(.agent_type) | unique)})) as $byfile
+                         | { edits: ($fe|length),
+                             files_touched: ($byfile|length),
+                             contended_files: ($byfile | map(select((.roles|length) > 1)) | length),
+                             contended_by: ($byfile | map(select((.roles|length) > 1))
+                                            | map(.roles | join("+")) | group_by(.)
+                                            | map({key:.[0], value:length}) | from_entries) }
+                       end),
              # REWORK PROXY (ADR 0019): per-packet command classes. The payload carries no
              # exit code, so repeat invocations are the reliable signal — a packet that ran
              # `dotnet test` 5 times almost certainly failed 4 of them. Read alongside

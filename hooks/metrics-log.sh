@@ -105,6 +105,40 @@ tuid="$(printf '%s' "$input"  | jq -r '.tool_use_id // empty'  2>/dev/null)"
 skill="$(printf '%s' "$input" | jq -r 'if .tool_name=="Skill" then (.tool_input.skill // empty) else empty end' 2>/dev/null)"
 subtype="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_input.subagent_type // empty) else empty end' 2>/dev/null)"
 
+# `fh` — a stable, opaque token for the file an Edit/Write touched. NOT the path.
+#
+# Without some file identity, two roles editing the SAME file inside one packet is
+# indistinguishable from them dividing the work across different files — so rework
+# (the implementer correcting itself, or the orchestrator correcting the implementer)
+# cannot be separated from parallel progress. That distinction is the whole point of a
+# rework rate by editor role.
+#
+# A HASH, not the path, because the packet is designed to be safe to hand to Claude and
+# to paste into an issue: paths leak directory structure, client names, and sometimes
+# secrets in the filename itself. A hash answers "same file?" — the only question the
+# rework metric asks — and answers nothing else. It is deliberately NOT reversible to a
+# path, so `by_file` can never become a file listing.
+#
+# Digest choice is availability-driven, same rule as the parser probing in guard.sh:
+# shasum/sha1sum/md5/md5sum vary by platform (macOS has md5+shasum, stock Linux has
+# md5sum+sha1sum, minimal containers may have none), so probe by EXECUTION and fall
+# back to cksum, which is POSIX and therefore always present. Truncated to 12 chars:
+# collision risk is irrelevant when the comparison set is the files touched in one run.
+fh=""
+case "$tool" in
+  Edit|Write|NotebookEdit)
+    _fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null)"
+    if [ -n "$_fp" ]; then
+      if   command -v shasum  >/dev/null 2>&1 && _h="$(printf '%s' "$_fp" | shasum 2>/dev/null)";  then :
+      elif command -v sha1sum >/dev/null 2>&1 && _h="$(printf '%s' "$_fp" | sha1sum 2>/dev/null)"; then :
+      elif command -v md5sum  >/dev/null 2>&1 && _h="$(printf '%s' "$_fp" | md5sum 2>/dev/null)";  then :
+      else _h="$(printf '%s' "$_fp" | cksum 2>/dev/null)"; fi
+      # first field of every one of those tools is the digest; keep 12 chars
+      fh="$(printf '%s' "${_h%% *}" | cut -c1-12)"
+    fi
+    ;;
+esac
+
 # `model` — an EXPLICIT model override on an Agent dispatch. Its absence is the
 # NORMAL case, not a finding: the Agent tool resolves an omitted `model` to the
 # target agent's own `model:` frontmatter, and every orchestration agent declares
@@ -186,7 +220,7 @@ fi
 line="$(jq -cn \
   --arg ts "$ts" --arg sid "$sid" --arg aid "$aid" --arg at "$atype" --arg tool "$tool" \
   --arg dur "$dur" --arg tuid "$tuid" --arg skill "$skill" --arg subtype "$subtype" --arg cc "$cmd_class" \
-  --arg lane "$lane" --arg model "$model" --arg ok "$ok" \
+  --arg lane "$lane" --arg model "$model" --arg ok "$ok" --arg fh "$fh" \
   '{ts:$ts,session_id:$sid,agent_id:$aid,agent_type:$at,tool:$tool}
    + (if $dur!=""     then {duration_ms:($dur|tonumber?)} else {} end)
    + (if $tuid!=""    then {tool_use_id:$tuid}            else {} end)
@@ -195,7 +229,8 @@ line="$(jq -cn \
    + (if $cc!=""      then {cmd_class:$cc}                 else {} end)
    + (if $lane!=""    then {lane_id:$lane}                else {} end)
    + (if $model!=""   then {model:$model}                 else {} end)
-   + (if $ok!=""      then {ok:($ok=="true")}             else {} end)' 2>/dev/null)" || exit 0
+   + (if $ok!=""      then {ok:($ok=="true")}             else {} end)
+   + (if $fh!=""      then {file_hash:$fh}                else {} end)' 2>/dev/null)" || exit 0
 [ -n "$line" ] || exit 0
 
 # Append. Concurrent parallel lanes may be subagents that SHARE the parent session

@@ -176,6 +176,105 @@ cmd_set() {
   mv -f "$tmp" "$f"
 }
 
+# --- bound the freeform `note:` field, archiving the overflow ----------------
+# The template documents `note:` as ONE line the resuming session reads first. In a
+# real run it reached 164,678 chars — 87% of the whole run-state file, ~41k tokens,
+# carrying 15 stacked "earlier history" sections. Nothing appended it on purpose:
+# each packet added its narrative and nothing ever removed one, because nothing here
+# enforced the documented contract and the prompts never named a budget.
+#
+# That cost is paid on EVERY relay dispatch, where a fresh coordinator reads run-state
+# to answer only "did it land, what is next" (ADR 0012) — so ~41k tokens are re-read
+# to recover two facts, and they land in the standing context that gets re-cached.
+#
+# Trimming, not deleting: the overflow is appended to run-state-note-archive.md next
+# to the run-state, so the narrative survives for a human while leaving the hot path.
+# Whole lines are kept so the YAML stays parseable; a single over-long line (the
+# note-as-one-giant-line shape) is cut with an explicit marker rather than silently.
+cmd_trim_note() {
+  local f="${1:-}" max="${2:-}"
+  [ -n "$f" ] || die "usage: trim-note <file> [max-bytes]"
+  need_file "$f"
+  max="${max:-${ORCH_NOTE_MAX_BYTES:-2000}}"
+  case "$max" in ''|*[!0-9]*) die "max-bytes must be a number" ;; esac
+
+  # `|| true`: no-match makes grep exit 1, which under `set -euo pipefail` kills the
+  # script before the emptiness check below ever runs — the same fail-by-absence trap
+  # documented for guard.sh. An absent note is a legitimate state, not an error.
+  local start
+  start="$(grep -n '^note:' "$f" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+  if [ -z "$start" ]; then printf 'TRIMMED=no\nREASON=no-note-field\n'; return 0; fi
+
+  # The note runs to the next TOP-LEVEL key (column 0), else to EOF — which covers
+  # both the one-line shape and the block/multi-line shape a run actually produces.
+  local total end
+  total="$(wc -l < "$f" | tr -d ' ')"
+  end="$(awk -v s="$start" 'NR>s && /^[A-Za-z_][A-Za-z0-9_]*:/ {print NR-1; exit}' "$f")"
+  [ -n "$end" ] || end="$total"
+
+  local size
+  size="$(awk -v s="$start" -v e="$end" 'NR>=s && NR<=e' "$f" | wc -c | tr -d ' ')"
+  if [ "$size" -le "$max" ]; then
+    printf 'TRIMMED=no\nBYTES=%s\nMAX=%s\n' "$size" "$max"; return 0
+  fi
+
+  local dir arch tmp stamp
+  dir="$(dirname "$f")"; arch="${dir}/run-state-note-archive.md"
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  { printf '\n<!-- archived %s — %s bytes trimmed from run-state note -->\n\n' "$stamp" "$size"
+    awk -v s="$start" -v e="$end" 'NR>=s && NR<=e' "$f"
+  } >> "$arch" || die "cannot write ${arch}"
+
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
+  { [ "$start" -gt 1 ] && awk -v s="$start" 'NR < s' "$f"
+    awk -v s="$start" -v e="$end" -v m="$max" '
+      NR<s || NR>e { next }
+      NR==s { if (length($0) > m) { print substr($0, 1, m) " …[trimmed]"; cut=1 }
+              else { print; n = length($0) + 1 } ; next }
+      cut  { exit }
+      { n += length($0) + 1; if (n > m) exit; print }' "$f"
+    printf '  [note trimmed to %s bytes at %s; full history in %s]\n' "$max" "$stamp" "$(basename "$arch")"
+    [ "$end" -lt "$total" ] && awk -v e="$end" 'NR > e' "$f"
+    :
+  } > "$tmp" || die "cannot write temp file"
+  mv -f "$tmp" "$f"
+  printf 'TRIMMED=yes\nBYTES_BEFORE=%s\nMAX=%s\nARCHIVE=%s\n' "$size" "$max" "$arch"
+}
+
+# --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
+# Append-only, one line per packet boundary, to .agents/metrics/outcomes/<session>.jsonl.
+# The collector reconstructs packets from green-commit trailers, so it structurally
+# cannot see a packet that failed or was rolled back — those never produce a commit.
+# Only the loop knows, and only at the boundary, so it has to say so here.
+#
+# NOT written into run-state: run-state has a single writer (the driver) and this must
+# be callable from a lane without contending for it — the same reason packet boundaries
+# were left on commit trailers instead of migrating run-state's schema (ADR 0019).
+# Append-only + last-wins means a retried packet correctly ends up at its final state.
+cmd_record_outcome() {
+  local pkt="${1:-}" outcome="${2:-}" sess="${3:-${CLAUDE_SESSION_ID:-adhoc}}"
+  [ -n "$pkt" ] && [ -n "$outcome" ] || die "usage: record-outcome <packet-id> <green|failed|rolled-back|blocked|abandoned> [session-id]"
+  case "$outcome" in
+    green|failed|rolled-back|blocked|abandoned) ;;
+    *) die "outcome must be one of: green failed rolled-back blocked abandoned" ;;
+  esac
+  # Resolve the MAIN checkout the same way the hooks do: --git-common-dir points at
+  # the main repo even from a lane worktree, so every lane records into one log.
+  local gcd main_root dir
+  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [ -n "$gcd" ] || gcd="$(cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .)" 2>/dev/null && pwd || true)"
+  [ -n "$gcd" ] || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 0; }
+  main_root="$(dirname "$gcd")"
+  dir="${main_root}/.agents/metrics/outcomes"
+  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 0; }
+  # Same atomicity argument as the metrics hook: a single short line, O_APPEND, well
+  # under PIPE_BUF, so concurrent lanes sharing a session id cannot tear each other.
+  printf '{"ts":"%s","packet":"%s","outcome":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pkt" "$outcome" >> "${dir}/${sess}.jsonl" 2>/dev/null \
+    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 0; }
+  printf 'RECORDED=yes\nPACKET=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -629,6 +728,8 @@ case "$cmd" in
   heartbeat)     cmd_heartbeat     "$@" ;;
   driver-status) cmd_driver_status "$@" ;;
   outcome)       cmd_outcome       "$@" ;;
+  trim-note)     cmd_trim_note     "$@" ;;
+  record-outcome) cmd_record_outcome "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;
   packets-by-status)  cmd_packets_by_status "$@" ;;

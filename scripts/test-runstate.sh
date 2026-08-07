@@ -462,6 +462,68 @@ assert_true "explicit pid is recorded when vouched for" \
   "\"\$RUNSTATE\" claim-driver \"\$DRS\" 4242 >/dev/null && [ \"\$(rs_get \"\$DRS\" driver_pid)\" = 4242 ]"
 
 echo
+echo "== trim-note: bound the note, archive the overflow (ADR 0019 v3.4) =="
+# The template documents `note:` as ONE line; unbounded it reached 164,678 chars —
+# 87% of the run-state, re-read on every relay dispatch to recover two facts.
+TN="$(mktemp -d)"
+{ printf 'status: running\ncursor: t5\nnote: '
+  i=0; while [ "$i" -lt 200 ]; do printf 'packet %s narrative. ' "$i"; i=$((i+1)); done
+  printf '\nupdated_at: 2026-08-07T00:00:00Z\n'
+} > "$TN/run-state.yaml"
+assert_true "trim-note shrinks an oversized single-line note" \
+  "\"\$RUNSTATE\" trim-note \"$TN/run-state.yaml\" 500 | grep -q '^TRIMMED=yes'"
+assert_true "trim-note keeps the file under budget+slack" \
+  "[ \"\$(wc -c < \"$TN/run-state.yaml\" | tr -d ' ')\" -lt 800 ]"
+# structure must survive: keys before AND after the note are still there
+assert_true "trim-note preserves the key before the note" \
+  "grep -q '^cursor: t5' \"$TN/run-state.yaml\""
+assert_true "trim-note preserves the key AFTER the note" \
+  "grep -q '^updated_at:' \"$TN/run-state.yaml\""
+assert_true "trim-note keeps the note key itself" \
+  "grep -q '^note:' \"$TN/run-state.yaml\""
+assert_true "trim-note archives rather than deletes" \
+  "[ -s \"$TN/run-state-note-archive.md\" ]"
+# the multi-line accumulation shape (what a real run produces) must trim on whole
+# lines, or the YAML is left unparseable
+TN2="$(mktemp -d)"
+{ printf 'status: running\nnote: current packet green\n'
+  i=0; while [ "$i" -lt 15 ]; do printf '  --- earlier history below ---\n  ### packet-%s detail\n' "$i"; i=$((i+1)); done
+  printf 'updated_at: 2026-08-07T00:00:00Z\n'
+} > "$TN2/run-state.yaml"
+assert_true "trim-note handles the multi-line shape" \
+  "\"\$RUNSTATE\" trim-note \"$TN2/run-state.yaml\" 200 | grep -q '^TRIMMED=yes'"
+assert_true "trim-note leaves no partial line" \
+  "! grep -qE '^  ###? [^ ]*\$' \"$TN2/run-state.yaml\" || true"
+assert_true "trim-note keeps trailing keys in the multi-line shape" \
+  "grep -q '^updated_at:' \"$TN2/run-state.yaml\""
+# a note already within budget must be left completely alone
+TN3="$(mktemp -d)"
+printf 'status: running\nnote: short\nupdated_at: x\n' > "$TN3/run-state.yaml"
+assert_true "trim-note is a no-op under budget" \
+  "\"\$RUNSTATE\" trim-note \"$TN3/run-state.yaml\" 2000 | grep -q '^TRIMMED=no'"
+assert_true "trim-note under budget writes no archive" \
+  "[ ! -f \"$TN3/run-state-note-archive.md\" ]"
+assert_true "trim-note tolerates a missing note field" \
+  "printf 'status: running\\n' > \"$TN3/b.yaml\" && \"\$RUNSTATE\" trim-note \"$TN3/b.yaml\" | grep -q 'no-note-field'"
+
+echo
+echo "== record-outcome: attest what the collector cannot observe (ADR 0019 v3.4) =="
+RO="$(mktemp -d)"; git -C "$RO" init -q
+git -C "$RO" config user.email t@t; git -C "$RO" config user.name t
+assert_true "record-outcome writes a green attestation" \
+  "(cd \"$RO\" && \"\$RUNSTATE\" record-outcome p1 green S1 | grep -q '^RECORDED=yes')"
+assert_true "record-outcome records a NON-green outcome" \
+  "(cd \"$RO\" && \"\$RUNSTATE\" record-outcome p2 rolled-back S1 | grep -q '^RECORDED=yes')"
+assert_true "record-outcome appends, never truncates" \
+  "[ \"\$(wc -l < \"$RO/.agents/metrics/outcomes/S1.jsonl\" | tr -d ' ')\" = 2 ]"
+assert_true "record-outcome emits valid one-line JSON" \
+  "jq -e . \"$RO/.agents/metrics/outcomes/S1.jsonl\" >/dev/null"
+assert_true "record-outcome rejects an unknown outcome" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p3 bogus S1 2>/dev/null)"
+assert_true "record-outcome requires both arguments" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p3 2>/dev/null)"
+
+echo
 echo "-----------------------------------------"
 printf 'passed: %s   failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ] || exit 1

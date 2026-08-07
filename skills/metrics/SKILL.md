@@ -88,6 +88,23 @@ Look for, and cite the figures behind, at least:
   flag waves that serialized when the graph allowed concurrency.
 - **The relay-vs-inline crossover** — whether this run's shape supports or contradicts
   the ADR 0012 "20-packet" assumption.
+- **Standing-context size, via `by_agent_role.<role>.cc_shape`** — prefer this over
+  cacheCreation totals, which are too noisy to steer by (measured: 1.76x spread across
+  untouched same-regime runs, 9x overall). `median` is the cost of one more turn;
+  `p90`/`max` are what it costs to rebuild that role's context once. **A flat median
+  with a large max is not an expensive agent — it is a large payload being re-cached**,
+  and it is fixed by scoping what the role reads, not by dispatching it less.
+- **`totals.context_invalidations`** — effort or model changed mid-context, which
+  re-caches the whole prefix. Measured at 16 events / 3.35M cacheC in one repo, ~3.2%
+  of its lifetime cacheCreation, firing in **both** directions and propagating into
+  dispatched subagents. If any appear, say so and note that the fix is behavioural:
+  change effort/model at a **packet boundary**, where the context is smallest.
+- **`packets[].outcome` and `packets[].edits`** — both are `null` on runs that predate
+  the attestation, and `null` means **unmeasured, not clean**. Never infer a success
+  rate from packet rows alone: a packet exists only because it produced a green commit,
+  so failed and rolled-back work is structurally absent. Where `edits` is present,
+  `contended_files` (one file touched by more than one role) is the rework signal —
+  it separates correction from division of labour, which per-role edit counts cannot.
 
 **Honesty about the token source is mandatory:** if `token_source` is `none` or
 `transcript`, say so and scope the token-based claims accordingly (structural claims —

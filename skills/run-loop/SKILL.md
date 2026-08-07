@@ -76,6 +76,20 @@ Per packet, do exactly this:
    invoke `/gaffer:run-loop`; without the path it will improvise the loop
    from memory (ADR 0012, finding 4). Do **not** pour this session's conversation
    into the brief: run-state and the packet are the context it needs.
+
+   **Name the governing documents; do not let it go looking.** Add to the brief the
+   specific ADR ids and the single `gspec/tasks/<slug>.md` this packet is governed by,
+   and say that reading beyond them is out of scope for the packet. Unscoped, a fresh
+   coordinator sweeps the whole corpus — measured at ~111k tokens (17 ADRs ≈ 48k,
+   7 task plans ≈ 30k, gspec core ≈ 22k) for a packet that governs about one of each.
+   That payload is not read once: it becomes the standing context re-cached on every
+   large turn, which is why coordinator `cc_shape.max` reads 148k–240k on runs that
+   skip this and 24k on one that did not.
+
+   Where a document is genuinely large and only one section applies, say so — a
+   bounded `Read` (`offset`/`limit`) is the intended tool. Across 30 sessions the top
+   **10%** of `Read` calls carried **50%** of all read volume, and `Read` totalled
+   **7.6x** every shell search combined; whole-file reads of long ADRs are that tail.
 3. **Relay the returned check-in verbatim.** Do not summarize it, re-derive it,
    comment on it, or verify it by reading the repo yourself — that is how this
    context refills.
@@ -230,12 +244,33 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
      packet to `done`, set `last_green_commit` to the new SHA, advance `cursor`,
      keep `status: running`. Emit a **status** check-in
      (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`).
+
+     Then close the packet out — both of these, every time:
+
+     - **Attest the outcome:** `runstate.sh record-outcome <cursor> green`. Do this
+       on **every** boundary, not just green ones — see the failure branches below.
+     - **Keep `note:` to the CURRENT packet.** It is one line for the resuming
+       session, not a log. Overwrite it; never append to what is there, and never
+       add an "earlier history" section — the archive is
+       `runstate.sh trim-note .agents/run-state.yaml`, which moves the overflow to
+       `run-state-note-archive.md`. Left to accumulate it reached **164,678 chars —
+       87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a relay
+       dispatch re-reads all of it to recover two facts ADR 0012 states plainly:
+       did it land, what is next.
    - **Hard gate touched, genuine ambiguity, conflicting specs, or still red
      after honest diagnosis** — do **not** force it: record a severity-tagged
      **blocking question** in `run-state.pending_questions`, then **pause** via
      `/gaffer:pause` (roll to the last green commit, discard non-checkpoint
      scratch, never leave the tree dirty) and **stop**. Emit the blocking-question
      check-in.
+
+     **Attest this outcome too** — `runstate.sh record-outcome <cursor> blocked`
+     (or `rolled-back` / `failed` / `abandoned`, whichever actually happened).
+     This is the branch that makes the metric honest. A packet only becomes visible
+     to the collector by way of its green-commit trailer, so work that failed or was
+     rolled back leaves **no trace at all** and the run reads "42 of 42 green" —
+     survivorship restated as quality, looking *better* the more work was thrown
+     away. Recording it here is the only place the truth exists.
    - **Integrate (only at `full-autonomy`).** After the packet lands green on its
      `orch/<task-id>` branch, you may take the day-to-day integration steps the guard
      now delegates at this level: **merge** the branch into the **non-`main`**

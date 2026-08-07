@@ -120,4 +120,13 @@ pending_questions:
     question: <what you need decided, in one or two sentences>
 
 # Optional freeform note the resuming session should read first.
+#
+# ONE line about the CURRENT state. Overwrite it each packet — do NOT append, and do
+# NOT add "earlier history" sections. Left to accumulate in a real run it reached
+# 164,678 chars (87% of the whole file, ~41k tokens, 15 stacked histories), and every
+# relay dispatch re-read all of it to recover the two facts ADR 0012 says a resuming
+# coordinator needs: did it land, what is next.
+#
+# Budget: ~2000 bytes (ORCH_NOTE_MAX_BYTES). `runstate.sh trim-note <file>` enforces
+# it, archiving the overflow to run-state-note-archive.md rather than dropping it.
 note: <e.g. paused after feature-000 landed green; feature-001 blocked on q-001>

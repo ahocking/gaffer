@@ -919,6 +919,66 @@ check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'e
 # the retracted cost claim must not come back in the by_tool heading
 check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
 
+echo "== v3.4: cc_shape separates standing-context size from per-turn cost =="
+# Totals are too noisy to steer by (1.76x across untouched same-regime runs). The
+# shape is not: median is flat everywhere while max tracks the payload being
+# re-cached. Turns here: 100, 100, 9000 -> median 100, max 9000, one 50k+ spike absent.
+check "cc_shape: turns"        "3"    "$(jq -r '.by_agent_role.main.cc_shape.turns' "$EOUT")"
+check "cc_shape: median"       "100"  "$(jq -r '.by_agent_role.main.cc_shape.median' "$EOUT")"
+check "cc_shape: max"          "9000" "$(jq -r '.by_agent_role.main.cc_shape.max' "$EOUT")"
+check "cc_shape: no false spike" "0"  "$(jq -r '.by_agent_role.main.cc_shape.turns_over_50k' "$EOUT")"
+# a real spike must be counted AND its cost attributed
+SPIKE="$ROOT/spike.json"
+mkdir -p "$ROOT/sproj/proj"
+cat > "$ROOT/sproj/proj/E1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02Z","effort":"high","message":{"id":"s1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":900,"cache_read_input_tokens":1}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"id":"s2","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":120000,"cache_read_input_tokens":1}}}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$ROOT/sproj" --out "$SPIKE" >/dev/null 2>&1
+check "cc_shape: spike counted" "1"      "$(jq -r '.by_agent_role.main.cc_shape.turns_over_50k' "$SPIKE")"
+check "cc_shape: spike cost"    "120000" "$(jq -r '.by_agent_role.main.cc_shape.cc_over_50k' "$SPIKE")"
+
+echo "== v3.4: outcome is attested, never assumed green =="
+# A packet exists only because a green-commit trailer was found, so inferring "green"
+# from its presence is survivorship. Absent attestation must read null, not green.
+check "outcome: null without log" "null" "$(jq -r '.packets[0].outcome' "$EOUT")"
+mkdir -p "$EREPO/.agents/metrics/outcomes"
+cat > "$EREPO/.agents/metrics/outcomes/E1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:08Z","packet":"eff-one","outcome":"failed"}
+{"ts":"2026-07-21T10:00:09Z","packet":"eff-one","outcome":"green"}
+JSON
+OOUT="$ROOT/orun.json"
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+# last record wins: failed-then-fixed is green now
+check "outcome: attested wins"   "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+
+echo "== v3.4: edit overlap separates correction from division of labour =="
+# Per-role edit COUNTS cannot tell "orchestrator fixed the implementer" from "they
+# worked on different files". Overlap on the same file hash can. Values are opaque
+# hashes from the hook — never paths — so this reports shape only.
+XREPO="$ROOT/xrepo"; mkdir -p "$XREPO/.agents/metrics/events"
+git -C "$XREPO" init -q; git -C "$XREPO" config user.email t@t; git -C "$XREPO" config user.name t
+echo a > "$XREPO/f.txt"; git -C "$XREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$XREPO" commit -q -m "w
+
+[orch packet:x-one]"
+# fileA touched by implementer AND main (contended); fileB by implementer only.
+cat > "$XREPO/.agents/metrics/events/X1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"bbbbbbbbbbbb"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"aaaaaaaaaaaa"}
+JSON
+XOUT="$ROOT/xrun.json"
+"$METRICS" collect --main-root "$XREPO" --projects-dir "$ROOT/none" --out "$XOUT" >/dev/null 2>&1
+check "edits: total"            "3" "$(jq -r '.packets[0].edits.edits' "$XOUT")"
+check "edits: distinct files"   "2" "$(jq -r '.packets[0].edits.files_touched' "$XOUT")"
+check "edits: contended"        "1" "$(jq -r '.packets[0].edits.contended_files' "$XOUT")"
+check "edits: contended by"     "1" "$(jq -r '.packets[0].edits.contended_by["gaffer:implementer+main"]' "$XOUT")"
+# a run with no hashes at all is UNMEASURED, not zero-overlap
+check "edits: null when absent" "null" "$(jq -r '.packets[0].edits' "$EOUT")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0

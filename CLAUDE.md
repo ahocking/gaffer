@@ -279,6 +279,33 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   table: at 14 packets it was off-screen, which is how a real signal goes unread with nothing
   actually hidden. **Neither was missing instrumentation** — do not reach for a new counter
   when the existing one is being rendered or placed wrongly.
+  **v3.4 (2026-08-07) measures the PAYLOAD, not the aggregate, and stops assuming green.**
+  (a) **`by_agent_role.<role>.cc_shape`** (median/p90/max/turns_over_50k/cc_over_50k) exists
+  because cacheCreation-per-packet **cannot** detect a context diet: it spans **1.76x across
+  four untouched same-regime sessions** (9x overall), so a ~150k trim (20–30%) sits inside the
+  noise. The aggregate conflates two things — a turn is either a small warm-cache delta or a
+  **full re-cache of everything the role holds**. Split out, the **median is flat everywhere**
+  (1,408–4,683) while `max` separates by an order of magnitude with no overlap: **24,190 and
+  0/300 turns >50k** on the cheap session vs **198,397 and 32/524** on the costly one. So
+  `p90`/`max` read the standing-context SIZE and move when you scope reads — measurable in ONE
+  run. **A flat median with a large max is not an expensive agent; it is a large payload being
+  re-cached.** (b) **`outcome` is now attested or `null`, never assumed `"green"`** — a packet
+  exists here only via its green-commit trailer, so failed/rolled-back work leaves NO row and
+  "42 of 42 green" was survivorship that looked *better* the more work was discarded. The loop
+  calls `runstate.sh record-outcome <pkt> <green|failed|rolled-back|blocked|abandoned>` at
+  **every** boundary; append-only to `.agents/metrics/outcomes/`, deliberately NOT run-state
+  (single-writer contention, same reason boundaries stayed on trailers), last-wins. (c)
+  **`packets[].edits`** turns per-role edit counts into a rework signal: "implementer 34, main
+  3" is either correction or division of labour, and only **same-file overlap**
+  (`contended_files`) tells them apart. The hook stamps a 12-char **hash, never the path** —
+  the packet must stay safe to paste into an issue, and a hash answers "same file?" and
+  nothing else; digest probing is by **execution** (shasum/sha1sum/md5sum → POSIX `cksum`),
+  the guard.sh rule. (d) **`runstate.sh trim-note`** enforces the ONE-line contract
+  `templates/run-state.yaml` already documented but nothing checked — unbounded it hit
+  **164,678 chars, 87% of the run-state, ~41k tokens, 15 stacked histories**, re-read on every
+  relay dispatch to recover two facts. It archives to `run-state-note-archive.md` and trims on
+  **whole lines** so the YAML stays parseable. All four degrade to `null`/absent on legacy
+  runs — **`null` means unmeasured, never clean**.
 - **Search-tool selection is a PREFERENCE; only the write surface is a real control**
   (ADR 0019 v3.3 — **v3's cost claim is RETRACTED**). All seven `agents/*.md` carry a
   "structured tools, not the shell" section: `Grep`/`Glob`/`Read` to search and read,

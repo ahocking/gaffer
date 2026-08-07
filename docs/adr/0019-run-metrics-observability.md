@@ -719,6 +719,102 @@ Worth stating plainly, because it recurs: the failure was **not** missing instru
 It was a true value rendered indistinguishably from a false one, and a real signal placed
 where nobody looks. Adding a new counter would have fixed neither.
 
+## v3.4 revision (2026-08-07) — measure the payload, not the aggregate; stop assuming green
+
+Four changes, all landed *before* a run rather than after, because each one determines what
+the next run is able to tell us.
+
+### 1. `by_agent_role.<role>.cc_shape` — the metric that beats the noise floor
+
+The plan was to trim the coordinator's standing context and measure the result in
+cacheCreation-per-packet. That measurement cannot work. Across four **untouched**
+same-regime sessions, coordinator cc/packet spans **1.76x** (498K / 546K / 589K / 876K);
+across all sessions it spans **9x**. A change that removes ~150k of context is 20–30% —
+comfortably inside the noise. Two runs would not have resolved it, and the "change one thing
+at a time" instinct would have bought a second expensive run for an uninterpretable number.
+
+The aggregate is noisy because it conflates two different things. A coordinator turn is
+either steady-state (a small delta appended to a warm cache) or a **full re-cache of
+everything it is holding**. Separating them, per session:
+
+| Session | median turn | p90 | max | turns > 50k |
+|---|---|---|---|---|
+| `89cecaec` (cheap) | 1,850 | 8,468 | **24,190** | **0 / 300** |
+| `e383a0d8` (costly) | 1,408 | 9,793 | **198,397** | **32 / 524** |
+| `0195876b` | 2,130 | 76,526 | 147,817 | — |
+| `970115da` | 3,500 | 115,114 | 221,962 | — |
+| `af043d81` | 4,683 | 196,478 | 239,851 | — |
+
+**The median is flat everywhere.** All the difference is in the re-cache size, and it
+separates by an order of magnitude with no overlap. `max`/`p90` therefore read *the size of
+the standing context itself* — exactly what a read-list or run-state diet changes — so the
+effect will show up in one run instead of needing several.
+
+Read it as: `median` = cost of one more turn; `p90`/`max` = cost of rebuilding this role's
+context once. **A flat median with a large max is not an expensive agent; it is a large
+payload being re-cached**, and the fix is scoping what it reads, not dispatching it less.
+
+### 2. `packets[].outcome` — attested, never assumed
+
+`outcome` was the literal string `"green"`. Not a measurement: a packet appears in this
+collector **only** because a `[orch packet:]` trailer was found, and that trailer is written
+on a green commit — so failed, abandoned and rolled-back work produces no row at all. "42 of
+42 green" was survivorship restated as quality, and a run looked *healthier the more work it
+threw away*.
+
+The collector structurally cannot fix this; only the loop knows, and only at the boundary.
+So `runstate.sh record-outcome <packet> <green|failed|rolled-back|blocked|abandoned>` appends
+to `.agents/metrics/outcomes/<session>.jsonl`, and the collector joins it. Absent attestation
+the field is **`null`** — unmeasured — never an assumed `"green"`.
+
+Append-only and deliberately **not** in run-state: run-state has a single writer (the driver)
+and this must be callable from a lane without contending for it, the same reasoning that kept
+packet boundaries on commit trailers instead of migrating run-state's schema. Last record per
+id wins, so a packet that failed, was fixed and landed is green.
+
+### 3. `packets[].edits` — overlap, from hashes, never paths
+
+Per-role edit counts cannot distinguish rework from division of labour: "implementer 34,
+main 3" is either the orchestrator correcting the implementer or the two working on separate
+files, and those mean opposite things. Overlap on the **same file** is the discriminator.
+
+`metrics-log.sh` now stamps `file_hash` on `Edit`/`Write`/`NotebookEdit` — a 12-char digest of
+the path, **not the path**. The packet is meant to be safe to hand to Claude and paste into an
+issue; paths leak directory structure, client names, and occasionally secrets in the filename.
+A hash answers "same file?" — the only question this metric asks — and nothing else, and is
+deliberately not reversible, so `edits` can never become a file listing. Digest selection
+probes shasum/sha1sum/md5sum by **execution** and falls back to POSIX `cksum`, the same
+availability-driven rule as guard.sh's parser probing.
+
+`contended_files` is the rework signal; `files_touched` is its denominator. Both `null` on
+runs predating the field — unmeasured, not zero-overlap.
+
+### 4. `runstate.sh trim-note` — enforce the contract the template already stated
+
+`templates/run-state.yaml` documents `note:` as **one line** the resuming session reads first.
+In a real run it reached **164,678 chars — 87% of the entire run-state, ~41k tokens, 15
+stacked "earlier history" sections.** Nothing appended it deliberately: each packet added its
+narrative, nothing removed one, and no mechanism or prompt named a budget. That cost is paid
+on every relay dispatch, where a fresh coordinator reads run-state to recover the two facts
+ADR 0012 names — *did it land, what is next*.
+
+`trim-note` archives the overflow to `run-state-note-archive.md` rather than dropping it, and
+trims on **whole lines** so the YAML stays parseable (a single over-long line — the
+note-as-one-giant-line shape — is cut with an explicit marker rather than silently). Budget
+`ORCH_NOTE_MAX_BYTES`, default 2000. The prompts and the template now state the rule; the
+script enforces it.
+
+One bug worth recording, because this repo has hit its class before: the first cut used
+`start="$(grep -n '^note:' … )"`, and a no-match exits 1, which under `set -euo pipefail`
+killed the function before the emptiness check ran — a missing note is a legitimate state,
+not an error. Same fail-by-absence trap documented for `guard.sh`. Caught by the sweep.
+
+Regression cases live under the `v3.4` headings in `test-metrics.sh` and `test-runstate.sh`,
+including the non-regressions: a run with no hashes reports `edits: null` rather than zero
+overlap, a run with no outcomes log reports `outcome: null` rather than green, a note already
+within budget is left byte-identical with no archive written, and trimming preserves the keys
+both before and after the note.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

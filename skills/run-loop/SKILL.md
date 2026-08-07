@@ -64,6 +64,15 @@ Per packet, do exactly this:
 1. **Read the run's shape from disk, not from the repo:**
    `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh summary .agents/run-state.yaml`
    (skip if there is no run-state yet — the first dispatch establishes it per §2).
+
+   **Findings are an index, and the index is the only part that is free** (ADR 0022).
+   `runstate.sh findings .agents/run-state.yaml` prints one line per finding. Put
+   **only the lines relevant to this packet** in the brief, and pass the `file:` path
+   so the coordinator can open the body **if it decides it needs it**. Do not paste
+   finding bodies into the brief, and do not tell it to read them all — that
+   reconstructs the 41k-token run-state this design removed, in a different file.
+   Conversely, never drop the index: a finding nobody sees causes the rework it
+   existed to prevent, which costs more than reading it would have.
 2. **Dispatch a fresh `gaffer:chief-engineer`** with a brief containing
    **only**: the repo root, the resolved autonomy level, the run-state path, the
    cursor packet id, and this instruction —
@@ -257,6 +266,16 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
        87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a relay
        dispatch re-reads all of it to recover two facts ADR 0012 states plainly:
        did it land, what is next.
+     - **Anything worth keeping past this packet is a FINDING, not note content**
+       (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"`,
+       then write the detail into the `.agents/findings/<id>.md` it creates. Route it
+       first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
+       - **"this should be built/fixed"** → **not a finding.** That is backlog: a
+         gspec task/feature, sequenced via `.agents/roadmap.yaml`.
+       - **"this is a gotcha, a constraint, or a decision and why"** → a finding.
+       A resolved question is a finding (the decision plus its rationale) — do **not**
+       grow a `resolved_questions:` list in run-state; a real run grew one to 21,664
+       chars precisely because there was nowhere else to put it.
    - **Hard gate touched, genuine ambiguity, conflicting specs, or still red
      after honest diagnosis** — do **not** force it: record a severity-tagged
      **blocking question** in `run-state.pending_questions`, then **pause** via

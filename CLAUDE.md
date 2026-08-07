@@ -328,6 +328,32 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   exactly why `guard.sh` must pattern-match them as a write surface. **The general
   lesson: a frequency count is not a cost measurement.** Keep the (now smaller) block
   when editing an agent; do not re-add a cost claim to it without a cost measurement.
+- **Findings live in `.agents/findings/<id>.md`; run-state keeps ONLY a one-line index**
+  (ADR 0022). Everything in run-state is read by every packet — a dispatched coordinator
+  reads it at dispatch start, so it sits in the standing context and is re-written to cache
+  on **every** large turn (measured: **32 cache writes >50k in ONE dispatch**, the
+  coordinator the only role with any). A finding useful to one packet was being paid for by
+  all of them. Evidence this is a **design gap, not sloppiness**: the two fields that
+  ballooned were `note` (164,678 chars — documented as *one line*) and
+  **`resolved_questions` (21,664 chars), which is not in the template or `runstate.sh` at
+  all** — the agent invented it because the schema offered nowhere else. The shape is
+  **index hot, body cold**, NOT "links instead of content": moving content out with no
+  index flips the failure from *expensive* to *never read*, and a gotcha exists precisely
+  to prevent the rework that not reading it causes. The summary's one job is to let an
+  agent decide whether it needs the body **without opening it**. Routing is the ADR 0020
+  seam and getting it wrong builds a **shadow backlog competing with gspec**: *"this should
+  be built/fixed"* → **gspec task/feature** (+ `.agents/roadmap.yaml`), never a finding;
+  *gotcha / constraint / decision + rationale / resolved question* → **a finding**;
+  one sentence of "where we stopped" → `note:`. Mechanism is `runstate.sh add-finding`
+  (appends the entry, creates the body stub) and `findings` (prints the index and nothing
+  else) — appending to a YAML list by hand is how agents corrupt the loop's only durable
+  state. Entries insert **immediately after the `findings:` key** (newest-first) because
+  that is the only placement that cannot land in `note:`/`pending_questions:`; ids are
+  `[a-zA-Z0-9._-]` (an id becomes a filename); summary newlines are **collapsed, not
+  rejected** (a raw newline injects a sibling YAML key, and the caller is an agent
+  mid-loop). `trim-note` survives as a **backstop**, not the intended path. The discipline
+  is prompt-enforced and therefore the fragile part — **`cc_shape.max` is the detector: if
+  it does not fall on the next run, the rule is not being followed.**
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

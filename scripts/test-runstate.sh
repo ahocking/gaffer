@@ -524,6 +524,48 @@ assert_true "record-outcome requires both arguments" \
   "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p3 2>/dev/null)"
 
 echo
+echo "== findings: index hot, body cold (ADR 0022) =="
+FD="$(mktemp -d)"
+printf 'status: running\npending_questions:\n  - id: q-001\n    severity: blocking\nfindings:\nnote: green\n' \
+  > "$FD/run-state.yaml"
+assert_true "add-finding reports success" \
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'runner wedges on a per-session flag' | grep -q '^ADDED=yes'"
+assert_true "add-finding creates the body file" \
+  "[ -s \"$FD/findings/f-001.md\" ]"
+assert_true "the SUMMARY lands in run-state" \
+  "grep -q 'summary: runner wedges on a per-session flag' \"$FD/run-state.yaml\""
+# the whole point: the body must NOT be in run-state
+assert_true "the BODY does not land in run-state" \
+  "! grep -q 'What was found' \"$FD/run-state.yaml\""
+assert_true "entry lands inside findings, not pending_questions" \
+  "awk '/^findings:/{f=1;next} /^[a-z_]+:/{f=0} f && /- id: f-001/{ok=1} END{exit !ok}' \"$FD/run-state.yaml\""
+assert_true "keys after findings survive" \
+  "grep -q '^note: green' \"$FD/run-state.yaml\""
+assert_true "second finding coexists with the first" \
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-002 'rounding differs' >/dev/null && [ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 2 ]"
+assert_true "duplicate id is refused, not duplicated" \
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'other text' | grep -q 'duplicate-id'"
+assert_true "duplicate refusal leaves ONE index entry" \
+  "[ \"\$(grep -c '\- id: f-001' \"$FD/run-state.yaml\")\" = 1 ]"
+# an id becomes a filename — reject path traversal and separators outright
+assert_true "a traversing id is rejected" \
+  "! \"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" '../escape' 'x' 2>/dev/null"
+# a newline in the summary would inject a sibling YAML key
+assert_true "a multi-line summary cannot inject a key" \
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-003 \"\$(printf 'one\\nstatus: hacked')\" >/dev/null && [ \"\$(grep -c '^status:' \"$FD/run-state.yaml\")\" = 1 ]"
+# the READ side must return the index only, never body content
+assert_true "findings returns one line per finding" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 3 ]"
+assert_true "findings emits id, summary and file path" \
+  "\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | grep -q 'f-001.*runner wedges.*\.agents/findings/f-001\.md'"
+# a fresh template must read as EMPTY, not as one placeholder finding
+assert_true "template placeholder is not a real finding" \
+  "cp \"\${HERE}/../templates/run-state.yaml\" \"$FD/t.yaml\" && [ -z \"\$(\"\$RUNSTATE\" findings \"$FD/t.yaml\")\" ]"
+# an older run-state with no findings key must gain one rather than fail
+assert_true "a run-state without a findings key gains one" \
+  "printf 'status: running\\n' > \"$FD/old.yaml\" && \"\$RUNSTATE\" add-finding \"$FD/old.yaml\" f-9 'x' | grep -q '^ADDED=yes' && grep -q '^findings:' \"$FD/old.yaml\""
+
+echo
 echo "-----------------------------------------"
 printf 'passed: %s   failed: %s\n' "$pass" "$fail"
 [ "$fail" = 0 ] || exit 1

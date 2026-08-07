@@ -241,6 +241,92 @@ cmd_trim_note() {
   printf 'TRIMMED=yes\nBYTES_BEFORE=%s\nMAX=%s\nARCHIVE=%s\n' "$size" "$max" "$arch"
 }
 
+# --- add a finding: one-line index entry here, body in .agents/findings/ ------
+# ADR 0022. Run-state is read by EVERY packet and sits in the standing context for a
+# whole dispatch, so content useful to one packet is paid for by all of them. The
+# summary stays hot so an agent can decide whether it needs the body; the body goes
+# cold in .agents/findings/<id>.md.
+#
+# A script rather than "the agent edits the YAML": appending to a list is the one
+# edit that reliably produces malformed run-state (wrong indent, a second `findings:`
+# key, a list item merged into the previous one), and this file is the loop's only
+# durable state. Placement is deliberate — inserted directly after the `findings:`
+# key so the entry cannot land inside `pending_questions` or after `note:`.
+#
+# Idempotent on id: re-adding an existing id updates nothing and reports it, so a
+# retried packet cannot produce duplicate index entries pointing at one body.
+#
+# NEWEST FIRST. The entry goes immediately after the `findings:` key, which is the
+# only placement that cannot land in the wrong section — locating the end of the list
+# means guessing where the block stops, and guessing wrong writes the entry into
+# `note:` or `pending_questions:`. Newest-first also happens to be the right read
+# order for an index that gets scanned rather than paged through.
+cmd_add_finding() {
+  local f="${1:-}" id="${2:-}" summary="${3:-}"
+  [ -n "$f" ] && [ -n "$id" ] && [ -n "$summary" ] \
+    || die "usage: add-finding <run-state-file> <id> <one-line summary>"
+  need_file "$f"
+  case "$id" in
+    *[!a-zA-Z0-9._-]*|'') die "finding id must be [a-zA-Z0-9._-] (it becomes a filename)" ;;
+  esac
+  # A newline in the summary would break the single-line YAML scalar and, worse, could
+  # inject a sibling key. Collapse rather than reject: the caller is an agent mid-loop.
+  summary="$(printf '%s' "$summary" | tr '\n\r' '  ')"
+
+  if grep -qE "^[[:space:]]+- id: ${id}[[:space:]]*$" "$f" 2>/dev/null; then
+    printf 'ADDED=no\nREASON=duplicate-id\nID=%s\n' "$id"; return 0
+  fi
+
+  local dir body rel
+  dir="$(dirname "$f")"
+  body="${dir}/findings/${id}.md"
+  rel=".agents/findings/${id}.md"
+  mkdir -p "${dir}/findings" 2>/dev/null || die "cannot create ${dir}/findings"
+  if [ ! -f "$body" ]; then
+    { printf '# %s\n\n' "$id"
+      printf '> %s\n\n' "$summary"
+      printf -- '- recorded: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '## What was found\n\n<the detail that did NOT belong in run-state>\n\n'
+      printf '## Why it matters / what to do about it\n\n<so a later packet can act on it>\n\n'
+      printf '## Scope\n\n<which packets or areas this applies to; "run-wide" if general>\n'
+    } > "$body" || die "cannot write ${body}"
+  fi
+
+  local tmp
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
+  if grep -qE '^findings:' "$f"; then
+    awk -v id="$id" -v s="$summary" -v rel="$rel" '
+      { print }
+      /^findings:[[:space:]]*$/ && !done { printf "  - id: %s\n    summary: %s\n    file: %s\n", id, s, rel; done=1 }
+    ' "$f" > "$tmp"
+  else
+    # No findings key yet (a run-state from an older template): create the section at
+    # the end rather than guessing an insertion point mid-file.
+    { cat "$f"; printf 'findings:\n  - id: %s\n    summary: %s\n    file: %s\n' "$id" "$summary" "$rel"; } > "$tmp"
+  fi
+  mv -f "$tmp" "$f"
+  printf 'ADDED=yes\nID=%s\nFILE=%s\n' "$id" "$body"
+}
+
+# --- list the finding index (ids + summaries only, never the bodies) ----------
+# The read side of the same contract: an agent checks THIS, then opens only the
+# bodies it needs. Printing summaries here — and nothing else — is what keeps the
+# "index hot, body cold" split from silently collapsing back into "read everything".
+cmd_findings() {
+  local f="${1:-}"
+  [ -n "$f" ] || die "usage: findings <run-state-file>"
+  need_file "$f"
+  awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" sum "\t" file; sum=""; file="";
+                                     sub(/^[[:space:]]*- id:[[:space:]]*/, ""); id=$0; next }
+    inf && /^[[:space:]]*summary:/ { line=$0; sub(/^[[:space:]]*summary:[[:space:]]*/, "", line); sum=line; next }
+    inf && /^[[:space:]]*file:/    { line=$0; sub(/^[[:space:]]*file:[[:space:]]*/, "", line); file=line; next }
+    END { if (id != "") print id "\t" sum "\t" file }
+  ' "$f" | grep -v '^<' || true
+}
+
 # --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
 # Append-only, one line per packet boundary, to .agents/metrics/outcomes/<session>.jsonl.
 # The collector reconstructs packets from green-commit trailers, so it structurally
@@ -730,6 +816,8 @@ case "$cmd" in
   outcome)       cmd_outcome       "$@" ;;
   trim-note)     cmd_trim_note     "$@" ;;
   record-outcome) cmd_record_outcome "$@" ;;
+  add-finding)   cmd_add_finding   "$@" ;;
+  findings)      cmd_findings      "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;
   packets-by-status)  cmd_packets_by_status "$@" ;;

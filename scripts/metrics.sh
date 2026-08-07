@@ -26,7 +26,21 @@
 # event spine and trailer scan) so a whole-file transcript read cannot bleed a prior
 # run's tokens into the totals; when the unattributable ('unknown' role) share of
 # output is large the stamp downgrades to `transcript-degraded`. OTEL read-back is a
-# deferred later upgrade (Tier 0), not built here.
+# deferred later upgrade (Tier 0), not built here. A `none`/degraded stamp always
+# carries `token_diagnostics` (counts, no paths) saying WHICH failure it was —
+# nothing on disk, lookup miss, format drift, or window miss.
+#
+# PORTABILITY TRAP — jq AND CRLF: the native Windows jq build writes \r\n, including
+# to pipes. Two consequences, and the second is the one that bites twice:
+#   1. `read` strips only the \n, so any `jq -r … > file` consumed by a `while read`
+#      loop MUST be piped through `tr -d '\r'` (a no-op on POSIX). See the sids.txt
+#      write — getting this wrong broke only the transcript-file globs, so every
+#      structural number stayed right while the token half read as legitimately absent.
+#   2. `$( )` looks safe but is not portably safe. MSYS bash strips a trailing \r\n
+#      from command substitution; plain bash (Linux, macOS) strips only the \n. So
+#      every scalar capture here was correct on Windows purely by accident of which
+#      bash Git Bash ships. Hence jqr() — all raw reads go through it.
+# Neither failure is loud, so neither is discoverable by looking at the output.
 #
 # Subcommands:
 #   collect [opts]     assemble the run-metrics packet and print its path.
@@ -58,6 +72,21 @@ set -uo pipefail
 
 die() { printf 'metrics.sh: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'metrics.sh: %s\n' "$*" >&2; }
+
+# --- jqr: raw-mode jq with CR stripped (see PORTABILITY TRAP in the header) ----
+# EVERY raw jq read goes through here. It is tempting to skip it for `$(jq -r …)`
+# captures because MSYS bash strips a trailing \r\n from command substitution —
+# but that is an MSYS QUIRK, not bash behavior. Plain bash (Linux, macOS) strips
+# only the \n, so on any other shell a CRLF-emitting jq leaves every captured
+# scalar one byte too long. Measured, with a CRLF jq under Linux bash: role keys
+# became "implementer\r", window/packet timestamps gained a \r, `turns_have_ts`
+# stopped equalling "true" (silently nulling every per-packet token split), and
+# the turn counts failed their numeric guard and reset to 0. Depending on which
+# bash the host happens to ship is exactly the hidden assumption that produced
+# the original bug, so this does not rely on it.
+# pipefail (set above) is what preserves jq's exit status through the pipe, so
+# callers' `|| echo <default>` fallbacks still fire on a jq error.
+jqr() { jq -r "$@" | tr -d '\r'; }
 
 # --- portable ISO-8601(Z) -> epoch seconds -----------------------------------
 epoch() {
@@ -217,9 +246,9 @@ cmd_collect() {
   fi
 
   local run_start run_end tool_calls
-  run_start="$(jq -r 'map(.ts)|min // empty' "$tmp/events.json")"
-  run_end="$(jq -r 'map(.ts)|max // empty' "$tmp/events.json")"
-  tool_calls="$(jq -r 'length' "$tmp/events.json")"
+  run_start="$(jqr 'map(.ts)|min // empty' "$tmp/events.json")"
+  run_end="$(jqr 'map(.ts)|max // empty' "$tmp/events.json")"
+  tool_calls="$(jqr 'length' "$tmp/events.json")"
 
   # --- active vs idle wall time (ADR 0019 v2): sum inter-event gaps; a gap longer
   # than the idle threshold is IDLE (a pause / rate-limit sleep / waiting on a human),
@@ -293,8 +322,24 @@ cmd_collect() {
 
   # aid -> agent_type map (for attributing subagent transcript files to a role)
   jq '[.[]|{key:.agent_id,value:.agent_type}]|from_entries' "$tmp/events.json" > "$tmp/aidmap.json" 2>/dev/null || echo '{}' > "$tmp/aidmap.json"
-  # distinct session ids seen in events
-  jq -r '[.[].session_id]|unique|.[]' "$tmp/events.json" > "$tmp/sids.txt" 2>/dev/null || true
+  # distinct session ids seen in events.
+  #
+  # CRLF (Windows): the native Windows jq build opens stdout in TEXT mode, so EVERY
+  # jq line ends \r\n — on pipes too, not just consoles. `read` strips only the \n and
+  # leaves the \r. This is the ONE jq-written LINE LIST consumed by a `while read`
+  # loop, and the values are used to build GLOBS: a session id one byte too long makes
+  # `<uuid>\r.jsonl` match nothing, so the transcript join found zero files and stamped
+  # token_source=none on every Windows run — silently, via the legitimate fail-soft
+  # path, while every structural number stayed correct.
+  #
+  # It is ONLY this site that broke in production, because MSYS bash strips a trailing
+  # \r\n from `$( )` and so cleaned every scalar capture for free. Do NOT read that as
+  # "the captures are safe" — it is an MSYS quirk, not bash behavior (verified: under
+  # Linux bash 5.2 the same capture keeps the CR). That is why the scalar reads go
+  # through jqr() rather than relying on the host shell.
+  # RULE: any future `jq -r … > file` that a `read` loop consumes must be piped
+  # through `tr -d '\r'` the same way.
+  jq -r '[.[].session_id]|unique|.[]' "$tmp/events.json" 2>/dev/null | tr -d '\r' > "$tmp/sids.txt" || true
 
   # finalize the deferred "adhoc" run_id, disambiguated so two different sessions
   # never collide on .agents/metrics/adhoc/run-metrics.json. Prefer the (first)
@@ -430,11 +475,16 @@ cmd_collect() {
   # Fail soft to structural-only; `ts` may be absent (older transcript) -> per-packet
   # tokens degrade to null while run/role totals stay intact.
   : > "$tmp/turns.ndjson"
-  local token_source="none"
+  local token_source="none" tfiles=0
   while IFS= read -r sid; do
+    # Belt-and-braces against the CRLF trap documented at the sids.txt write above:
+    # strip ANY CR so a jq-fed list that skipped the source normalization still
+    # cannot silently produce a glob that matches nothing.
+    sid="$(printf '%s' "$sid" | tr -d '\r')"
     [ -n "$sid" ] || continue
     for mf in "$projects_dir"/*/"$sid".jsonl; do
       [ -e "$mf" ] || continue
+      tfiles=$((tfiles + 1))
       jq -c 'select((.message.usage // .usage) != null)
         | {role:"main", ts:(.timestamp // null), model:(.message.model // .model // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
@@ -443,9 +493,10 @@ cmd_collect() {
     done
     for sf in "$projects_dir"/*/"$sid"/subagents/agent-*.jsonl; do
       [ -e "$sf" ] || continue
+      tfiles=$((tfiles + 1))
       local base aid role
       base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
-      role="$(jq -r --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
+      role="$(jqr --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
       [ -n "$role" ] || role="unknown"
       jq -c --arg role "$role" 'select((.message.usage // .usage) != null)
         | {role:$role, ts:(.timestamp // null), model:(.message.model // .model // null),
@@ -497,7 +548,26 @@ cmd_collect() {
   if jq -e 'map(.tok.input+.tok.output+.tok.cache_read+.tok.cache_creation)|add>0' "$tmp/turns.json" >/dev/null 2>&1; then
     token_source="transcript"
   fi
-  local turns_have_ts; turns_have_ts="$(jq -r 'any(.ts != null)' "$tmp/turns.json" 2>/dev/null || echo false)"
+  local turns_have_ts; turns_have_ts="$(jqr 'any(.ts != null)' "$tmp/turns.json" 2>/dev/null || echo false)"
+
+  # --- 4b. token diagnostics: make a `none` stamp DIAGNOSABLE -----------------
+  # `token_source=none` used to conflate three completely different failures, and
+  # the emitted note asserted "no transcript found" in all of them — actively
+  # misleading when transcripts were sitting on disk (that wording cost a half-hour
+  # bisect on the Windows CRLF bug). Record the counts that separate them:
+  #   files_present=0                      -> genuinely nothing on disk
+  #   files_present>0, files_matched=0     -> LOOKUP is broken (id mismatch/glob bug)
+  #   files_matched>0, usage_turns=0       -> the on-disk FORMAT changed (ADR 0019)
+  #   usage_turns>0, in_window=0           -> the WINDOW is wrong, not the parse
+  # Counts only — no paths — so the packet stays safe to hand to Claude.
+  local tpresent=0 _tf
+  for _tf in "$projects_dir"/*/*.jsonl; do [ -e "$_tf" ] && tpresent=$((tpresent + 1)); done
+  for _tf in "$projects_dir"/*/*/subagents/agent-*.jsonl; do [ -e "$_tf" ] && tpresent=$((tpresent + 1)); done
+  local turns_raw turns_win
+  turns_raw="$(jqr 'length' "$tmp/turns_raw.json" 2>/dev/null || echo 0)"
+  turns_win="$(jqr 'length' "$tmp/turns.json" 2>/dev/null || echo 0)"
+  case "$turns_raw" in ''|*[!0-9]*) turns_raw=0 ;; esac
+  case "$turns_win" in ''|*[!0-9]*) turns_win=0 ;; esac
 
   # ATTRIBUTION CONFIDENCE (ADR 0019): role='unknown' is a subagent transcript whose
   # agent_id was never seen in the event spine, so it could not be mapped to a role
@@ -508,8 +578,8 @@ cmd_collect() {
   local unknown_note=""
   if [ "$token_source" = "transcript" ]; then
     local unknown_out total_out
-    unknown_out="$(jq -r '(.unknown.tokens.output // 0)' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
-    total_out="$(jq -r '[.[].tokens.output // 0] | add // 0' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
+    unknown_out="$(jqr '(.unknown.tokens.output // 0)' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
+    total_out="$(jqr '[.[].tokens.output // 0] | add // 0' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
     case "$unknown_out$total_out" in *[!0-9]*) unknown_out=0; total_out=0 ;; esac
     if [ "${total_out:-0}" -gt 0 ] && [ "${unknown_out:-0}" -gt 0 ]; then
       local unknown_pct=$(( unknown_out * 100 / total_out ))
@@ -634,6 +704,11 @@ cmd_collect() {
     --arg run_end "$win_end" \
     --argjson wall "$wall" \
     --argjson tool_calls "${tool_calls:-0}" \
+    --arg transcript_dir "$([ -d "$projects_dir" ] && echo present || echo absent)" \
+    --argjson tfiles "${tfiles:-0}" \
+    --argjson tpresent "${tpresent:-0}" \
+    --argjson turns_raw "${turns_raw:-0}" \
+    --argjson turns_win "${turns_win:-0}" \
     --slurpfile packets "$tmp/packets.json" \
     --slurpfile roletokens "$tmp/roletokens.json" \
     --slurpfile bymodel "$tmp/bymodel.json" \
@@ -666,6 +741,17 @@ cmd_collect() {
       run_id: $run_id,
       generated_at: $generated,
       token_source: $token_source,
+      # Why token_source reads the way it does — counts only, no paths. Read
+      # top-down: dir absent < nothing on disk < nothing matched the session ids of
+      # this run (LOOKUP bug) < nothing parsed (FORMAT drift) < nothing in window.
+      # (No apostrophes in here: the whole program is one single-quoted shell word.)
+      token_diagnostics: {
+        transcript_dir: $transcript_dir,
+        transcript_files_present: $tpresent,
+        transcript_files_matched: $tfiles,
+        usage_turns: $turns_raw,
+        usage_turns_in_window: $turns_win
+      },
       mode: $mode,
       autonomy: $autonomy,
       sessions: ($sids[0] // [] | map(.session_id) | unique),
@@ -722,7 +808,21 @@ cmd_collect() {
       }),
       packets: ($packets[0] // []),
       notes: ([
-        (if $token_source=="none" then "token_source=none: no transcript found; structural metrics only (ADR 0019 Open Q1)."
+        # A `none` stamp must say WHICH of the four failures happened. The old note
+        # asserted "no transcript found" unconditionally, which lied whenever files
+        # existed but the lookup or the window dropped them (ADR 0019 v3.1).
+        (if $token_source=="none" then
+           (if $transcript_dir=="absent" then
+              "token_source=none: the transcript directory does not exist (--projects-dir / ORCH_METRICS_PROJECTS_DIR); structural metrics only (ADR 0019 Open Q1)."
+            elif $tpresent==0 then
+              "token_source=none: no transcript files on disk at all; structural metrics only (ADR 0019 Open Q1)."
+            elif $tfiles==0 then
+              "token_source=none: LOOKUP FAILURE — \($tpresent) transcript file(s) are on disk but NONE matched the session id(s) of this run. The parse is fine; the file resolution is not. Structural metrics only."
+            elif $turns_raw==0 then
+              "token_source=none: \($tfiles) transcript file(s) opened but NONE yielded a usage block — the on-disk transcript format has likely changed (ADR 0019 version-fragility). Structural metrics only."
+            else
+              "token_source=none: \($turns_raw) usage turn(s) parsed but 0 fell inside the run window — the WINDOW is wrong, not the parse. Structural metrics only."
+            end)
          elif $token_source=="transcript-degraded" then "token_source=transcript-degraded: parse succeeded but a large share of tokens is unattributed; treat per-role/model splits as low-confidence (ADR 0019)."
          else "token_source=transcript: version-fragile on-disk parse (ADR 0019 Open Q1)." end),
         $unknown_note,
@@ -766,6 +866,12 @@ cmd_show() {
     "run: \(.run_id)   mode: \(.mode)   autonomy: \(.autonomy // "?")   token_source: \(.token_source)",
     "window: \(.window.wall_seconds)s wall (active \(.window.active_seconds // "?")s / idle \(.window.idle_seconds // "?")s)   packets: \(.totals.packets)   tool_calls: \(.totals.tool_calls) (+\(.totals.unattributed_tool_calls // 0) unattributed)",
     "tokens: in=\(.totals.tokens.input) out=\(.totals.tokens.output) cacheR=\(.totals.tokens.cache_read) cacheC=\(.totals.tokens.cache_creation)   cache_hit_ratio: \(.totals.cache_hit_ratio // "n/a")",
+    # Surface WHY the token half is missing/low-confidence, rather than leaving a
+    # bare `none` that reads identically to "this run had no transcripts".
+    (if (.token_source // "") != "transcript" then
+       ((.token_diagnostics // {}) as $d
+        | "  token diagnostics: dir=\($d.transcript_dir // "?")  files_present=\($d.transcript_files_present // "?")  files_matched=\($d.transcript_files_matched // "?")  usage_turns=\($d.usage_turns // "?")  in_window=\($d.usage_turns_in_window // "?")")
+     else empty end),
     "",
     "by model:",
     ((.totals.by_model // {}) | to_entries[] | "  \(.key): out=\(.value.output) cacheC=\(.value.cache_creation) cacheR=\(.value.cache_read)"),

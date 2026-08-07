@@ -328,6 +328,23 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   exactly why `guard.sh` must pattern-match them as a write surface. **The general
   lesson: a frequency count is not a cost measurement.** Keep the (now smaller) block
   when editing an agent; do not re-add a cost claim to it without a cost measurement.
+- **All seven agents carry a "do not re-read what you already have" block — the RULE only,
+  never the evidence.** Measured across one production week: of **5,243 `Read` calls, 1,366
+  (26%) re-read a file already read in that same context** (~2.4M tokens). That is not a
+  2.4M problem — content in context is re-read on every later turn, so a token read twice is
+  paid for twice on every subsequent turn for the rest of the session. At the measured ~16
+  effective tokens per source token, it is ~**11% of that repo's weekly spend**. Part of the
+  mechanism is confirmed: **63 occurrences of `Read` immediately after `Edit`/`Write` of the
+  SAME file in just 25 subagent contexts** — verify-after-edit, which is unnecessary because
+  those tools error on failure, so a successful result already IS the confirmation. It has to
+  target the **implementer** above all: it is **47.9% of all turns** at 128k average context
+  and does nearly all the reading, whereas the coordinator — which the run-state and
+  read-list work reached — is only **9.5% of turns**. **Keep the evidence HERE, not in the
+  prompts.** The first cut shipped a three-line "Measured:" paragraph into all seven agents
+  — **61 tokens each, 427 total**, re-read on every dispatch to justify a rule the agent
+  follows without it. Small, but it was bloat added by the very block telling agents not to
+  waste context. Rule in the prompt, evidence in this file: this file does not propagate,
+  so it is free here and recurring there.
 - **Findings live in `.agents/findings/<id>.md`; run-state keeps ONLY a one-line index**
   (ADR 0022). Everything in run-state is read by every packet — a dispatched coordinator
   reads it at dispatch start, so it sits in the standing context and is re-written to cache

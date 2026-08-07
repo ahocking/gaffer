@@ -65,10 +65,6 @@ every later turn pays for again, and tells you nothing you do not already have. 
 back rather than re-reading; if you need a different part of a large file, `Read` it with
 `offset`/`limit` instead of pulling the whole thing again.
 
-Measured: **26%** of all `Read` calls in one production week re-read a file already in
-that context — ~2.4M tokens, and context is re-read many times, so it cost far more than
-it looks. This is the single largest avoidable cost in the loop.
-
 | instead of                          | use                 |
 | ----------------------------------- | ------------------- |
 | `grep -rn PATTERN .`, `rg PATTERN`  | `Grep`              |

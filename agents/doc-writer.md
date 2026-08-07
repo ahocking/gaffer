@@ -62,10 +62,6 @@ particular, do **not** re-read a file to confirm an `Edit`/`Write` landed — th
 error on failure, so a successful result *is* the confirmation. Need a different part of
 a large file? `Read` it with `offset`/`limit`, do not pull the whole thing again.
 
-Measured: **26%** of all `Read` calls in one production week re-read a file already in
-that context — ~2.4M tokens, and context is re-read many times, so it cost far more than
-it looks. This is the single largest avoidable cost in the loop.
-
 | instead of                          | use                 |
 | ----------------------------------- | ------------------- |
 | `grep -rn PATTERN .`, `rg PATTERN`  | `Grep`              |

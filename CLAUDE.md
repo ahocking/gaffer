@@ -289,8 +289,11 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   against 1,568 shell `grep`s — a measurement of tool *selection*, which was then
   reported as a measurement of tool *cost* without anyone measuring cost. Measured
   properly (join `tool_use`→`tool_result` in the transcripts and total the result
-  bytes): shell search across 30 sessions is **~187k tokens against 279M lifetime
-  cacheCreation — 0.07%**, mean 1,164 chars per call. Eliminating it entirely saves a
+  bytes): shell search across 30 sessions is **~187k tokens against 105M deduped lifetime
+  cacheCreation — ~0.18%**, mean 1,164 chars per call. (Result-byte figures needed no
+  dedup correction: the v3.3 duplication is confined to assistant `usage` records, while
+  `tool_use`/`tool_result` blocks measure **1.0x** unique. Only the denominator was
+  wrong.) Eliminating it entirely saves a
   rounding error. `Read` is **7.6x** all shell search combined, with the top decile of
   calls carrying half the volume — so the real read-cost lever is scoping what agents
   read, not how they search. What survives is the WRITE half, and it survives on its

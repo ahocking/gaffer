@@ -675,7 +675,11 @@ bytes across 30 sessions:
 | `Grep`/`Glob` | 10 | 1,680 ch | — |
 | `Read` | 1,192 | **5,668,991 ch ≈ 1,417k tok** | 4,755 ch |
 
-187k tokens against 279M lifetime cacheCreation is **0.07%**. The greps are well-targeted, not
+187k tokens against argent's **105M deduped** lifetime cacheCreation is **~0.18%**. (The
+duplication in §1 is confined to assistant `usage` records: `tool_use`/`tool_result` blocks
+measure **1.0x** unique, so the result-byte figures here needed no correction — only the
+denominator did. An earlier draft of this section quoted the pre-dedup 279M and read 0.07%,
+which was wrong in the same commit that proved the inflation.) The greps are well-targeted, not
 unbounded dumps. Eliminating shell search entirely saves a rounding error, and the
 planned guard-hook enforcement was dropped on this evidence.
 

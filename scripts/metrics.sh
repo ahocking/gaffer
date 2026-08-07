@@ -63,7 +63,10 @@
 #                      upper. BOTH bounds are always enforced: without --until the
 #                      upper bound is the last tool event PLUS a grace margin
 #                      ($ORCH_METRICS_TRAILER_GRACE, default 3600s), because a run's
-#                      last packet commits just after its last tool event.
+#                      last packet commits just after its last tool event — CAPPED at
+#                      the earliest event of any other session after that point, so
+#                      the grace can never reach into a concurrent or back-to-back
+#                      run and claim its commits (ADR 0019 v3.2).
 #   --out FILE         where to write the packet (default:
 #                      <main-root>/.agents/metrics/<run-id>/run-metrics.json).
 # =============================================================================
@@ -112,6 +115,27 @@ iso_plus() {
   date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || printf '%s' "$t"
+}
+
+# --- earliest event belonging to a session OTHER than this run's, after `after`.
+# Feeds the next-session cap on the trailer grace (ADR 0019 v3.2). Prints empty when
+# nothing else ran — the caller then keeps the full grace. Event logs are append-
+# ordered by ts, so the first match per file is that file's earliest; `sort|head -1`
+# picks the global minimum. Reads only `.ts`; no command text, no paths. Best-effort
+# by construction: any unreadable/malformed log simply contributes nothing, which
+# degrades to the pre-v3.2 flat-grace behaviour rather than dropping real packets.
+next_foreign_event() {
+  local agents_dir="${1:-}" sids_file="${2:-}" after="${3:-}"
+  [ -n "$after" ] || { printf ''; return; }
+  [ -d "$agents_dir/metrics/events" ] || { printf ''; return; }
+  local ef esid
+  for ef in "$agents_dir"/metrics/events/*.jsonl; do
+    [ -e "$ef" ] || continue
+    esid="$(basename "$ef" .jsonl)"
+    # our own selected session(s) can never be "foreign"
+    if [ -s "$sids_file" ] && grep -qxF "$esid" "$sids_file" 2>/dev/null; then continue; fi
+    jq -r --arg a "$after" 'select((.ts // "") > $a) | .ts' "$ef" 2>/dev/null | head -1
+  done | tr -d '\r' | sort | head -1
 }
 
 # --- resolve the main checkout that owns .agents/ -----------------------------
@@ -354,7 +378,7 @@ cmd_collect() {
   fi
 
   # --- 2. packet boundaries from `[orch packet:<id>]` commit trailers ---------
-  # Emit the committer time in the SAME UTC `...Z` form as event timestamps so the
+  # Emit the AUTHOR time in the SAME UTC `...Z` form as event timestamps so the
   # window comparison below is a sound string compare (TZ=UTC0 + format-local). We
   # print a marker header line `===ORCHCOMMIT===<TAB><date>` before each commit's
   # raw body, then scan bodies for the `[orch packet:<id>]` trailer — this avoids
@@ -380,12 +404,29 @@ cmd_collect() {
   # handled with a grace margin instead of an open end: a run's last packet commits
   # just AFTER its last tool event (the commit itself produces no tool event once the
   # loop hands off), so allow ORCH_METRICS_TRAILER_GRACE seconds past win_end.
+  #
+  # NEXT-SESSION CAP (ADR 0019 v3.2). A flat grace is only safe when THIS run is the
+  # only thing running. In a repo with overlapping or back-to-back sessions the grace
+  # reaches straight into the next session and claims its commits: measured in a real
+  # consumer repo as 7 phantom rows out of 37, including 6 duplicated packet ids —
+  # e.g. a session whose events ended 15:26 absorbed packets committed at 16:02/16:04
+  # by a session that was running CONCURRENTLY. So cap the grace at the earliest event
+  # belonging to any OTHER session after win_end. This handles both shapes: a
+  # back-to-back session (its first event cuts the grace short) and a concurrent one
+  # (it already has events just past our win_end, so the bound collapses to ~win_end).
+  # When nothing else is running the full grace still applies, which is the case the
+  # grace exists for. `--until` still wins verbatim — tests and manual scoping rely on
+  # it being honoured exactly.
   local log_revs="--all" we_bound=""
   if [ -n "$win_start" ]; then
     if [ -n "$opt_until" ]; then
       we_bound="$win_end"                             # explicit --until wins verbatim
     else
       we_bound="$(iso_plus "$win_end" "${ORCH_METRICS_TRAILER_GRACE:-3600}")"
+      local next_evt
+      next_evt="$(next_foreign_event "$agents" "$tmp/sids.txt" "$win_end")"
+      # string compare is sound: both are the same fixed-width UTC ...Z form
+      if [ -n "$next_evt" ] && [ "$next_evt" \< "$we_bound" ]; then we_bound="$next_evt"; fi
     fi
   else
     local base="$integ"
@@ -400,10 +441,19 @@ cmd_collect() {
     fi
   fi
   : > "$tmp/packets_raw.tsv"
+  # AUTHOR date, not committer date (ADR 0019 v3.2). Committer date is REWRITTEN by
+  # rebase, cherry-pick, amend and squash-merge, so a packet's recorded time drifts to
+  # whenever the branch was last replayed rather than when the work was done. Measured
+  # in a real consumer repo: six packets authored 08:29-13:04 were folded into a run
+  # that started at 13:56 because their MERGE commits landed inside its window, while a
+  # packet genuinely committed in-window with a valid trailer went missing. Author date
+  # survives every one of those rewrites. Traversal order is `--author-date-order` for
+  # coherence only — correctness does not depend on it, since the per-packet reduction
+  # below re-sorts on the emitted date column.
   # shellcheck disable=SC2086  # log_revs is an intentional word-split rev argument
-  TZ=UTC0 git -C "$main_root" log $log_revs --date-order \
+  TZ=UTC0 git -C "$main_root" log $log_revs --author-date-order \
       --date=format-local:'%Y-%m-%dT%H:%M:%SZ' \
-      --format='===ORCHCOMMIT===%x09%cd%n%B' 2>/dev/null \
+      --format='===ORCHCOMMIT===%x09%ad%n%B' 2>/dev/null \
     | awk -F'\t' -v ws="$win_start" -v we="$we_bound" '
         # Only a trailer on its OWN line counts (that is how commits/pause-check
         # emit it). This excludes prose that merely mentions the trailer format,
@@ -485,8 +535,9 @@ cmd_collect() {
     for mf in "$projects_dir"/*/"$sid".jsonl; do
       [ -e "$mf" ] || continue
       tfiles=$((tfiles + 1))
-      jq -c 'select((.message.usage // .usage) != null)
-        | {role:"main", ts:(.timestamp // null), model:(.message.model // .model // null),
+      jq -c --arg aid "main:$sid" 'select((.message.usage // .usage) != null)
+        | {role:"main", aid:$aid, ts:(.timestamp // null), model:(.message.model // .model // null),
+           effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
         "$mf" 2>/dev/null >> "$tmp/turns.ndjson" || true
@@ -498,8 +549,9 @@ cmd_collect() {
       base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
       role="$(jqr --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
       [ -n "$role" ] || role="unknown"
-      jq -c --arg role "$role" 'select((.message.usage // .usage) != null)
-        | {role:$role, ts:(.timestamp // null), model:(.message.model // .model // null),
+      jq -c --arg role "$role" --arg aid "$aid" 'select((.message.usage // .usage) != null)
+        | {role:$role, aid:$aid, ts:(.timestamp // null), model:(.message.model // .model // null),
+           effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
         "$sf" 2>/dev/null >> "$tmp/turns.ndjson" || true
@@ -544,6 +596,48 @@ cmd_collect() {
     group_by(.model) | map(select(.[0].model != null))
     | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries
   ' "$tmp/turns.json" > "$tmp/bymodel.json" 2>/dev/null || echo '{}' > "$tmp/bymodel.json"
+
+  # by_effort rollup (ADR 0019 v3.2). Reasoning effort is a per-turn request parameter
+  # the user can change mid-session; nothing else in the packet records it, so a run
+  # spanning two effort levels was previously indistinguishable from one that did not.
+  # Null on transcripts that predate the field — an absent bucket, never a zero.
+  jq '
+    def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
+                    cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
+    group_by(.effort) | map(select(.[0].effort != null))
+    | map({key:(.[0].effort), value:((map(.tok)|sumtok(.)) + {turns: length})}) | from_entries
+  ' "$tmp/turns.json" > "$tmp/byeffort.json" 2>/dev/null || echo '{}' > "$tmp/byeffort.json"
+
+  # context_invalidations (ADR 0019 v3.2) — the cost of CHANGING a request parameter,
+  # as distinct from the cost of its value. Changing `effort` or the model mid-context
+  # invalidates the cached prefix, so the whole context is re-written to cache on the
+  # next turn. Measured in production: three such flips cost 372,588 / 380,005 /
+  # 115,509 cache-creation tokens against session medians of 1,380 / 856 / ~1,700 —
+  # 270x, 444x and 68x. It fires in BOTH directions (high->xhigh AND xhigh->high), which
+  # is what identifies it as invalidation rather than "higher effort costs more"; the
+  # size tracks how deep into the context the flip happens, not which way it went.
+  #
+  # Scanned per (role, aid) — one agent context — and NOT per role. Two dispatches of
+  # the same role are separate contexts, so an implementer that ran opus once and
+  # sonnet once is normal tier routing, not a mid-context switch; grouping by role
+  # alone would report it as an invalidation. Turns with no ts cannot be ordered and
+  # are excluded, so this degrades to 0 rather than guessing on older transcripts.
+  jq '
+    [ group_by([.role, .aid])[]
+      | (map(select(.ts != null)) | sort_by(.ts)) as $t
+      | range(1; ($t | length)) as $i
+      | select( (($t[$i].effort // "") != ($t[$i-1].effort // ""))
+             or (($t[$i].model  // "") != ($t[$i-1].model  // "")) )
+      | { role: $t[$i].role, ts: $t[$i].ts,
+          from: { effort: $t[$i-1].effort, model: $t[$i-1].model },
+          to:   { effort: $t[$i].effort,   model: $t[$i].model   },
+          cache_creation: ($t[$i].tok.cache_creation // 0) } ]
+    | sort_by(.ts)
+    | { count: length,
+        cache_creation: (map(.cache_creation) | add // 0),
+        events: .[0:20] }
+  ' "$tmp/turns.json" > "$tmp/ctxinval.json" 2>/dev/null \
+    || echo '{"count":0,"cache_creation":0,"events":[]}' > "$tmp/ctxinval.json"
 
   if jq -e 'map(.tok.input+.tok.output+.tok.cache_read+.tok.cache_creation)|add>0' "$tmp/turns.json" >/dev/null 2>&1; then
     token_source="transcript"
@@ -712,6 +806,8 @@ cmd_collect() {
     --slurpfile packets "$tmp/packets.json" \
     --slurpfile roletokens "$tmp/roletokens.json" \
     --slurpfile bymodel "$tmp/bymodel.json" \
+    --slurpfile byeffort "$tmp/byeffort.json" \
+    --slurpfile ctxinval "$tmp/ctxinval.json" \
     --slurpfile activity "$tmp/activity.json" \
     --slurpfile unattr "$tmp/unattributed.json" \
     --slurpfile byskill "$tmp/byskill.json" \
@@ -770,6 +866,8 @@ cmd_collect() {
         by_lane: ($bylane[0] // {}),
         tokens: $tot,
         by_model: ($bymodel[0] // {}),
+        by_effort: ($byeffort[0] // {}),
+        context_invalidations: ($ctxinval[0] // {count:0, cache_creation:0, events:[]}),
         cache_hit_ratio: (if $cache_total>0 then (($tot.cache_read / $cache_total)*1000|floor)/1000 else null end),
         failed_tool_calls: (if $instrumented then (($sids[0] // []) | map(select(.ok == false)) | length) else null end),
         human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length)
@@ -831,7 +929,10 @@ cmd_collect() {
         "Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).",
         "Packet boundaries derived from [orch packet:<id>] commit trailers; failed/uncommitted packets do not appear.",
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
+        "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
+        "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",
         "by_skill is STICKY: set by the most recent slash-command/Skill invocation and never cleared, so it is an UPPER BOUND on the spend of that skill, not an exact span.",
+        "totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.",
         "by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.",
         "active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.",
         "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
@@ -875,6 +976,16 @@ cmd_show() {
     "",
     "by model:",
     ((.totals.by_model // {}) | to_entries[] | "  \(.key): out=\(.value.output) cacheC=\(.value.cache_creation) cacheR=\(.value.cache_read)"),
+    (if ((.totals.by_effort // {}) | length) > 0 then
+       "", "by effort:",
+       ((.totals.by_effort) | to_entries[] | "  \(.key): turns=\(.value.turns) out=\(.value.output) cacheC=\(.value.cache_creation)")
+     else empty end),
+    (((.totals.context_invalidations // {count:0}) ) as $ci
+     | if ($ci.count // 0) > 0 then
+         "", "context invalidations (effort/model changed mid-context — each re-caches the whole prefix):",
+         "  \($ci.count) change(s), \($ci.cache_creation) cacheC",
+         ($ci.events[]? | "  \(.ts)  \(.role)  \(.from.effort // "?")/\(.from.model // "?") -> \(.to.effort // "?")/\(.to.model // "?")  cacheC=\(.cache_creation)")
+       else empty end),
     "",
     "by role:",
     (.by_agent_role | to_entries[] | "  \(.key): out=\(.value.tokens.output) cacheR=\(.value.tokens.cache_read) cacheC=\(.value.tokens.cache_creation)   models=\((.value.models // {} | keys | join(",")))"),

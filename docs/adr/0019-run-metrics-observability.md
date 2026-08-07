@@ -541,6 +541,79 @@ only `packets[]` rows go non-disjoint. This is inherent to deriving boundaries f
 trailers rather than run-state, and closing it means either narrowing the grace or
 intersecting overlapping windows — a semantics decision, not a bug fix.
 
+## v3.2 revision (2026-08-07) — the overlap left open by v3.1, plus effort
+
+Two cross-repo analyses of 42 real sessions closed the overlap question above and found one
+dimension the packet could not see at all. All three changes are **retroactive** — they
+re-read stored events, git history and transcripts, so existing runs can simply be
+re-collected.
+
+**(a) Trailer times are AUTHOR dates, not committer dates.** Committer date is rewritten by
+rebase, cherry-pick, amend and squash-merge, so a packet's recorded time drifts to whenever
+the branch was last replayed. `%cd` → `%ad`; traversal moves to `--author-date-order` for
+coherence only (the per-packet reduction re-sorts on the emitted column, so correctness never
+depended on traversal).
+
+Honest scope: this is **defensive, not a fix for an observed production failure**. The
+analysis that motivated it claimed six packets had been absorbed into a run that did not
+author them; checked against git, those commits have *identical* author and committer dates
+and were genuinely in-window — the claim does not hold and is withdrawn. Divergence is real
+but rare: **5 of 899 commits in one repo (1 of 395 carrying a trailer), 12 of 329 in the
+other (8 of 107 with a trailer)**. So the change matters mainly for repos that rebase before
+merging, where up to ~7.5% of trailer commits carry a rewritten date. What actually drives
+that first repo's unattributed spend is much simpler and is *not* a date bug: only **395 of
+899 commits carry an `[orch packet:]` trailer at all**.
+
+**(b) The grace is capped at the next session's first event.** This is the overlap question
+v3.1 left open, and it resolves as a bug fix rather than the feared semantics decision. A
+flat grace is only safe when nothing else is running; with overlapping or back-to-back
+sessions it reaches straight into the next run and claims its commits. The cap is the
+earliest event belonging to any *other* session after `win_end`, which handles both shapes:
+a back-to-back session cuts the grace short, and a concurrent one already has events just
+past `win_end`, so the bound collapses to ~`win_end`. When nothing else ran, the full grace
+still applies — which is the case it exists for. `--until` still wins verbatim.
+
+Validated against ground truth derived independently by hand: one consumer repo's analysis
+had removed **7 phantom rows across 5 sessions** by re-collecting each with an explicit
+`--until`. The cap reproduces that list **exactly and automatically** — and correctly keeps
+`wbr-t14`, the one packet that legitimately spans two sessions (checkpointed in one, verified
+and merged in the next), in **both**. The fix is not "drop everything near a boundary".
+
+**(c) `by_effort` and `context_invalidations`.** Reasoning effort is a per-turn request
+parameter the user can change mid-session, recorded in the transcript as a top-level `effort`
+field. Nothing in the packet read it, so a run spanning two effort levels was
+indistinguishable from one that did not. Both are now emitted from the same transcript
+records already parsed for tokens.
+
+The second counter is the more useful one: changing `effort` **or** the model mid-context
+invalidates the cached prefix, so the whole context is re-written to cache. Three flips
+measured by hand cost **372,588 / 380,005 / 115,509** cache-creation against session medians
+of 1,380 / 856 / ~1,700 — 270x, 444x and 68x. It fires in **both** directions
+(`high→xhigh` *and* `xhigh→high`), which is what identifies it as invalidation rather than
+"higher effort costs more"; the size tracks how deep into the context the flip happens, not
+which way it went.
+
+Implementing it answered a question the manual analysis had left open: **effort propagates to
+dispatched subagents.** A single flip in one session registered **9 invalidations across 6
+agent contexts** (main, chief-engineer ×3, implementer ×3, reviewer, ux-designer) totalling
+**1,531,777** cache-creation — roughly one full relayed-coordinator dispatch for one keystroke,
+and ~4x what measuring the main context alone suggested.
+
+The scan is per `(role, agent_id)` — one agent context — not per role: two dispatches of the
+same role are separate contexts, so an implementer that ran opus once and sonnet once is
+normal tier routing, not a mid-context switch. Turns without a timestamp cannot be ordered
+and are excluded, so this degrades to 0 rather than guessing on older transcripts. An empty
+`by_effort` means the transcripts predate the field (unmeasured), never that effort was
+constant.
+
+Per-turn effort is **not** available to the hooks — no hook payload carries it — so the
+transcript remains the sole sensor, and these two fields inherit `token_source`'s
+version-fragility exactly like the token figures do.
+
+Regression cases live in `scripts/test-metrics.sh` under the three `v3.2` headings, including
+the non-regressions that matter: legacy transcripts leave `by_effort` absent rather than
+zeroed, and separate dispatches of one role never register as an invalidation.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

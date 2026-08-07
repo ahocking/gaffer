@@ -747,6 +747,121 @@ emit_prompt "H5" '"/gaffer:metrics collect --session abc123 --until now"' >/dev/
 check "skill hook drops args"     "gaffer:metrics"  "$(cat "$SH_EV/_state/H5.skill" 2>/dev/null)"
 
 echo
+echo "== v3.2: trailer times are AUTHOR dates, not committer dates =="
+# Committer date is rewritten by rebase/cherry-pick/squash-merge; author date is not.
+# Both real failure modes, observed in a production repo:
+#   (a) work AUTHORED in-window whose merge/rebase moved its COMMITTER date after the
+#       window -> was silently DROPPED from the run that actually did it.
+#   (b) work AUTHORED before the window (a prior run) whose merge landed INSIDE this
+#       window -> was silently ABSORBED into a run that never touched it.
+AREPO="$ROOT/arepo"; mkdir -p "$AREPO/.agents/metrics/events"
+git -C "$AREPO" init -q; git -C "$AREPO" config user.email t@t; git -C "$AREPO" config user.name t
+acommit() { # acommit <author-iso> <committer-iso> <packet-id>
+  echo "$3" >> "$AREPO/l.txt"; git -C "$AREPO" add -A
+  GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$2" git -C "$AREPO" commit -q -m "w
+
+[orch packet:$3]"; }
+# (a) authored in-window, replayed (committed) 11 days later
+acommit "2026-07-21T10:00:04Z" "2026-08-01T10:00:00Z" "authored-in-window"
+# (b) authored 11 days BEFORE, merged into this window
+acommit "2026-07-10T09:00:00Z" "2026-07-21T10:00:05Z" "authored-earlier-run"
+cat > "$AREPO/.agents/metrics/events/A1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"A1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"A1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":20,"ok":true}
+JSON
+AOUT="$ROOT/arun.json"
+"$METRICS" collect --main-root "$AREPO" --projects-dir "$ROOT/none" --out "$AOUT" >/dev/null 2>&1
+check "authordate: in-window KEPT"    "1" "$(jq -r '[.packets[]|select(.id=="authored-in-window")]|length' "$AOUT")"
+check "authordate: earlier run DROP"  "0" "$(jq -r '[.packets[]|select(.id=="authored-earlier-run")]|length' "$AOUT")"
+check "authordate: total packets"     "1" "$(jq -r '.totals.packets' "$AOUT")"
+check "authordate: note"              "1" "$(jq -r '[.notes[]|select(startswith("Trailer times are AUTHOR"))]|length' "$AOUT")"
+
+echo
+echo "== v3.2: the trailer grace is capped at the next session's first event =="
+# A flat grace reaches into whatever ran next. Session N1 ends 10:00:02; a commit at
+# 10:00:30 sits inside the default 3600s grace, but session N2 is already running and
+# owns it. Measured in a real repo as 7 phantom rows / 6 duplicated packet ids.
+NREPO="$ROOT/nrepo"; mkdir -p "$NREPO/.agents/metrics/events"
+git -C "$NREPO" init -q; git -C "$NREPO" config user.email t@t; git -C "$NREPO" config user.name t
+ncommit() { echo "$2" >> "$NREPO/l.txt"; git -C "$NREPO" add -A
+  GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$NREPO" commit -q -m "w
+
+[orch packet:$2]"; }
+ncommit "2026-07-21T10:00:02Z" "n1-own"
+ncommit "2026-07-21T10:00:30Z" "n2-owns-this"
+cat > "$NREPO/.agents/metrics/events/N1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"N1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"N1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+# N2 starts at :10 — before the :30 commit, so the grace must collapse to :10
+cat > "$NREPO/.agents/metrics/events/N2.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:10Z","session_id":"N2","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:40Z","session_id":"N2","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+NOUT="$ROOT/nrun.json"
+"$METRICS" collect --main-root "$NREPO" --projects-dir "$ROOT/none" --session N1 --out "$NOUT" >/dev/null 2>&1
+check "nextcap: own packet kept"      "1" "$(jq -r '[.packets[]|select(.id=="n1-own")]|length' "$NOUT")"
+check "nextcap: next session NOT claimed" "0" "$(jq -r '[.packets[]|select(.id=="n2-owns-this")]|length' "$NOUT")"
+check "nextcap: note"                 "1" "$(jq -r '[.notes[]|select(startswith("The trailer grace is CAPPED"))]|length' "$NOUT")"
+# with nothing else running, the SAME commit is legitimately inside the grace
+rm -f "$NREPO/.agents/metrics/events/N2.jsonl"
+NOUT2="$ROOT/nrun2.json"
+"$METRICS" collect --main-root "$NREPO" --projects-dir "$ROOT/none" --session N1 --out "$NOUT2" >/dev/null 2>&1
+check "nextcap: grace still applies"  "1" "$(jq -r '[.packets[]|select(.id=="n2-owns-this")]|length' "$NOUT2")"
+
+echo
+echo "== v3.2: by_effort and context_invalidations =="
+# Effort is a per-turn request parameter the user can change mid-session. Changing it
+# (or the model) invalidates the cached prefix, so the whole context is re-written to
+# cache. Production: three flips cost 372,588 / 380,005 / 115,509 cacheC against
+# session medians of 1,380 / 856 / ~1,700.
+EREPO="$ROOT/erepo"; mkdir -p "$EREPO/.agents/metrics/events"
+git -C "$EREPO" init -q; git -C "$EREPO" config user.email t@t; git -C "$EREPO" config user.name t
+echo a > "$EREPO/f.txt"; git -C "$EREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$EREPO" commit -q -m "w
+
+[orch packet:eff-one]"
+cat > "$EREPO/.agents/metrics/events/E1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"E1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"E1","agent_id":"b1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":20,"ok":true}
+{"ts":"2026-07-21T10:00:07Z","session_id":"E1","agent_id":"b2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":20,"ok":true}
+JSON
+EPROJ="$ROOT/eproj"; mkdir -p "$EPROJ/proj/E1/subagents"
+# main: high, high, then a flip to xhigh -> ONE invalidation carrying 9000 cacheC
+cat > "$EPROJ/proj/E1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:04Z","effort":"xhigh","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":9000,"cache_read_input_tokens":10}}}
+JSON
+# two SEPARATE implementer dispatches on different models: normal tier routing across
+# two contexts, NOT a mid-context switch -> must not register as an invalidation.
+cat > "$EPROJ/proj/E1/subagents/agent-b1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:06Z","effort":"high","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":10}}}
+JSON
+cat > "$EPROJ/proj/E1/subagents/agent-b2.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:07Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":10}}}
+JSON
+EOUT="$ROOT/erun.json"
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$EOUT" >/dev/null 2>&1
+check "effort: token_source"        "transcript" "$(jq -r '.token_source' "$EOUT")"
+check "effort: high turns"          "4"    "$(jq -r '.totals.by_effort.high.turns' "$EOUT")"
+check "effort: xhigh turns"         "1"    "$(jq -r '.totals.by_effort.xhigh.turns' "$EOUT")"
+check "effort: xhigh cacheC"        "9000" "$(jq -r '.totals.by_effort.xhigh.cache_creation' "$EOUT")"
+check "ctxinval: one change"        "1"    "$(jq -r '.totals.context_invalidations.count' "$EOUT")"
+check "ctxinval: cost attributed"   "9000" "$(jq -r '.totals.context_invalidations.cache_creation' "$EOUT")"
+check "ctxinval: from effort"       "high" "$(jq -r '.totals.context_invalidations.events[0].from.effort' "$EOUT")"
+check "ctxinval: to effort"         "xhigh" "$(jq -r '.totals.context_invalidations.events[0].to.effort' "$EOUT")"
+check "ctxinval: role"              "main" "$(jq -r '.totals.context_invalidations.events[0].role' "$EOUT")"
+check "ctxinval: note"              "1"    "$(jq -r '[.notes[]|select(startswith("totals.context_invalidations"))]|length' "$EOUT")"
+# separate dispatches of one role on different models are NOT a mid-context switch
+check "ctxinval: no cross-dispatch FP" "0" \
+  "$(jq -r '[.totals.context_invalidations.events[]|select(.role|test("implementer"))]|length' "$EOUT")"
+# transcripts predating the `effort` field must leave the bucket ABSENT, never zeroed
+check "effort: absent on legacy"    "0"    "$(jq -r '.totals.by_effort|length' "$OUT")"
+check "ctxinval: legacy model-only" "0"    "$(jq -r '.totals.context_invalidations.count' "$OUT")"
+
+echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0
 else

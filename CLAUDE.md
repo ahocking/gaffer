@@ -231,9 +231,32 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   sat on disk. Packets now carry `token_diagnostics` (counts only, no paths) separating
   *nothing on disk* / *lookup failure* / *format drift* / *window miss*, the note names
   which, and `show` prints it whenever `token_source != transcript`. The enum is
-  unchanged. Still open (report, not fixed): overlapping concurrent sessions double-count
-  `packets[]` rows, since `--session` scopes the trailer scan to that session's window
-  plus the 1h grace.
+  unchanged.
+  **v3.2 (2026-08-07) closes the overlap v3.1 left open, and adds the effort dimension.**
+  All three changes are **retroactive** — they re-read stored events/git/transcripts, so old
+  runs just re-collect. (a) Trailer times are **author dates** (`%ad`), not committer dates,
+  which rebase/cherry-pick/squash-merge rewrite. This one is **defensive, not a fix for an
+  observed failure**: the analysis that motivated it claimed six absorbed packets, but those
+  commits have *identical* author and committer dates — claim withdrawn. Divergence is real
+  but rare (**1 of 395** trailer commits in one repo, **8 of 107** in the other), so it
+  matters mainly where branches are rebased before merging. That first repo's real
+  attribution gap is not a date bug: only **395 of 899 commits carry a trailer at all**.
+  (b) The trailer grace is **capped at the earliest event of any other session after
+  `win_end`** — a flat grace is only safe when nothing else is running, and this is a bug
+  fix, not the semantics decision v3.1 feared. It reproduces, exactly and automatically, the
+  **7 phantom rows across 5 sessions** a consumer-repo analysis had removed by hand with
+  explicit `--until` — while correctly keeping `wbr-t14`, the one packet that legitimately
+  spans two sessions, in **both**. (c) `totals.by_effort` + `totals.context_invalidations`:
+  reasoning effort is a per-turn request parameter (transcript-only — **no hook payload
+  carries it**), and changing effort **or** model mid-context invalidates the cached prefix.
+  Measured flips cost 372,588 / 380,005 / 115,509 cacheC against medians of 1,380 / 856 /
+  ~1,700, and it fires in **both** directions — which is what makes it invalidation, not
+  "higher effort costs more". Building it answered an open question: **effort propagates to
+  subagents** — one flip produced **9 invalidations across 6 agent contexts totalling 1.53M
+  cacheC**, ~one relayed-coordinator dispatch for one keystroke. The scan is per
+  `(role, agent_id)`, NOT per role, so two dispatches of one role on different models read as
+  normal tier routing rather than a switch; ts-less turns are excluded (degrade to 0), and an
+  empty `by_effort` means *unmeasured*, never *constant*.
 - **Search/edit tool selection is a measured cost, and it lives in the agent prompts**
   (ADR 0019 v3). All seven `agents/*.md` carry a "structured tools, not the shell"
   section: `Grep`/`Glob`/`Read` to search and read, `Edit`/`Write` to change, `Bash` only

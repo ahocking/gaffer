@@ -31,6 +31,7 @@ scratch/
 # The assembled run-metrics.json is a portable single file — archive a run by
 # copying it out, not by committing this live directory.
 .agents/metrics/
+.agents/metrics*
 
 # OS cruft
 .DS_Store

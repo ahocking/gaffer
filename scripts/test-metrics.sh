@@ -205,8 +205,15 @@ check "CRLF-jq: tokens.output"         "270"        "$(jq -r '.totals.tokens.out
 check "CRLF-jq: transcripts matched"   "3"          "$(jq -r '.token_diagnostics.transcript_files_matched' "$CRLFOUT")"
 check "CRLF-jq: structural unchanged"  "2"          "$(jq -r '.totals.packets' "$CRLFOUT")"
 # Strongest form: a CRLF jq must produce a BYTE-IDENTICAL packet (bar the timestamp).
-check "CRLF-jq: packet identical to clean run" "same" \
-  "$(if [ "$(jq -S 'del(.generated_at)' "$OUT")" = "$(jq -S 'del(.generated_at)' "$CRLFOUT")" ]; then echo same; else echo differs; fi)"
+# On failure PRINT THE DIFF — "expected [same] got [differs]" names nothing, and this
+# check is the one most likely to trip on a platform the author cannot run locally.
+if [ "$(jq -S 'del(.generated_at)' "$CRLFOUT")" = "$(jq -S 'del(.generated_at)' "$OUT")" ]; then
+  ok "CRLF-jq: packet identical to clean run"
+else
+  bad "CRLF-jq: packet identical to clean run" "differing fields (< clean, > CRLF-jq):"
+  diff <(jq -S 'del(.generated_at)' "$OUT") <(jq -S 'del(.generated_at)' "$CRLFOUT") \
+    | head -40 | sed 's/^/       /'
+fi
 
 echo "== ADR 0019 v3.1: token_source=none says WHICH failure it was =="
 # `none` used to conflate "nothing on disk" with "files exist but none opened", and the

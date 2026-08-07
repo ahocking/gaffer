@@ -126,7 +126,12 @@ subtype="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_inpu
 # collision risk is irrelevant when the comparison set is the files touched in one run.
 fh=""
 case "$tool" in
-  Edit|Write|NotebookEdit)
+  # Keep this list identical to guard.sh's registered write surface
+  # (Bash|Edit|Write|MultiEdit|NotebookEdit, minus Bash which has no single file_path)
+  # and to the edit filter in metrics.sh. MultiEdit was missing here and there, so those
+  # edits logged no file_hash at all and both the rework signal and the routing audit
+  # under-counted — silently, since an absent hash is indistinguishable from no edit.
+  Edit|Write|MultiEdit|NotebookEdit)
     _fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null)"
     if [ -n "$_fp" ]; then
       if   command -v shasum  >/dev/null 2>&1 && _h="$(printf '%s' "$_fp" | shasum 2>/dev/null)";  then :

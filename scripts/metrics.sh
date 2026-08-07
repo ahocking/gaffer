@@ -818,7 +818,9 @@ cmd_collect() {
          | ($turns | map(select($ts_ok and .ts != null and .ts > $start and .ts <= $p.end))) as $wtok
          # ROUTING AUDIT (ADR 0019): who actually wrote code, and what was dispatched,
          # so the executor self-label (tier/impl) can be cross-checked against reality.
-         | ($win | map(select(.tool=="Edit" or .tool=="Write" or .tool=="NotebookEdit"))
+         # Same write surface as guard.sh and hooks/metrics-log.sh — keep all three in
+         # step. MultiEdit was absent here, so multi-edit work read as zero edits.
+         | ($win | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))
                  | group_by(.agent_type) | map({key:(.[0].agent_type),value:length}) | from_entries) as $edits
          | ($win | map(select(.tool=="Agent" and (.subagent_type != null)))
                  | group_by(.subagent_type) | map({key:(.[0].subagent_type),value:length}) | from_entries) as $disp
@@ -1126,13 +1128,28 @@ cmd_show() {
     "",
     "by role:",
     (.by_agent_role | to_entries[] | "  \(.key): out=\(.value.tokens.output) cacheR=\(.value.tokens.cache_read) cacheC=\(.value.tokens.cache_creation)   models=\((.value.models // {} | keys | join(",")))"),
+    # cc_shape is the ONLY view here that can detect a context diet, and it has to be
+    # in `show` because it is the stated verification mechanism for ADR 0022 — a
+    # detector reachable only via `analyze` is a detector nobody reads on the run that
+    # matters. Aggregate cacheCreation cannot do this job: it spans 1.76x across
+    # untouched same-regime sessions, so a 20-30% trim sits inside the noise. Split
+    # out, the MEDIAN is flat everywhere while p90/max track the standing-context SIZE.
+    # Read it that way: a flat median with a large max is not an expensive agent, it is
+    # a large payload being re-cached.
+    (if ((.by_agent_role // {}) | map(select(.cc_shape != null)) | length) > 0 then
+       "",
+       "cc_shape — payload per turn, NOT agent cost (flat median + large max = a big standing context being re-cached):",
+       (.by_agent_role | to_entries[] | select(.value.cc_shape != null)
+        | "  \(.key): median=\(.value.cc_shape.median) p90=\(.value.cc_shape.p90) max=\(.value.cc_shape.max)   turns>50k=\(.value.cc_shape.turns_over_50k) (\(.value.cc_shape.cc_over_50k) cacheC)")
+     else "", "cc_shape: unmeasured (no per-turn token data for this run)" end),
     "",
     "by skill (tool_calls / duration):",
     ((.totals.by_skill // {}) | to_entries | sort_by(-.value.tool_calls)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms"),
     "",
     # Reports tool SELECTION. It does NOT report cost: shell search output was
-    # measured at ~187k tokens against 279M lifetime cacheCreation (0.07%), so the
-    # earlier "shell grep here is waste" framing was unfounded (ADR 0019 v3.3).
+    # measured at ~187k tokens against 105M DEDUPED lifetime cacheCreation (~0.18%), so
+    # the earlier "shell grep here is waste" framing was unfounded (ADR 0019 v3.3).
+    # (279M/0.07% was the pre-dedup inflated denominator — v3.3 corrected it.)
     # `sed -i`/`cat >` remain worth watching, as WRITES that bypass diff review.
     "by tool (selection, not cost):",
     ((.totals.by_tool // {}) | to_entries | sort_by(-.value.calls)[] | "  \(.key): \(.value.calls) calls / \(.value.duration_ms)ms"),
@@ -1157,8 +1174,21 @@ cmd_show() {
     "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
     "",
-    "packets (id | wave | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")")
+    # `outcome` renders as `?` when null, never as "green". A packet exists here only
+    # because a green-commit trailer was found, so failed and rolled-back work leaves NO
+    # row at all — "42 of 42 green" is survivorship that looks BETTER the more work was
+    # discarded. Only `runstate.sh record-outcome` can attest it; null means unattested.
+    "packets (id | wave | outcome | tool_calls | active | dur | out-tok):",
+    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
+    # Per-role edit counts alone cannot tell "the orchestrator corrected the implementer"
+    # from "they worked on different files". Only same-file overlap can, so print the
+    # counts and the contention together or the numbers invite the wrong reading.
+    (if (.packets | map(select(.edits != null)) | length) > 0 then
+       "",
+       "edits per packet (rework signal — an edit count means little without the contention):",
+       (.packets[] | select(.edits != null)
+        | "  \(.id): \(.edits.edits) edits across \(.edits.files_touched) file(s), contended=\(.edits.contended_files)\(if (.edits.contended_files // 0) > 0 then "  ⚠ same file touched by \((.edits.contended_by // {}) | to_entries | map("\(.key) (\(.value))") | join(", "))" else "" end)")
+     else empty end)
   ' "$f"
   printf '\npacket: %s\n' "$f"
 }

@@ -918,6 +918,22 @@ SHOW_LEG="$("$METRICS" show "$OUT" 2>/dev/null)"
 check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'explicit model overrides: unmeasured')"
 # the retracted cost claim must not come back in the by_tool heading
 check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
+# ...nor the retracted DENOMINATOR. 279M was the pre-dedup inflated figure (v3.3);
+# quoting it anywhere makes shell search look 2.6x cheaper than it is.
+check "show: no retracted 279M"    "0" "$(grep -c '279M lifetime' "$METRICS")"
+
+# v3.4 outputs must be VISIBLE, not merely present in the JSON. ADR 0022 names
+# cc_shape.max as the detector for whether the findings discipline is working, so a
+# detector reachable only via `analyze` is one nobody reads on the run that matters —
+# the same "real signal placed where nobody looks" failure v3.3 recorded once already.
+# Assert the MEASURED branch, not just a heading — both branches start with "cc_shape",
+# so grepping the heading alone would pass while printing "unmeasured".
+check "show: cc_shape rendered"    "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'median=.*p90=.*max=9000')"
+check "show: cc_shape not unmeasured" "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^cc_shape: unmeasured')"
+# outcome must appear in the packets table, and render as ? (not green) when unattested
+check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | wave | outcome')"
+check "show: null outcome is not green" "0" \
+  "$(printf '%s\n' "$SHOW_OUT" | awk '/^packets \(id/{p=1;next} p&&/^  /{print}' | grep -c '| green |')"
 
 echo "== v3.4: cc_shape separates standing-context size from per-turn cost =="
 # Totals are too noisy to steer by (1.76x across untouched same-regime runs). The
@@ -996,6 +1012,33 @@ check "edits: contended"        "1" "$(jq -r '.packets[0].edits.contended_files'
 check "edits: contended by"     "1" "$(jq -r '.packets[0].edits.contended_by["gaffer:implementer+main"]' "$XOUT")"
 # a run with no hashes at all is UNMEASURED, not zero-overlap
 check "edits: null when absent" "null" "$(jq -r '.packets[0].edits' "$EOUT")"
+
+# MultiEdit is on guard.sh's registered write surface, so it must be on this one too.
+# It was missing from BOTH the hook's file_hash case and this filter, so multi-edit
+# work read as zero edits — silently, since an absent hash looks like no edit at all.
+cat >> "$XREPO/.agents/metrics/events/X1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:05Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"MultiEdit","duration_ms":5,"ok":true,"file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"MultiEdit","duration_ms":5,"ok":true,"file_hash":"dddddddddddd"}
+JSON
+"$METRICS" collect --main-root "$XREPO" --projects-dir "$ROOT/none" --out "$XOUT" >/dev/null 2>&1
+# `edits` keys off file_hash PRESENCE, so this pair guards the HOOK stamping a hash for
+# MultiEdit at all (without it there is no hash and the edit is invisible)...
+check "edits: MultiEdit counted"      "5" "$(jq -r '.packets[0].edits.edits' "$XOUT")"
+check "edits: MultiEdit file counted" "4" "$(jq -r '.packets[0].edits.files_touched' "$XOUT")"
+# ...and THIS guards the collector's own tool-name filter, which is a separate list.
+# The routing audit counts orchestrator edits by tool name, so a missing MultiEdit
+# there under-reports exactly the leak the audit exists to catch: the opus orchestrator
+# writing code instead of dispatching the implementer. Two main-role edits now.
+check "audit: MultiEdit counts as an orchestrator edit" "2" \
+  "$(jq -r '.audit.orchestrator_impl_edits' "$XOUT")"
+# and `show` must render the contention, using the real contended_by object shape —
+# a `join` against the wrong shape errors and takes the whole jq program down with it.
+XSHOW="$("$METRICS" show "$XOUT" 2>/dev/null)"
+check "show: edits rendered"          "1" "$(printf '%s\n' "$XSHOW" | grep -c '^edits per packet')"
+check "show: contention named"        "1" "$(printf '%s\n' "$XSHOW" | grep -c 'same file touched by gaffer:implementer+main')"
+# and the hook must stamp a hash for it in the first place
+check "hook: MultiEdit on write surface" "1" \
+  "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
 
 echo
 if [ "$fail" -eq 0 ]; then

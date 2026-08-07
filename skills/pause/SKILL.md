@@ -46,8 +46,10 @@ Inspect the loop's working tree — the single local checkout, currently on the
   git stash push --include-untracked -m "orch pause scratch: <task-id>"
   ```
 
-  `.agents/run-state.yaml` is gitignored (ADR 0009), so `--include-untracked`
-  sweeps the disposable scratch but leaves the run-state record in place. Record
+  `.agents/run-state.yaml` is gitignored (ADR 0009) — as are the finding bodies in
+  `.agents/findings/` and `run-state-note-archive.md`, which travel with it (ADR
+  0022) — so `--include-untracked` sweeps the disposable scratch but leaves the
+  whole run record in place. Record
   the stash ref in the check-in (step 4) so the human can recover or drop it.
   Because the loop shares your **single checkout**, this scratch may include work
   you have not reviewed — **escalate to the human before stashing if there is any
@@ -100,7 +102,7 @@ writes to a temp file and renames):
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh write .agents/run-state.yaml <<'YAML'
-schema: 2
+schema: 3
 status: paused
 updated_at: <now-UTC>
 branch: orch/<task-id>
@@ -110,8 +112,21 @@ backlog:
   done: [ ... ]
   pending: [ ... ]
 pending_questions: [ ... ]
+findings:
+  - id: <carry EVERY existing index entry through verbatim>
+    summary: <...>
+    file: .agents/findings/<id>.md
 YAML
 ```
+
+**`write` REPLACES the whole file, `add-finding` APPENDS to it — so the order is
+write first, findings second.** Run every `add-finding` from the routing table
+above *after* this write, not before: a finding recorded first is erased by the
+write, and because the body in `.agents/findings/` survives on disk you are left
+with an orphaned body and no index entry pointing at it — the one failure the
+index exists to prevent. For the same reason, any finding already in the index
+from earlier in the run must be carried through the heredoc verbatim; dropping a
+line here silently unlinks a body that is still sitting on disk.
 
 Order matters: reach the safe checkpoint and verify it (steps 1–2) **before**
 this write — a run-state that says `paused` must be true when it is written. This

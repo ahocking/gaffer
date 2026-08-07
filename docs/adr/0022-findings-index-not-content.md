@@ -104,12 +104,94 @@ Three details are load-bearing:
 slips. Findings are the intended path; a byte budget is what catches the days they are
 not used.
 
+### The summary is untrusted text (revision, 2026-08-07)
+
+The first cut wrote the summary as a **plain, unquoted** YAML scalar. A summary is
+free text written by an agent about code, so the single most likely thing in it is
+`": "` — which a plain scalar cannot hold: it parses as a nested mapping and the file
+stops loading. The function whose stated purpose was "appending to a YAML list is the
+one edit that reliably produces malformed run-state" was itself the way to produce it.
+
+**Summaries are now single-quoted, with `'` doubled.** Single- and not double-quoted
+because a single-quoted YAML scalar performs *no* escape processing: `'' → '` is the
+entire rule, and a backslash is already literal, so a Windows path needs nothing.
+Double-quoting would need `\` and `"` escaped and would then re-interpret `\n`.
+
+That choice also keeps `jq` out of it. Encoding is one `sed` substitution in any POSIX
+shell, so `add-finding` still works on stock Git Bash, which ships neither `jq` nor a
+real `python3` — the constraint `guard.sh` is already built around. Requiring `jq` here
+would have narrowed a guarantee the plugin makes elsewhere, to buy nothing.
+
+Two smaller defects in the same function, same revision. The value was interpolated
+via **`awk -v`, which expands backslash escapes in the value** — so a literal `\n` in a
+summary became a real newline *after* the collapse above had run, reopening the exact
+injection that collapse exists to close. It now passes through `ENVIRON`, which does
+not. And the **duplicate-id check scanned the whole file with a regex**: schema 3
+carries `packets:` entries in the same `  - id: <x>` shape, so a finding named after
+the packet it concerns — the natural name — was silently refused; and `.` is both a
+legal id character and a live metacharacter, so `f.001` collided with `f-001`. The
+check is now scoped to the findings block and matched literally.
+
+The lesson generalizes past this function: **run-state's writers must treat every value
+an agent supplies as hostile input**, because run-state is the only state that survives
+a session and a parse failure is unrecoverable. `test-runstate.sh` now asserts a real
+YAML **parse** after each mutating subcommand rather than grepping for a substring;
+grep is what let all of this through.
+
+### Where finding bodies live: gitignored, with run-state (revision, 2026-08-07)
+
+`.agents/findings/` is **gitignored**, in both the plugin's `.gitignore` and
+`templates/spec-driven-base/.gitignore`, alongside `.agents/run-state.yaml` — as is
+`run-state-note-archive.md`. This amends nothing in ADR 0009; it applies it. Two
+reasons, and the second is the one that forced the decision:
+
+1. **Consistency.** The index is inside gitignored run-state. Tracking the bodies while
+   the index is local produces a checkout with orphan bodies and no index — the "durable
+   and reviewable" property below delivered backwards.
+2. **They are only durable if ignored.** Untracked is not the same as ignored here.
+   `/gaffer:pause` sets scratch aside with `git stash --include-untracked`, and
+   `runstate.sh reconcile` reads `git status --porcelain` — which lists untracked files
+   — as "scratch sitting on top of the green checkpoint", and discards it. An untracked
+   finding is therefore destroyed by the pause path, which is the ADR's own headline use
+   case. An **ignored** file is invisible to both, exactly like `run-state.yaml`.
+
+The cost is that findings are **same-machine**, like run-state (ADR 0009's existing
+trade-off). A finding worth sharing across machines is not a finding; it is an ADR or a
+gspec item, and the routing table above already sends it there.
+
+One consequence that is easy to miss: `runstate.sh write` **replaces** the whole file
+while `add-finding` **appends** to it. So the loop must carry the `findings:` index
+through every whole-file write, and must record findings *after* that write, not
+before. Dropping an index line does not remove a finding — it unlinks a body that is
+still on disk. Both loop skills state the ordering explicitly.
+
+### A parallel lane reports findings; it does not record them (revision, 2026-08-07)
+
+Under ADR 0016 the scheduler is run-state's single writer and lanes are stateless
+workers. `add-finding` mutates run-state, so a lane must not call it: its worktree has
+no `.agents/run-state.yaml` to append to, and two lanes appending at once is exactly the
+contention the single-writer rule exists to prevent.
+
+A lane therefore returns findings **in its check-in**, under a `Findings:` key, and the
+scheduler records them on collection — prefixing ids with the lane's task-id so two
+lanes cannot collide. This is the same conclusion `record-outcome` reached from the
+other direction: that command *is* lane-callable precisely because it writes append-only
+to `.agents/metrics/outcomes/` and never touches run-state. Two mechanisms, one rule —
+**nothing but the scheduler writes run-state.**
+
+The alternative was to give `add-finding` the `git rev-parse --git-common-dir`
+resolution `record-outcome` uses, letting a lane write through to the main checkout.
+Rejected: it would make concurrent lanes contend on the one file whose corruption is
+unrecoverable, to save relaying one line through a check-in the scheduler already reads.
+
 ## Consequences
 
 - **A relayed coordinator stops paying for other packets' history.** The saving is
   per-re-cache, not per-read, so it is larger than the raw token difference suggests.
 - **`.agents/findings/` is durable and reviewable** — a human can read one finding
-  without paging through a run's whole narrative, and it survives the run.
+  without paging through a run's whole narrative, and it survives the run. "Durable"
+  means *gitignored local bookkeeping that the pause path cannot sweep*, not *committed*
+  — see the revision above; the bodies are same-machine, like run-state itself.
 - **The discipline is the fragile part**, and it is prompt-enforced, not mechanical.
   Nothing stops an agent from pasting bodies into a brief. `cc_shape.max` is the
   detector: if it does not fall, the rule is not being followed.

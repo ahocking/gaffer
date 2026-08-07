@@ -251,7 +251,11 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
      packet is a legitimate opus edit; a `mechanical`/`inline` one is the leak this
      measures. Then update run-state **atomically** (`runstate.sh write`): append the
      packet to `done`, set `last_green_commit` to the new SHA, advance `cursor`,
-     keep `status: running`. Emit a **status** check-in
+     keep `status: running`, and **carry the whole `findings:` index through
+     verbatim** — `write` REPLACES the file, so an entry you omit is not edited out,
+     it is unlinked: the body stays on disk in `.agents/findings/` with nothing
+     pointing at it. (This is also why `add-finding` comes *after* the write, below —
+     it appends, and a write afterwards would erase it.) Emit a **status** check-in
      (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`).
 
      Then close the packet out — both of these, every time:
@@ -268,7 +272,10 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
        did it land, what is next.
      - **Anything worth keeping past this packet is a FINDING, not note content**
        (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"`,
-       then write the detail into the `.agents/findings/<id>.md` it creates. Route it
+       then write the detail into the `.agents/findings/<id>.md` it creates.
+       **In a parallel lane, do not run this** — you have no run-state to append to
+       and you are not its writer. Put the line in your check-in under `Findings:`
+       and the scheduler records it (`parallel.md` P1.4). Route it
        first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
        - **"this should be built/fixed"** → **not a finding.** That is backlog: a
          gspec task/feature, sequenced via `.agents/roadmap.yaml`.

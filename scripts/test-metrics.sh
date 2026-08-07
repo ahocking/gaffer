@@ -952,6 +952,24 @@ OOUT="$ROOT/orun.json"
 # last record wins: failed-then-fixed is green now
 check "outcome: attested wins"   "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
 
+# The outcomes join is scoped by SESSION and by the run WINDOW, like every other join
+# here. Unscoped it globbed every outcome ever written and took a global last-wins, so
+# a later run's verdict for a same-named packet overwrote this one's — the identical
+# cross-run bleed v3/v3.2 fixed twice for commit trailers.
+cat > "$EREPO/.agents/metrics/outcomes/E2-foreign.jsonl" <<'JSON'
+{"ts":"2026-08-14T10:00:00Z","packet":"eff-one","outcome":"rolled-back"}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+check "outcome: a foreign session's file is not joined" "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+
+# Same session, but stamped far outside the run window: the ts filter must drop it.
+cat >> "$EREPO/.agents/metrics/outcomes/E1.jsonl" <<'JSON'
+{"ts":"2026-09-01T10:00:00Z","packet":"eff-one","outcome":"abandoned"}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+check "outcome: an out-of-window record is not joined" "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+rm -f "$EREPO/.agents/metrics/outcomes/E2-foreign.jsonl"
+
 echo "== v3.4: edit overlap separates correction from division of labour =="
 # Per-role edit COUNTS cannot tell "orchestrator fixed the implementer" from "they
 # worked on different files". Overlap on the same file hash can. Values are opaque

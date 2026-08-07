@@ -525,15 +525,23 @@ assert_true "record-outcome requires both arguments" \
 
 echo
 echo "== findings: index hot, body cold (ADR 0022) =="
-FD="$(mktemp -d)"
+# The fixture puts run-state at a REAL `.agents/run-state.yaml`, because the index's
+# `file:` value is derived from where the file actually sits. The previous fixture used
+# a bare mktemp dir and asserted the literal string `.agents/findings/...`, which only
+# passed because the code hardcoded that prefix — so the test encoded the very bug it
+# looked like it was guarding, and a dangling index could never fail it.
+FD="$(mktemp -d)/.agents"; mkdir -p "$FD"
 printf 'status: running\npending_questions:\n  - id: q-001\n    severity: blocking\nfindings:\nnote: green\n' \
   > "$FD/run-state.yaml"
 assert_true "add-finding reports success" \
   "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'runner wedges on a per-session flag' | grep -q '^ADDED=yes'"
 assert_true "add-finding creates the body file" \
   "[ -s \"$FD/findings/f-001.md\" ]"
-assert_true "the SUMMARY lands in run-state" \
-  "grep -q 'summary: runner wedges on a per-session flag' \"$FD/run-state.yaml\""
+assert_true "the SUMMARY lands in run-state (single-quoted)" \
+  "grep -q \"summary: 'runner wedges on a per-session flag'\" \"$FD/run-state.yaml\""
+# The index must point at where the body ACTUALLY is, not at a hardcoded prefix.
+assert_true "the index file: path resolves to the real body" \
+  "[ -s \"\$(dirname \"$FD\")/\$(grep -m1 'file:' \"$FD/run-state.yaml\" | sed 's/.*file: //')\" ]"
 # the whole point: the body must NOT be in run-state
 assert_true "the BODY does not land in run-state" \
   "! grep -q 'What was found' \"$FD/run-state.yaml\""
@@ -558,6 +566,75 @@ assert_true "findings returns one line per finding" \
   "[ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 3 ]"
 assert_true "findings emits id, summary and file path" \
   "\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | grep -q 'f-001.*runner wedges.*\.agents/findings/f-001\.md'"
+# The read side must DECODE the single-quoted encoding the write side applies —
+# otherwise every summary reaches a brief wrapped in quotes it did not ask for.
+assert_true "findings strips the YAML quoting it wrote" \
+  "! \"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | grep -q \"'runner wedges\""
+
+# --- the summary is UNTRUSTED TEXT: it must not be able to break the file ----
+# Every case below produced an unparseable run-state before the single-quoted
+# encoding. run-state is the loop's ONLY durable state, so "it usually parses" is
+# not a property worth having — each of these asserts a real YAML parse, not a grep.
+yamlok() {  # yamlok <file> -- true if some available parser accepts it
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+    python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$1" 2>/dev/null
+  else return 0; fi   # no parser available -> do not fail the sweep on this host
+}
+FY="$(mktemp -d)/.agents"; mkdir -p "$FY"
+for case_name in colon hash quote backslash dashlead brace; do
+  case "$case_name" in
+    colon)     s='guard.sh: fails closed on unreadable input' ;;
+    hash)      s='trailing comment # not a comment' ;;
+    quote)     s="it's got 'single' and \"double\" quotes" ;;
+    backslash) s='windows path C:\nope needs \t no escaping' ;;
+    dashlead)  s='- leading dash reads as a list item' ;;
+    brace)     s='{flow: mapping} and [flow, seq] and & anchor * alias' ;;
+  esac
+  printf 'schema: 3\nfindings:\nstatus: running\n' > "$FY/rs-$case_name.yaml"
+  assert_true "hostile summary ($case_name) keeps run-state parseable" \
+    "\"\$RUNSTATE\" add-finding \"$FY/rs-$case_name.yaml\" f-1 \"\$s\" >/dev/null && yamlok \"$FY/rs-$case_name.yaml\""
+  assert_true "hostile summary ($case_name) round-trips through findings" \
+    "[ \"\$(\"\$RUNSTATE\" findings \"$FY/rs-$case_name.yaml\" | cut -f2)\" = \"\$s\" ]"
+  assert_true "hostile summary ($case_name) injects no sibling key" \
+    "[ \"\$(grep -c '^status:' \"$FY/rs-$case_name.yaml\")\" = 1 ]"
+done
+
+# A duplicate check that scans the WHOLE file collides with schema-3 `packets:` ids,
+# which share the `  - id: <x>` shape — and a finding named after the packet it is
+# about is the natural name, so this silently refused real findings.
+printf 'schema: 3\npackets:\n  - id: feature-001-scope\n    status: green\nfindings:\n' > "$FY/pk.yaml"
+assert_true "a finding may share a name with a packet" \
+  "\"\$RUNSTATE\" add-finding \"$FY/pk.yaml\" feature-001-scope 'gotcha about that packet' | grep -q '^ADDED=yes'"
+# `.` is a legal id character AND a regex metachar: an unanchored regex match made
+# `f.001` collide with `f-001`.
+printf 'schema: 3\nfindings:\n' > "$FY/rx.yaml"
+assert_true "a dot in an id does not match a dash" \
+  "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two | grep -q '^ADDED=yes'"
+
+# --- trim-note must survive EVERY note encoding -------------------------------
+# The cut is a byte cut, so the encoding decides whether it is safe: a quoted scalar
+# loses its closing quote and the file stops parsing. trim-note therefore re-emits the
+# note as a literal block scalar, which is truncatable at any byte. A note describing a
+# packet very often contains ': ', so the quoted shapes are not hypothetical.
+FT="$(mktemp -d)/.agents"; mkdir -p "$FT"
+long='ratio: high and "quoted" and C:\path '
+big=""; i=0; while [ $i -lt 120 ]; do big="${big}${long}"; i=$((i+1)); done
+{ printf 'schema: 3\nnote: %s\nstatus: paused\n' "$big"; }            > "$FT/plain.yaml"
+{ printf 'schema: 3\nnote: "%s"\nstatus: paused\n' "$big"; }          > "$FT/dq.yaml"
+{ printf 'schema: 3\nnote: |-\n'; i=0
+  while [ $i -lt 120 ]; do printf '  %s\n' "$long"; i=$((i+1)); done
+  printf 'status: paused\n'; }                                        > "$FT/block.yaml"
+for shape in plain dq block; do
+  assert_true "trim-note keeps YAML valid ($shape note)" \
+    "\"\$RUNSTATE\" trim-note \"$FT/$shape.yaml\" 200 >/dev/null && yamlok \"$FT/$shape.yaml\""
+  assert_true "trim-note preserves the key after note ($shape)" \
+    "grep -q '^status: paused' \"$FT/$shape.yaml\""
+done
+
+# record-outcome writes a JSON line the collector slurps; one malformed line makes jq
+# drop EVERY attestation at once, silently. Reject the input instead.
+assert_true "record-outcome rejects a packet id that would break its JSON" \
+  "! \"\$RUNSTATE\" record-outcome 'pkt\"; drop' green 2>/dev/null"
 # a fresh template must read as EMPTY, not as one placeholder finding
 assert_true "template placeholder is not a real finding" \
   "cp \"\${HERE}/../templates/run-state.yaml\" \"$FD/t.yaml\" && [ -z \"\$(\"\$RUNSTATE\" findings \"$FD/t.yaml\")\" ]"

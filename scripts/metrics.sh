@@ -530,14 +530,34 @@ cmd_collect() {
   #
   # LAST record per packet id wins: a packet that failed, was fixed and then landed
   # green is green now. Absent file or absent id -> null, never an assumed "green".
+  #
+  # SCOPED TWO WAYS, exactly like every other join here — by SESSION and by the run
+  # WINDOW. `record-outcome` names its log after the same session id that names the
+  # event log, so the selected sessions in sids.txt pick the right files; the ts filter
+  # then bounds them to [win_start, we_bound]. Unscoped, this globbed every outcome ever
+  # written and took a global last-wins, so re-collecting an old run inherited a later
+  # run's verdict for a same-named packet — the identical cross-run bleed v3/v3.2 spent
+  # two revisions eliminating for commit trailers. Same bug, same fix, same bounds.
   echo '{}' > "$tmp/outcomes.json"
-  if [ -d "${agents}/metrics/outcomes" ]; then
-    cat "${agents}/metrics/outcomes"/*.jsonl 2>/dev/null \
-      | jq -s 'map(select(.packet != null and .outcome != null))
-               | group_by(.packet)
-               | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
-               | from_entries' \
-      > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+  local ocdir="${agents}/metrics/outcomes"
+  if [ -d "$ocdir" ]; then
+    : > "$tmp/outcomes.ndjson"
+    if [ -s "$tmp/sids.txt" ]; then
+      while IFS= read -r _sid; do
+        [ -n "$_sid" ] && [ -e "$ocdir/$_sid.jsonl" ] && cat "$ocdir/$_sid.jsonl" >> "$tmp/outcomes.ndjson"
+      done < "$tmp/sids.txt"
+    else
+      # No event spine at all (structural fallback): there is no session to select and
+      # no window to filter by, so take everything rather than silently reporting none.
+      cat "$ocdir"/*.jsonl >> "$tmp/outcomes.ndjson" 2>/dev/null || true
+    fi
+    jq -s --arg ws "$win_start" --arg we "$we_bound" \
+      'map(select(.packet != null and .outcome != null))
+       | map(select(($ws == "" or (.ts // "") >= $ws) and ($we == "" or (.ts // "") <= $we)))
+       | group_by(.packet)
+       | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
+       | from_entries' \
+      "$tmp/outcomes.ndjson" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
   fi
 
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------

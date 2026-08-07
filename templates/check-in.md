@@ -19,6 +19,18 @@
 - cursor:  <next packet-id | "backlog complete">
 - pending: <N packets>, <M blocking question(s)>
 - next:    <one line: "continuing" | "paused — <reason>" | "branch ready for review">
+- Findings:                            # omit the key entirely when there are none
+  - <one line: a gotcha, a constraint, or a decision AND why>
+
+# `Findings:` is how a PARALLEL LANE reports something worth keeping past its packet.
+# A lane must not call `runstate.sh add-finding` itself — it has no run-state in its
+# worktree and it is not run-state's writer (ADR 0022 / ADR 0016) — so it states the
+# line here and the scheduler records it on collection. In sequential mode the loop
+# records findings directly and this key is usually unnecessary.
+#
+# What does NOT go here: "this should be built/fixed". That is backlog — a gspec
+# task/feature ordered via .agents/roadmap.yaml (the ADR 0020 seam). A findings list
+# holding future work is a shadow backlog competing with gspec.
 
 # --- Blocking question (hard gate / ambiguity) -------------------------------
 # Emitted when the loop cannot proceed without a human decision. `severity`:

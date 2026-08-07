@@ -371,6 +371,36 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   mid-loop). `trim-note` survives as a **backstop**, not the intended path. The discipline
   is prompt-enforced and therefore the fragile part — **`cc_shape.max` is the detector: if
   it does not fall on the next run, the rule is not being followed.**
+  **Treat every agent-supplied value written into run-state as hostile input** — it is
+  the only state that survives a session and a parse failure is unrecoverable. The
+  first cut wrote `summary` as a **plain** YAML scalar, so the single likeliest thing in
+  a finding about code (`": "`) corrupted the file the function existed to protect.
+  Summaries are now **single-quoted with `'` doubled**: single- and not double-quoted
+  because a single-quoted scalar does **no** escape processing (`'' → '` is the whole
+  rule, a backslash is already literal), and because one `sed` keeps `jq` out of it —
+  `add-finding` must keep working on stock Git Bash, the same constraint `guard.sh` is
+  built around. Interpolate via **`awk ENVIRON`, never `awk -v`**: `-v` expands `\n` in
+  the *value*, which re-opened the newline injection one line after the `tr` collapse
+  closed it. The duplicate-id check is scoped to the findings **block** and matched
+  **literally** — a whole-file regex scan collided with schema-3 `packets:` ids (same
+  `  - id: <x>` shape, and naming a finding after its packet is natural) and `.` is
+  both a legal id char and a metachar, so `f.001` matched `f-001`. Same rule made
+  `trim-note` re-emit the note as a **literal block scalar**: the cut is a byte cut, and
+  only a block scalar is truncatable at any byte — cutting `note: "…"` severed the
+  closing quote. **`test-runstate.sh` now asserts a real YAML *parse* after each mutating
+  subcommand; grep is what let all of this through.**
+  Bodies are **gitignored** (both `.gitignore`s), with run-state. Not just for symmetry:
+  untracked ≠ ignored here — `git stash --include-untracked` (the pause path) sweeps an
+  untracked finding and `reconcile` reads it in `git status --porcelain` as scratch on
+  the green checkpoint and discards it, so the ADR's headline use case destroyed its own
+  output. Cost: same-machine, like run-state. And because `runstate.sh write` **replaces**
+  while `add-finding` **appends**, every whole-file write must carry `findings:` through
+  and findings are recorded **after** it — a dropped index line does not delete a finding,
+  it unlinks a body still on disk. **A parallel lane never calls `add-finding`** (no
+  run-state in its worktree; it is not the writer): it returns `Findings:` lines in its
+  check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
+  `record-outcome` obeys from the other side — it is lane-callable *because* it writes
+  append-only outside run-state.
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

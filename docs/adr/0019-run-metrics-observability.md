@@ -541,6 +541,280 @@ only `packets[]` rows go non-disjoint. This is inherent to deriving boundaries f
 trailers rather than run-state, and closing it means either narrowing the grace or
 intersecting overlapping windows — a semantics decision, not a bug fix.
 
+## v3.2 revision (2026-08-07) — the overlap left open by v3.1, plus effort
+
+Two cross-repo analyses of 42 real sessions closed the overlap question above and found one
+dimension the packet could not see at all. All three changes are **retroactive** — they
+re-read stored events, git history and transcripts, so existing runs can simply be
+re-collected.
+
+**(a) Trailer times are AUTHOR dates, not committer dates.** Committer date is rewritten by
+rebase, cherry-pick, amend and squash-merge, so a packet's recorded time drifts to whenever
+the branch was last replayed. `%cd` → `%ad`; traversal moves to `--author-date-order` for
+coherence only (the per-packet reduction re-sorts on the emitted column, so correctness never
+depended on traversal).
+
+Honest scope: this is **defensive, not a fix for an observed production failure**. The
+analysis that motivated it claimed six packets had been absorbed into a run that did not
+author them; checked against git, those commits have *identical* author and committer dates
+and were genuinely in-window — the claim does not hold and is withdrawn. Divergence is real
+but rare: **5 of 899 commits in one repo (1 of 395 carrying a trailer), 12 of 329 in the
+other (8 of 107 with a trailer)**. So the change matters mainly for repos that rebase before
+merging, where up to ~7.5% of trailer commits carry a rewritten date. What actually drives
+that first repo's unattributed spend is much simpler and is *not* a date bug: only **395 of
+899 commits carry an `[orch packet:]` trailer at all**.
+
+**(b) The grace is capped at the next session's first event.** This is the overlap question
+v3.1 left open, and it resolves as a bug fix rather than the feared semantics decision. A
+flat grace is only safe when nothing else is running; with overlapping or back-to-back
+sessions it reaches straight into the next run and claims its commits. The cap is the
+earliest event belonging to any *other* session after `win_end`, which handles both shapes:
+a back-to-back session cuts the grace short, and a concurrent one already has events just
+past `win_end`, so the bound collapses to ~`win_end`. When nothing else ran, the full grace
+still applies — which is the case it exists for. `--until` still wins verbatim.
+
+Validated against ground truth derived independently by hand: one consumer repo's analysis
+had removed **7 phantom rows across 5 sessions** by re-collecting each with an explicit
+`--until`. The cap reproduces that list **exactly and automatically** — and correctly keeps
+`wbr-t14`, the one packet that legitimately spans two sessions (checkpointed in one, verified
+and merged in the next), in **both**. The fix is not "drop everything near a boundary".
+
+**(c) `by_effort` and `context_invalidations`.** Reasoning effort is a per-turn request
+parameter the user can change mid-session, recorded in the transcript as a top-level `effort`
+field. Nothing in the packet read it, so a run spanning two effort levels was
+indistinguishable from one that did not. Both are now emitted from the same transcript
+records already parsed for tokens.
+
+The second counter is the more useful one: changing `effort` **or** the model mid-context
+invalidates the cached prefix, so the whole context is re-written to cache. Three flips
+measured by hand cost **372,588 / 380,005 / 115,509** cache-creation against session medians
+of 1,380 / 856 / ~1,700 — 270x, 444x and 68x. It fires in **both** directions
+(`high→xhigh` *and* `xhigh→high`), which is what identifies it as invalidation rather than
+"higher effort costs more"; the size tracks how deep into the context the flip happens, not
+which way it went.
+
+Implementing it answered a question the manual analysis had left open: **effort propagates to
+dispatched subagents.** A single flip in one session registered **9 invalidations across 6
+agent contexts** (main, chief-engineer ×3, implementer ×3, reviewer, ux-designer) totalling
+**1,531,777** cache-creation — roughly one full relayed-coordinator dispatch for one keystroke,
+and ~4x what measuring the main context alone suggested.
+
+The scan is per `(role, agent_id)` — one agent context — not per role: two dispatches of the
+same role are separate contexts, so an implementer that ran opus once and sonnet once is
+normal tier routing, not a mid-context switch. Turns without a timestamp cannot be ordered
+and are excluded, so this degrades to 0 rather than guessing on older transcripts. An empty
+`by_effort` means the transcripts predate the field (unmeasured), never that effort was
+constant.
+
+Per-turn effort is **not** available to the hooks — no hook payload carries it — so the
+transcript remains the sole sensor, and these two fields inherit `token_source`'s
+version-fragility exactly like the token figures do.
+
+Regression cases live in `scripts/test-metrics.sh` under the three `v3.2` headings, including
+the non-regressions that matter: legacy transcripts leave `by_effort` absent rather than
+zeroed, and separate dispatches of one role never register as an invalidation.
+
+## v3.3 revision (2026-08-07) — every token number was inflated ~2.6x, and v3's cost claim was never measured
+
+Two corrections. The first invalidates every absolute token figure this collector has ever
+emitted; the second retracts a claim this ADR itself made and propagated into seven agent
+prompts. Both were found the same way — by trying to *calibrate* a recommendation rather
+than act on it.
+
+### 1. Deduplicate transcript turns by `message.id`
+
+A transcript records the **same assistant message more than once**. Observed: message id
+`msg_011CdnkJ7EP1uDWn2Wbn` appearing three times, at +2ms and +26s, each carrying the full
+`usage` block. Summing rows therefore counts the same tokens repeatedly. `metrics.sh` had no
+dedup; **ADR 0012's own measurement deduplicated by message id** ("totals come from each
+agent's transcript, deduplicated by message id"), so the technique was known in this repo and
+simply never reached the collector.
+
+Measured inflation across four real sessions:
+
+| Session | cacheCreation | output | CC:out raw | CC:out deduped |
+|---|---|---|---|---|
+| `89cecaec` | 3.16x | 4.38x | 5.6 | **7.8** |
+| `58215cfa` | 2.32x | 3.28x | 6.4 | **9.0** |
+| `0195876b` | 2.60x | 3.67x | 11.8 | **16.6** |
+| `970115da` | 2.64x | 4.33x | 12.6 | **20.6** |
+| `af043d81` | 3.03x | 4.09x | 19.4 | **26.2** |
+| `e383a0d8` | 2.76x | 6.25x | 14.9 | **33.8** |
+
+**The two rates differ, and differ per session, so this does NOT cancel in a ratio.** That is
+what makes it more than a scaling error: CC:out — the metric every optimization decision here
+was ranked by — was wrong by 1.4x-2.3x, non-uniformly. Directionally the conclusions survived
+(the ordering is unchanged and the best-vs-worst gap *widens* from 2.3x to 3.8x), but that was
+luck, not method.
+
+The fix keeps the **earliest** row per id. Duplicates carry identical usage so the choice is
+cosmetic for totals, but it must be deterministic for the `context_invalidations` scan, which
+reads per-turn `ts`. Rows with **no** `message.id` are kept verbatim rather than keyed on
+`.uuid`: `.uuid` is per-ROW, not per-message, so keying on it would silently dedupe nothing
+while appearing to work. Under-deduping is the safe direction. `token_diagnostics` gains
+`duplicate_turns_dropped` so the rate is visible — a sudden move toward 0 means either the
+transcript stopped repeating messages **or** stopped carrying `message.id`, and the second
+would silently re-inflate the packet ~2.6x while still stamping `token_source: transcript`.
+
+### 2. RETRACTED: "search tool selection is a measured cost"
+
+v3 added a "structured tools, not the shell" section to all seven `agents/*.md`, asserting it
+was "a measured cost, not a style preference," and telling the three read-only agents that
+shell search was "most of your context budget."
+
+**No cost was ever measured.** The v3 finding was **0** `Grep`/`Glob` calls against 1,568
+shell `grep`s — a measurement of tool *selection*. It was reported as a measurement of tool
+*cost*, and the inference went unchallenged because the number was striking.
+
+Measured properly — joining `tool_use`→`tool_result` in the transcripts and totalling result
+bytes across 30 sessions:
+
+| | calls | output | mean |
+|---|---|---|---|
+| shell search (`grep`/`find`/`rg`) | 643 | **749,069 ch ≈ 187k tok** | 1,164 ch |
+| `Grep`/`Glob` | 10 | 1,680 ch | — |
+| `Read` | 1,192 | **5,668,991 ch ≈ 1,417k tok** | 4,755 ch |
+
+187k tokens against argent's **105M deduped** lifetime cacheCreation is **~0.18%**. (The
+duplication in §1 is confined to assistant `usage` records: `tool_use`/`tool_result` blocks
+measure **1.0x** unique, so the result-byte figures here needed no correction — only the
+denominator did. An earlier draft of this section quoted the pre-dedup 279M and read 0.07%,
+which was wrong in the same commit that proved the inflation.) The greps are well-targeted, not
+unbounded dumps. Eliminating shell search entirely saves a rounding error, and the
+planned guard-hook enforcement was dropped on this evidence.
+
+The same measurement points somewhere real: **`Read` is 7.6x all shell search combined**, and
+the **top 10% of `Read` calls carry 50% of the volume** (top 25% carry 73%; median read is
+only 2,189 chars). A few very large document reads dominate — which is the coordinator
+read-list problem, and the opposite of a search-tool problem.
+
+What survives is the **write** half, on its own merits and independent of tokens: `sed -i` and
+`cat >` bypass diff review and the guard's path tiers, which is why `guard.sh` pattern-matches
+them as a write surface. The agent blocks now say only that, and are shorter for it — which
+matters directly, since they are re-read on every dispatch.
+
+**The general lesson, recorded because this ADR made the mistake twice in two revisions
+(v3 here, and the phantom-packet framing in v3.2): a frequency count is not a cost
+measurement.** Do not add a cost claim to an agent prompt without measuring cost.
+
+### 3. `show` reported unmeasured counters as clean zeros
+
+This started from a wrong premise too, and the correction is the useful part. The plan was
+"surface the routing audit, because nothing prints it" — after a real deviation (16 of 83
+dispatches overriding a declared model, 13 onto opus) went unnoticed for weeks. **`show`
+was already printing it.** The counters were never dark.
+
+Two things were actually wrong:
+
+- **`null` rendered as `0`.** The collector deliberately emits `dispatches_with_model_override`
+  and `failed_tool_calls` as `null` for runs predating the instrumentation, with an explicit
+  comment that reporting them as `0` would be "a lie" — and then `show` applied `// 0` and
+  told exactly that lie. A legacy run read as "83 dispatches, 0 overrides, 0 failures": fully
+  audited and perfectly clean. Both now print `unmeasured — pre-instrumentation run`.
+- **Placement.** The audit sat *below* the per-packet table. At 14 packets it is off the
+  bottom of a screen, which is how a real signal goes unread without anything being hidden.
+  It now prints above the table.
+
+Worth stating plainly, because it recurs: the failure was **not** missing instrumentation.
+It was a true value rendered indistinguishably from a false one, and a real signal placed
+where nobody looks. Adding a new counter would have fixed neither.
+
+## v3.4 revision (2026-08-07) — measure the payload, not the aggregate; stop assuming green
+
+Four changes, all landed *before* a run rather than after, because each one determines what
+the next run is able to tell us.
+
+### 1. `by_agent_role.<role>.cc_shape` — the metric that beats the noise floor
+
+The plan was to trim the coordinator's standing context and measure the result in
+cacheCreation-per-packet. That measurement cannot work. Across four **untouched**
+same-regime sessions, coordinator cc/packet spans **1.76x** (498K / 546K / 589K / 876K);
+across all sessions it spans **9x**. A change that removes ~150k of context is 20–30% —
+comfortably inside the noise. Two runs would not have resolved it, and the "change one thing
+at a time" instinct would have bought a second expensive run for an uninterpretable number.
+
+The aggregate is noisy because it conflates two different things. A coordinator turn is
+either steady-state (a small delta appended to a warm cache) or a **full re-cache of
+everything it is holding**. Separating them, per session:
+
+| Session | median turn | p90 | max | turns > 50k |
+|---|---|---|---|---|
+| `89cecaec` (cheap) | 1,850 | 8,468 | **24,190** | **0 / 300** |
+| `e383a0d8` (costly) | 1,408 | 9,793 | **198,397** | **32 / 524** |
+| `0195876b` | 2,130 | 76,526 | 147,817 | — |
+| `970115da` | 3,500 | 115,114 | 221,962 | — |
+| `af043d81` | 4,683 | 196,478 | 239,851 | — |
+
+**The median is flat everywhere.** All the difference is in the re-cache size, and it
+separates by an order of magnitude with no overlap. `max`/`p90` therefore read *the size of
+the standing context itself* — exactly what a read-list or run-state diet changes — so the
+effect will show up in one run instead of needing several.
+
+Read it as: `median` = cost of one more turn; `p90`/`max` = cost of rebuilding this role's
+context once. **A flat median with a large max is not an expensive agent; it is a large
+payload being re-cached**, and the fix is scoping what it reads, not dispatching it less.
+
+### 2. `packets[].outcome` — attested, never assumed
+
+`outcome` was the literal string `"green"`. Not a measurement: a packet appears in this
+collector **only** because a `[orch packet:]` trailer was found, and that trailer is written
+on a green commit — so failed, abandoned and rolled-back work produces no row at all. "42 of
+42 green" was survivorship restated as quality, and a run looked *healthier the more work it
+threw away*.
+
+The collector structurally cannot fix this; only the loop knows, and only at the boundary.
+So `runstate.sh record-outcome <packet> <green|failed|rolled-back|blocked|abandoned>` appends
+to `.agents/metrics/outcomes/<session>.jsonl`, and the collector joins it. Absent attestation
+the field is **`null`** — unmeasured — never an assumed `"green"`.
+
+Append-only and deliberately **not** in run-state: run-state has a single writer (the driver)
+and this must be callable from a lane without contending for it, the same reasoning that kept
+packet boundaries on commit trailers instead of migrating run-state's schema. Last record per
+id wins, so a packet that failed, was fixed and landed is green.
+
+### 3. `packets[].edits` — overlap, from hashes, never paths
+
+Per-role edit counts cannot distinguish rework from division of labour: "implementer 34,
+main 3" is either the orchestrator correcting the implementer or the two working on separate
+files, and those mean opposite things. Overlap on the **same file** is the discriminator.
+
+`metrics-log.sh` now stamps `file_hash` on `Edit`/`Write`/`NotebookEdit` — a 12-char digest of
+the path, **not the path**. The packet is meant to be safe to hand to Claude and paste into an
+issue; paths leak directory structure, client names, and occasionally secrets in the filename.
+A hash answers "same file?" — the only question this metric asks — and nothing else, and is
+deliberately not reversible, so `edits` can never become a file listing. Digest selection
+probes shasum/sha1sum/md5sum by **execution** and falls back to POSIX `cksum`, the same
+availability-driven rule as guard.sh's parser probing.
+
+`contended_files` is the rework signal; `files_touched` is its denominator. Both `null` on
+runs predating the field — unmeasured, not zero-overlap.
+
+### 4. `runstate.sh trim-note` — enforce the contract the template already stated
+
+`templates/run-state.yaml` documents `note:` as **one line** the resuming session reads first.
+In a real run it reached **164,678 chars — 87% of the entire run-state, ~41k tokens, 15
+stacked "earlier history" sections.** Nothing appended it deliberately: each packet added its
+narrative, nothing removed one, and no mechanism or prompt named a budget. That cost is paid
+on every relay dispatch, where a fresh coordinator reads run-state to recover the two facts
+ADR 0012 names — *did it land, what is next*.
+
+`trim-note` archives the overflow to `run-state-note-archive.md` rather than dropping it, and
+trims on **whole lines** so the YAML stays parseable (a single over-long line — the
+note-as-one-giant-line shape — is cut with an explicit marker rather than silently). Budget
+`ORCH_NOTE_MAX_BYTES`, default 2000. The prompts and the template now state the rule; the
+script enforces it.
+
+One bug worth recording, because this repo has hit its class before: the first cut used
+`start="$(grep -n '^note:' … )"`, and a no-match exits 1, which under `set -euo pipefail`
+killed the function before the emptiness check ran — a missing note is a legitimate state,
+not an error. Same fail-by-absence trap documented for `guard.sh`. Caught by the sweep.
+
+Regression cases live under the `v3.4` headings in `test-metrics.sh` and `test-runstate.sh`,
+including the non-regressions: a run with no hashes reports `edits: null` rather than zero
+overlap, a run with no outcomes log reports `outcome: null` rather than green, a note already
+within budget is left byte-identical with no archive written, and trimming preserves the keys
+both before and after the note.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

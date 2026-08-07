@@ -23,12 +23,26 @@ logs/
 # `runstate.sh reconcile` inspects (ADR 0009). Persists on local disk.
 .agents/run-state.yaml
 
+# The two files that TRAVEL WITH run-state and must share its treatment exactly
+# (plugin ADR 0022, ADR 0019 v3.4): the finding BODIES whose one-line index lives
+# inside run-state, and the archived overflow of run-state's `note:`. Both are the
+# cold half of a hot/cold split whose hot half is gitignored — so ignoring them is
+# what keeps the pair consistent. Ignoring is also what makes them SURVIVE: an
+# untracked file is swept by the pause path's `git stash --include-untracked` and
+# shows up in the `git status --porcelain` that `reconcile` reads as scratch sitting
+# on the green checkpoint (which it then discards). An ignored file is invisible to
+# both, exactly like run-state.yaml.
+.agents/findings/
+.agents/run-state-note-archive.md
+
 # Orchestration run-metrics — the event spine + assembled per-run metrics packets
 # (plugin ADR 0019 Tier 1). Local run bookkeeping, NOT product history; gitignored
 # for the same ADR 0009 reasons as run-state above. The assembled run-metrics.json
 # is a portable single file — archive a run by copying it out, not by committing
-# this live directory.
+# this live directory. The bare-prefix glob also covers an archived copy named
+# `.agents/metrics-<id>/`.
 .agents/metrics/
+.agents/metrics*
 
 # Orchestration pause sentinel(s) — the cooperative-pause REQUEST channel (ADR
 # 0017). Transient, machine-local, and NOT product history: a running loop/lanes

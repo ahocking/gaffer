@@ -176,6 +176,273 @@ cmd_set() {
   mv -f "$tmp" "$f"
 }
 
+# --- bound the freeform `note:` field, archiving the overflow ----------------
+# The template documents `note:` as ONE line the resuming session reads first. In a
+# real run it reached 164,678 chars — 87% of the whole run-state file, ~41k tokens,
+# carrying 15 stacked "earlier history" sections. Nothing appended it on purpose:
+# each packet added its narrative and nothing ever removed one, because nothing here
+# enforced the documented contract and the prompts never named a budget.
+#
+# That cost is paid on EVERY relay dispatch, where a fresh coordinator reads run-state
+# to answer only "did it land, what is next" (ADR 0012) — so ~41k tokens are re-read
+# to recover two facts, and they land in the standing context that gets re-cached.
+#
+# Trimming, not deleting: the overflow is appended to run-state-note-archive.md next
+# to the run-state, so the narrative survives for a human while leaving the hot path.
+#
+# THE TRIMMED NOTE IS ALWAYS RE-EMITTED AS A LITERAL BLOCK SCALAR (`note: |-`),
+# whatever shape it had before. This is the whole reason the function is safe, and it
+# is a property of block scalars rather than care taken here: block content is verbatim
+# lines, so ANY byte-prefix of it is still well-formed. Cutting a quoted scalar is not —
+# the earlier version truncated `note: "…"` mid-string, severed the closing quote and
+# produced a run-state that no longer parsed. Since a note describing a packet very
+# often contains `: `, it MUST be quoted or block; and of those two only block can be
+# truncated. So the cut and the encoding are one decision, not two.
+#
+# Everything after the cut is indented two spaces to sit inside the block, and the
+# marker line is indented with it — an unindented line would close the scalar early and
+# be read as a sibling key.
+cmd_trim_note() {
+  local f="${1:-}" max="${2:-}"
+  [ -n "$f" ] || die "usage: trim-note <file> [max-bytes]"
+  need_file "$f"
+  max="${max:-${ORCH_NOTE_MAX_BYTES:-2000}}"
+  case "$max" in ''|*[!0-9]*) die "max-bytes must be a number" ;; esac
+
+  # `|| true`: no-match makes grep exit 1, which under `set -euo pipefail` kills the
+  # script before the emptiness check below ever runs — the same fail-by-absence trap
+  # documented for guard.sh. An absent note is a legitimate state, not an error.
+  local start
+  start="$(grep -n '^note:' "$f" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+  if [ -z "$start" ]; then printf 'TRIMMED=no\nREASON=no-note-field\n'; return 0; fi
+
+  # The note runs to the next TOP-LEVEL key (column 0), else to EOF — which covers
+  # both the one-line shape and the block/multi-line shape a run actually produces.
+  local total end
+  total="$(wc -l < "$f" | tr -d ' ')"
+  end="$(awk -v s="$start" 'NR>s && /^[A-Za-z_][A-Za-z0-9_]*:/ {print NR-1; exit}' "$f")"
+  [ -n "$end" ] || end="$total"
+
+  local size
+  size="$(awk -v s="$start" -v e="$end" 'NR>=s && NR<=e' "$f" | wc -c | tr -d ' ')"
+  if [ "$size" -le "$max" ]; then
+    printf 'TRIMMED=no\nBYTES=%s\nMAX=%s\n' "$size" "$max"; return 0
+  fi
+
+  local dir arch tmp stamp
+  dir="$(dirname "$f")"; arch="${dir}/run-state-note-archive.md"
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  { printf '\n<!-- archived %s — %s bytes trimmed from run-state note -->\n\n' "$stamp" "$size"
+    awk -v s="$start" -v e="$end" 'NR>=s && NR<=e' "$f"
+  } >> "$arch" || die "cannot write ${arch}"
+
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
+  { [ "$start" -gt 1 ] && awk -v s="$start" 'NR < s' "$f"
+    printf 'note: |-\n'
+    # Strip the old encoding down to raw text, then re-emit it as block content:
+    # drop the `note:` key from the first line, drop a `|`/`|-`/`>`/`>-` block header,
+    # and unwrap a surrounding quote pair. What is left is verbatim text that cannot
+    # carry YAML meaning once it is indented inside the block.
+    awk -v s="$start" -v e="$end" -v m="$max" '
+      NR<s || NR>e { next }
+      NR==s { sub(/^note:[[:space:]]*/, "")
+              if ($0 ~ /^[|>][-+]?[0-9]*[[:space:]]*$/) next   # was already a block
+              sub(/^"/, ""); sub(/"$/, ""); sub(/^'"'"'/, ""); sub(/^'"'"'$/, "") }
+      { line = $0
+        sub(/^[[:space:]][[:space:]]/, "", line)               # de-indent old block body
+        if (n + length(line) + 1 > m) {                        # cut INSIDE the block
+          room = m - n - 1
+          if (room > 0) print "  " substr(line, 1, room)
+          exit }
+        n += length(line) + 1
+        print "  " line }' "$f"
+    printf '  [note trimmed to %s bytes at %s; full history in %s]\n' "$max" "$stamp" "$(basename "$arch")"
+    [ "$end" -lt "$total" ] && awk -v e="$end" 'NR > e' "$f"
+    :
+  } > "$tmp" || die "cannot write temp file"
+  mv -f "$tmp" "$f"
+  printf 'TRIMMED=yes\nBYTES_BEFORE=%s\nMAX=%s\nARCHIVE=%s\n' "$size" "$max" "$arch"
+}
+
+# --- add a finding: one-line index entry here, body in .agents/findings/ ------
+# ADR 0022. Run-state is read by EVERY packet and sits in the standing context for a
+# whole dispatch, so content useful to one packet is paid for by all of them. The
+# summary stays hot so an agent can decide whether it needs the body; the body goes
+# cold in .agents/findings/<id>.md.
+#
+# A script rather than "the agent edits the YAML": appending to a list is the one
+# edit that reliably produces malformed run-state (wrong indent, a second `findings:`
+# key, a list item merged into the previous one), and this file is the loop's only
+# durable state. Placement is deliberate — inserted directly after the `findings:`
+# key so the entry cannot land inside `pending_questions` or after `note:`.
+#
+# Idempotent on id: re-adding an existing id updates nothing and reports it, so a
+# retried packet cannot produce duplicate index entries pointing at one body.
+#
+# NEWEST FIRST. The entry goes immediately after the `findings:` key, which is the
+# only placement that cannot land in the wrong section — locating the end of the list
+# means guessing where the block stops, and guessing wrong writes the entry into
+# `note:` or `pending_questions:`. Newest-first also happens to be the right read
+# order for an index that gets scanned rather than paged through.
+cmd_add_finding() {
+  local f="${1:-}" id="${2:-}" summary="${3:-}"
+  [ -n "$f" ] && [ -n "$id" ] && [ -n "$summary" ] \
+    || die "usage: add-finding <run-state-file> <id> <one-line summary>"
+  need_file "$f"
+  case "$id" in
+    *[!a-zA-Z0-9._-]*|'') die "finding id must be [a-zA-Z0-9._-] (it becomes a filename)" ;;
+  esac
+  # A newline in the summary would break the single-line YAML scalar and, worse, could
+  # inject a sibling key. Collapse rather than reject: the caller is an agent mid-loop.
+  summary="$(printf '%s' "$summary" | tr '\n\r' '  ')"
+
+  # SINGLE-QUOTED YAML scalar, with `'` doubled. This is the whole encoding, and the
+  # reason it is single- and not double-quoted: a single-quoted YAML scalar performs NO
+  # escape processing, so `'' -> '` is the ONLY rule and a backslash is already literal.
+  # Double-quoting would need `\` and `"` escaped and would then re-interpret `\n`; plain
+  # (unquoted) was the original shape and could not survive a `: ` in the summary at all,
+  # which is the single most likely character sequence in a finding about code.
+  #
+  # This is also why nothing here needs `jq`. Making the summary safe is one substitution
+  # in any POSIX shell, so `add-finding` keeps working on stock Git Bash, which ships
+  # neither jq nor a real python3 (the same constraint guard.sh is built around).
+  local q_summary
+  q_summary="$(printf '%s' "$summary" | sed "s/'/''/g")"
+
+  # Duplicate check, scoped to the findings BLOCK and matched LITERALLY.
+  #   - scoped: schema 3 carries `packets:` entries in the same `  - id: <x>` shape, so a
+  #     whole-file scan silently refuses a finding named after a packet — which is a
+  #     natural name for a finding ABOUT that packet.
+  #   - literal (`grep -F` on an exact line): `.` is a legal id character and a live regex
+  #     metachar, so `f.001` matched `f-001` and reported a duplicate that did not exist.
+  local in_findings
+  in_findings="$(awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf { print }' "$f" 2>/dev/null || true)"
+  if printf '%s\n' "$in_findings" | grep -qxF "  - id: ${id}"; then
+    printf 'ADDED=no\nREASON=duplicate-id\nID=%s\n' "$id"; return 0
+  fi
+
+  # The index entry must point at where the body ACTUALLY went. Deriving both from the
+  # same `dir` is what keeps them in step; the previously hardcoded `.agents/…` was
+  # correct only when run-state sat at exactly `.agents/run-state.yaml` and produced a
+  # dangling index everywhere else — including in its own tests, which asserted the
+  # hardcoded string and so could never catch it.
+  local dir body rel
+  dir="$(dirname "$f")"
+  body="${dir}/findings/${id}.md"
+  rel="$(basename "$dir")/findings/${id}.md"
+  mkdir -p "${dir}/findings" 2>/dev/null || die "cannot create ${dir}/findings"
+  if [ ! -f "$body" ]; then
+    { printf '# %s\n\n' "$id"
+      printf '> %s\n\n' "$summary"
+      printf -- '- recorded: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '## What was found\n\n<the detail that did NOT belong in run-state>\n\n'
+      printf '## Why it matters / what to do about it\n\n<so a later packet can act on it>\n\n'
+      printf '## Scope\n\n<which packets or areas this applies to; "run-wide" if general>\n'
+    } > "$body" || die "cannot write ${body}"
+  fi
+
+  local tmp
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
+  # ENVIRON, never `awk -v`. `-v` processes backslash escapes in the VALUE, so a summary
+  # containing a literal `\n` became a real newline AFTER the `tr` collapse above had
+  # already run — re-opening the exact injection the collapse exists to close, one line
+  # later. ENVIRON passes the bytes through untouched.
+  if grep -qE '^findings:' "$f"; then
+    ID="$id" SUM="$q_summary" REL="$rel" awk '
+      { print }
+      /^findings:[[:space:]]*$/ && !done {
+        printf "  - id: %s\n    summary: '\''%s'\''\n    file: %s\n",
+               ENVIRON["ID"], ENVIRON["SUM"], ENVIRON["REL"]; done=1 }
+    ' "$f" > "$tmp"
+  else
+    # No findings key yet (a run-state from an older template): create the section at
+    # the end rather than guessing an insertion point mid-file.
+    { cat "$f"
+      printf "findings:\n  - id: %s\n    summary: '%s'\n    file: %s\n" "$id" "$q_summary" "$rel"
+    } > "$tmp"
+  fi
+  mv -f "$tmp" "$f"
+  printf 'ADDED=yes\nID=%s\nFILE=%s\n' "$id" "$body"
+}
+
+# --- list the finding index (ids + summaries only, never the bodies) ----------
+# The read side of the same contract: an agent checks THIS, then opens only the
+# bodies it needs. Printing summaries here — and nothing else — is what keeps the
+# "index hot, body cold" split from silently collapsing back into "read everything".
+cmd_findings() {
+  local f="${1:-}"
+  [ -n "$f" ] || die "usage: findings <run-state-file>"
+  need_file "$f"
+  awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" sum "\t" file; sum=""; file="";
+                                     sub(/^[[:space:]]*- id:[[:space:]]*/, ""); id=$0; next }
+    inf && /^[[:space:]]*summary:/ { line=$0; sub(/^[[:space:]]*summary:[[:space:]]*/, "", line);
+                                     # Undo the single-quoted encoding the write side
+                                     # applies: strip the wrapping quotes, then `'"''"'` -> `'"'"'`.
+                                     # Left alone, every summary would print wrapped in
+                                     # quotes and an agent would copy them into a brief.
+                                     if (line ~ /^'"'"'.*'"'"'$/) {
+                                       line = substr(line, 2, length(line) - 2)
+                                       gsub(/'"''"'/, "'"'"'", line) }
+                                     sum=line; next }
+    inf && /^[[:space:]]*file:/    { line=$0; sub(/^[[:space:]]*file:[[:space:]]*/, "", line); file=line; next }
+    END { if (id != "") print id "\t" sum "\t" file }
+  ' "$f" | grep -v '^<' || true
+}
+
+# --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
+# Append-only, one line per packet boundary, to .agents/metrics/outcomes/<session>.jsonl.
+# The collector reconstructs packets from green-commit trailers, so it structurally
+# cannot see a packet that failed or was rolled back — those never produce a commit.
+# Only the loop knows, and only at the boundary, so it has to say so here.
+#
+# NOT written into run-state: run-state has a single writer (the driver) and this must
+# be callable from a lane without contending for it — the same reason packet boundaries
+# were left on commit trailers instead of migrating run-state's schema (ADR 0019).
+# Append-only + last-wins means a retried packet correctly ends up at its final state.
+# SESSION ID: `CLAUDE_CODE_SESSION_ID`, which is the variable Claude Code actually
+# exports to a Bash tool call. The first cut read `CLAUDE_SESSION_ID`, which does not
+# exist — so every attestation from every run fell through to the `adhoc` default and
+# landed in ONE file, and the collector then joined a packet id to whichever run last
+# used that name. Verified rather than assumed: this env var is byte-identical to the
+# `.session_id` in the PostToolUse payload that names `.agents/metrics/events/<id>.jsonl`,
+# so `outcomes/<id>.jsonl` and `events/<id>.jsonl` share a key and the collector can
+# scope outcomes with the same `--session` selection it already applies to events.
+cmd_record_outcome() {
+  local pkt="${1:-}" outcome="${2:-}" sess="${3:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  [ -n "$pkt" ] && [ -n "$outcome" ] || die "usage: record-outcome <packet-id> <green|failed|rolled-back|blocked|abandoned> [session-id]"
+  # Same charset rule as a finding id: this value is interpolated into a JSON line, and
+  # a `"` or `\` in it emits invalid JSON that makes the collector's `jq -s` drop EVERY
+  # attestation at once, silently, with no diagnostic.
+  case "$pkt" in
+    *[!a-zA-Z0-9._-]*) die "packet id must be [a-zA-Z0-9._-]" ;;
+  esac
+  case "$outcome" in
+    green|failed|rolled-back|blocked|abandoned) ;;
+    *) die "outcome must be one of: green failed rolled-back blocked abandoned" ;;
+  esac
+  # Resolve the MAIN checkout the same way the hooks do: --git-common-dir points at
+  # the main repo even from a lane worktree, so every lane records into one log.
+  local gcd main_root dir
+  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [ -n "$gcd" ] || gcd="$(cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .)" 2>/dev/null && pwd || true)"
+  [ -n "$gcd" ] || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 0; }
+  main_root="$(dirname "$gcd")"
+  dir="${main_root}/.agents/metrics/outcomes"
+  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 0; }
+  # Same atomicity argument as the metrics hook: a single short line, O_APPEND, well
+  # under PIPE_BUF, so concurrent lanes sharing a session id cannot tear each other.
+  printf '{"ts":"%s","packet":"%s","outcome":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pkt" "$outcome" >> "${dir}/${sess}.jsonl" 2>/dev/null \
+    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 0; }
+  printf 'RECORDED=yes\nPACKET=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -629,6 +896,10 @@ case "$cmd" in
   heartbeat)     cmd_heartbeat     "$@" ;;
   driver-status) cmd_driver_status "$@" ;;
   outcome)       cmd_outcome       "$@" ;;
+  trim-note)     cmd_trim_note     "$@" ;;
+  record-outcome) cmd_record_outcome "$@" ;;
+  add-finding)   cmd_add_finding   "$@" ;;
+  findings)      cmd_findings      "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;
   packets-by-status)  cmd_packets_by_status "$@" ;;

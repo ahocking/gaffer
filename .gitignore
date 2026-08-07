@@ -24,6 +24,18 @@ scratch/
 # reconcile inspects (ADR 0009). It persists on local disk across sessions.
 .agents/run-state.yaml
 
+# The two files that TRAVEL WITH run-state and must share its treatment exactly
+# (ADR 0022, ADR 0019 v3.4): the finding BODIES whose one-line index lives inside
+# run-state, and the archived overflow of run-state's `note:`. Both are the cold
+# half of a hot/cold split whose hot half is gitignored — so ignoring them is what
+# keeps the pair consistent. Ignoring is also what makes them SURVIVE: an untracked
+# file is swept by the pause path's `git stash --include-untracked` and shows up in
+# the `git status --porcelain` that `reconcile` reads as scratch sitting on the green
+# checkpoint (which it then discards). An ignored file is invisible to both, exactly
+# like run-state.yaml. Same-machine, same as run-state.
+.agents/findings/
+.agents/run-state-note-archive.md
+
 # Orchestration run-metrics — the event spine + assembled run packets (ADR 0019
 # Tier 1). Local run bookkeeping, NOT product history; gitignored for the same
 # ADR 0009 reasons as run-state (the loop's `git add -A` / `git stash -u` must
@@ -31,6 +43,7 @@ scratch/
 # The assembled run-metrics.json is a portable single file — archive a run by
 # copying it out, not by committing this live directory.
 .agents/metrics/
+.agents/metrics*
 
 # OS cruft
 .DS_Store

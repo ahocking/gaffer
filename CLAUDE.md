@@ -231,20 +231,176 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   sat on disk. Packets now carry `token_diagnostics` (counts only, no paths) separating
   *nothing on disk* / *lookup failure* / *format drift* / *window miss*, the note names
   which, and `show` prints it whenever `token_source != transcript`. The enum is
-  unchanged. Still open (report, not fixed): overlapping concurrent sessions double-count
-  `packets[]` rows, since `--session` scopes the trailer scan to that session's window
-  plus the 1h grace.
-- **Search/edit tool selection is a measured cost, and it lives in the agent prompts**
-  (ADR 0019 v3). All seven `agents/*.md` carry a "structured tools, not the shell"
-  section: `Grep`/`Glob`/`Read` to search and read, `Edit`/`Write` to change, `Bash` only
-  for builds, tests, git, and running the project. This is not style — two production
-  repos logged **0** `Grep`/`Glob` calls against 1,568 shell `grep`s, 258 `find`s and 496
-  `sed`s in ~6k tool calls. Shell search dumps unbounded output into context where `Grep`
-  bounds it (`output_mode`/`head_limit`), and `sed -i`/`cat >` edits bypass diff review
-  and the guard's path tiers — which is exactly why `guard.sh` must pattern-match them as
-  a write surface. It has to live in the **agent** prompts: this file does not propagate,
-  and every one of these agents is granted `Grep, Glob` already — the grant was never the
-  problem. Keep the block when editing an agent, and add it to any new one.
+  unchanged.
+  **v3.2 (2026-08-07) closes the overlap v3.1 left open, and adds the effort dimension.**
+  All three changes are **retroactive** — they re-read stored events/git/transcripts, so old
+  runs just re-collect. (a) Trailer times are **author dates** (`%ad`), not committer dates,
+  which rebase/cherry-pick/squash-merge rewrite. This one is **defensive, not a fix for an
+  observed failure**: the analysis that motivated it claimed six absorbed packets, but those
+  commits have *identical* author and committer dates — claim withdrawn. Divergence is real
+  but rare (**1 of 395** trailer commits in one repo, **8 of 107** in the other), so it
+  matters mainly where branches are rebased before merging. That first repo's real
+  attribution gap is not a date bug: only **395 of 899 commits carry a trailer at all**.
+  (b) The trailer grace is **capped at the earliest event of any other session after
+  `win_end`** — a flat grace is only safe when nothing else is running, and this is a bug
+  fix, not the semantics decision v3.1 feared. It reproduces, exactly and automatically, the
+  **7 phantom rows across 5 sessions** a consumer-repo analysis had removed by hand with
+  explicit `--until` — while correctly keeping `wbr-t14`, the one packet that legitimately
+  spans two sessions, in **both**. (c) `totals.by_effort` + `totals.context_invalidations`:
+  reasoning effort is a per-turn request parameter (transcript-only — **no hook payload
+  carries it**), and changing effort **or** model mid-context invalidates the cached prefix.
+  Measured flips cost 372,588 / 380,005 / 115,509 cacheC against medians of 1,380 / 856 /
+  ~1,700, and it fires in **both** directions — which is what makes it invalidation, not
+  "higher effort costs more". Building it answered an open question: **effort propagates to
+  subagents** — one flip produced **9 invalidations across 6 agent contexts totalling 1.53M
+  cacheC**, ~one relayed-coordinator dispatch for one keystroke. The scan is per
+  `(role, agent_id)`, NOT per role, so two dispatches of one role on different models read as
+  normal tier routing rather than a switch; ts-less turns are excluded (degrade to 0), and an
+  empty `by_effort` means *unmeasured*, never *constant*.
+  **v3.3 (2026-08-07) — every token number before it was inflated ~2.6x.** A transcript
+  records the SAME assistant message more than once (observed **3x** for one id, at +2ms and
+  +26s), each row carrying the full `usage` block, and the collector summed rows. **ADR 0012's
+  own measurement deduplicated by `message.id`; the collector never did.** Measured inflation
+  over four real sessions: cacheCreation **2.3x–3.2x**, output **3.3x–6.3x** — *different
+  rates, differing per session*, so it does **NOT** cancel in a ratio: `CC:out` read 6.4 raw
+  vs **9.0** deduped on one session and 14.9 vs **33.8** on another. Directionally the
+  conclusions held (ordering unchanged, best-vs-worst gap *widens* 2.3x → 3.8x) but that was
+  luck. Dedup keeps the **earliest** row per id (duplicates carry identical usage, so the pick
+  is cosmetic for totals but must be deterministic for the `context_invalidations` ts scan);
+  rows with **no** `message.id` are kept verbatim, because `.uuid` is per-**ROW** and keying on
+  it would dedupe nothing while looking like it worked — under-dedupe is the safe direction.
+  `token_diagnostics.duplicate_turns_dropped` makes the rate visible: a drift toward 0 means
+  either the transcript stopped repeating messages **or** stopped carrying `message.id`, and
+  the second silently re-inflates ~2.6x while still stamping `token_source: transcript`.
+  v3.3 also fixed `show` rendering **`null` as `0`** for `dispatches_with_model_override` and
+  `failed_tool_calls` — the collector emits null for pre-instrumentation runs *on purpose*
+  (its own comment calls reporting 0 "a lie") and `show` told that lie via `// 0`, so a legacy
+  run read as fully-audited-and-clean. The audit block also moved **above** the per-packet
+  table: at 14 packets it was off-screen, which is how a real signal goes unread with nothing
+  actually hidden. **Neither was missing instrumentation** — do not reach for a new counter
+  when the existing one is being rendered or placed wrongly.
+  **v3.4 (2026-08-07) measures the PAYLOAD, not the aggregate, and stops assuming green.**
+  (a) **`by_agent_role.<role>.cc_shape`** (median/p90/max/turns_over_50k/cc_over_50k) exists
+  because cacheCreation-per-packet **cannot** detect a context diet: it spans **1.76x across
+  four untouched same-regime sessions** (9x overall), so a ~150k trim (20–30%) sits inside the
+  noise. The aggregate conflates two things — a turn is either a small warm-cache delta or a
+  **full re-cache of everything the role holds**. Split out, the **median is flat everywhere**
+  (1,408–4,683) while `max` separates by an order of magnitude with no overlap: **24,190 and
+  0/300 turns >50k** on the cheap session vs **198,397 and 32/524** on the costly one. So
+  `p90`/`max` read the standing-context SIZE and move when you scope reads — measurable in ONE
+  run. **A flat median with a large max is not an expensive agent; it is a large payload being
+  re-cached.** (b) **`outcome` is now attested or `null`, never assumed `"green"`** — a packet
+  exists here only via its green-commit trailer, so failed/rolled-back work leaves NO row and
+  "42 of 42 green" was survivorship that looked *better* the more work was discarded. The loop
+  calls `runstate.sh record-outcome <pkt> <green|failed|rolled-back|blocked|abandoned>` at
+  **every** boundary; append-only to `.agents/metrics/outcomes/`, deliberately NOT run-state
+  (single-writer contention, same reason boundaries stayed on trailers), last-wins. (c)
+  **`packets[].edits`** turns per-role edit counts into a rework signal: "implementer 34, main
+  3" is either correction or division of labour, and only **same-file overlap**
+  (`contended_files`) tells them apart. The hook stamps a 12-char **hash, never the path** —
+  the packet must stay safe to paste into an issue, and a hash answers "same file?" and
+  nothing else; digest probing is by **execution** (shasum/sha1sum/md5sum → POSIX `cksum`),
+  the guard.sh rule. (d) **`runstate.sh trim-note`** enforces the ONE-line contract
+  `templates/run-state.yaml` already documented but nothing checked — unbounded it hit
+  **164,678 chars, 87% of the run-state, ~41k tokens, 15 stacked histories**, re-read on every
+  relay dispatch to recover two facts. It archives to `run-state-note-archive.md` and trims on
+  **whole lines** so the YAML stays parseable. All four degrade to `null`/absent on legacy
+  runs — **`null` means unmeasured, never clean**.
+- **Search-tool selection is a PREFERENCE; only the write surface is a real control**
+  (ADR 0019 v3.3 — **v3's cost claim is RETRACTED**). All seven `agents/*.md` carry a
+  "structured tools, not the shell" section: `Grep`/`Glob`/`Read` to search and read,
+  `Edit`/`Write` to change, `Bash` for builds, tests, git, and running the project.
+  v3 asserted this was "a measured cost, not a style preference" and the read-only
+  agents were told shell search was "most of your context budget." **Both were wrong,
+  and the error is instructive:** the finding v3 actually had was **0** `Grep`/`Glob`
+  against 1,568 shell `grep`s — a measurement of tool *selection*, which was then
+  reported as a measurement of tool *cost* without anyone measuring cost. Measured
+  properly (join `tool_use`→`tool_result` in the transcripts and total the result
+  bytes): shell search across 30 sessions is **~187k tokens against 105M deduped lifetime
+  cacheCreation — ~0.18%**, mean 1,164 chars per call. (Result-byte figures needed no
+  dedup correction: the v3.3 duplication is confined to assistant `usage` records, while
+  `tool_use`/`tool_result` blocks measure **1.0x** unique. Only the denominator was
+  wrong.) Eliminating it entirely saves a
+  rounding error. `Read` is **7.6x** all shell search combined, with the top decile of
+  calls carrying half the volume — so the real read-cost lever is scoping what agents
+  read, not how they search. What survives is the WRITE half, and it survives on its
+  own merits: `sed -i`/`cat >` bypass diff review and the guard's path tiers, which is
+  exactly why `guard.sh` must pattern-match them as a write surface. **The general
+  lesson: a frequency count is not a cost measurement.** Keep the (now smaller) block
+  when editing an agent; do not re-add a cost claim to it without a cost measurement.
+- **All seven agents carry a "do not re-read what you already have" block — the RULE only,
+  never the evidence.** Measured across one production week: of **5,243 `Read` calls, 1,366
+  (26%) re-read a file already read in that same context** (~2.4M tokens). That is not a
+  2.4M problem — content in context is re-read on every later turn, so a token read twice is
+  paid for twice on every subsequent turn for the rest of the session. At the measured ~16
+  effective tokens per source token, it is ~**11% of that repo's weekly spend**. Part of the
+  mechanism is confirmed: **63 occurrences of `Read` immediately after `Edit`/`Write` of the
+  SAME file in just 25 subagent contexts** — verify-after-edit, which is unnecessary because
+  those tools error on failure, so a successful result already IS the confirmation. It has to
+  target the **implementer** above all: it is **47.9% of all turns** at 128k average context
+  and does nearly all the reading, whereas the coordinator — which the run-state and
+  read-list work reached — is only **9.5% of turns**. **Keep the evidence HERE, not in the
+  prompts.** The first cut shipped a three-line "Measured:" paragraph into all seven agents
+  — **61 tokens each, 427 total**, re-read on every dispatch to justify a rule the agent
+  follows without it. Small, but it was bloat added by the very block telling agents not to
+  waste context. Rule in the prompt, evidence in this file: this file does not propagate,
+  so it is free here and recurring there.
+- **Findings live in `.agents/findings/<id>.md`; run-state keeps ONLY a one-line index**
+  (ADR 0022). Everything in run-state is read by every packet — a dispatched coordinator
+  reads it at dispatch start, so it sits in the standing context and is re-written to cache
+  on **every** large turn (measured: **32 cache writes >50k in ONE dispatch**, the
+  coordinator the only role with any). A finding useful to one packet was being paid for by
+  all of them. Evidence this is a **design gap, not sloppiness**: the two fields that
+  ballooned were `note` (164,678 chars — documented as *one line*) and
+  **`resolved_questions` (21,664 chars), which is not in the template or `runstate.sh` at
+  all** — the agent invented it because the schema offered nowhere else. The shape is
+  **index hot, body cold**, NOT "links instead of content": moving content out with no
+  index flips the failure from *expensive* to *never read*, and a gotcha exists precisely
+  to prevent the rework that not reading it causes. The summary's one job is to let an
+  agent decide whether it needs the body **without opening it**. Routing is the ADR 0020
+  seam and getting it wrong builds a **shadow backlog competing with gspec**: *"this should
+  be built/fixed"* → **gspec task/feature** (+ `.agents/roadmap.yaml`), never a finding;
+  *gotcha / constraint / decision + rationale / resolved question* → **a finding**;
+  one sentence of "where we stopped" → `note:`. Mechanism is `runstate.sh add-finding`
+  (appends the entry, creates the body stub) and `findings` (prints the index and nothing
+  else) — appending to a YAML list by hand is how agents corrupt the loop's only durable
+  state. Entries insert **immediately after the `findings:` key** (newest-first) because
+  that is the only placement that cannot land in `note:`/`pending_questions:`; ids are
+  `[a-zA-Z0-9._-]` (an id becomes a filename); summary newlines are **collapsed, not
+  rejected** (a raw newline injects a sibling YAML key, and the caller is an agent
+  mid-loop). `trim-note` survives as a **backstop**, not the intended path. The discipline
+  is prompt-enforced and therefore the fragile part — **`cc_shape.max` is the detector: if
+  it does not fall on the next run, the rule is not being followed.**
+  **Treat every agent-supplied value written into run-state as hostile input** — it is
+  the only state that survives a session and a parse failure is unrecoverable. The
+  first cut wrote `summary` as a **plain** YAML scalar, so the single likeliest thing in
+  a finding about code (`": "`) corrupted the file the function existed to protect.
+  Summaries are now **single-quoted with `'` doubled**: single- and not double-quoted
+  because a single-quoted scalar does **no** escape processing (`'' → '` is the whole
+  rule, a backslash is already literal), and because one `sed` keeps `jq` out of it —
+  `add-finding` must keep working on stock Git Bash, the same constraint `guard.sh` is
+  built around. Interpolate via **`awk ENVIRON`, never `awk -v`**: `-v` expands `\n` in
+  the *value*, which re-opened the newline injection one line after the `tr` collapse
+  closed it. The duplicate-id check is scoped to the findings **block** and matched
+  **literally** — a whole-file regex scan collided with schema-3 `packets:` ids (same
+  `  - id: <x>` shape, and naming a finding after its packet is natural) and `.` is
+  both a legal id char and a metachar, so `f.001` matched `f-001`. Same rule made
+  `trim-note` re-emit the note as a **literal block scalar**: the cut is a byte cut, and
+  only a block scalar is truncatable at any byte — cutting `note: "…"` severed the
+  closing quote. **`test-runstate.sh` now asserts a real YAML *parse* after each mutating
+  subcommand; grep is what let all of this through.**
+  Bodies are **gitignored** (both `.gitignore`s), with run-state. Not just for symmetry:
+  untracked ≠ ignored here — `git stash --include-untracked` (the pause path) sweeps an
+  untracked finding and `reconcile` reads it in `git status --porcelain` as scratch on
+  the green checkpoint and discards it, so the ADR's headline use case destroyed its own
+  output. Cost: same-machine, like run-state. And because `runstate.sh write` **replaces**
+  while `add-finding` **appends**, every whole-file write must carry `findings:` through
+  and findings are recorded **after** it — a dropped index line does not delete a finding,
+  it unlinks a body still on disk. **A parallel lane never calls `add-finding`** (no
+  run-state in its worktree; it is not the writer): it returns `Findings:` lines in its
+  check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
+  `record-outcome` obeys from the other side — it is lane-callable *because* it writes
+  append-only outside run-state.
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

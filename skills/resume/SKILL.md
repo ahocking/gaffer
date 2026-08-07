@@ -76,6 +76,17 @@ Read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status
 `branch`, `last_green_commit`, `backlog.cursor`/`done`/`pending`, and
 `pending_questions`.
 
+**Then read the finding INDEX — and only the index** (ADR 0022):
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh findings .agents/run-state.yaml`. One line
+each; the bodies live in `.agents/findings/<id>.md`. Open a body **only** when its
+summary bears on the packet you are about to run, and say which you opened and why.
+
+Both failure modes are real, so neither instinct is safe on its own. Reading every
+body rebuilds the 41k-token run-state this design took apart, just in another file.
+Skipping the index means a gotcha recorded specifically to prevent rework goes unseen
+and the rework happens — which costs more than the reading would have. The index is
+cheap and mandatory; the bodies are not free and are conditional.
+
 **If the file is missing, reconstruct it from git before giving up** (it is
 gitignored local bookkeeping — ADR 0009 — so a lost disk or a fresh checkout will
 not have it, but the feature branch and its commit trailers usually survive):

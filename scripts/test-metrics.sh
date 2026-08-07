@@ -747,6 +747,300 @@ emit_prompt "H5" '"/gaffer:metrics collect --session abc123 --until now"' >/dev/
 check "skill hook drops args"     "gaffer:metrics"  "$(cat "$SH_EV/_state/H5.skill" 2>/dev/null)"
 
 echo
+echo "== v3.2: trailer times are AUTHOR dates, not committer dates =="
+# Committer date is rewritten by rebase/cherry-pick/squash-merge; author date is not.
+# Both real failure modes, observed in a production repo:
+#   (a) work AUTHORED in-window whose merge/rebase moved its COMMITTER date after the
+#       window -> was silently DROPPED from the run that actually did it.
+#   (b) work AUTHORED before the window (a prior run) whose merge landed INSIDE this
+#       window -> was silently ABSORBED into a run that never touched it.
+AREPO="$ROOT/arepo"; mkdir -p "$AREPO/.agents/metrics/events"
+git -C "$AREPO" init -q; git -C "$AREPO" config user.email t@t; git -C "$AREPO" config user.name t
+acommit() { # acommit <author-iso> <committer-iso> <packet-id>
+  echo "$3" >> "$AREPO/l.txt"; git -C "$AREPO" add -A
+  GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$2" git -C "$AREPO" commit -q -m "w
+
+[orch packet:$3]"; }
+# (a) authored in-window, replayed (committed) 11 days later
+acommit "2026-07-21T10:00:04Z" "2026-08-01T10:00:00Z" "authored-in-window"
+# (b) authored 11 days BEFORE, merged into this window
+acommit "2026-07-10T09:00:00Z" "2026-07-21T10:00:05Z" "authored-earlier-run"
+cat > "$AREPO/.agents/metrics/events/A1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"A1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"A1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":20,"ok":true}
+JSON
+AOUT="$ROOT/arun.json"
+"$METRICS" collect --main-root "$AREPO" --projects-dir "$ROOT/none" --out "$AOUT" >/dev/null 2>&1
+check "authordate: in-window KEPT"    "1" "$(jq -r '[.packets[]|select(.id=="authored-in-window")]|length' "$AOUT")"
+check "authordate: earlier run DROP"  "0" "$(jq -r '[.packets[]|select(.id=="authored-earlier-run")]|length' "$AOUT")"
+check "authordate: total packets"     "1" "$(jq -r '.totals.packets' "$AOUT")"
+check "authordate: note"              "1" "$(jq -r '[.notes[]|select(startswith("Trailer times are AUTHOR"))]|length' "$AOUT")"
+
+echo
+echo "== v3.2: the trailer grace is capped at the next session's first event =="
+# A flat grace reaches into whatever ran next. Session N1 ends 10:00:02; a commit at
+# 10:00:30 sits inside the default 3600s grace, but session N2 is already running and
+# owns it. Measured in a real repo as 7 phantom rows / 6 duplicated packet ids.
+NREPO="$ROOT/nrepo"; mkdir -p "$NREPO/.agents/metrics/events"
+git -C "$NREPO" init -q; git -C "$NREPO" config user.email t@t; git -C "$NREPO" config user.name t
+ncommit() { echo "$2" >> "$NREPO/l.txt"; git -C "$NREPO" add -A
+  GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" git -C "$NREPO" commit -q -m "w
+
+[orch packet:$2]"; }
+ncommit "2026-07-21T10:00:02Z" "n1-own"
+ncommit "2026-07-21T10:00:30Z" "n2-owns-this"
+cat > "$NREPO/.agents/metrics/events/N1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"N1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"N1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+# N2 starts at :10 — before the :30 commit, so the grace must collapse to :10
+cat > "$NREPO/.agents/metrics/events/N2.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:10Z","session_id":"N2","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:40Z","session_id":"N2","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+NOUT="$ROOT/nrun.json"
+"$METRICS" collect --main-root "$NREPO" --projects-dir "$ROOT/none" --session N1 --out "$NOUT" >/dev/null 2>&1
+check "nextcap: own packet kept"      "1" "$(jq -r '[.packets[]|select(.id=="n1-own")]|length' "$NOUT")"
+check "nextcap: next session NOT claimed" "0" "$(jq -r '[.packets[]|select(.id=="n2-owns-this")]|length' "$NOUT")"
+check "nextcap: note"                 "1" "$(jq -r '[.notes[]|select(startswith("The trailer grace is CAPPED"))]|length' "$NOUT")"
+# with nothing else running, the SAME commit is legitimately inside the grace
+rm -f "$NREPO/.agents/metrics/events/N2.jsonl"
+NOUT2="$ROOT/nrun2.json"
+"$METRICS" collect --main-root "$NREPO" --projects-dir "$ROOT/none" --session N1 --out "$NOUT2" >/dev/null 2>&1
+check "nextcap: grace still applies"  "1" "$(jq -r '[.packets[]|select(.id=="n2-owns-this")]|length' "$NOUT2")"
+
+echo
+echo "== v3.2: by_effort and context_invalidations =="
+# Effort is a per-turn request parameter the user can change mid-session. Changing it
+# (or the model) invalidates the cached prefix, so the whole context is re-written to
+# cache. Production: three flips cost 372,588 / 380,005 / 115,509 cacheC against
+# session medians of 1,380 / 856 / ~1,700.
+EREPO="$ROOT/erepo"; mkdir -p "$EREPO/.agents/metrics/events"
+git -C "$EREPO" init -q; git -C "$EREPO" config user.email t@t; git -C "$EREPO" config user.name t
+echo a > "$EREPO/f.txt"; git -C "$EREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$EREPO" commit -q -m "w
+
+[orch packet:eff-one]"
+cat > "$EREPO/.agents/metrics/events/E1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"E1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"E1","agent_id":"b1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":20,"ok":true}
+{"ts":"2026-07-21T10:00:07Z","session_id":"E1","agent_id":"b2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":20,"ok":true}
+JSON
+EPROJ="$ROOT/eproj"; mkdir -p "$EPROJ/proj/E1/subagents"
+# main: high, high, then a flip to xhigh -> ONE invalidation carrying 9000 cacheC
+cat > "$EPROJ/proj/E1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:04Z","effort":"xhigh","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":9000,"cache_read_input_tokens":10}}}
+JSON
+# two SEPARATE implementer dispatches on different models: normal tier routing across
+# two contexts, NOT a mid-context switch -> must not register as an invalidation.
+cat > "$EPROJ/proj/E1/subagents/agent-b1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:06Z","effort":"high","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":10}}}
+JSON
+cat > "$EPROJ/proj/E1/subagents/agent-b2.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:07Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":10}}}
+JSON
+EOUT="$ROOT/erun.json"
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$EOUT" >/dev/null 2>&1
+check "effort: token_source"        "transcript" "$(jq -r '.token_source' "$EOUT")"
+check "effort: high turns"          "4"    "$(jq -r '.totals.by_effort.high.turns' "$EOUT")"
+check "effort: xhigh turns"         "1"    "$(jq -r '.totals.by_effort.xhigh.turns' "$EOUT")"
+check "effort: xhigh cacheC"        "9000" "$(jq -r '.totals.by_effort.xhigh.cache_creation' "$EOUT")"
+check "ctxinval: one change"        "1"    "$(jq -r '.totals.context_invalidations.count' "$EOUT")"
+check "ctxinval: cost attributed"   "9000" "$(jq -r '.totals.context_invalidations.cache_creation' "$EOUT")"
+check "ctxinval: from effort"       "high" "$(jq -r '.totals.context_invalidations.events[0].from.effort' "$EOUT")"
+check "ctxinval: to effort"         "xhigh" "$(jq -r '.totals.context_invalidations.events[0].to.effort' "$EOUT")"
+check "ctxinval: role"              "main" "$(jq -r '.totals.context_invalidations.events[0].role' "$EOUT")"
+check "ctxinval: note"              "1"    "$(jq -r '[.notes[]|select(startswith("totals.context_invalidations"))]|length' "$EOUT")"
+# separate dispatches of one role on different models are NOT a mid-context switch
+check "ctxinval: no cross-dispatch FP" "0" \
+  "$(jq -r '[.totals.context_invalidations.events[]|select(.role|test("implementer"))]|length' "$EOUT")"
+# transcripts predating the `effort` field must leave the bucket ABSENT, never zeroed
+check "effort: absent on legacy"    "0"    "$(jq -r '.totals.by_effort|length' "$OUT")"
+check "ctxinval: legacy model-only" "0"    "$(jq -r '.totals.context_invalidations.count' "$OUT")"
+
+echo "== v3.3: transcript turns are deduplicated by message.id =="
+# A transcript records the SAME assistant message more than once (production: 3x for
+# one id, at +2ms and +26s), each row carrying the full usage block. Summing rows
+# inflated cacheCreation 2.3x-3.2x and output 3.3x-6.3x — at DIFFERENT rates, so it
+# did not cancel in CC:out. Rows with no message.id must be kept verbatim: .uuid is
+# per-ROW, so keying on it would dedupe nothing while appearing to work.
+DREPO="$ROOT/drepo"; mkdir -p "$DREPO/.agents/metrics/events"
+git -C "$DREPO" init -q; git -C "$DREPO" config user.email t@t; git -C "$DREPO" config user.name t
+echo a > "$DREPO/f.txt"; git -C "$DREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$DREPO" commit -q -m "w
+
+[orch packet:dup-one]"
+cat > "$DREPO/.agents/metrics/events/D1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+DPROJ="$ROOT/dproj"; mkdir -p "$DPROJ/proj"
+# msg_A appears 3x (the production shape). msg_B once. Two rows carry NO id at all.
+# Deduped truth: 1000 (A) + 200 (B) + 70 + 70 (idless) = 1340 cacheC over 4 turns.
+cat > "$DPROJ/proj/D1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02.100Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:02.102Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:28.700Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"id":"msg_B","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":20,"cache_creation_input_tokens":200,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:04Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":70,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:05Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":70,"cache_read_input_tokens":10}}}
+JSON
+DOUT="$ROOT/drun.json"
+"$METRICS" collect --main-root "$DREPO" --projects-dir "$DPROJ" --out "$DOUT" >/dev/null 2>&1
+check "dedup: token_source"        "transcript" "$(jq -r '.token_source' "$DOUT")"
+check "dedup: cacheC counted once" "1340" "$(jq -r '.totals.tokens.cache_creation' "$DOUT")"
+check "dedup: output counted once" "74"   "$(jq -r '.totals.tokens.output' "$DOUT")"
+check "dedup: rows dropped"        "2"    "$(jq -r '.token_diagnostics.duplicate_turns_dropped' "$DOUT")"
+check "dedup: turns kept"          "4"    "$(jq -r '.token_diagnostics.usage_turns' "$DOUT")"
+# idless rows must NOT collapse into one — under-dedupe is the safe direction.
+# If they had collapsed, this would read 1270 over 3 turns instead of 1340 over 4.
+check "dedup: idless rows kept"    "1340" "$(jq -r '.totals.by_model["claude-opus-5"].cache_creation' "$DOUT")"
+# The EARLIEST duplicate must win. msg_A's latest row is at 10:00:28.7Z, PAST the
+# window end (10:00:06Z) — so if the last row won instead, msg_A would be filtered
+# out and this would read 3 turns / 340 cacheC. Keeping 4/1340 proves earliest won.
+check "dedup: earliest row wins"   "4"    "$(jq -r '.token_diagnostics.usage_turns_in_window' "$DOUT")"
+
+echo "== v3.3: show reports unmeasured counters as unmeasured, not as clean zeros =="
+# The audit block already existed; what it did wrong was render null (a legacy run
+# that predates the counter) as 0, which reads as "checked, nothing found".
+SHOW_OUT="$("$METRICS" show "$EOUT" 2>/dev/null)"
+check "show: audit present"        "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^routing audit')"
+check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'explicit model overrides')"
+# audit must come BEFORE the packets table, not be buried under it
+check "show: audit above packets"  "before" \
+  "$(printf '%s\n' "$SHOW_OUT" | awk '/^routing audit/{a=NR} /^packets \(id/{p=NR} END{print (a>0 && a<p) ? "before" : "after"}')"
+# a legacy run must read as UNMEASURED, never as a clean zero
+SHOW_LEG="$("$METRICS" show "$OUT" 2>/dev/null)"
+check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'explicit model overrides: unmeasured')"
+# the retracted cost claim must not come back in the by_tool heading
+check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
+# ...nor the retracted DENOMINATOR. 279M was the pre-dedup inflated figure (v3.3);
+# quoting it anywhere makes shell search look 2.6x cheaper than it is.
+check "show: no retracted 279M"    "0" "$(grep -c '279M lifetime' "$METRICS")"
+
+# v3.4 outputs must be VISIBLE, not merely present in the JSON. ADR 0022 names
+# cc_shape.max as the detector for whether the findings discipline is working, so a
+# detector reachable only via `analyze` is one nobody reads on the run that matters —
+# the same "real signal placed where nobody looks" failure v3.3 recorded once already.
+# Assert the MEASURED branch, not just a heading — both branches start with "cc_shape",
+# so grepping the heading alone would pass while printing "unmeasured".
+check "show: cc_shape rendered"    "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'median=.*p90=.*max=9000')"
+check "show: cc_shape not unmeasured" "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^cc_shape: unmeasured')"
+# outcome must appear in the packets table, and render as ? (not green) when unattested
+check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | wave | outcome')"
+check "show: null outcome is not green" "0" \
+  "$(printf '%s\n' "$SHOW_OUT" | awk '/^packets \(id/{p=1;next} p&&/^  /{print}' | grep -c '| green |')"
+
+echo "== v3.4: cc_shape separates standing-context size from per-turn cost =="
+# Totals are too noisy to steer by (1.76x across untouched same-regime runs). The
+# shape is not: median is flat everywhere while max tracks the payload being
+# re-cached. Turns here: 100, 100, 9000 -> median 100, max 9000, one 50k+ spike absent.
+check "cc_shape: turns"        "3"    "$(jq -r '.by_agent_role.main.cc_shape.turns' "$EOUT")"
+check "cc_shape: median"       "100"  "$(jq -r '.by_agent_role.main.cc_shape.median' "$EOUT")"
+check "cc_shape: max"          "9000" "$(jq -r '.by_agent_role.main.cc_shape.max' "$EOUT")"
+check "cc_shape: no false spike" "0"  "$(jq -r '.by_agent_role.main.cc_shape.turns_over_50k' "$EOUT")"
+# a real spike must be counted AND its cost attributed
+SPIKE="$ROOT/spike.json"
+mkdir -p "$ROOT/sproj/proj"
+cat > "$ROOT/sproj/proj/E1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02Z","effort":"high","message":{"id":"s1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":900,"cache_read_input_tokens":1}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"id":"s2","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":120000,"cache_read_input_tokens":1}}}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$ROOT/sproj" --out "$SPIKE" >/dev/null 2>&1
+check "cc_shape: spike counted" "1"      "$(jq -r '.by_agent_role.main.cc_shape.turns_over_50k' "$SPIKE")"
+check "cc_shape: spike cost"    "120000" "$(jq -r '.by_agent_role.main.cc_shape.cc_over_50k' "$SPIKE")"
+
+echo "== v3.4: outcome is attested, never assumed green =="
+# A packet exists only because a green-commit trailer was found, so inferring "green"
+# from its presence is survivorship. Absent attestation must read null, not green.
+check "outcome: null without log" "null" "$(jq -r '.packets[0].outcome' "$EOUT")"
+mkdir -p "$EREPO/.agents/metrics/outcomes"
+cat > "$EREPO/.agents/metrics/outcomes/E1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:08Z","packet":"eff-one","outcome":"failed"}
+{"ts":"2026-07-21T10:00:09Z","packet":"eff-one","outcome":"green"}
+JSON
+OOUT="$ROOT/orun.json"
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+# last record wins: failed-then-fixed is green now
+check "outcome: attested wins"   "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+
+# The outcomes join is scoped by SESSION and by the run WINDOW, like every other join
+# here. Unscoped it globbed every outcome ever written and took a global last-wins, so
+# a later run's verdict for a same-named packet overwrote this one's — the identical
+# cross-run bleed v3/v3.2 fixed twice for commit trailers.
+cat > "$EREPO/.agents/metrics/outcomes/E2-foreign.jsonl" <<'JSON'
+{"ts":"2026-08-14T10:00:00Z","packet":"eff-one","outcome":"rolled-back"}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+check "outcome: a foreign session's file is not joined" "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+
+# Same session, but stamped far outside the run window: the ts filter must drop it.
+cat >> "$EREPO/.agents/metrics/outcomes/E1.jsonl" <<'JSON'
+{"ts":"2026-09-01T10:00:00Z","packet":"eff-one","outcome":"abandoned"}
+JSON
+"$METRICS" collect --main-root "$EREPO" --projects-dir "$EPROJ" --out "$OOUT" >/dev/null 2>&1
+check "outcome: an out-of-window record is not joined" "green" "$(jq -r '.packets[0].outcome' "$OOUT")"
+rm -f "$EREPO/.agents/metrics/outcomes/E2-foreign.jsonl"
+
+echo "== v3.4: edit overlap separates correction from division of labour =="
+# Per-role edit COUNTS cannot tell "orchestrator fixed the implementer" from "they
+# worked on different files". Overlap on the same file hash can. Values are opaque
+# hashes from the hook — never paths — so this reports shape only.
+XREPO="$ROOT/xrepo"; mkdir -p "$XREPO/.agents/metrics/events"
+git -C "$XREPO" init -q; git -C "$XREPO" config user.email t@t; git -C "$XREPO" config user.name t
+echo a > "$XREPO/f.txt"; git -C "$XREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$XREPO" commit -q -m "w
+
+[orch packet:x-one]"
+# fileA touched by implementer AND main (contended); fileB by implementer only.
+cat > "$XREPO/.agents/metrics/events/X1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"bbbbbbbbbbbb"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"Edit","duration_ms":5,"ok":true,"file_hash":"aaaaaaaaaaaa"}
+JSON
+XOUT="$ROOT/xrun.json"
+"$METRICS" collect --main-root "$XREPO" --projects-dir "$ROOT/none" --out "$XOUT" >/dev/null 2>&1
+check "edits: total"            "3" "$(jq -r '.packets[0].edits.edits' "$XOUT")"
+check "edits: distinct files"   "2" "$(jq -r '.packets[0].edits.files_touched' "$XOUT")"
+check "edits: contended"        "1" "$(jq -r '.packets[0].edits.contended_files' "$XOUT")"
+check "edits: contended by"     "1" "$(jq -r '.packets[0].edits.contended_by["gaffer:implementer+main"]' "$XOUT")"
+# a run with no hashes at all is UNMEASURED, not zero-overlap
+check "edits: null when absent" "null" "$(jq -r '.packets[0].edits' "$EOUT")"
+
+# MultiEdit is on guard.sh's registered write surface, so it must be on this one too.
+# It was missing from BOTH the hook's file_hash case and this filter, so multi-edit
+# work read as zero edits — silently, since an absent hash looks like no edit at all.
+cat >> "$XREPO/.agents/metrics/events/X1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:05Z","session_id":"X1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"MultiEdit","duration_ms":5,"ok":true,"file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"X1","agent_id":"","agent_type":"main","tool":"MultiEdit","duration_ms":5,"ok":true,"file_hash":"dddddddddddd"}
+JSON
+"$METRICS" collect --main-root "$XREPO" --projects-dir "$ROOT/none" --out "$XOUT" >/dev/null 2>&1
+# `edits` keys off file_hash PRESENCE, so this pair guards the HOOK stamping a hash for
+# MultiEdit at all (without it there is no hash and the edit is invisible)...
+check "edits: MultiEdit counted"      "5" "$(jq -r '.packets[0].edits.edits' "$XOUT")"
+check "edits: MultiEdit file counted" "4" "$(jq -r '.packets[0].edits.files_touched' "$XOUT")"
+# ...and THIS guards the collector's own tool-name filter, which is a separate list.
+# The routing audit counts orchestrator edits by tool name, so a missing MultiEdit
+# there under-reports exactly the leak the audit exists to catch: the opus orchestrator
+# writing code instead of dispatching the implementer. Two main-role edits now.
+check "audit: MultiEdit counts as an orchestrator edit" "2" \
+  "$(jq -r '.audit.orchestrator_impl_edits' "$XOUT")"
+# and `show` must render the contention, using the real contended_by object shape —
+# a `join` against the wrong shape errors and takes the whole jq program down with it.
+XSHOW="$("$METRICS" show "$XOUT" 2>/dev/null)"
+check "show: edits rendered"          "1" "$(printf '%s\n' "$XSHOW" | grep -c '^edits per packet')"
+check "show: contention named"        "1" "$(printf '%s\n' "$XSHOW" | grep -c 'same file touched by gaffer:implementer+main')"
+# and the hook must stamp a hash for it in the first place
+check "hook: MultiEdit on write surface" "1" \
+  "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
+
+echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0
 else

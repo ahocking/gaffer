@@ -63,7 +63,10 @@
 #                      upper. BOTH bounds are always enforced: without --until the
 #                      upper bound is the last tool event PLUS a grace margin
 #                      ($ORCH_METRICS_TRAILER_GRACE, default 3600s), because a run's
-#                      last packet commits just after its last tool event.
+#                      last packet commits just after its last tool event — CAPPED at
+#                      the earliest event of any other session after that point, so
+#                      the grace can never reach into a concurrent or back-to-back
+#                      run and claim its commits (ADR 0019 v3.2).
 #   --out FILE         where to write the packet (default:
 #                      <main-root>/.agents/metrics/<run-id>/run-metrics.json).
 # =============================================================================
@@ -112,6 +115,27 @@ iso_plus() {
   date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || printf '%s' "$t"
+}
+
+# --- earliest event belonging to a session OTHER than this run's, after `after`.
+# Feeds the next-session cap on the trailer grace (ADR 0019 v3.2). Prints empty when
+# nothing else ran — the caller then keeps the full grace. Event logs are append-
+# ordered by ts, so the first match per file is that file's earliest; `sort|head -1`
+# picks the global minimum. Reads only `.ts`; no command text, no paths. Best-effort
+# by construction: any unreadable/malformed log simply contributes nothing, which
+# degrades to the pre-v3.2 flat-grace behaviour rather than dropping real packets.
+next_foreign_event() {
+  local agents_dir="${1:-}" sids_file="${2:-}" after="${3:-}"
+  [ -n "$after" ] || { printf ''; return; }
+  [ -d "$agents_dir/metrics/events" ] || { printf ''; return; }
+  local ef esid
+  for ef in "$agents_dir"/metrics/events/*.jsonl; do
+    [ -e "$ef" ] || continue
+    esid="$(basename "$ef" .jsonl)"
+    # our own selected session(s) can never be "foreign"
+    if [ -s "$sids_file" ] && grep -qxF "$esid" "$sids_file" 2>/dev/null; then continue; fi
+    jq -r --arg a "$after" 'select((.ts // "") > $a) | .ts' "$ef" 2>/dev/null | head -1
+  done | tr -d '\r' | sort | head -1
 }
 
 # --- resolve the main checkout that owns .agents/ -----------------------------
@@ -354,7 +378,7 @@ cmd_collect() {
   fi
 
   # --- 2. packet boundaries from `[orch packet:<id>]` commit trailers ---------
-  # Emit the committer time in the SAME UTC `...Z` form as event timestamps so the
+  # Emit the AUTHOR time in the SAME UTC `...Z` form as event timestamps so the
   # window comparison below is a sound string compare (TZ=UTC0 + format-local). We
   # print a marker header line `===ORCHCOMMIT===<TAB><date>` before each commit's
   # raw body, then scan bodies for the `[orch packet:<id>]` trailer — this avoids
@@ -380,12 +404,29 @@ cmd_collect() {
   # handled with a grace margin instead of an open end: a run's last packet commits
   # just AFTER its last tool event (the commit itself produces no tool event once the
   # loop hands off), so allow ORCH_METRICS_TRAILER_GRACE seconds past win_end.
+  #
+  # NEXT-SESSION CAP (ADR 0019 v3.2). A flat grace is only safe when THIS run is the
+  # only thing running. In a repo with overlapping or back-to-back sessions the grace
+  # reaches straight into the next session and claims its commits: measured in a real
+  # consumer repo as 7 phantom rows out of 37, including 6 duplicated packet ids —
+  # e.g. a session whose events ended 15:26 absorbed packets committed at 16:02/16:04
+  # by a session that was running CONCURRENTLY. So cap the grace at the earliest event
+  # belonging to any OTHER session after win_end. This handles both shapes: a
+  # back-to-back session (its first event cuts the grace short) and a concurrent one
+  # (it already has events just past our win_end, so the bound collapses to ~win_end).
+  # When nothing else is running the full grace still applies, which is the case the
+  # grace exists for. `--until` still wins verbatim — tests and manual scoping rely on
+  # it being honoured exactly.
   local log_revs="--all" we_bound=""
   if [ -n "$win_start" ]; then
     if [ -n "$opt_until" ]; then
       we_bound="$win_end"                             # explicit --until wins verbatim
     else
       we_bound="$(iso_plus "$win_end" "${ORCH_METRICS_TRAILER_GRACE:-3600}")"
+      local next_evt
+      next_evt="$(next_foreign_event "$agents" "$tmp/sids.txt" "$win_end")"
+      # string compare is sound: both are the same fixed-width UTC ...Z form
+      if [ -n "$next_evt" ] && [ "$next_evt" \< "$we_bound" ]; then we_bound="$next_evt"; fi
     fi
   else
     local base="$integ"
@@ -400,10 +441,19 @@ cmd_collect() {
     fi
   fi
   : > "$tmp/packets_raw.tsv"
+  # AUTHOR date, not committer date (ADR 0019 v3.2). Committer date is REWRITTEN by
+  # rebase, cherry-pick, amend and squash-merge, so a packet's recorded time drifts to
+  # whenever the branch was last replayed rather than when the work was done. Measured
+  # in a real consumer repo: six packets authored 08:29-13:04 were folded into a run
+  # that started at 13:56 because their MERGE commits landed inside its window, while a
+  # packet genuinely committed in-window with a valid trailer went missing. Author date
+  # survives every one of those rewrites. Traversal order is `--author-date-order` for
+  # coherence only — correctness does not depend on it, since the per-packet reduction
+  # below re-sorts on the emitted date column.
   # shellcheck disable=SC2086  # log_revs is an intentional word-split rev argument
-  TZ=UTC0 git -C "$main_root" log $log_revs --date-order \
+  TZ=UTC0 git -C "$main_root" log $log_revs --author-date-order \
       --date=format-local:'%Y-%m-%dT%H:%M:%SZ' \
-      --format='===ORCHCOMMIT===%x09%cd%n%B' 2>/dev/null \
+      --format='===ORCHCOMMIT===%x09%ad%n%B' 2>/dev/null \
     | awk -F'\t' -v ws="$win_start" -v we="$we_bound" '
         # Only a trailer on its OWN line counts (that is how commits/pause-check
         # emit it). This excludes prose that merely mentions the trailer format,
@@ -468,6 +518,48 @@ cmd_collect() {
     > "$tmp/waves.json" 2>/dev/null || echo '{}' > "$tmp/waves.json"
   fi
 
+  # --- 3b. ATTESTED packet outcomes (ADR 0019 v3.4) --------------------------
+  # Optional, append-only, written by the loop via `runstate.sh record-outcome` at each
+  # packet boundary — including the boundaries that do NOT produce a commit, which is
+  # the entire point. The collector cannot observe outcome: it reconstructs packets from
+  # green-commit trailers, so a rolled-back packet leaves no trace to find.
+  #
+  # Deliberately NOT run-state: run-state has a single writer (the driver) and this must
+  # be writable from a lane without contending for it — the same reasoning that kept
+  # packet boundaries on commit trailers rather than migrating run-state's schema.
+  #
+  # LAST record per packet id wins: a packet that failed, was fixed and then landed
+  # green is green now. Absent file or absent id -> null, never an assumed "green".
+  #
+  # SCOPED TWO WAYS, exactly like every other join here — by SESSION and by the run
+  # WINDOW. `record-outcome` names its log after the same session id that names the
+  # event log, so the selected sessions in sids.txt pick the right files; the ts filter
+  # then bounds them to [win_start, we_bound]. Unscoped, this globbed every outcome ever
+  # written and took a global last-wins, so re-collecting an old run inherited a later
+  # run's verdict for a same-named packet — the identical cross-run bleed v3/v3.2 spent
+  # two revisions eliminating for commit trailers. Same bug, same fix, same bounds.
+  echo '{}' > "$tmp/outcomes.json"
+  local ocdir="${agents}/metrics/outcomes"
+  if [ -d "$ocdir" ]; then
+    : > "$tmp/outcomes.ndjson"
+    if [ -s "$tmp/sids.txt" ]; then
+      while IFS= read -r _sid; do
+        [ -n "$_sid" ] && [ -e "$ocdir/$_sid.jsonl" ] && cat "$ocdir/$_sid.jsonl" >> "$tmp/outcomes.ndjson"
+      done < "$tmp/sids.txt"
+    else
+      # No event spine at all (structural fallback): there is no session to select and
+      # no window to filter by, so take everything rather than silently reporting none.
+      cat "$ocdir"/*.jsonl >> "$tmp/outcomes.ndjson" 2>/dev/null || true
+    fi
+    jq -s --arg ws "$win_start" --arg we "$we_bound" \
+      'map(select(.packet != null and .outcome != null))
+       | map(select(($ws == "" or (.ts // "") >= $ws) and ($we == "" or (.ts // "") <= $we)))
+       | group_by(.packet)
+       | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
+       | from_entries' \
+      "$tmp/outcomes.ndjson" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+  fi
+
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------
   # Emit ONE record per assistant turn: {role, ts, model, tok}. Per-turn `ts` lets us
   # bucket tokens into packet windows (per-packet split); `model` enables per-model
@@ -485,8 +577,10 @@ cmd_collect() {
     for mf in "$projects_dir"/*/"$sid".jsonl; do
       [ -e "$mf" ] || continue
       tfiles=$((tfiles + 1))
-      jq -c 'select((.message.usage // .usage) != null)
-        | {role:"main", ts:(.timestamp // null), model:(.message.model // .model // null),
+      jq -c --arg aid "main:$sid" 'select((.message.usage // .usage) != null)
+        | {role:"main", aid:$aid, id:(.message.id // null),
+           ts:(.timestamp // null), model:(.message.model // .model // null),
+           effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
         "$mf" 2>/dev/null >> "$tmp/turns.ndjson" || true
@@ -498,14 +592,35 @@ cmd_collect() {
       base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
       role="$(jqr --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
       [ -n "$role" ] || role="unknown"
-      jq -c --arg role "$role" 'select((.message.usage // .usage) != null)
-        | {role:$role, ts:(.timestamp // null), model:(.message.model // .model // null),
+      jq -c --arg role "$role" --arg aid "$aid" 'select((.message.usage // .usage) != null)
+        | {role:$role, aid:$aid, id:(.message.id // null),
+           ts:(.timestamp // null), model:(.message.model // .model // null),
+           effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
         "$sf" 2>/dev/null >> "$tmp/turns.ndjson" || true
     done
   done < "$tmp/sids.txt"
-  jq -s '.' "$tmp/turns.ndjson" > "$tmp/turns_raw.json" 2>/dev/null || echo '[]' > "$tmp/turns_raw.json"
+  # DEDUP BY MESSAGE ID (ADR 0019 v3.3). A transcript records the SAME assistant
+  # message more than once — observed 3x for one message id, at +2ms and +26s — so
+  # summing rows double-counts its usage block. Measured inflation across four real
+  # sessions: cacheCreation 2.3x-3.2x, output 3.3x-6.3x. The two rates DIFFER, and
+  # differ per session, so this does NOT cancel in a ratio: CC:out read 6.4 raw vs
+  # 9.0 deduped on one session and 14.9 vs 33.8 on another. Every absolute token
+  # figure and every ratio was wrong until this landed. ADR 0012's own measurement
+  # deduplicated by message id; the collector never did — that gap is the bug.
+  #
+  # Keep the EARLIEST row per id (duplicates carry identical usage, so the choice is
+  # cosmetic for totals, but it must be deterministic for the invalidation scan,
+  # which reads per-turn ts). Rows with no message id are kept verbatim: `.uuid` is
+  # per-ROW, not per-message, so keying on it would silently dedupe nothing while
+  # looking like it worked — better to under-dedupe than to invent collisions.
+  # Order is not preserved and does not need to be: every consumer either groups or
+  # sorts by ts itself.
+  jq -s '
+      ( map(select(.id != null)) | group_by(.id) | map(sort_by(.ts // "") | .[0]) )
+    + ( map(select(.id == null)) )
+  ' "$tmp/turns.ndjson" > "$tmp/turns_raw.json" 2>/dev/null || echo '[]' > "$tmp/turns_raw.json"
 
   # WINDOW-BLEED FIX (ADR 0019): the event spine and the trailer scan are bounded to
   # the run window, but the transcript files above are read WHOLE. A session whose
@@ -524,16 +639,42 @@ cmd_collect() {
                  or ((.ts[0:19] >= ($ws[0:19])) and ($we == "" or .ts[0:19] <= ($we[0:19])))))
   ' "$tmp/turns_raw.json" > "$tmp/turns.json" 2>/dev/null || cp "$tmp/turns_raw.json" "$tmp/turns.json"
 
-  # per-role totals + per-model split within role
+  # per-role totals + per-model split within role, PLUS the cache-creation shape.
+  #
+  # cc_shape exists because the totals are too noisy to steer by. Measured across four
+  # untouched same-regime sessions, coordinator cacheCreation-per-packet spans 1.76x
+  # (9x across all sessions) — so a change that trims ~150k of standing context is
+  # invisible underneath ordinary run-to-run variation.
+  #
+  # The shape is not noisy, because it separates the two things the total conflates.
+  # A coordinator turn is either steady-state (a small delta appended to a warm cache)
+  # or a full re-cache of everything it is holding. Measured per session, the MEDIAN
+  # turn is flat everywhere — 1,893 / 2,105 / 2,130 / 3,500 / 4,683 — while `max`
+  # separates cleanly by regime: 24,190 on the cheap July session against 147,817 /
+  # 198,397 / 221,962 / 239,851 on the expensive ones. `max`/`p90` therefore read the
+  # size of the standing context itself, which is the thing a read-list or run-state
+  # diet actually changes, and they move by more than their own spread when it does.
+  #
+  # Read them as: median = incremental cost of one more turn; p90/max = what it costs
+  # to rebuild this role's context once. A high max with a flat median is not "an
+  # expensive agent" — it is a large payload being re-cached.
   jq '
     def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
                     cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
+    def pctl(s; p): if (s|length) == 0 then null else s[((s|length) * p | floor) | if . >= (s|length) then (s|length)-1 else . end] end;
     group_by(.role) | map({
       key: .[0].role,
       value: {
         tokens: (map(.tok) | sumtok(.)),
         models: (group_by(.model) | map(select(.[0].model != null))
-                 | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries)
+                 | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries),
+        cc_shape: ((map(.tok.cache_creation) | sort) as $s
+                   | { turns: ($s|length),
+                       median: pctl($s; 0.5), p90: pctl($s; 0.9), max: ($s|max),
+                       # how concentrated the spend is: a coordinator re-caching a large
+                       # payload puts ~87% of a dispatch above 50k in <10% of its turns.
+                       turns_over_50k: ($s | map(select(. > 50000)) | length),
+                       cc_over_50k:    ($s | map(select(. > 50000)) | add // 0) })
       }}) | from_entries
   ' "$tmp/turns.json" > "$tmp/roletokens.json" 2>/dev/null || echo '{}' > "$tmp/roletokens.json"
 
@@ -544,6 +685,48 @@ cmd_collect() {
     group_by(.model) | map(select(.[0].model != null))
     | map({key:(.[0].model), value:(map(.tok)|sumtok(.))}) | from_entries
   ' "$tmp/turns.json" > "$tmp/bymodel.json" 2>/dev/null || echo '{}' > "$tmp/bymodel.json"
+
+  # by_effort rollup (ADR 0019 v3.2). Reasoning effort is a per-turn request parameter
+  # the user can change mid-session; nothing else in the packet records it, so a run
+  # spanning two effort levels was previously indistinguishable from one that did not.
+  # Null on transcripts that predate the field — an absent bucket, never a zero.
+  jq '
+    def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
+                    cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
+    group_by(.effort) | map(select(.[0].effort != null))
+    | map({key:(.[0].effort), value:((map(.tok)|sumtok(.)) + {turns: length})}) | from_entries
+  ' "$tmp/turns.json" > "$tmp/byeffort.json" 2>/dev/null || echo '{}' > "$tmp/byeffort.json"
+
+  # context_invalidations (ADR 0019 v3.2) — the cost of CHANGING a request parameter,
+  # as distinct from the cost of its value. Changing `effort` or the model mid-context
+  # invalidates the cached prefix, so the whole context is re-written to cache on the
+  # next turn. Measured in production: three such flips cost 372,588 / 380,005 /
+  # 115,509 cache-creation tokens against session medians of 1,380 / 856 / ~1,700 —
+  # 270x, 444x and 68x. It fires in BOTH directions (high->xhigh AND xhigh->high), which
+  # is what identifies it as invalidation rather than "higher effort costs more"; the
+  # size tracks how deep into the context the flip happens, not which way it went.
+  #
+  # Scanned per (role, aid) — one agent context — and NOT per role. Two dispatches of
+  # the same role are separate contexts, so an implementer that ran opus once and
+  # sonnet once is normal tier routing, not a mid-context switch; grouping by role
+  # alone would report it as an invalidation. Turns with no ts cannot be ordered and
+  # are excluded, so this degrades to 0 rather than guessing on older transcripts.
+  jq '
+    [ group_by([.role, .aid])[]
+      | (map(select(.ts != null)) | sort_by(.ts)) as $t
+      | range(1; ($t | length)) as $i
+      | select( (($t[$i].effort // "") != ($t[$i-1].effort // ""))
+             or (($t[$i].model  // "") != ($t[$i-1].model  // "")) )
+      | { role: $t[$i].role, ts: $t[$i].ts,
+          from: { effort: $t[$i-1].effort, model: $t[$i-1].model },
+          to:   { effort: $t[$i].effort,   model: $t[$i].model   },
+          cache_creation: ($t[$i].tok.cache_creation // 0) } ]
+    | sort_by(.ts)
+    | { count: length,
+        cache_creation: (map(.cache_creation) | add // 0),
+        events: .[0:20] }
+  ' "$tmp/turns.json" > "$tmp/ctxinval.json" 2>/dev/null \
+    || echo '{"count":0,"cache_creation":0,"events":[]}' > "$tmp/ctxinval.json"
 
   if jq -e 'map(.tok.input+.tok.output+.tok.cache_read+.tok.cache_creation)|add>0' "$tmp/turns.json" >/dev/null 2>&1; then
     token_source="transcript"
@@ -568,6 +751,14 @@ cmd_collect() {
   turns_win="$(jqr 'length' "$tmp/turns.json" 2>/dev/null || echo 0)"
   case "$turns_raw" in ''|*[!0-9]*) turns_raw=0 ;; esac
   case "$turns_win" in ''|*[!0-9]*) turns_win=0 ;; esac
+  # Rows the message-id dedup removed (ADR 0019 v3.3). Surfaced, not hidden: a
+  # sudden move toward 0 means the transcript stopped repeating messages OR stopped
+  # carrying `message.id` — the second silently disables the dedup, and the packet
+  # would re-inflate ~2.6x while still stamping token_source=transcript.
+  local turns_dup=0
+  turns_dup="$(wc -l < "$tmp/turns.ndjson" 2>/dev/null | tr -d ' ')"
+  case "$turns_dup" in ''|*[!0-9]*) turns_dup=0 ;; esac
+  turns_dup=$(( turns_dup - turns_raw )); [ "$turns_dup" -ge 0 ] 2>/dev/null || turns_dup=0
 
   # ATTRIBUTION CONFIDENCE (ADR 0019): role='unknown' is a subagent transcript whose
   # agent_id was never seen in the event spine, so it could not be mapped to a role
@@ -595,6 +786,7 @@ cmd_collect() {
   jq \
      --slurpfile ev "$tmp/events.json" \
      --slurpfile waves "$tmp/waves.json" \
+     --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
@@ -606,6 +798,7 @@ cmd_collect() {
      | ($ev[0] // []) as $events
      | ($turns[0] // []) as $turns
      | ($waves[0] // {}) as $wavemap
+     | ($outc[0] // {}) as $outcomes
      | ($have_ts=="true") as $ts_ok
      # Does this run use the tier/impl convention at ALL? A run where NO packet
      # carries a label predates the convention (or ran with it off) — flagging
@@ -625,7 +818,9 @@ cmd_collect() {
          | ($turns | map(select($ts_ok and .ts != null and .ts > $start and .ts <= $p.end))) as $wtok
          # ROUTING AUDIT (ADR 0019): who actually wrote code, and what was dispatched,
          # so the executor self-label (tier/impl) can be cross-checked against reality.
-         | ($win | map(select(.tool=="Edit" or .tool=="Write" or .tool=="NotebookEdit"))
+         # Same write surface as guard.sh and hooks/metrics-log.sh — keep all three in
+         # step. MultiEdit was absent here, so multi-edit work read as zero edits.
+         | ($win | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))
                  | group_by(.agent_type) | map({key:(.[0].agent_type),value:length}) | from_entries) as $edits
          | ($win | map(select(.tool=="Agent" and (.subagent_type != null)))
                  | group_by(.subagent_type) | map({key:(.[0].subagent_type),value:length}) | from_entries) as $disp
@@ -651,7 +846,20 @@ cmd_collect() {
          | $acc + [{
              id: $p.id,
              wave: ($wavemap[$p.id]),
-             outcome: "green",
+             # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
+             # This read "green" unconditionally. It was not a measurement: a packet
+             # EXISTS here only because a `[orch packet:]` trailer was found, and that
+             # trailer is written on a green commit — so failed, abandoned and
+             # rolled-back work has no trailer and never becomes a row at all. "42 of
+             # 42 green" was survivorship restated as quality, and the more work a run
+             # threw away the healthier it looked.
+             #
+             # Emitting null is the honest floor: an analysis can then say "unknown"
+             # instead of inferring a success rate from a filter. Attesting it needs a
+             # writer at the packet boundary (the loop knows the outcome; the collector
+             # never can), which is why this reads an OPTIONAL outcomes log rather than
+             # guessing — absent log, absent claim.
+             outcome: ($outcomes[$p.id] // null),
              tier: $p.tier,
              impl: $p.impl,
              start: $start,
@@ -661,6 +869,29 @@ cmd_collect() {
              duration_ms: ($win|map(.duration_ms//0)|add),
              by_agent: ($win|group_by(.agent_type)|map({key:(.[0].agent_type),value:length})|from_entries),
              by_tool: ($win|group_by(.tool)|map({key:(.[0].tool),value:length})|from_entries),
+             # EDIT OVERLAP (ADR 0019 v3.4). Counting edits per role cannot tell
+             # correction from division of labour: "implementer 34, main 3" is either
+             # the orchestrator fixing the implementer or the two working on separate
+             # files, and those have opposite meanings for a rework rate. Overlap on
+             # the SAME file is what separates them.
+             #
+             # Values are opaque hashes from the hook (never paths), so this reports
+             # SHAPE only — how many distinct files, how many were touched by more than
+             # one role, and by which roles. `contended_files` is the rework signal;
+             # `files_touched` is its denominator. Both null when no edit in this packet
+             # carried a hash, i.e. a run predating the field — never 0, which would
+             # read as "measured, no overlap".
+             edits: (($win | map(select(.file_hash != null))) as $fe
+                     | if ($fe|length) == 0 then null
+                       else ($fe | group_by(.file_hash)
+                             | map({roles: (map(.agent_type) | unique)})) as $byfile
+                         | { edits: ($fe|length),
+                             files_touched: ($byfile|length),
+                             contended_files: ($byfile | map(select((.roles|length) > 1)) | length),
+                             contended_by: ($byfile | map(select((.roles|length) > 1))
+                                            | map(.roles | join("+")) | group_by(.)
+                                            | map({key:.[0], value:length}) | from_entries) }
+                       end),
              # REWORK PROXY (ADR 0019): per-packet command classes. The payload carries no
              # exit code, so repeat invocations are the reliable signal — a packet that ran
              # `dotnet test` 5 times almost certainly failed 4 of them. Read alongside
@@ -709,9 +940,12 @@ cmd_collect() {
     --argjson tpresent "${tpresent:-0}" \
     --argjson turns_raw "${turns_raw:-0}" \
     --argjson turns_win "${turns_win:-0}" \
+    --argjson turns_dup "${turns_dup:-0}" \
     --slurpfile packets "$tmp/packets.json" \
     --slurpfile roletokens "$tmp/roletokens.json" \
     --slurpfile bymodel "$tmp/bymodel.json" \
+    --slurpfile byeffort "$tmp/byeffort.json" \
+    --slurpfile ctxinval "$tmp/ctxinval.json" \
     --slurpfile activity "$tmp/activity.json" \
     --slurpfile unattr "$tmp/unattributed.json" \
     --slurpfile byskill "$tmp/byskill.json" \
@@ -750,7 +984,8 @@ cmd_collect() {
         transcript_files_present: $tpresent,
         transcript_files_matched: $tfiles,
         usage_turns: $turns_raw,
-        usage_turns_in_window: $turns_win
+        usage_turns_in_window: $turns_win,
+        duplicate_turns_dropped: $turns_dup
       },
       mode: $mode,
       autonomy: $autonomy,
@@ -770,6 +1005,8 @@ cmd_collect() {
         by_lane: ($bylane[0] // {}),
         tokens: $tot,
         by_model: ($bymodel[0] // {}),
+        by_effort: ($byeffort[0] // {}),
+        context_invalidations: ($ctxinval[0] // {count:0, cache_creation:0, events:[]}),
         cache_hit_ratio: (if $cache_total>0 then (($tot.cache_read / $cache_total)*1000|floor)/1000 else null end),
         failed_tool_calls: (if $instrumented then (($sids[0] // []) | map(select(.ok == false)) | length) else null end),
         human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length)
@@ -831,7 +1068,10 @@ cmd_collect() {
         "Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).",
         "Packet boundaries derived from [orch packet:<id>] commit trailers; failed/uncommitted packets do not appear.",
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
+        "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
+        "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",
         "by_skill is STICKY: set by the most recent slash-command/Skill invocation and never cleared, so it is an UPPER BOUND on the spend of that skill, not an exact span.",
+        "totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.",
         "by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.",
         "active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.",
         "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
@@ -875,14 +1115,43 @@ cmd_show() {
     "",
     "by model:",
     ((.totals.by_model // {}) | to_entries[] | "  \(.key): out=\(.value.output) cacheC=\(.value.cache_creation) cacheR=\(.value.cache_read)"),
+    (if ((.totals.by_effort // {}) | length) > 0 then
+       "", "by effort:",
+       ((.totals.by_effort) | to_entries[] | "  \(.key): turns=\(.value.turns) out=\(.value.output) cacheC=\(.value.cache_creation)")
+     else empty end),
+    (((.totals.context_invalidations // {count:0}) ) as $ci
+     | if ($ci.count // 0) > 0 then
+         "", "context invalidations (effort/model changed mid-context — each re-caches the whole prefix):",
+         "  \($ci.count) change(s), \($ci.cache_creation) cacheC",
+         ($ci.events[]? | "  \(.ts)  \(.role)  \(.from.effort // "?")/\(.from.model // "?") -> \(.to.effort // "?")/\(.to.model // "?")  cacheC=\(.cache_creation)")
+       else empty end),
     "",
     "by role:",
     (.by_agent_role | to_entries[] | "  \(.key): out=\(.value.tokens.output) cacheR=\(.value.tokens.cache_read) cacheC=\(.value.tokens.cache_creation)   models=\((.value.models // {} | keys | join(",")))"),
+    # cc_shape is the ONLY view here that can detect a context diet, and it has to be
+    # in `show` because it is the stated verification mechanism for ADR 0022 — a
+    # detector reachable only via `analyze` is a detector nobody reads on the run that
+    # matters. Aggregate cacheCreation cannot do this job: it spans 1.76x across
+    # untouched same-regime sessions, so a 20-30% trim sits inside the noise. Split
+    # out, the MEDIAN is flat everywhere while p90/max track the standing-context SIZE.
+    # Read it that way: a flat median with a large max is not an expensive agent, it is
+    # a large payload being re-cached.
+    (if ((.by_agent_role // {}) | map(select(.cc_shape != null)) | length) > 0 then
+       "",
+       "cc_shape — payload per turn, NOT agent cost (flat median + large max = a big standing context being re-cached):",
+       (.by_agent_role | to_entries[] | select(.value.cc_shape != null)
+        | "  \(.key): median=\(.value.cc_shape.median) p90=\(.value.cc_shape.p90) max=\(.value.cc_shape.max)   turns>50k=\(.value.cc_shape.turns_over_50k) (\(.value.cc_shape.cc_over_50k) cacheC)")
+     else "", "cc_shape: unmeasured (no per-turn token data for this run)" end),
     "",
     "by skill (tool_calls / duration):",
     ((.totals.by_skill // {}) | to_entries | sort_by(-.value.tool_calls)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms"),
     "",
-    "by tool (tool SELECTION — shell `grep`/`find`/`sed` here instead of Grep/Glob/Edit is waste):",
+    # Reports tool SELECTION. It does NOT report cost: shell search output was
+    # measured at ~187k tokens against 105M DEDUPED lifetime cacheCreation (~0.18%), so
+    # the earlier "shell grep here is waste" framing was unfounded (ADR 0019 v3.3).
+    # (279M/0.07% was the pre-dedup inflated denominator — v3.3 corrected it.)
+    # `sed -i`/`cat >` remain worth watching, as WRITES that bypass diff review.
+    "by tool (selection, not cost):",
     ((.totals.by_tool // {}) | to_entries | sort_by(-.value.calls)[] | "  \(.key): \(.value.calls) calls / \(.value.duration_ms)ms"),
     "",
     "by command class (rtk-targeting: calls / duration):",
@@ -892,15 +1161,34 @@ cmd_show() {
        ((.totals.by_lane) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms")
      else empty end),
     "",
-    "packets (id | wave | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
-    "",
+    # The audit sits ABOVE the packets table on purpose: it is the "something is off"
+    # section, and a run with 14 packets pushed it far enough down the page that a real
+    # deviation (16 of 83 dispatches overriding a declared model, 13 onto opus) went
+    # unread. Counters that the collector emits as null mean UNMEASURED — a legacy run
+    # predating the instrumentation — and must never render as 0, which reads as clean.
+    # That distinction is deliberate in the packet and used to be erased right here.
     "routing audit (opus orchestrator edits vs implementer dispatches; label \(if (.audit.labels_present) then "present" else "ABSENT — pre-instrumentation run" end)):",
     "  orchestrator_impl_edits=\(.audit.orchestrator_impl_edits // 0)   implementer_dispatches=\(.audit.implementer_dispatches // 0)   by_tier=\(.audit.by_tier // {})",
     "  tier labels: \((.audit.packets_total // 0) - (.audit.packets_missing_tier // 0))/\(.audit.packets_total // 0) packets labelled\(if (.audit.packets_missing_tier // 0) > 0 then "   ⚠ UNMEASURED: \(.audit.unlabelled_packet_ids // [] | join(", "))" else "" end)",
-    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(.audit.dispatches_with_model_override // 0))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
-    "  failed_tool_calls=\(.totals.failed_tool_calls // 0)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
-    ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end)
+    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-instrumentation run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
+    "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
+    ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
+    "",
+    # `outcome` renders as `?` when null, never as "green". A packet exists here only
+    # because a green-commit trailer was found, so failed and rolled-back work leaves NO
+    # row at all — "42 of 42 green" is survivorship that looks BETTER the more work was
+    # discarded. Only `runstate.sh record-outcome` can attest it; null means unattested.
+    "packets (id | wave | outcome | tool_calls | active | dur | out-tok):",
+    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
+    # Per-role edit counts alone cannot tell "the orchestrator corrected the implementer"
+    # from "they worked on different files". Only same-file overlap can, so print the
+    # counts and the contention together or the numbers invite the wrong reading.
+    (if (.packets | map(select(.edits != null)) | length) > 0 then
+       "",
+       "edits per packet (rework signal — an edit count means little without the contention):",
+       (.packets[] | select(.edits != null)
+        | "  \(.id): \(.edits.edits) edits across \(.edits.files_touched) file(s), contended=\(.edits.contended_files)\(if (.edits.contended_files // 0) > 0 then "  ⚠ same file touched by \((.edits.contended_by // {}) | to_entries | map("\(.key) (\(.value))") | join(", "))" else "" end)")
+     else empty end)
   ' "$f"
   printf '\npacket: %s\n' "$f"
 }

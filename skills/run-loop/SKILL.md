@@ -64,6 +64,15 @@ Per packet, do exactly this:
 1. **Read the run's shape from disk, not from the repo:**
    `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh summary .agents/run-state.yaml`
    (skip if there is no run-state yet — the first dispatch establishes it per §2).
+
+   **Findings are an index, and the index is the only part that is free** (ADR 0022).
+   `runstate.sh findings .agents/run-state.yaml` prints one line per finding. Put
+   **only the lines relevant to this packet** in the brief, and pass the `file:` path
+   so the coordinator can open the body **if it decides it needs it**. Do not paste
+   finding bodies into the brief, and do not tell it to read them all — that
+   reconstructs the 41k-token run-state this design removed, in a different file.
+   Conversely, never drop the index: a finding nobody sees causes the rework it
+   existed to prevent, which costs more than reading it would have.
 2. **Dispatch a fresh `gaffer:chief-engineer`** with a brief containing
    **only**: the repo root, the resolved autonomy level, the run-state path, the
    cursor packet id, and this instruction —
@@ -76,6 +85,20 @@ Per packet, do exactly this:
    invoke `/gaffer:run-loop`; without the path it will improvise the loop
    from memory (ADR 0012, finding 4). Do **not** pour this session's conversation
    into the brief: run-state and the packet are the context it needs.
+
+   **Name the governing documents; do not let it go looking.** Add to the brief the
+   specific ADR ids and the single `gspec/tasks/<slug>.md` this packet is governed by,
+   and say that reading beyond them is out of scope for the packet. Unscoped, a fresh
+   coordinator sweeps the whole corpus — measured at ~111k tokens (17 ADRs ≈ 48k,
+   7 task plans ≈ 30k, gspec core ≈ 22k) for a packet that governs about one of each.
+   That payload is not read once: it becomes the standing context re-cached on every
+   large turn, which is why coordinator `cc_shape.max` reads 148k–240k on runs that
+   skip this and 24k on one that did not.
+
+   Where a document is genuinely large and only one section applies, say so — a
+   bounded `Read` (`offset`/`limit`) is the intended tool. Across 30 sessions the top
+   **10%** of `Read` calls carried **50%** of all read volume, and `Read` totalled
+   **7.6x** every shell search combined; whole-file reads of long ADRs are that tail.
 3. **Relay the returned check-in verbatim.** Do not summarize it, re-derive it,
    comment on it, or verify it by reading the repo yourself — that is how this
    context refills.
@@ -228,14 +251,52 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
      packet is a legitimate opus edit; a `mechanical`/`inline` one is the leak this
      measures. Then update run-state **atomically** (`runstate.sh write`): append the
      packet to `done`, set `last_green_commit` to the new SHA, advance `cursor`,
-     keep `status: running`. Emit a **status** check-in
+     keep `status: running`, and **carry the whole `findings:` index through
+     verbatim** — `write` REPLACES the file, so an entry you omit is not edited out,
+     it is unlinked: the body stays on disk in `.agents/findings/` with nothing
+     pointing at it. (This is also why `add-finding` comes *after* the write, below —
+     it appends, and a write afterwards would erase it.) Emit a **status** check-in
      (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`).
+
+     Then close the packet out — both of these, every time:
+
+     - **Attest the outcome:** `runstate.sh record-outcome <cursor> green`. Do this
+       on **every** boundary, not just green ones — see the failure branches below.
+     - **Keep `note:` to the CURRENT packet.** It is one line for the resuming
+       session, not a log. Overwrite it; never append to what is there, and never
+       add an "earlier history" section — the archive is
+       `runstate.sh trim-note .agents/run-state.yaml`, which moves the overflow to
+       `run-state-note-archive.md`. Left to accumulate it reached **164,678 chars —
+       87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a relay
+       dispatch re-reads all of it to recover two facts ADR 0012 states plainly:
+       did it land, what is next.
+     - **Anything worth keeping past this packet is a FINDING, not note content**
+       (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"`,
+       then write the detail into the `.agents/findings/<id>.md` it creates.
+       **In a parallel lane, do not run this** — you have no run-state to append to
+       and you are not its writer. Put the line in your check-in under `Findings:`
+       and the scheduler records it (`parallel.md` P1.4). Route it
+       first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
+       - **"this should be built/fixed"** → **not a finding.** That is backlog: a
+         gspec task/feature, sequenced via `.agents/roadmap.yaml`.
+       - **"this is a gotcha, a constraint, or a decision and why"** → a finding.
+       A resolved question is a finding (the decision plus its rationale) — do **not**
+       grow a `resolved_questions:` list in run-state; a real run grew one to 21,664
+       chars precisely because there was nowhere else to put it.
    - **Hard gate touched, genuine ambiguity, conflicting specs, or still red
      after honest diagnosis** — do **not** force it: record a severity-tagged
      **blocking question** in `run-state.pending_questions`, then **pause** via
      `/gaffer:pause` (roll to the last green commit, discard non-checkpoint
      scratch, never leave the tree dirty) and **stop**. Emit the blocking-question
      check-in.
+
+     **Attest this outcome too** — `runstate.sh record-outcome <cursor> blocked`
+     (or `rolled-back` / `failed` / `abandoned`, whichever actually happened).
+     This is the branch that makes the metric honest. A packet only becomes visible
+     to the collector by way of its green-commit trailer, so work that failed or was
+     rolled back leaves **no trace at all** and the run reads "42 of 42 green" —
+     survivorship restated as quality, looking *better* the more work was thrown
+     away. Recording it here is the only place the truth exists.
    - **Integrate (only at `full-autonomy`).** After the packet lands green on its
      `orch/<task-id>` branch, you may take the day-to-day integration steps the guard
      now delegates at this level: **merge** the branch into the **non-`main`**

@@ -119,5 +119,57 @@ pending_questions:
     packet: <feature-001-scope>
     question: <what you need decided, in one or two sentences>
 
+# ═══════════════════════════════════════════════════════════════════════════
+# FINDINGS — an INDEX, never the content (ADR 0022).
+#
+# Everything in run-state is read by EVERY packet: a dispatched coordinator reads it
+# at the start, so it sits in the standing context for the whole dispatch and is
+# re-written into cache on every large turn (measured: 32 cache writes >50k in ONE
+# dispatch). A finding useful to one packet therefore gets paid for by all of them.
+#
+# So: the one-line summary lives HERE, the body lives in .agents/findings/<id>.md.
+# The summary exists so an agent can DECIDE whether it needs the body without opening
+# it. Moving content out with no index is worse than leaving it in — the failure mode
+# flips from "expensive" to "never read", and gotchas exist precisely to prevent the
+# rework that not reading them causes.
+#
+# WHAT BELONGS HERE vs. IN THE BACKLOG (the ADR 0020 seam — get this wrong and you
+# build a shadow backlog that competes with gspec):
+#   - "this should be built/fixed"      -> NOT a finding. That is backlog: a gspec
+#                                          task/feature, ordered via .agents/roadmap.yaml.
+#   - "this is a gotcha / why the run   -> a finding. Execution context, plugin-owned.
+#      did what it did / a decision and
+#      its rationale"
+#
+# Resolved questions are findings, not a separate field. An earlier real run grew an
+# unschema'd `resolved_questions:` list to 21,664 chars because there was nowhere else
+# to put them; record the decision and its rationale as a finding and link it.
+#
+# Write with `runstate.sh add-finding <file> <id> <summary>` — it appends here and
+# creates the body stub, so nobody hand-edits YAML lists.
+#
+# `summary` is a SINGLE-QUOTED scalar, always, and `add-finding` emits it that way.
+# A finding about code very often contains `: `, which a plain (unquoted) YAML scalar
+# cannot hold — it parses as a nested mapping and corrupts this file. Single quotes
+# also mean a backslash is literal, so a Windows path needs no escaping; the one rule
+# is that an embedded `'` is doubled (`''`). If you ever hand-edit this list, keep the
+# quotes.
+findings:
+  - id: <f-001>
+    summary: '<ONE line: what was found, specific enough to decide on without opening it>'
+    file: .agents/findings/<f-001>.md
+    packets: [<feature-002-scope>]     # optional: who this is for; omit if run-wide
+
 # Optional freeform note the resuming session should read first.
+#
+# ONE line about the CURRENT state. Overwrite it each packet — do NOT append, and do
+# NOT add "earlier history" sections. Anything worth keeping past the next packet is a
+# FINDING (above), not note content. Left to accumulate in a real run it reached
+# 164,678 chars (87% of the whole file, ~41k tokens, 15 stacked histories), and every
+# relay dispatch re-read all of it to recover the two facts ADR 0012 says a resuming
+# coordinator needs: did it land, what is next.
+#
+# Budget: ~2000 bytes (ORCH_NOTE_MAX_BYTES). `runstate.sh trim-note <file>` enforces
+# it, archiving the overflow to run-state-note-archive.md rather than dropping it.
+# That is a BACKSTOP for when discipline slips, not the intended path — findings are.
 note: <e.g. paused after feature-000 landed green; feature-001 blocked on q-001>

@@ -78,7 +78,13 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
    > this one packet, entirely inside the given worktree path** (implement → test →
    > review → commit on `orch/<task-id>` with the `[orch packet:<id>]` trailer), then
    > stop. Return **only** the check-in. Do **not** merge and do **not** touch
-   > run-state — the scheduler owns both. **If a pause is requested** (poll
+   > run-state — the scheduler owns both. That includes findings: if you learn
+   > something worth keeping past this packet (a gotcha, a constraint, a decision and
+   > why), do **not** run `add-finding` — put it in the check-in under **`Findings:`**,
+   > one line each, and the scheduler will record it. Your worktree has no
+   > `.agents/run-state.yaml` to append to, and two lanes appending at once is exactly
+   > the contention the single-writer rule exists to prevent. **If a pause is
+   > requested** (poll
    > `runstate.sh pause-status <pause-file> <task-id>`, or a tool advisory surfaces
    > it), bring this packet to a SAFE rest — commit green with the trailer if it is
    > green and in policy, else leave the last green commit and set aside scratch
@@ -89,6 +95,13 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
      then **integrate** (P2, `full-autonomy` only).
    - **blocking question / red / escalate** → surface it (the human's); that lane's
      packet stays unfinished. Keep the other lanes going.
+   - **any lane's `Findings:` lines** → you record them, in the main checkout, one
+     `runstate.sh add-finding .agents/run-state.yaml <id> "<line>"` per line, then
+     write the detail into the `.agents/findings/<id>.md` each call creates. Do this
+     as you collect each check-in, while you still hold the lane's context — a finding
+     you postpone to the end of the wave is one you will summarize from memory.
+     Prefix ids with the lane's task-id (`<task-id>-<n>`) so two lanes cannot collide
+     on a name; `add-finding` refuses a duplicate id rather than merging into it.
 5. **Recompute** the ready-set (step 1) and dispatch the next batch — newly-unblocked
    dependents appear once their deps are `done` (and, at `full-autonomy`, integrated).
 

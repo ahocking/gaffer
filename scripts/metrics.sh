@@ -30,12 +30,17 @@
 # carries `token_diagnostics` (counts, no paths) saying WHICH failure it was —
 # nothing on disk, lookup miss, format drift, or window miss.
 #
-# PORTABILITY TRAP — jq LINE LISTS ON WINDOWS: the native Windows jq build writes
-# \r\n, including to pipes. `$(jq …)` hides it (MSYS bash strips a trailing \r\n)
-# but `read` does not, so any `jq -r … > file` consumed by a `while read` loop MUST
-# be piped through `tr -d '\r'` (a no-op on POSIX). Getting this wrong is silent:
-# it broke only the transcript-file globs, so every structural number stayed right
-# while the whole token half read as legitimately absent. See the sids.txt write.
+# PORTABILITY TRAP — jq AND CRLF: the native Windows jq build writes \r\n, including
+# to pipes. Two consequences, and the second is the one that bites twice:
+#   1. `read` strips only the \n, so any `jq -r … > file` consumed by a `while read`
+#      loop MUST be piped through `tr -d '\r'` (a no-op on POSIX). See the sids.txt
+#      write — getting this wrong broke only the transcript-file globs, so every
+#      structural number stayed right while the token half read as legitimately absent.
+#   2. `$( )` looks safe but is not portably safe. MSYS bash strips a trailing \r\n
+#      from command substitution; plain bash (Linux, macOS) strips only the \n. So
+#      every scalar capture here was correct on Windows purely by accident of which
+#      bash Git Bash ships. Hence jqr() — all raw reads go through it.
+# Neither failure is loud, so neither is discoverable by looking at the output.
 #
 # Subcommands:
 #   collect [opts]     assemble the run-metrics packet and print its path.
@@ -67,6 +72,21 @@ set -uo pipefail
 
 die() { printf 'metrics.sh: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'metrics.sh: %s\n' "$*" >&2; }
+
+# --- jqr: raw-mode jq with CR stripped (see PORTABILITY TRAP in the header) ----
+# EVERY raw jq read goes through here. It is tempting to skip it for `$(jq -r …)`
+# captures because MSYS bash strips a trailing \r\n from command substitution —
+# but that is an MSYS QUIRK, not bash behavior. Plain bash (Linux, macOS) strips
+# only the \n, so on any other shell a CRLF-emitting jq leaves every captured
+# scalar one byte too long. Measured, with a CRLF jq under Linux bash: role keys
+# became "implementer\r", window/packet timestamps gained a \r, `turns_have_ts`
+# stopped equalling "true" (silently nulling every per-packet token split), and
+# the turn counts failed their numeric guard and reset to 0. Depending on which
+# bash the host happens to ship is exactly the hidden assumption that produced
+# the original bug, so this does not rely on it.
+# pipefail (set above) is what preserves jq's exit status through the pipe, so
+# callers' `|| echo <default>` fallbacks still fire on a jq error.
+jqr() { jq -r "$@" | tr -d '\r'; }
 
 # --- portable ISO-8601(Z) -> epoch seconds -----------------------------------
 epoch() {
@@ -226,9 +246,9 @@ cmd_collect() {
   fi
 
   local run_start run_end tool_calls
-  run_start="$(jq -r 'map(.ts)|min // empty' "$tmp/events.json")"
-  run_end="$(jq -r 'map(.ts)|max // empty' "$tmp/events.json")"
-  tool_calls="$(jq -r 'length' "$tmp/events.json")"
+  run_start="$(jqr 'map(.ts)|min // empty' "$tmp/events.json")"
+  run_end="$(jqr 'map(.ts)|max // empty' "$tmp/events.json")"
+  tool_calls="$(jqr 'length' "$tmp/events.json")"
 
   # --- active vs idle wall time (ADR 0019 v2): sum inter-event gaps; a gap longer
   # than the idle threshold is IDLE (a pause / rate-limit sleep / waiting on a human),
@@ -305,15 +325,18 @@ cmd_collect() {
   # distinct session ids seen in events.
   #
   # CRLF (Windows): the native Windows jq build opens stdout in TEXT mode, so EVERY
-  # jq line ends \r\n — on pipes too, not just consoles. Command substitution hides
-  # this (MSYS bash strips a TRAILING \r\n), which is why every `$(jq -r …)` capture
-  # in this script is clean; but `read` strips only the \n and leaves the \r. This is
-  # the ONE jq-written LINE LIST consumed by a `while read` loop, and the values are
-  # used to build GLOBS: a session id one byte too long makes `<uuid>\r.jsonl` match
-  # nothing, so the transcript join found zero files and stamped token_source=none on
-  # every Windows run — silently, via the legitimate fail-soft path, while every
-  # structural number stayed correct. Normalize at the SOURCE (a no-op on POSIX,
-  # where jq already emits \n) and again at the consumer below.
+  # jq line ends \r\n — on pipes too, not just consoles. `read` strips only the \n and
+  # leaves the \r. This is the ONE jq-written LINE LIST consumed by a `while read`
+  # loop, and the values are used to build GLOBS: a session id one byte too long makes
+  # `<uuid>\r.jsonl` match nothing, so the transcript join found zero files and stamped
+  # token_source=none on every Windows run — silently, via the legitimate fail-soft
+  # path, while every structural number stayed correct.
+  #
+  # It is ONLY this site that broke in production, because MSYS bash strips a trailing
+  # \r\n from `$( )` and so cleaned every scalar capture for free. Do NOT read that as
+  # "the captures are safe" — it is an MSYS quirk, not bash behavior (verified: under
+  # Linux bash 5.2 the same capture keeps the CR). That is why the scalar reads go
+  # through jqr() rather than relying on the host shell.
   # RULE: any future `jq -r … > file` that a `read` loop consumes must be piped
   # through `tr -d '\r'` the same way.
   jq -r '[.[].session_id]|unique|.[]' "$tmp/events.json" 2>/dev/null | tr -d '\r' > "$tmp/sids.txt" || true
@@ -473,7 +496,7 @@ cmd_collect() {
       tfiles=$((tfiles + 1))
       local base aid role
       base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
-      role="$(jq -r --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
+      role="$(jqr --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
       [ -n "$role" ] || role="unknown"
       jq -c --arg role "$role" 'select((.message.usage // .usage) != null)
         | {role:$role, ts:(.timestamp // null), model:(.message.model // .model // null),
@@ -525,7 +548,7 @@ cmd_collect() {
   if jq -e 'map(.tok.input+.tok.output+.tok.cache_read+.tok.cache_creation)|add>0' "$tmp/turns.json" >/dev/null 2>&1; then
     token_source="transcript"
   fi
-  local turns_have_ts; turns_have_ts="$(jq -r 'any(.ts != null)' "$tmp/turns.json" 2>/dev/null || echo false)"
+  local turns_have_ts; turns_have_ts="$(jqr 'any(.ts != null)' "$tmp/turns.json" 2>/dev/null || echo false)"
 
   # --- 4b. token diagnostics: make a `none` stamp DIAGNOSABLE -----------------
   # `token_source=none` used to conflate three completely different failures, and
@@ -541,8 +564,8 @@ cmd_collect() {
   for _tf in "$projects_dir"/*/*.jsonl; do [ -e "$_tf" ] && tpresent=$((tpresent + 1)); done
   for _tf in "$projects_dir"/*/*/subagents/agent-*.jsonl; do [ -e "$_tf" ] && tpresent=$((tpresent + 1)); done
   local turns_raw turns_win
-  turns_raw="$(jq -r 'length' "$tmp/turns_raw.json" 2>/dev/null || echo 0)"
-  turns_win="$(jq -r 'length' "$tmp/turns.json" 2>/dev/null || echo 0)"
+  turns_raw="$(jqr 'length' "$tmp/turns_raw.json" 2>/dev/null || echo 0)"
+  turns_win="$(jqr 'length' "$tmp/turns.json" 2>/dev/null || echo 0)"
   case "$turns_raw" in ''|*[!0-9]*) turns_raw=0 ;; esac
   case "$turns_win" in ''|*[!0-9]*) turns_win=0 ;; esac
 
@@ -555,8 +578,8 @@ cmd_collect() {
   local unknown_note=""
   if [ "$token_source" = "transcript" ]; then
     local unknown_out total_out
-    unknown_out="$(jq -r '(.unknown.tokens.output // 0)' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
-    total_out="$(jq -r '[.[].tokens.output // 0] | add // 0' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
+    unknown_out="$(jqr '(.unknown.tokens.output // 0)' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
+    total_out="$(jqr '[.[].tokens.output // 0] | add // 0' "$tmp/roletokens.json" 2>/dev/null || echo 0)"
     case "$unknown_out$total_out" in *[!0-9]*) unknown_out=0; total_out=0 ;; esac
     if [ "${total_out:-0}" -gt 0 ] && [ "${unknown_out:-0}" -gt 0 ]; then
       local unknown_pct=$(( unknown_out * 100 / total_out ))

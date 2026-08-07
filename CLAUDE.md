@@ -207,17 +207,26 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   labor. Both are prerequisites for a rework rate by editor role.
   **v3.1 (2026-08-07) — the collector was blind on Windows, and said so misleadingly.**
   The native Windows jq build opens stdout in TEXT mode, so **every** jq line ends `\r\n`,
-  on pipes too. `$(jq …)` hides it (MSYS bash strips a *trailing* `\r\n` — which is why all
-  seven captures in `metrics.sh` are clean and the bug had exactly one site), but `read`
-  strips only the `\n`. The distinct-session-id list is the one jq-written **line list** a
-  `while read` loop consumes, and its values build **globs**: `$sid` came out 37 chars, so
-  `<uuid>\r.jsonl` matched nothing and `token_source` never left its `none` initialiser —
-  on every Windows run, via the legitimate fail-soft path, with every structural number
-  still correct. **RULE: any `jq -r … > file` consumed by a `read` loop must be piped
-  through `tr -d '\r'`** (a no-op on POSIX). The regression test simulates the Windows
-  build on any platform with a PATH shim that CRLF-ifies jq's stdout — written in `awk`,
-  NOT `sed 's/$/\r/'`, because BSD/macOS sed inserts a literal `r` and the test would be
-  silently vacuous exactly where it matters. Second half of the fix: `token_source: none`
+  on pipes too, and `read` strips only the `\n`. The distinct-session-id list is the one
+  jq-written **line list** a `while read` loop consumes, and its values build **globs**:
+  `$sid` came out 37 chars, so `<uuid>\r.jsonl` matched nothing and `token_source` never
+  left its `none` initialiser — on every Windows run, via the legitimate fail-soft path,
+  with every structural number still correct. **RULE: any `jq -r … > file` consumed by a
+  `read` loop must be piped through `tr -d '\r'`** (a no-op on POSIX). **And do NOT
+  conclude that `$(jq …)` captures are therefore safe** — that reading is what the bug
+  report and the first cut of this fix both assumed. MSYS bash strips a trailing `\r\n`
+  from command substitution; **plain bash does not** (measured: 11 bytes under MSYS bash
+  5.2.37, **12 under Linux bash 5.2.21**), so all seven scalar captures were correct on
+  Windows purely by accident of which bash Git Bash ships. They now go through
+  `jqr() { jq -r "$@" | tr -d '\r'; }` — `pipefail` keeps jq's exit status so the
+  `|| echo <default>` fallbacks still fire. **CI caught this, not the author's machine**:
+  the regression test asserts the CRLF-shimmed packet is BYTE-IDENTICAL to a clean run,
+  which on Linux exercises the exact shell/jq pairing Windows masks (it failed with
+  `"implementer\r"` role keys and every per-packet `tokens` nulled). That assertion was
+  written as redundant belt-and-braces and was the only thing separating *fixed* from
+  *fixed on this machine* — keep it. The shim is written in `awk`, NOT `sed 's/$/\r/'`,
+  because BSD/macOS sed inserts a literal `r` and the test would be silently vacuous
+  exactly where it matters. Second half of the fix: `token_source: none`
   conflated four failures and its note claimed "no transcript found" while 29 transcripts
   sat on disk. Packets now carry `token_diagnostics` (counts only, no paths) separating
   *nothing on disk* / *lookup failure* / *format drift* / *window miss*, the note names

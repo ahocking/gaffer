@@ -481,10 +481,8 @@ only ever produce structural advice on that platform.
 
 **1. Root cause: the native Windows jq build writes CRLF, and one line list is read with
 `read`.** That build opens stdout in text mode, so *every* jq line ends `\r\n`, on pipes
-as well as consoles (`jq -rn '"abc"' | od -c` ⇒ `a b c \r \n`). Command substitution
-hides this — MSYS bash strips a **trailing** `\r\n` — which is why all seven `$(jq -r …)`
-captures in the collector are clean, and why the bug had exactly one site instead of a
-dozen. But `read` strips only the `\n`. The distinct-session-id list is the one
+as well as consoles (`jq -rn '"abc"' | od -c` ⇒ `a b c \r \n`), and `read` strips only
+the `\n`. The distinct-session-id list is the one
 jq-written line list consumed by a `while read` loop, and its values build **globs**:
 `$sid` came out 37 characters instead of 36, `…/<uuid>\r.jsonl` matched nothing,
 `[ -e "$mf" ] || continue` skipped every file, and `turns.ndjson` stayed empty — so
@@ -492,14 +490,36 @@ jq-written line list consumed by a `while read` loop, and its values build **glo
 legitimate fail-soft path, which is why it was silent.
 
 Fixed at the source (`… | tr -d '\r' > sids.txt`, a no-op on POSIX where jq emits `\n`)
-and again at the consumer, and the rule is now stated in the script header: **any future
-`jq -r … > file` consumed by a `read` loop must be `tr -d '\r'`-piped.** The regression
-case installs a shim on `PATH` that CRLF-ifies jq's stdout, so the Windows build is
-simulated on any platform; it asserts the assembled packet is byte-identical to a clean
-run. The shim uses `awk`, not `sed 's/$/\r/'` — BSD/macOS sed does not interpret `\r` in
-the replacement and would insert a literal `r`, making the test silently vacuous on the
-one platform most likely to regress differently. The same one-line defect existed in
-`test-metrics.sh` itself (a jq list joined with `paste`), and is fixed the same way.
+and again at the consumer. The rule is now stated in the script header: **any `jq -r …
+> file` consumed by a `read` loop must be `tr -d '\r'`-piped.** The same one-line defect
+existed in `test-metrics.sh` itself (a jq list joined with `paste`), fixed the same way.
+
+**1b. The bug had one site by accident, not by design — and the regression test caught
+it.** The obvious reading, the one the originating bug report reached and this ADR first
+recorded, is that the collector's seven `$(jq -r …)` scalar captures are safe because
+command substitution strips the trailing `\r\n`. **That is an MSYS quirk, not bash
+behavior.** Verified directly: capturing `printf 'implementer\r\n'` yields **11 bytes
+under MSYS bash 5.2.37 and 12 bytes under Linux bash 5.2.21** — the CR survives. Those
+captures were correct on Windows purely by accident of which bash Git Bash ships, and a
+CRLF jq under any other shell would corrupt all seven.
+
+CI caught this within minutes, because the new regression test asserts the CRLF-shimmed
+packet is **byte-identical** to a clean run — strictly harsher than the production
+failure, and on Linux it exercises precisely the shell/jq combination Windows masks. It
+failed with `by_agent_role` keys of `"implementer\r"`, `\r`-suffixed window and packet
+timestamps, every per-packet `tokens` nulled (`turns_have_ts` no longer equalled
+`"true"`), and the turn counts tripping their numeric guard and resetting to 0. All raw
+reads now go through `jqr()` (`jq -r "$@" | tr -d '\r'`; `pipefail` preserves jq's exit
+status so callers' `|| echo <default>` fallbacks still fire), so correctness no longer
+depends on the host shell.
+
+Two things are worth keeping from this. The byte-identity assertion was written as a
+belt-and-braces "strongest form" check and expected to be redundant; it was the only
+thing separating *fixed* from *fixed on this machine*. And the shim deliberately uses
+`awk`, not `sed 's/$/\r/'` — BSD/macOS sed does not interpret `\r` in the replacement and
+would insert a literal `r`, making the test silently vacuous on the platform least able
+to verify it. When the check did fail it reported only `expected [same] got [differs]`,
+naming nothing; it now prints the differing fields.
 
 **2. `token_source: none` was undiagnosable, and its note actively lied.** A single
 `none` covered four unrelated failures, and the emitted note asserted "no transcript

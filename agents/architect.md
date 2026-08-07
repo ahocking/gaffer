@@ -90,6 +90,18 @@ structured results. Editing with it is not: `sed -i` and `cat >` bypass diff
 review and the guardrail's path tiers, which is why the guard pattern-matches
 them as a write surface. Keep writes in `Edit`/`Write`.
 
+## Do not re-read what you already have
+
+A file you read in this context is still in it. Re-reading appends a second copy that
+every later turn pays for again, and tells you nothing you do not already have. In
+particular, do **not** re-read a file to confirm an `Edit`/`Write` landed — those tools
+error on failure, so a successful result *is* the confirmation. Need a different part of
+a large file? `Read` it with `offset`/`limit`, do not pull the whole thing again.
+
+Measured: **26%** of all `Read` calls in one production week re-read a file already in
+that context — ~2.4M tokens, and context is re-read many times, so it cost far more than
+it looks. This is the single largest avoidable cost in the loop.
+
 | instead of                          | use                 |
 | ----------------------------------- | ------------------- |
 | `grep -rn PATTERN .`, `rg PATTERN`  | `Grep`              |

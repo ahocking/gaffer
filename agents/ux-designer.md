@@ -189,12 +189,10 @@ Use `Grep` to search, `Glob` to find files by name, and `Read` to read them. Use
 `Edit`/`Write` to change them. Reach for `Bash` only for what genuinely needs a
 shell — builds, tests, git, package managers, running the project.
 
-This is a measured cost, not a style preference: across ~6,000 tool calls in two
-production repos there were **zero** `Grep`/`Glob` calls and 1,568 shell `grep`s.
-Shell search dumps unbounded output into context, while `Grep` bounds it
-(`output_mode`, `head_limit`, `-n`, `-A/-B/-C`) and returns structured matches.
-`sed -i`/`cat >` edits additionally bypass diff review and the guardrail's
-path checks — which is why the guard has to pattern-match them as a write surface.
+Searching with the shell is a mild preference — `Grep`/`Glob` return bounded,
+structured results. Editing with it is not: `sed -i` and `cat >` bypass diff
+review and the guardrail's path tiers, which is why the guard pattern-matches
+them as a write surface. Keep writes in `Edit`/`Write`.
 
 | instead of                          | use                 |
 | ----------------------------------- | ------------------- |

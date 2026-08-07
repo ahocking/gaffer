@@ -536,7 +536,8 @@ cmd_collect() {
       [ -e "$mf" ] || continue
       tfiles=$((tfiles + 1))
       jq -c --arg aid "main:$sid" 'select((.message.usage // .usage) != null)
-        | {role:"main", aid:$aid, ts:(.timestamp // null), model:(.message.model // .model // null),
+        | {role:"main", aid:$aid, id:(.message.id // null),
+           ts:(.timestamp // null), model:(.message.model // .model // null),
            effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
@@ -550,14 +551,34 @@ cmd_collect() {
       role="$(jqr --arg a "$aid" '.[$a] // "unknown"' "$tmp/aidmap.json" 2>/dev/null)"
       [ -n "$role" ] || role="unknown"
       jq -c --arg role "$role" --arg aid "$aid" 'select((.message.usage // .usage) != null)
-        | {role:$role, aid:$aid, ts:(.timestamp // null), model:(.message.model // .model // null),
+        | {role:$role, aid:$aid, id:(.message.id // null),
+           ts:(.timestamp // null), model:(.message.model // .model // null),
            effort:(.effort // null),
            tok:((.message.usage // .usage) | {input:(.input_tokens//0), output:(.output_tokens//0),
                 cache_creation:(.cache_creation_input_tokens//0), cache_read:(.cache_read_input_tokens//0)})}' \
         "$sf" 2>/dev/null >> "$tmp/turns.ndjson" || true
     done
   done < "$tmp/sids.txt"
-  jq -s '.' "$tmp/turns.ndjson" > "$tmp/turns_raw.json" 2>/dev/null || echo '[]' > "$tmp/turns_raw.json"
+  # DEDUP BY MESSAGE ID (ADR 0019 v3.3). A transcript records the SAME assistant
+  # message more than once — observed 3x for one message id, at +2ms and +26s — so
+  # summing rows double-counts its usage block. Measured inflation across four real
+  # sessions: cacheCreation 2.3x-3.2x, output 3.3x-6.3x. The two rates DIFFER, and
+  # differ per session, so this does NOT cancel in a ratio: CC:out read 6.4 raw vs
+  # 9.0 deduped on one session and 14.9 vs 33.8 on another. Every absolute token
+  # figure and every ratio was wrong until this landed. ADR 0012's own measurement
+  # deduplicated by message id; the collector never did — that gap is the bug.
+  #
+  # Keep the EARLIEST row per id (duplicates carry identical usage, so the choice is
+  # cosmetic for totals, but it must be deterministic for the invalidation scan,
+  # which reads per-turn ts). Rows with no message id are kept verbatim: `.uuid` is
+  # per-ROW, not per-message, so keying on it would silently dedupe nothing while
+  # looking like it worked — better to under-dedupe than to invent collisions.
+  # Order is not preserved and does not need to be: every consumer either groups or
+  # sorts by ts itself.
+  jq -s '
+      ( map(select(.id != null)) | group_by(.id) | map(sort_by(.ts // "") | .[0]) )
+    + ( map(select(.id == null)) )
+  ' "$tmp/turns.ndjson" > "$tmp/turns_raw.json" 2>/dev/null || echo '[]' > "$tmp/turns_raw.json"
 
   # WINDOW-BLEED FIX (ADR 0019): the event spine and the trailer scan are bounded to
   # the run window, but the transcript files above are read WHOLE. A session whose
@@ -662,6 +683,14 @@ cmd_collect() {
   turns_win="$(jqr 'length' "$tmp/turns.json" 2>/dev/null || echo 0)"
   case "$turns_raw" in ''|*[!0-9]*) turns_raw=0 ;; esac
   case "$turns_win" in ''|*[!0-9]*) turns_win=0 ;; esac
+  # Rows the message-id dedup removed (ADR 0019 v3.3). Surfaced, not hidden: a
+  # sudden move toward 0 means the transcript stopped repeating messages OR stopped
+  # carrying `message.id` — the second silently disables the dedup, and the packet
+  # would re-inflate ~2.6x while still stamping token_source=transcript.
+  local turns_dup=0
+  turns_dup="$(wc -l < "$tmp/turns.ndjson" 2>/dev/null | tr -d ' ')"
+  case "$turns_dup" in ''|*[!0-9]*) turns_dup=0 ;; esac
+  turns_dup=$(( turns_dup - turns_raw )); [ "$turns_dup" -ge 0 ] 2>/dev/null || turns_dup=0
 
   # ATTRIBUTION CONFIDENCE (ADR 0019): role='unknown' is a subagent transcript whose
   # agent_id was never seen in the event spine, so it could not be mapped to a role
@@ -803,6 +832,7 @@ cmd_collect() {
     --argjson tpresent "${tpresent:-0}" \
     --argjson turns_raw "${turns_raw:-0}" \
     --argjson turns_win "${turns_win:-0}" \
+    --argjson turns_dup "${turns_dup:-0}" \
     --slurpfile packets "$tmp/packets.json" \
     --slurpfile roletokens "$tmp/roletokens.json" \
     --slurpfile bymodel "$tmp/bymodel.json" \
@@ -846,7 +876,8 @@ cmd_collect() {
         transcript_files_present: $tpresent,
         transcript_files_matched: $tfiles,
         usage_turns: $turns_raw,
-        usage_turns_in_window: $turns_win
+        usage_turns_in_window: $turns_win,
+        duplicate_turns_dropped: $turns_dup
       },
       mode: $mode,
       autonomy: $autonomy,
@@ -993,7 +1024,11 @@ cmd_show() {
     "by skill (tool_calls / duration):",
     ((.totals.by_skill // {}) | to_entries | sort_by(-.value.tool_calls)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms"),
     "",
-    "by tool (tool SELECTION — shell `grep`/`find`/`sed` here instead of Grep/Glob/Edit is waste):",
+    # Reports tool SELECTION. It does NOT report cost: shell search output was
+    # measured at ~187k tokens against 279M lifetime cacheCreation (0.07%), so the
+    # earlier "shell grep here is waste" framing was unfounded (ADR 0019 v3.3).
+    # `sed -i`/`cat >` remain worth watching, as WRITES that bypass diff review.
+    "by tool (selection, not cost):",
     ((.totals.by_tool // {}) | to_entries | sort_by(-.value.calls)[] | "  \(.key): \(.value.calls) calls / \(.value.duration_ms)ms"),
     "",
     "by command class (rtk-targeting: calls / duration):",
@@ -1003,15 +1038,21 @@ cmd_show() {
        ((.totals.by_lane) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms")
      else empty end),
     "",
-    "packets (id | wave | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
-    "",
+    # The audit sits ABOVE the packets table on purpose: it is the "something is off"
+    # section, and a run with 14 packets pushed it far enough down the page that a real
+    # deviation (16 of 83 dispatches overriding a declared model, 13 onto opus) went
+    # unread. Counters that the collector emits as null mean UNMEASURED — a legacy run
+    # predating the instrumentation — and must never render as 0, which reads as clean.
+    # That distinction is deliberate in the packet and used to be erased right here.
     "routing audit (opus orchestrator edits vs implementer dispatches; label \(if (.audit.labels_present) then "present" else "ABSENT — pre-instrumentation run" end)):",
     "  orchestrator_impl_edits=\(.audit.orchestrator_impl_edits // 0)   implementer_dispatches=\(.audit.implementer_dispatches // 0)   by_tier=\(.audit.by_tier // {})",
     "  tier labels: \((.audit.packets_total // 0) - (.audit.packets_missing_tier // 0))/\(.audit.packets_total // 0) packets labelled\(if (.audit.packets_missing_tier // 0) > 0 then "   ⚠ UNMEASURED: \(.audit.unlabelled_packet_ids // [] | join(", "))" else "" end)",
-    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(.audit.dispatches_with_model_override // 0))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
-    "  failed_tool_calls=\(.totals.failed_tool_calls // 0)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
-    ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end)
+    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-instrumentation run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
+    "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
+    ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
+    "",
+    "packets (id | wave | tool_calls | active | dur | out-tok):",
+    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")")
   ' "$f"
   printf '\npacket: %s\n' "$f"
 }

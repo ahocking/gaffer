@@ -121,12 +121,9 @@ Use `Grep` to search, `Glob` to find files by name, and `Read` to read them.
 Reach for `Bash` only for what genuinely needs a shell — `git diff`/`git log`,
 builds, tests, running the project.
 
-This is a measured cost, not a style preference: across ~6,000 tool calls in two
-production repos there were **zero** `Grep`/`Glob` calls and 1,568 shell `grep`s.
-Shell search dumps unbounded output into context, while `Grep` bounds it
-(`output_mode`, `head_limit`, `-n`, `-A/-B/-C`) and returns structured matches.
-For a read-only agent that reviews wide and reports narrow, that difference is
-most of your context budget.
+`Grep`/`Glob` return bounded, structured results (`output_mode`, `head_limit`,
+`-n`, `-A/-B/-C`), which is easier to act on than a raw dump and keeps a wide
+search from crowding out what you are actually reading.
 
 | instead of                          | use                 |
 | ----------------------------------- | ------------------- |

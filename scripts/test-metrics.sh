@@ -861,6 +861,64 @@ check "ctxinval: no cross-dispatch FP" "0" \
 check "effort: absent on legacy"    "0"    "$(jq -r '.totals.by_effort|length' "$OUT")"
 check "ctxinval: legacy model-only" "0"    "$(jq -r '.totals.context_invalidations.count' "$OUT")"
 
+echo "== v3.3: transcript turns are deduplicated by message.id =="
+# A transcript records the SAME assistant message more than once (production: 3x for
+# one id, at +2ms and +26s), each row carrying the full usage block. Summing rows
+# inflated cacheCreation 2.3x-3.2x and output 3.3x-6.3x — at DIFFERENT rates, so it
+# did not cancel in CC:out. Rows with no message.id must be kept verbatim: .uuid is
+# per-ROW, so keying on it would dedupe nothing while appearing to work.
+DREPO="$ROOT/drepo"; mkdir -p "$DREPO/.agents/metrics/events"
+git -C "$DREPO" init -q; git -C "$DREPO" config user.email t@t; git -C "$DREPO" config user.name t
+echo a > "$DREPO/f.txt"; git -C "$DREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$DREPO" commit -q -m "w
+
+[orch packet:dup-one]"
+cat > "$DREPO/.agents/metrics/events/D1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"ok":true}
+JSON
+DPROJ="$ROOT/dproj"; mkdir -p "$DPROJ/proj"
+# msg_A appears 3x (the production shape). msg_B once. Two rows carry NO id at all.
+# Deduped truth: 1000 (A) + 200 (B) + 70 + 70 (idless) = 1340 cacheC over 4 turns.
+cat > "$DPROJ/proj/D1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-21T10:00:02.100Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:02.102Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:28.700Z","effort":"high","message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":40,"cache_creation_input_tokens":1000,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:03Z","effort":"high","message":{"id":"msg_B","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":20,"cache_creation_input_tokens":200,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:04Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":70,"cache_read_input_tokens":10}}}
+{"type":"assistant","timestamp":"2026-07-21T10:00:05Z","effort":"high","message":{"model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":7,"cache_creation_input_tokens":70,"cache_read_input_tokens":10}}}
+JSON
+DOUT="$ROOT/drun.json"
+"$METRICS" collect --main-root "$DREPO" --projects-dir "$DPROJ" --out "$DOUT" >/dev/null 2>&1
+check "dedup: token_source"        "transcript" "$(jq -r '.token_source' "$DOUT")"
+check "dedup: cacheC counted once" "1340" "$(jq -r '.totals.tokens.cache_creation' "$DOUT")"
+check "dedup: output counted once" "74"   "$(jq -r '.totals.tokens.output' "$DOUT")"
+check "dedup: rows dropped"        "2"    "$(jq -r '.token_diagnostics.duplicate_turns_dropped' "$DOUT")"
+check "dedup: turns kept"          "4"    "$(jq -r '.token_diagnostics.usage_turns' "$DOUT")"
+# idless rows must NOT collapse into one — under-dedupe is the safe direction.
+# If they had collapsed, this would read 1270 over 3 turns instead of 1340 over 4.
+check "dedup: idless rows kept"    "1340" "$(jq -r '.totals.by_model["claude-opus-5"].cache_creation' "$DOUT")"
+# The EARLIEST duplicate must win. msg_A's latest row is at 10:00:28.7Z, PAST the
+# window end (10:00:06Z) — so if the last row won instead, msg_A would be filtered
+# out and this would read 3 turns / 340 cacheC. Keeping 4/1340 proves earliest won.
+check "dedup: earliest row wins"   "4"    "$(jq -r '.token_diagnostics.usage_turns_in_window' "$DOUT")"
+
+echo "== v3.3: show reports unmeasured counters as unmeasured, not as clean zeros =="
+# The audit block already existed; what it did wrong was render null (a legacy run
+# that predates the counter) as 0, which reads as "checked, nothing found".
+SHOW_OUT="$("$METRICS" show "$EOUT" 2>/dev/null)"
+check "show: audit present"        "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^routing audit')"
+check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'explicit model overrides')"
+# audit must come BEFORE the packets table, not be buried under it
+check "show: audit above packets"  "before" \
+  "$(printf '%s\n' "$SHOW_OUT" | awk '/^routing audit/{a=NR} /^packets \(id/{p=NR} END{print (a>0 && a<p) ? "before" : "after"}')"
+# a legacy run must read as UNMEASURED, never as a clean zero
+SHOW_LEG="$("$METRICS" show "$OUT" 2>/dev/null)"
+check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'explicit model overrides: unmeasured')"
+# the retracted cost claim must not come back in the by_tool heading
+check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0

@@ -257,17 +257,47 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   `(role, agent_id)`, NOT per role, so two dispatches of one role on different models read as
   normal tier routing rather than a switch; ts-less turns are excluded (degrade to 0), and an
   empty `by_effort` means *unmeasured*, never *constant*.
-- **Search/edit tool selection is a measured cost, and it lives in the agent prompts**
-  (ADR 0019 v3). All seven `agents/*.md` carry a "structured tools, not the shell"
-  section: `Grep`/`Glob`/`Read` to search and read, `Edit`/`Write` to change, `Bash` only
-  for builds, tests, git, and running the project. This is not style — two production
-  repos logged **0** `Grep`/`Glob` calls against 1,568 shell `grep`s, 258 `find`s and 496
-  `sed`s in ~6k tool calls. Shell search dumps unbounded output into context where `Grep`
-  bounds it (`output_mode`/`head_limit`), and `sed -i`/`cat >` edits bypass diff review
-  and the guard's path tiers — which is exactly why `guard.sh` must pattern-match them as
-  a write surface. It has to live in the **agent** prompts: this file does not propagate,
-  and every one of these agents is granted `Grep, Glob` already — the grant was never the
-  problem. Keep the block when editing an agent, and add it to any new one.
+  **v3.3 (2026-08-07) — every token number before it was inflated ~2.6x.** A transcript
+  records the SAME assistant message more than once (observed **3x** for one id, at +2ms and
+  +26s), each row carrying the full `usage` block, and the collector summed rows. **ADR 0012's
+  own measurement deduplicated by `message.id`; the collector never did.** Measured inflation
+  over four real sessions: cacheCreation **2.3x–3.2x**, output **3.3x–6.3x** — *different
+  rates, differing per session*, so it does **NOT** cancel in a ratio: `CC:out` read 6.4 raw
+  vs **9.0** deduped on one session and 14.9 vs **33.8** on another. Directionally the
+  conclusions held (ordering unchanged, best-vs-worst gap *widens* 2.3x → 3.8x) but that was
+  luck. Dedup keeps the **earliest** row per id (duplicates carry identical usage, so the pick
+  is cosmetic for totals but must be deterministic for the `context_invalidations` ts scan);
+  rows with **no** `message.id` are kept verbatim, because `.uuid` is per-**ROW** and keying on
+  it would dedupe nothing while looking like it worked — under-dedupe is the safe direction.
+  `token_diagnostics.duplicate_turns_dropped` makes the rate visible: a drift toward 0 means
+  either the transcript stopped repeating messages **or** stopped carrying `message.id`, and
+  the second silently re-inflates ~2.6x while still stamping `token_source: transcript`.
+  v3.3 also fixed `show` rendering **`null` as `0`** for `dispatches_with_model_override` and
+  `failed_tool_calls` — the collector emits null for pre-instrumentation runs *on purpose*
+  (its own comment calls reporting 0 "a lie") and `show` told that lie via `// 0`, so a legacy
+  run read as fully-audited-and-clean. The audit block also moved **above** the per-packet
+  table: at 14 packets it was off-screen, which is how a real signal goes unread with nothing
+  actually hidden. **Neither was missing instrumentation** — do not reach for a new counter
+  when the existing one is being rendered or placed wrongly.
+- **Search-tool selection is a PREFERENCE; only the write surface is a real control**
+  (ADR 0019 v3.3 — **v3's cost claim is RETRACTED**). All seven `agents/*.md` carry a
+  "structured tools, not the shell" section: `Grep`/`Glob`/`Read` to search and read,
+  `Edit`/`Write` to change, `Bash` for builds, tests, git, and running the project.
+  v3 asserted this was "a measured cost, not a style preference" and the read-only
+  agents were told shell search was "most of your context budget." **Both were wrong,
+  and the error is instructive:** the finding v3 actually had was **0** `Grep`/`Glob`
+  against 1,568 shell `grep`s — a measurement of tool *selection*, which was then
+  reported as a measurement of tool *cost* without anyone measuring cost. Measured
+  properly (join `tool_use`→`tool_result` in the transcripts and total the result
+  bytes): shell search across 30 sessions is **~187k tokens against 279M lifetime
+  cacheCreation — 0.07%**, mean 1,164 chars per call. Eliminating it entirely saves a
+  rounding error. `Read` is **7.6x** all shell search combined, with the top decile of
+  calls carrying half the volume — so the real read-cost lever is scoping what agents
+  read, not how they search. What survives is the WRITE half, and it survives on its
+  own merits: `sed -i`/`cat >` bypass diff review and the guard's path tiers, which is
+  exactly why `guard.sh` must pattern-match them as a write surface. **The general
+  lesson: a frequency count is not a cost measurement.** Keep the (now smaller) block
+  when editing an agent; do not re-add a cost claim to it without a cost measurement.
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

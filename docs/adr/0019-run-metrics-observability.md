@@ -614,6 +614,107 @@ Regression cases live in `scripts/test-metrics.sh` under the three `v3.2` headin
 the non-regressions that matter: legacy transcripts leave `by_effort` absent rather than
 zeroed, and separate dispatches of one role never register as an invalidation.
 
+## v3.3 revision (2026-08-07) — every token number was inflated ~2.6x, and v3's cost claim was never measured
+
+Two corrections. The first invalidates every absolute token figure this collector has ever
+emitted; the second retracts a claim this ADR itself made and propagated into seven agent
+prompts. Both were found the same way — by trying to *calibrate* a recommendation rather
+than act on it.
+
+### 1. Deduplicate transcript turns by `message.id`
+
+A transcript records the **same assistant message more than once**. Observed: message id
+`msg_011CdnkJ7EP1uDWn2Wbn` appearing three times, at +2ms and +26s, each carrying the full
+`usage` block. Summing rows therefore counts the same tokens repeatedly. `metrics.sh` had no
+dedup; **ADR 0012's own measurement deduplicated by message id** ("totals come from each
+agent's transcript, deduplicated by message id"), so the technique was known in this repo and
+simply never reached the collector.
+
+Measured inflation across four real sessions:
+
+| Session | cacheCreation | output | CC:out raw | CC:out deduped |
+|---|---|---|---|---|
+| `89cecaec` | 3.16x | 4.38x | 5.6 | **7.8** |
+| `58215cfa` | 2.32x | 3.28x | 6.4 | **9.0** |
+| `0195876b` | 2.60x | 3.67x | 11.8 | **16.6** |
+| `970115da` | 2.64x | 4.33x | 12.6 | **20.6** |
+| `af043d81` | 3.03x | 4.09x | 19.4 | **26.2** |
+| `e383a0d8` | 2.76x | 6.25x | 14.9 | **33.8** |
+
+**The two rates differ, and differ per session, so this does NOT cancel in a ratio.** That is
+what makes it more than a scaling error: CC:out — the metric every optimization decision here
+was ranked by — was wrong by 1.4x-2.3x, non-uniformly. Directionally the conclusions survived
+(the ordering is unchanged and the best-vs-worst gap *widens* from 2.3x to 3.8x), but that was
+luck, not method.
+
+The fix keeps the **earliest** row per id. Duplicates carry identical usage so the choice is
+cosmetic for totals, but it must be deterministic for the `context_invalidations` scan, which
+reads per-turn `ts`. Rows with **no** `message.id` are kept verbatim rather than keyed on
+`.uuid`: `.uuid` is per-ROW, not per-message, so keying on it would silently dedupe nothing
+while appearing to work. Under-deduping is the safe direction. `token_diagnostics` gains
+`duplicate_turns_dropped` so the rate is visible — a sudden move toward 0 means either the
+transcript stopped repeating messages **or** stopped carrying `message.id`, and the second
+would silently re-inflate the packet ~2.6x while still stamping `token_source: transcript`.
+
+### 2. RETRACTED: "search tool selection is a measured cost"
+
+v3 added a "structured tools, not the shell" section to all seven `agents/*.md`, asserting it
+was "a measured cost, not a style preference," and telling the three read-only agents that
+shell search was "most of your context budget."
+
+**No cost was ever measured.** The v3 finding was **0** `Grep`/`Glob` calls against 1,568
+shell `grep`s — a measurement of tool *selection*. It was reported as a measurement of tool
+*cost*, and the inference went unchallenged because the number was striking.
+
+Measured properly — joining `tool_use`→`tool_result` in the transcripts and totalling result
+bytes across 30 sessions:
+
+| | calls | output | mean |
+|---|---|---|---|
+| shell search (`grep`/`find`/`rg`) | 643 | **749,069 ch ≈ 187k tok** | 1,164 ch |
+| `Grep`/`Glob` | 10 | 1,680 ch | — |
+| `Read` | 1,192 | **5,668,991 ch ≈ 1,417k tok** | 4,755 ch |
+
+187k tokens against 279M lifetime cacheCreation is **0.07%**. The greps are well-targeted, not
+unbounded dumps. Eliminating shell search entirely saves a rounding error, and the
+planned guard-hook enforcement was dropped on this evidence.
+
+The same measurement points somewhere real: **`Read` is 7.6x all shell search combined**, and
+the **top 10% of `Read` calls carry 50% of the volume** (top 25% carry 73%; median read is
+only 2,189 chars). A few very large document reads dominate — which is the coordinator
+read-list problem, and the opposite of a search-tool problem.
+
+What survives is the **write** half, on its own merits and independent of tokens: `sed -i` and
+`cat >` bypass diff review and the guard's path tiers, which is why `guard.sh` pattern-matches
+them as a write surface. The agent blocks now say only that, and are shorter for it — which
+matters directly, since they are re-read on every dispatch.
+
+**The general lesson, recorded because this ADR made the mistake twice in two revisions
+(v3 here, and the phantom-packet framing in v3.2): a frequency count is not a cost
+measurement.** Do not add a cost claim to an agent prompt without measuring cost.
+
+### 3. `show` reported unmeasured counters as clean zeros
+
+This started from a wrong premise too, and the correction is the useful part. The plan was
+"surface the routing audit, because nothing prints it" — after a real deviation (16 of 83
+dispatches overriding a declared model, 13 onto opus) went unnoticed for weeks. **`show`
+was already printing it.** The counters were never dark.
+
+Two things were actually wrong:
+
+- **`null` rendered as `0`.** The collector deliberately emits `dispatches_with_model_override`
+  and `failed_tool_calls` as `null` for runs predating the instrumentation, with an explicit
+  comment that reporting them as `0` would be "a lie" — and then `show` applied `// 0` and
+  told exactly that lie. A legacy run read as "83 dispatches, 0 overrides, 0 failures": fully
+  audited and perfectly clean. Both now print `unmeasured — pre-instrumentation run`.
+- **Placement.** The audit sat *below* the per-packet table. At 14 packets it is off the
+  bottom of a screen, which is how a real signal goes unread without anything being hidden.
+  It now prints above the table.
+
+Worth stating plainly, because it recurs: the failure was **not** missing instrumentation.
+It was a true value rendered indistinguishably from a false one, and a real signal placed
+where nobody looks. Adding a new counter would have fixed neither.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

@@ -59,6 +59,15 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh show <path>   # a specific packet
 Relay the run/window/tokens/cache-ratio, the per-role token split, and the
 per-packet table to the user.
 
+This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
+the tally means "this is a run and here is its state", and there is nothing to count
+here. The rest of the conventions in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` still apply: plain-English titles
+before packet ids, one line per finding, empty sections omitted, and no restating of
+the raw JSON. Where a number is *unmeasured* rather than zero (`null` on a legacy
+run), say so in words — a `0` the human reads as "clean" is the exact failure v3.3
+already had to fix once in this skill's own output.
+
 ## 4. `status` — is it on, and what can it see?
 
 ```bash
@@ -112,6 +121,13 @@ timing, waves, tool counts — are unaffected). Then produce a **ranked, concret
 of changes (e.g. "wave 3 lanes re-load ~40k each; widen file-disjointness so N more run
 concurrently", or "reviewer spends 2× the implementer in cacheCreation — hold its
 context across packets"), most-impactful first, each tied to the metric that motivates it.
+
+**A recommendation that is really a trade-off is a decision block**
+(`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`), not a bullet. "Widen
+file-disjointness" costs review confidence; "hold the reviewer's context" costs
+freshness. Where you are recommending something the human gives up something for, give
+them the two options, what follows from each, your lean, and the default — the same
+form every other ask in this plugin takes. A bullet that hides a cost reads as free.
 
 For a single small packet, reasoning inline is fine. For a deep or multi-run analysis,
 delegate to the **architect** (the optimization/architecture authority) via `Task`,

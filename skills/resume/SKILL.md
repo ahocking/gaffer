@@ -52,10 +52,13 @@ sequential resume.
    **Give it the file path — it has no `Skill` tool** (ADR 0012, finding 4).
    The reconcile in §2 is deliberately inside the dispatch: it is git-state work,
    and its output belongs in the subagent's context, not yours.
-4. **Relay the returned check-in verbatim**, then hand off to
+4. **Render the returned check-in into the human check-in shape**
+   (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape A — from the returned
+   text alone, never by re-reading the repo), then hand off to
    `/gaffer:run-loop` §0 — the same contract drives every packet after this
    one. If the check-in reports `escalate`, a red tip, or a blocking question,
-   **stop and surface it**; those are the human's, not yours to resolve.
+   **stop and surface it** as a stop report (shape B) with the question written as an
+   answerable decision; those are the human's, not yours to resolve.
 
 Everything below §0 is written for **whoever executes the resume** — you, at
 `--inline`/a small remaining backlog, or the dispatched Chief Engineer under the
@@ -182,12 +185,26 @@ if it errors or `jq` is absent, ignore it and continue.
 
 If `pending_questions` contains any `blocking` entry for the packet at
 `backlog.cursor`, the loop **cannot** proceed on it — present those questions to
-the human as a check-in and wait. Non-blocking questions are surfaced but do not
-halt progress on unrelated packets.
+the human and wait. Present them as the **Decisions for you** block of the stop
+report (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B): each one an
+answerable choice with what follows from each option and your lean, not the raw
+`pending_questions` text. These were written by a session that no longer exists, so
+give the human the plain-English title of the packet they block — they will not
+recognise the id. Non-blocking questions are surfaced but do not halt progress on
+unrelated packets.
 
 ## 4. Continue from the cursor
 
-With no blocking questions in the way, pick up the packet at `backlog.cursor` and
+**First, emit the kickoff** — shape C in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, headed `### Resuming`. State what
+is **left**, not what the original run set out to do: the remaining packets in plain
+words, what is expected to need a decision, and where this session will stop. The
+human may be days removed from the run and remembers none of the ids; the checkpoint
+you just loaded is the only thing that does. Where the tree needed reconciling (§2),
+say so in one line — whether anything was adopted or set aside, and whether the
+resumed state matches where they think they left off.
+
+Then pick up the packet at `backlog.cursor` and
 continue the implement → test → review → commit-on-branch loop under the session's
 autonomy level. Honor the same gates as before: the Chief Engineer owns routine
 commits above `interactive` (and merge/rebase/push onto non-`main` branches at

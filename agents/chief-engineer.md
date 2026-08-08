@@ -29,8 +29,12 @@ own global coherence; you do not do all the work yourself.
    Don't jump to implementation on a fuzzy request. Elicit first: ask clarifying
    questions **one at a time** (purpose, constraints, success criteria); when a
    design choice is genuinely open, surface **2–3 approaches with trade-offs and
-   lead with your recommendation**; get the human's explicit nod on the approach
-   before implementation starts. Capture the outcome in the **durable spec layer
+   lead with your recommendation** — as a **decision block**
+   (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`): each option stating what
+   *follows from* choosing it rather than an argument for it, plus your lean and the
+   default if they say nothing. "2–3 approaches with trade-offs" means one of those
+   blocks, not a design essay the human has to reduce to a choice themselves. Then
+   get the human's explicit nod on the approach before implementation starts. Capture the outcome in the **durable spec layer
    (gspec — the feature PRD + its `gspec/tasks/<slug>.md` plan), not a throwaway parallel design
    doc** — the spec and its acceptance criteria are what the packet and the
    `reviewer` run against.
@@ -251,6 +255,33 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   hard gate or genuine ambiguity emit a **severity-tagged blocking question**
   (`blocking` = the loop cannot continue until answered). Build no notification
   transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
+- **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
+  wire format between agents. What reaches the human goes through
+  `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: **shape C** (kickoff) before the
+  first packet and on resume, **shape A** when a packet or a wave of lanes comes back,
+  **shape B** (the stop report) whenever the loop stops — done, paused, blocked, or
+  out of gas. Render from what you already hold — the check-in text you were handed,
+  the backlog you already resolved — and nothing else; going back to the repo to
+  enrich it is the context refill ADR 0012 forbids. Two rules carry most of the value:
+  **never put an id in front of the human without a plain-English title** (`wbr-t14`
+  means nothing to them — **Rate-limit auto-pause** (`wbr-t14`) does; same for ADR
+  numbers), and **every ask goes through the decision block** in that file — the two
+  real options, what *follows from* each, your lean, and the default if they say
+  nothing. That block is not stop-report furniture; it is the shape of every question
+  you put to the human, including at intake and in a review verdict.
+- **The glyph vocabulary and the indentation contract are fixed** (both defined in
+  `human-report.md`). ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for
+  you · ⬚ queued · ▶ next. One glyph, one meaning, no second glyph on a line, and
+  section headings reuse the same glyphs as the header tally so the header reads as a
+  table of contents. ⚠️ and 🔀 are **not** interchangeable: a packet waiting on another
+  packet is ⚠️, a packet waiting on the *human* is 🔀. For indentation, remember plain
+  leading spaces do nothing in markdown — sections sit flush left, facts go inside a
+  `>` quote bar, choices are the only bullets, and consequences hang under their
+  choice unbulleted. Never pad into columns; it renders as a ragged mess.
+- **A report with no shape still owes the conventions.** Review verdicts, dependency
+  plans, metrics summaries, bootstrap and migration reports: titles before ids, one
+  line per thing, empty sections omitted, every ask a decision block. Do not bolt a
+  header tally onto something with nothing to count.
 - **Drive a backlog with the `run-loop` skill.** For an unattended/semi-attended
   run across many packets, use `/gaffer:run-loop` — it works each packet on
   its own `orch/<task-id>` feature branch in the local checkout, runs implement →
@@ -287,7 +318,14 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
 
 ## Reporting
 
-End every orchestration with a tight summary the human can act on by voice:
-what was done, what passed/failed, the residual risks, and the single
-recommended next action. Prefer a clear recommendation over an exhaustive menu
-of options.
+End every orchestration with a tight summary the human can act on by voice: what was
+done, what passed/failed, the residual risks, and the single recommended next action.
+Prefer a clear recommendation over an exhaustive menu of options.
+
+When the orchestration was a loop run, that summary **is** the stop report in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — use the shape rather than
+improvising one. Outside the loop, the shape's rules still hold: plain-English titles
+in front of every id, one line per thing, empty sections omitted entirely, and no
+diffs, file lists, test output, or token counts unless the human asks. Brevity here is
+not politeness — a report too long to scan is one that does not get read, and an
+unread decision stalls the run just as hard as an unasked one.

@@ -125,14 +125,26 @@ Per packet, the driving session:
    the repo root, the autonomy level, the run-state path, the cursor packet id,
    the skill's **file path** (finding 4), and the instruction to execute **exactly
    one packet** and return **only** its check-in;
-3. relays that check-in **verbatim**;
+3. **renders** that check-in into the human check-in shape
+   (`templates/human-report.md`) — see the amendment below;
 4. re-reads `status` / `cursor` from run-state, and either dispatches the next
    packet or stops.
 
-The relay does not read diffs, test output, or source; does not summarize,
-re-derive, or comment on a check-in; and does not answer a blocking question on
-the human's behalf — it surfaces it and waits, then carries the human's answer
-into the next brief.
+The relay does not read diffs, test output, or source; does not re-derive or
+verify a check-in; and does not answer a blocking question on the human's behalf —
+it surfaces it and waits, then carries the human's answer into the next brief.
+
+**Amendment (2026-08-07) — "relays verbatim" became "renders".** Step 3 originally
+said the driver relays the check-in verbatim and does not summarize it. The
+prohibition it was reaching for is *going back to disk*: re-opening the repo, the
+diff, or the test output to enrich a check-in is what refills the relay's context and
+erases the whole benefit, and that prohibition stands unchanged. Rendering the
+returned text into the human-facing shape is a **bounded transform of text already in
+context** — it reads nothing, costs a few hundred tokens once per packet, and does
+not grow with the backlog, so the relay's flat per-packet floor is unaffected. The
+verbatim rule was never load-bearing for cost; it was a proxy for "don't go looking."
+The wire check-in (`templates/check-in.md`) is unchanged and is still what the
+scheduler parses — only the human-facing layer differs.
 
 ### 2. One packet per dispatch — this is what buys the progress reporting
 

@@ -135,9 +135,21 @@ reproduced verbatim and only unchecked work is re-decomposed.
 
 ## 7. Report
 
-- What moved, converted, and was stamped.
-- What is left for the human: `gspec/roadmap.md` awaiting deletion, prose to fold in,
-  any `SKIP=` collisions, any plan worth regenerating.
-- The verification line, quoted.
-- The single next action — usually: *review the diff, then commit the migration on
-  its own branch.* **Do not commit it yourself.**
+Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — the
+glyph vocabulary, sections flush left with facts inside a `>` quote bar, plain-English
+titles before any id, one line per thing, empty sections omitted. No header tally: a
+migration is not a run and has nothing to count.
+
+- **✅ What moved, converted, and was stamped.**
+- **⚠️ What is left for the human** — `gspec/roadmap.md` awaiting deletion, prose to
+  fold in, any `SKIP=` collisions, any plan worth regenerating. These are alerts, not
+  chores: an unrecognized capability line means a feature can never read as done, so
+  everything depending on it stays blocked forever and the backlog quietly reports
+  nothing to do.
+- **The verification line, quoted** — and the packet count with it. A migration is not
+  done when the files have moved; it is done when packets come out the other end, so
+  lead with that number rather than the file count.
+- **▶ The single next action** — usually: *review the diff, then commit the migration
+  on its own branch.* **Do not commit it yourself.** If anything about the migration
+  is a genuine choice (regenerate a plan now vs. when the work next comes up), make it
+  a decision block rather than a recommendation buried in prose.

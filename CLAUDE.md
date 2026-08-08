@@ -401,6 +401,63 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **There are two report layers, and they have different readers.**
+  `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
+  Engineer returns it and the scheduler *parses* it, so its keys are stable and it
+  stays machine-shaped. `templates/human-report.md` is what the **human** reads:
+  one shared **decision block** plus three shapes — **C** kickoff (before the first
+  packet, and on resume), **A** check-in (a packet or wave came back), **B** stop
+  report (the loop stopped, for any reason). The main-context agent renders them from
+  the wire text and the already-resolved backlog, **and nothing else** — ADR 0012 step
+  3 was amended from "relay verbatim" to "render" for exactly this, because the rule
+  it was protecting is *don't go back to disk*, not *don't reword*. A bounded text
+  transform costs a few hundred tokens once per packet and does not grow with the
+  backlog; re-opening the repo to enrich a check-in is what refills a relay's context.
+  Two conventions are the whole point and the first thing to drift: **no bare ids**
+  (`wbr-t14` and "ADR 0017" mean nothing to a reader who is not holding the numbering
+  — every id gets a plain-English title on first appearance), and **every ask goes
+  through the decision block** (two real options, what *follows from* each — the
+  consequence, not the argument — plus a lean and the default if the human says
+  nothing). Empty sections are omitted, never written as "none".
+  **Two formatting contracts carry the scannability, and both are fixed.** The **glyph
+  vocabulary** — ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for you ·
+  ⬚ queued · 🔁 retried · ⏸️ paused · ▶ next — is one glyph, one meaning, never two on
+  a line. ⚠️ and 🔀 are **not** interchangeable and the split is load-bearing: waiting
+  on another packet is ⚠️, waiting on the *human* is 🔀, which is why a tally can
+  honestly read `⚠️ 2 blocked · 🔀 3 decisions`. **Section headings reuse the tally's
+  glyphs in the tally's order**, so the header line works as a table of contents — add
+  a decorative section marker (📦, 🎯) and that correspondence silently breaks. The
+  **indentation contract** exists because markdown here renders proportional and
+  **plain leading spaces indent nothing** (≤3 stripped, 4+ becomes a code block): so
+  sections sit flush left, facts go inside a `>` quote bar (which also draws the
+  section's vertical rule — hence no horizontal rules anywhere), bullets appear
+  **only** for choices, and consequences hang unbulleted under their choice. Never pad
+  into columns; alignment survives only inside a fence, and a fence costs every bold in
+  it. The header **tally replaced a progress bar** on purpose: a bar collapses "waiting
+  on you" and "not started" into one grey tail, which are precisely the two states the
+  human needs to tell apart. Tables are banned outright — they read worst on a phone,
+  which is where these land.
+  **Conventions are not the same as shapes, and reports without a shape still owe
+  them**: `review-change`'s verdict, `build-packet-dependency-tree`'s plan (which *is*
+  a kickoff — use shape C), `metrics show`/`analyze`, `new-project`, and `migrate` all
+  carry the vocabulary, the indentation, and the decision block. But do **not** bolt a
+  header tally onto a report with nothing to count — on a metrics summary it is
+  decoration, and decoration is what teaches a reader to stop trusting the glyphs.
+  **The decision block is a shared primitive, not stop-report furniture** — it is
+  also the Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s
+  Risks section, and an inline ask under a blocked lane in a check-in whose run is
+  still going. That is why it is factored out: four near-identical shapes would drift
+  apart, and the un-actionable form ("things a human should weigh") is exactly what
+  they drift *into*. **The kickoff is the cheapest correction point in a run** — a
+  wrong assumption costs a sentence there and several packets at the stop report,
+  which is why shape C carries an explicit `Assuming:` line and why `run-loop` emits
+  it *after* preflight and backlog resolution, when it states facts rather than
+  intentions. Deliberately NOT built, so they do not get invented later: a
+  welcome-back shape (identical content to B — reuse it), a metrics shape (numbers-
+  dense and pulled on demand, not pushed), anything for guard ASK-tier prompts (Claude
+  Code renders those natively and a template cannot reach them), and a mid-packet
+  progress heartbeat (a subagent returns nothing until it finishes — ADR 0012; that
+  is a transport limit, and a shape that implied liveness would be lying).
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

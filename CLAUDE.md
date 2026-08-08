@@ -419,6 +419,30 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   through the decision block** (two real options, what *follows from* each — the
   consequence, not the argument — plus a lean and the default if the human says
   nothing). Empty sections are omitted, never written as "none".
+  **Two formatting contracts carry the scannability, and both are fixed.** The **glyph
+  vocabulary** — ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for you ·
+  ⬚ queued · 🔁 retried · ⏸️ paused · ▶ next — is one glyph, one meaning, never two on
+  a line. ⚠️ and 🔀 are **not** interchangeable and the split is load-bearing: waiting
+  on another packet is ⚠️, waiting on the *human* is 🔀, which is why a tally can
+  honestly read `⚠️ 2 blocked · 🔀 3 decisions`. **Section headings reuse the tally's
+  glyphs in the tally's order**, so the header line works as a table of contents — add
+  a decorative section marker (📦, 🎯) and that correspondence silently breaks. The
+  **indentation contract** exists because markdown here renders proportional and
+  **plain leading spaces indent nothing** (≤3 stripped, 4+ becomes a code block): so
+  sections sit flush left, facts go inside a `>` quote bar (which also draws the
+  section's vertical rule — hence no horizontal rules anywhere), bullets appear
+  **only** for choices, and consequences hang unbulleted under their choice. Never pad
+  into columns; alignment survives only inside a fence, and a fence costs every bold in
+  it. The header **tally replaced a progress bar** on purpose: a bar collapses "waiting
+  on you" and "not started" into one grey tail, which are precisely the two states the
+  human needs to tell apart. Tables are banned outright — they read worst on a phone,
+  which is where these land.
+  **Conventions are not the same as shapes, and reports without a shape still owe
+  them**: `review-change`'s verdict, `build-packet-dependency-tree`'s plan (which *is*
+  a kickoff — use shape C), `metrics show`/`analyze`, `new-project`, and `migrate` all
+  carry the vocabulary, the indentation, and the decision block. But do **not** bolt a
+  header tally onto a report with nothing to count — on a metrics summary it is
+  decoration, and decoration is what teaches a reader to stop trusting the glyphs.
   **The decision block is a shared primitive, not stop-report furniture** — it is
   also the Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s
   Risks section, and an inline ask under a blocked lane in a check-in whose run is

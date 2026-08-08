@@ -127,6 +127,16 @@ empty one would add nothing. Mention it exists when you report — it is what un
   assumptions leaked in. Stack is decided later via the gspec `stack` skill.
 
 ## 6. Summarize and request approval (Chief Engineer)
+
+Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — glyph
+vocabulary, sections flush left with facts inside a `>` quote bar, one line per thing,
+empty sections omitted, no header tally (a bootstrap is not a run). **✅** what was
+laid down, **⚠️** anything that needs the human's eye (an installer prompt you paused
+on, a `PIN` that resolved empty), **▶** the next action. The closing approval request
+is itself an ask, so it takes a **decision block** — the human is choosing whether to
+`git init` and commit now or inspect first, and both options have consequences worth
+one line each.
+
 Report: the repo path, what was installed (gspec skills under `.claude/skills/` +
 overlay + seeded `.agents/roadmap.yaml`), the pinned gspec version installed, any
 installer prompts you paused on, and the

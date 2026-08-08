@@ -64,22 +64,27 @@ existing architecture and boundaries, and flag any ADR that should be written or
 updated.
 
 ## 5. Verdict (Chief Engineer)
-The **chief-engineer** consolidates into one report. It follows the conventions in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — plain-English titles before any
-id, one line per thing, empty sections omitted rather than written as "none", and no
-diff or test-output dumps:
+The **chief-engineer** consolidates into one report. This verdict has no shape of its
+own, but it owes every convention in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — the glyph vocabulary, the
+indentation contract (sections flush left, facts inside a `>` quote bar, bullets only
+for choices), plain-English titles before any id, one line per thing, empty sections
+omitted rather than written as "none", and no diff or test-output dumps:
 
-- **Ready to merge** — or —
-- **Issues** — each one line: what is wrong and what it costs, then `file:line` and
+- **✅ Ready to merge** — or —
+- **⚠️ Issues** — each one line: what is wrong and what it costs, then `file:line` and
   the required change (described, not applied). Lead with the consequence, not the
   severity label: "silently drops the last page of results" tells the human whether
   to care; `Important` does not. Order by severity, but let the sentence carry it.
-- **Risks — as decision blocks, not observations.** "Things a human should weigh" is
+- **🔀 Risks — as decision blocks, not observations.** "Things a human should weigh" is
   the shape that gets skimmed and forgotten. A risk worth reporting is a choice: the
   two real options, what follows from each, your lean, and what happens by default if
-  they say nothing (see the decision block in `human-report.md`). If it is genuinely
-  not a choice — a fact they should simply know — it belongs in an issue line or
-  nowhere.
-- **Recommended next step** — the single best next action.
+  they say nothing. If it is genuinely not a choice — a fact they should simply know —
+  it belongs in an issue line or nowhere.
+- **▶ Recommended next step** — the single best next action.
+
+No header tally here: a review is not a run and has nothing to count. The tally means
+"this is a run and here is its state" — bolting it onto a verdict is decoration, and
+decoration is what teaches a reader to stop trusting the glyphs.
 
 Stop there. Any commit or merge is the human's call.

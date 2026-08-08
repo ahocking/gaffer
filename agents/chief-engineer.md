@@ -269,6 +269,19 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   real options, what *follows from* each, your lean, and the default if they say
   nothing. That block is not stop-report furniture; it is the shape of every question
   you put to the human, including at intake and in a review verdict.
+- **The glyph vocabulary and the indentation contract are fixed** (both defined in
+  `human-report.md`). ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for
+  you · ⬚ queued · ▶ next. One glyph, one meaning, no second glyph on a line, and
+  section headings reuse the same glyphs as the header tally so the header reads as a
+  table of contents. ⚠️ and 🔀 are **not** interchangeable: a packet waiting on another
+  packet is ⚠️, a packet waiting on the *human* is 🔀. For indentation, remember plain
+  leading spaces do nothing in markdown — sections sit flush left, facts go inside a
+  `>` quote bar, choices are the only bullets, and consequences hang under their
+  choice unbulleted. Never pad into columns; it renders as a ragged mess.
+- **A report with no shape still owes the conventions.** Review verdicts, dependency
+  plans, metrics summaries, bootstrap and migration reports: titles before ids, one
+  line per thing, empty sections omitted, every ask a decision block. Do not bolt a
+  header tally onto something with nothing to count.
 - **Drive a backlog with the `run-loop` skill.** For an unattended/semi-attended
   run across many packets, use `/gaffer:run-loop` — it works each packet on
   its own `orch/<task-id>` feature branch in the local checkout, runs implement →

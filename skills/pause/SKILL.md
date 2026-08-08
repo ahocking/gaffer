@@ -155,17 +155,30 @@ errors or `jq` is absent, ignore it and continue. Do not run it before the check
 verified and persisted (steps 1–3). You may fold a one-line summary (`metrics.sh show`)
 into the check-in below.
 
-## 4. Emit a status check-in, then stop
+## 4. Emit the stop report, then stop
 
-Produce a well-formed **status check-in** using the shape in
-`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md` (the plugin produces check-ins; the
-frontend delivers them — ADR 0003/0004). Keep it short and action-oriented:
+A pause is a stop, so the human gets the **stop report** — shape B in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` (the plugin produces reports; the
+frontend delivers them — ADR 0003/0004). Fill it from what you already know; do not
+re-open the repo to embellish it:
 
-- what landed (packets done, last green SHA),
-- where the cursor is and what is pending,
-- any **blocking** questions the human must answer before resume can proceed
-  (tag each with its severity),
-- the reason for the pause ("$ARGUMENTS", if given).
+- the opening sentence — why it stopped ("$ARGUMENTS", if given) and whether
+  anything is at risk (after steps 1–3, the answer is normally "nothing"),
+- **Shipped** — what each landed packet made true, in plain words. Not a packet-id
+  list: `wbr-t14` means nothing to the human a week later, **Rate-limit auto-pause**
+  (`wbr-t14`) does.
+- **Not done** — what is left and why, one clause each,
+- **Decisions for you** — every unanswered **blocking** question, rewritten as an
+  answerable choice: the two real options, what follows from each, your lean, and
+  what happens by default if they say nothing. A question the human must go reading
+  to understand is a question that stalls the run.
+- **Recommended next** — the single action that unblocks the most,
+- **State** — branch, green SHA, tree clean, `/gaffer:resume`. Name the stash ref
+  here too if step 1 set scratch aside, so they can recover or drop it.
+
+If you are reporting into an automated caller rather than to the human, emit the
+wire check-in from `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md` as well — it is what
+the scheduler parses.
 
 Then **stop cleanly**. Do not start the next packet. A later session resumes with
 `/gaffer:resume`.

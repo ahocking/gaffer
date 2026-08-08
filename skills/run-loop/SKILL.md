@@ -99,13 +99,17 @@ Per packet, do exactly this:
    bounded `Read` (`offset`/`limit`) is the intended tool. Across 30 sessions the top
    **10%** of `Read` calls carried **50%** of all read volume, and `Read` totalled
    **7.6x** every shell search combined; whole-file reads of long ADRs are that tail.
-3. **Relay the returned check-in verbatim.** Do not summarize it, re-derive it,
-   comment on it, or verify it by reading the repo yourself — that is how this
-   context refills.
+3. **Render the returned check-in into the human check-in shape** in
+   `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` (shape A) — a few lines, every
+   id given a plain-English title, no machinery. **Render from the returned text and
+   nothing else:** do not re-derive it, comment on it, or verify it by reading the
+   repo, the diff, or the test output yourself — *that* is how this context refills,
+   and it is the thing ADR 0012's relay contract forbids. The transform is free; the
+   trip back to disk is not.
 4. **Decide from disk, not from the transcript:** re-read `status` and
    `backlog.cursor` (`runstate.sh get`). Then:
    - `status: running` and **cursor advanced** → dispatch the next packet (§0, relay contract step 2).
-   - `status: paused` / `blocked` / `done` → relay the final check-in and **stop**.
+   - `status: paused` / `blocked` / `done` → emit the **stop report** (shape B) and **stop**.
    - **cursor unchanged** → the packet did not land. **Stop and report** — never
      re-dispatch the same cursor. A dispatch loop that never advances burns tokens
      and looks like progress.
@@ -256,7 +260,11 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
      it is unlinked: the body stays on disk in `.agents/findings/` with nothing
      pointing at it. (This is also why `add-finding` comes *after* the write, below —
      it appends, and a write afterwards would erase it.) Emit a **status** check-in
-     (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`).
+     (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`) — and if the human is reading
+     you directly (inline mode, or you are the session they are talking to), emit it
+     in the **human check-in shape** instead
+     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape A): a few lines, every
+     id titled, no diff and no file list.
 
      Then close the packet out — both of these, every time:
 
@@ -288,7 +296,10 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
      **blocking question** in `run-state.pending_questions`, then **pause** via
      `/gaffer:pause` (roll to the last green commit, discard non-checkpoint
      scratch, never leave the tree dirty) and **stop**. Emit the blocking-question
-     check-in.
+     check-in — and to the human, the **stop report**
+     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B), with the
+     ambiguity written as an answerable decision: the two real options and what
+     follows from each, not a description of the problem.
 
      **Attest this outcome too** — `runstate.sh record-outcome <cursor> blocked`
      (or `rolled-back` / `failed` / `abandoned`, whichever actually happened).
@@ -348,11 +359,18 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   `${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — assembles
   `.agents/metrics/<run-id>/run-metrics.json` from the run's event spine + commit
   trailers + transcripts. **Non-critical bookkeeping**: if it errors or `jq` is
-  absent, ignore it — it must never affect termination. Then emit a final **status**
-  check-in: all packets landed green, whole-branch review clean,
-  `branch <orch/task-id>` is **ready for review** (optionally fold in a
-  `metrics.sh show` one-liner). **Stop there.**
-- **Blocked** → you are already paused with a blocking question; stop.
+  absent, ignore it — it must never affect termination. Then emit the **stop report**
+  (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B): what shipped in plain
+  words, anything left undone, any decision still open, the single recommended next
+  action, and `branch <orch/task-id>` **ready for review** as the state line
+  (optionally fold in a `metrics.sh show` one-liner). **Stop there.**
+- **Blocked** → you are already paused with a blocking question; emit the stop report
+  with that question written as an answerable decision, and stop.
+
+**The stop report is the last thing the human reads, so it is the one that has to
+scan.** Every packet id gets a plain title, every decision states what follows from
+each option, and nothing is padded to look thorough — the human asks follow-ups when
+they want more, and a report they have to mine is one they will not read.
 
 ## Never, at any autonomy level
 

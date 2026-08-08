@@ -102,6 +102,12 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
      you postpone to the end of the wave is one you will summarize from memory.
      Prefix ids with the lane's task-id (`<task-id>-<n>`) so two lanes cannot collide
      on a name; `add-finding` refuses a duplicate id rather than merging into it.
+   Then **report the wave to the human as ONE check-in**, not N relayed lane reports:
+   the human check-in shape in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`
+   (shape A) is built for exactly this — one line per lane, marker first, every packet
+   id carrying a plain-English title, and the lanes that need a decision visible
+   without scrolling. A wave of five verbatim lane check-ins is five times the reading
+   for the same three facts: what landed, what needs them, what is next.
 5. **Recompute** the ready-set (step 1) and dispatch the next batch — newly-unblocked
    dependents appear once their deps are `done` (and, at `full-autonomy`, integrated).
 
@@ -123,8 +129,10 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
   Critical/Important finding as a new packet; then `status: done`, **snapshot
   run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — best-effort,
   ADR 0019; the parallel run is exactly where the packet is most worth having, since it
-  captures every lane's per-agent spend and wave concurrency), and a final check-in.
-  Below `full-autonomy`: stop at branches-ready with a check-in listing the branches.
+  captures every lane's per-agent spend and wave concurrency), and a final **stop
+  report** (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B).
+  Below `full-autonomy`: stop at branches-ready, with the same stop report — each
+  branch named by what it *does*, not just by its `orch/<task-id>`.
 - **Any hard gate, merge conflict, blocking question, or a granted pause (ADR 0017)**
   → pause at a safe multi-lane checkpoint. For **every lane that was in flight**,
   record its outcome so the whole run is resumable (you are the single writer):
@@ -138,8 +146,11 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
   3. Persist run-state `status: paused` (or `blocked`), then **clear the sentinel**
      (`runstate.sh clear-pause .agents/pause`) so resume starts clean. **Snapshot
      run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` —
-     best-effort, ADR 0019; never let it affect the pause). Emit the multi-lane
-     check-in listing each lane's landing (green SHA or rolled-back), and stop.
+     best-effort, ADR 0019; never let it affect the pause). Emit the **stop report**
+     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B) — every lane's
+     landing (green SHA or rolled-back) as one line each under *Shipped* / *Not done*,
+     the reason for the pause in the opening sentence, and whatever forced it written
+     as an answerable decision. Then stop.
 
 ### P4. Resume (`/gaffer:resume --parallel`)
 Read run-state v3, run `runstate.sh reconcile-parallel .agents/run-state.yaml .`

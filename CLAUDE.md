@@ -401,6 +401,23 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **There are two report layers, and they have different readers.**
+  `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
+  Engineer returns it and the scheduler *parses* it, so its keys are stable and it
+  stays machine-shaped. `templates/human-report.md` is what the **human** reads:
+  shape A when a packet or wave comes back, shape B (the stop report) whenever the
+  loop stops. The main-context agent renders A/B from the wire text **and nothing
+  else** — ADR 0012 step 3 was amended from "relay verbatim" to "render" for exactly
+  this, because the rule it was protecting is *don't go back to disk*, not *don't
+  reword*. A bounded text transform costs a few hundred tokens once per packet and
+  does not grow with the backlog; re-opening the repo to enrich a check-in is what
+  refills a relay's context. Two conventions in the human shapes are the whole point
+  and the first thing to drift: **no bare ids** (`wbr-t14` and "ADR 0017" mean nothing
+  to a reader who is not holding the numbering — every id gets a plain-English title
+  on first appearance), and **every open question is written as an answerable
+  decision** (two real options, what *follows from* each — the consequence, not the
+  argument — plus a lean and the default if the human says nothing). Empty sections
+  are omitted, never written as "none".
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

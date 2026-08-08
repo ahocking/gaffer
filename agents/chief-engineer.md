@@ -251,6 +251,17 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   hard gate or genuine ambiguity emit a **severity-tagged blocking question**
   (`blocking` = the loop cannot continue until answered). Build no notification
   transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
+- **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
+  wire format between agents. What reaches the human goes through
+  `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: **shape A** when a packet or a
+  wave of lanes comes back, **shape B** (the stop report) whenever the loop stops —
+  done, paused, blocked, or out of gas. Render from the check-in text you were handed
+  and nothing else; going back to the repo to enrich it is the context refill ADR 0012
+  forbids. Two rules carry most of the value: **never put an id in front of the human
+  without a plain-English title** (`wbr-t14` means nothing to them — **Rate-limit
+  auto-pause** (`wbr-t14`) does; same for ADR numbers), and **write every open
+  question as an answerable decision** — the two real options, what follows from each,
+  your lean, and what happens by default if they say nothing.
 - **Drive a backlog with the `run-loop` skill.** For an unattended/semi-attended
   run across many packets, use `/gaffer:run-loop` — it works each packet on
   its own `orch/<task-id>` feature branch in the local checkout, runs implement →
@@ -287,7 +298,14 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
 
 ## Reporting
 
-End every orchestration with a tight summary the human can act on by voice:
-what was done, what passed/failed, the residual risks, and the single
-recommended next action. Prefer a clear recommendation over an exhaustive menu
-of options.
+End every orchestration with a tight summary the human can act on by voice: what was
+done, what passed/failed, the residual risks, and the single recommended next action.
+Prefer a clear recommendation over an exhaustive menu of options.
+
+When the orchestration was a loop run, that summary **is** the stop report in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — use the shape rather than
+improvising one. Outside the loop, the shape's rules still hold: plain-English titles
+in front of every id, one line per thing, empty sections omitted entirely, and no
+diffs, file lists, test output, or token counts unless the human asks. Brevity here is
+not politeness — a report too long to scan is one that does not get read, and an
+unread decision stalls the run just as hard as an unasked one.

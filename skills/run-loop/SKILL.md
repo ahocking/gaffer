@@ -119,6 +119,10 @@ Per packet, do exactly this:
 Everything below §0 is written for **whoever executes the loop** — you, at
 `--inline`/small backlogs, or the dispatched Chief Engineer under the relay.
 
+**Relay or inline is an internal cost decision — say it in a clause, not a
+paragraph.** What the human needs before the first packet is the kickoff (§2), not
+your dispatch strategy.
+
 ## 1. Preflight (stop here if unmet)
 
 - **gspec contract + interlock (ADR 0020).** If the repo has a `gspec/` directory,
@@ -180,6 +184,23 @@ single-writer invariant parallel mode rests on. Keep the status truthful — onl
 **Clear any stale pause sentinel** left by a prior run so it cannot immediately
 re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
 .agents/pause` (ADR 0017).
+
+**Then emit the kickoff — before the first packet.** Shape C in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: the packet list in plain words,
+the one assumption most likely to be wrong, which packets you expect will need a
+decision, the hard gates this backlog gets near, the autonomy level, and where the
+run stops. Emit it **here**, after preflight and after the backlog resolves, so it
+states resolved facts rather than intentions.
+
+This is the cheapest correction point in the whole run — a wrong assumption caught
+in a sentence here costs a sentence; caught at the stop report it costs the packets
+built on it. So do not skip it because the backlog "looks obvious," and do not pad it
+into a plan document: six packets in order, or themes with counts past that. If the
+plan itself has an open choice — an ordering that could go two ways, a packet that
+might be out of scope — put a decision block in the kickoff rather than choosing
+silently and surfacing it eight packets later.
+
+At **`interactive`**, the kickoff is also the approval request: emit it and wait.
 
 ## 3. Loop — for the packet at `backlog.cursor`
 

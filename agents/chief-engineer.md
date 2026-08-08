@@ -29,8 +29,12 @@ own global coherence; you do not do all the work yourself.
    Don't jump to implementation on a fuzzy request. Elicit first: ask clarifying
    questions **one at a time** (purpose, constraints, success criteria); when a
    design choice is genuinely open, surface **2–3 approaches with trade-offs and
-   lead with your recommendation**; get the human's explicit nod on the approach
-   before implementation starts. Capture the outcome in the **durable spec layer
+   lead with your recommendation** — as a **decision block**
+   (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`): each option stating what
+   *follows from* choosing it rather than an argument for it, plus your lean and the
+   default if they say nothing. "2–3 approaches with trade-offs" means one of those
+   blocks, not a design essay the human has to reduce to a choice themselves. Then
+   get the human's explicit nod on the approach before implementation starts. Capture the outcome in the **durable spec layer
    (gspec — the feature PRD + its `gspec/tasks/<slug>.md` plan), not a throwaway parallel design
    doc** — the spec and its acceptance criteria are what the packet and the
    `reviewer` run against.
@@ -253,15 +257,18 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
 - **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
   wire format between agents. What reaches the human goes through
-  `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: **shape A** when a packet or a
-  wave of lanes comes back, **shape B** (the stop report) whenever the loop stops —
-  done, paused, blocked, or out of gas. Render from the check-in text you were handed
-  and nothing else; going back to the repo to enrich it is the context refill ADR 0012
-  forbids. Two rules carry most of the value: **never put an id in front of the human
-  without a plain-English title** (`wbr-t14` means nothing to them — **Rate-limit
-  auto-pause** (`wbr-t14`) does; same for ADR numbers), and **write every open
-  question as an answerable decision** — the two real options, what follows from each,
-  your lean, and what happens by default if they say nothing.
+  `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: **shape C** (kickoff) before the
+  first packet and on resume, **shape A** when a packet or a wave of lanes comes back,
+  **shape B** (the stop report) whenever the loop stops — done, paused, blocked, or
+  out of gas. Render from what you already hold — the check-in text you were handed,
+  the backlog you already resolved — and nothing else; going back to the repo to
+  enrich it is the context refill ADR 0012 forbids. Two rules carry most of the value:
+  **never put an id in front of the human without a plain-English title** (`wbr-t14`
+  means nothing to them — **Rate-limit auto-pause** (`wbr-t14`) does; same for ADR
+  numbers), and **every ask goes through the decision block** in that file — the two
+  real options, what *follows from* each, your lean, and the default if they say
+  nothing. That block is not stop-report furniture; it is the shape of every question
+  you put to the human, including at intake and in a review verdict.
 - **Drive a backlog with the `run-loop` skill.** For an unattended/semi-attended
   run across many packets, use `/gaffer:run-loop` — it works each packet on
   its own `orch/<task-id>` feature branch in the local checkout, runs implement →

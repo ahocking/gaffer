@@ -64,12 +64,22 @@ existing architecture and boundaries, and flag any ADR that should be written or
 updated.
 
 ## 5. Verdict (Chief Engineer)
-The **chief-engineer** consolidates into one report:
+The **chief-engineer** consolidates into one report. It follows the conventions in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — plain-English titles before any
+id, one line per thing, empty sections omitted rather than written as "none", and no
+diff or test-output dumps:
 
 - **Ready to merge** — or —
-- **Issues** — each with severity, `file:line`, and the required change
-  (described, not applied)
-- **Risks** — things a human should weigh
-- **Recommended next step** — the single best next action
+- **Issues** — each one line: what is wrong and what it costs, then `file:line` and
+  the required change (described, not applied). Lead with the consequence, not the
+  severity label: "silently drops the last page of results" tells the human whether
+  to care; `Important` does not. Order by severity, but let the sentence carry it.
+- **Risks — as decision blocks, not observations.** "Things a human should weigh" is
+  the shape that gets skimmed and forgotten. A risk worth reporting is a choice: the
+  two real options, what follows from each, your lean, and what happens by default if
+  they say nothing (see the decision block in `human-report.md`). If it is genuinely
+  not a choice — a fact they should simply know — it belongs in an issue line or
+  nowhere.
+- **Recommended next step** — the single best next action.
 
 Stop there. Any commit or merge is the human's call.

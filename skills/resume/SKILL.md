@@ -195,7 +195,16 @@ unrelated packets.
 
 ## 4. Continue from the cursor
 
-With no blocking questions in the way, pick up the packet at `backlog.cursor` and
+**First, emit the kickoff** — shape C in
+`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, headed `### Resuming`. State what
+is **left**, not what the original run set out to do: the remaining packets in plain
+words, what is expected to need a decision, and where this session will stop. The
+human may be days removed from the run and remembers none of the ids; the checkpoint
+you just loaded is the only thing that does. Where the tree needed reconciling (§2),
+say so in one line — whether anything was adopted or set aside, and whether the
+resumed state matches where they think they left off.
+
+Then pick up the packet at `backlog.cursor` and
 continue the implement → test → review → commit-on-branch loop under the session's
 autonomy level. Honor the same gates as before: the Chief Engineer owns routine
 commits above `interactive` (and merge/rebase/push onto non-`main` branches at

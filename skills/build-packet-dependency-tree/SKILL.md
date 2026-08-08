@@ -133,3 +133,12 @@ count of conservatively-serialized packets. End with the single next action —
 usually: *"run `/gaffer:run-loop --parallel` to execute it"* (at
 `full-autonomy` it will also integrate lanes; below that it stops at
 branches-ready). See ADR 0016.
+
+**Use the kickoff shape** (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape
+C) — this output *is* a plan, and the human reads it to decide whether to run it. So
+name each wave by what it builds, not by its index, and give every packet a
+plain-English title; `wbr-t14` and `max_wave_size: 4` are graph facts, and a graph
+the human cannot check is one they approve on trust. **A conservatively-serialized
+packet is worth a line of its own** — it means the file-scope sidecar could not
+vouch for that packet, so it costs concurrency, and that is a thing the human can
+actually fix (`gspec-backlog.sh files-status`).

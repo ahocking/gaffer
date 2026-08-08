@@ -405,19 +405,35 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
   Engineer returns it and the scheduler *parses* it, so its keys are stable and it
   stays machine-shaped. `templates/human-report.md` is what the **human** reads:
-  shape A when a packet or wave comes back, shape B (the stop report) whenever the
-  loop stops. The main-context agent renders A/B from the wire text **and nothing
-  else** — ADR 0012 step 3 was amended from "relay verbatim" to "render" for exactly
-  this, because the rule it was protecting is *don't go back to disk*, not *don't
-  reword*. A bounded text transform costs a few hundred tokens once per packet and
-  does not grow with the backlog; re-opening the repo to enrich a check-in is what
-  refills a relay's context. Two conventions in the human shapes are the whole point
-  and the first thing to drift: **no bare ids** (`wbr-t14` and "ADR 0017" mean nothing
-  to a reader who is not holding the numbering — every id gets a plain-English title
-  on first appearance), and **every open question is written as an answerable
-  decision** (two real options, what *follows from* each — the consequence, not the
-  argument — plus a lean and the default if the human says nothing). Empty sections
-  are omitted, never written as "none".
+  one shared **decision block** plus three shapes — **C** kickoff (before the first
+  packet, and on resume), **A** check-in (a packet or wave came back), **B** stop
+  report (the loop stopped, for any reason). The main-context agent renders them from
+  the wire text and the already-resolved backlog, **and nothing else** — ADR 0012 step
+  3 was amended from "relay verbatim" to "render" for exactly this, because the rule
+  it was protecting is *don't go back to disk*, not *don't reword*. A bounded text
+  transform costs a few hundred tokens once per packet and does not grow with the
+  backlog; re-opening the repo to enrich a check-in is what refills a relay's context.
+  Two conventions are the whole point and the first thing to drift: **no bare ids**
+  (`wbr-t14` and "ADR 0017" mean nothing to a reader who is not holding the numbering
+  — every id gets a plain-English title on first appearance), and **every ask goes
+  through the decision block** (two real options, what *follows from* each — the
+  consequence, not the argument — plus a lean and the default if the human says
+  nothing). Empty sections are omitted, never written as "none".
+  **The decision block is a shared primitive, not stop-report furniture** — it is
+  also the Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s
+  Risks section, and an inline ask under a blocked lane in a check-in whose run is
+  still going. That is why it is factored out: four near-identical shapes would drift
+  apart, and the un-actionable form ("things a human should weigh") is exactly what
+  they drift *into*. **The kickoff is the cheapest correction point in a run** — a
+  wrong assumption costs a sentence there and several packets at the stop report,
+  which is why shape C carries an explicit `Assuming:` line and why `run-loop` emits
+  it *after* preflight and backlog resolution, when it states facts rather than
+  intentions. Deliberately NOT built, so they do not get invented later: a
+  welcome-back shape (identical content to B — reuse it), a metrics shape (numbers-
+  dense and pulled on demand, not pushed), anything for guard ASK-tier prompts (Claude
+  Code renders those natively and a template cannot reach them), and a mid-packet
+  progress heartbeat (a subagent returns nothing until it finishes — ADR 0012; that
+  is a transport limit, and a shape that implied liveness would be lying).
 - **Two harness facts that are easy to break by accident** (ADR 0012, findings
   2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
   SKILL.md **path** to `Read` — naming the slash command silently yields an

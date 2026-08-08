@@ -30,6 +30,14 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
   `/gaffer:build-packet-dependency-tree [<feature>]` first (as a dispatched
   subagent, `Read` its `SKILL.md` path — you have no `Skill` tool), then
   `packet-graph.sh validate .agents/packet-graph.yaml` (a cycle → stop and surface it).
+- **Kickoff before the first wave.** Once the graph validates and autonomy resolves,
+  emit shape C from `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`. Parallel mode
+  is where this matters most: the human is about to have `max_parallel` lanes running
+  against their repo at once, so the plan states **how many waves and how wide**, and
+  `Won't touch:` earns its place — file-disjointness is the invariant the whole mode
+  rests on, and saying which areas the wave spans is how a human catches a lane
+  aimed somewhere they did not expect. Below `full-autonomy`, say plainly that only
+  the first wave runs.
 - **Init run-state v3** (`mode: parallel`) from the template: every graph packet
   `status: pending`; set `max_parallel`, `graph`, `integration_branch`, empty `lanes`.
   Write atomically (`runstate.sh write`), then `status: running`, then **claim the

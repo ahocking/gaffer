@@ -13,6 +13,17 @@ in a dispatched subagent, **decided by the remaining backlog in §0**. See
 [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md) and
 [ADR 0012](../../docs/adr/0012-delegated-loop-driver.md).
 
+## The report contract — `Read` it before you emit anything
+
+**`Read` both of these now, once, before you surface anything to the human:**
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (the glyph vocabulary, the
+indentation contract, the header tally, the decision block) and
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shape **C** for the resuming
+kickoff, **A** per landing, **B** when it stops again). **Naming a path is not reading
+it** — unread, you will render from memory and produce free prose. One read covers the
+whole run; do not re-read per packet. A **dispatched** Chief Engineer or lane returns
+the wire format (`templates/check-in.md`) and must not read either file.
+
 ## Parallel runs — the `--parallel` flag
 
 **If the run-state is `mode: parallel` (or `$ARGUMENTS` contains `--parallel`),
@@ -53,7 +64,7 @@ sequential resume.
    The reconcile in §2 is deliberately inside the dispatch: it is git-state work,
    and its output belongs in the subagent's context, not yours.
 4. **Render the returned check-in into the human check-in shape**
-   (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape A — from the returned
+   (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A — from the returned
    text alone, never by re-reading the repo), then hand off to
    `/gaffer:run-loop` §0 — the same contract drives every packet after this
    one. If the check-in reports `escalate`, a red tip, or a blocking question,
@@ -186,7 +197,7 @@ if it errors or `jq` is absent, ignore it and continue.
 If `pending_questions` contains any `blocking` entry for the packet at
 `backlog.cursor`, the loop **cannot** proceed on it — present those questions to
 the human and wait. Present them as the **Decisions for you** block of the stop
-report (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B): each one an
+report (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): each one an
 answerable choice with what follows from each option and your lean, not the raw
 `pending_questions` text. These were written by a session that no longer exists, so
 give the human the plain-English title of the packet they block — they will not
@@ -196,7 +207,7 @@ unrelated packets.
 ## 4. Continue from the cursor
 
 **First, emit the kickoff** — shape C in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, headed `### Resuming`. State what
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, headed `### Resuming`. State what
 is **left**, not what the original run set out to do: the remaining packets in plain
 words, what is expected to need a decision, and where this session will stop. The
 human may be days removed from the run and remembers none of the ids; the checkpoint

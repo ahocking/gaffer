@@ -126,7 +126,10 @@ Per packet, the driving session:
    the skill's **file path** (finding 4), and the instruction to execute **exactly
    one packet** and return **only** its check-in;
 3. **renders** that check-in into the human check-in shape
-   (`templates/human-report.md`) — see the amendment below;
+   (`templates/report-templates.md`, named `human-report.md` when this ADR was
+   written — renamed in [ADR 0023](0023-report-conventions-delivered-not-referenced.md),
+   which also moved the conventions out to `templates/report-conventions.md`) — see
+   the amendment below;
 4. re-reads `status` / `cursor` from run-state, and either dispatches the next
    packet or stops.
 

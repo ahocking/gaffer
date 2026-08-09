@@ -94,7 +94,13 @@ _findings() {
     n=$((n+1))
   fi
 
-  # 7. Spec-version drift against the pinned gspec.
+  # 7. CLAUDE.md missing the report conventions — why reports come out as free prose.
+  if [ -f "$root/CLAUDE.md" ] && ! grep -q 'gaffer:report-conventions' "$root/CLAUDE.md" 2>/dev/null; then
+    printf 'FINDING=report-conventions\tCLAUDE.md does not carry the report conventions\twithout them every turn outside a gaffer skill reports in free prose; the skills read the full contract, but nothing else does\n'
+    n=$((n+1))
+  fi
+
+  # 8. Spec-version drift against the pinned gspec.
   if [ -d "$root/gspec" ] && ! "$ADAPTER" check "$root" >/dev/null 2>&1; then
     printf 'FINDING=spec-version\tgspec specs fail the version pin\trun `gspec-backlog.sh check` for the offenders; /gspec-migrate or a plugin pin bump resolves it\n'
     n=$((n+1))
@@ -156,6 +162,49 @@ _ensure_frontmatter() {
 # schema has. `status` and `parallel_group` are dropped on purpose: completion is
 # derived from PRD checkboxes and concurrency is computed per run, so storing
 # either is a drift source (ADR 0020 D2). Prose sections are NOT translated.
+# Stamp the report-conventions card into a consumer CLAUDE.md.
+#
+# This is mechanical on purpose. The card is inserted BYTE-VERBATIM, marker comment
+# included: the marker (`gaffer:report-conventions`) is what stops
+# hooks/report-conventions.sh injecting the same text again at every session start,
+# and a paraphrase would drift from the plugin's own contract. Left to an agent, the
+# stamp is exactly the kind of step that gets summarized instead of copied.
+#
+# Placement: immediately before the routing section when there is one (that is where
+# the overlay keeps it), else appended. Appending is safe even after gspec's own
+# usage guide — nothing in CLAUDE.md is order-dependent.
+#
+# Returns 0 if it stamped, 1 if there was nothing to do.
+_stamp_report_conventions() {
+  local root="$1" card="$HERE/../templates/report-conventions-card.md" md="$root/CLAUDE.md" tmp
+  [ -f "$md" ] || return 1
+  [ -f "$card" ] || return 1
+  grep -q 'gaffer:report-conventions' "$md" 2>/dev/null && return 1
+
+  tmp="$md.migrate.$$"
+  if grep -qE '^## Routing' "$md"; then
+    awk -v card="$card" '
+      /^## Routing/ && !done {
+        while ((getline line < card) > 0) print line
+        close(card); print ""; done = 1
+      }
+      { print }
+    ' "$md" > "$tmp"
+  else
+    cat "$md" > "$tmp"
+    printf '\n' >> "$tmp"
+    cat "$card" >> "$tmp"
+  fi
+
+  # Never leave a half-written operating brief behind.
+  if [ ! -s "$tmp" ] || ! grep -q 'gaffer:report-conventions' "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$md"
+  return 0
+}
+
 _convert_roadmap() {
   local src="$1" dest="$2"
   {
@@ -247,6 +296,12 @@ cmd_apply() {
       printf 'KEPT=gspec/roadmap.md left in place — it still holds prose the converter does not translate. Delete it yourself once reviewed.\n'
       did=1
     fi
+  fi
+
+  # 3. report conventions -> consumer CLAUDE.md (the always-on report format layer)
+  if _stamp_report_conventions "$root"; then
+    printf 'STAMPED_CONVENTIONS=report conventions added to CLAUDE.md — reports now follow the house format outside gaffer skills too\n'
+    did=1
   fi
 
   [ "$did" = "1" ] || printf 'NOCHANGE=nothing mechanical left to move\n'

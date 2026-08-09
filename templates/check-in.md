@@ -14,7 +14,7 @@
 # dispatched Chief Engineer returns this shape to the scheduler, which parses it and
 # records run-state from it — so keep it machine-shaped and keep the keys stable.
 # Whoever holds the main context window renders it into the human-facing shapes in
-# `human-report.md` before it reaches the human; that rendering is a pure transform
+# `report-templates.md` before it reaches the human; that rendering is a pure transform
 # of the text below, never a reason to go back to the repo.
 
 # --- Status update (checkpoint) ----------------------------------------------

@@ -21,6 +21,12 @@ ADR 0017); the running loop polls it at safe boundaries and hands here. However 
 were triggered, the steps below are the same — and once the checkpoint is durable
 you **clear the sentinel** (step 3) so a later resume starts clean.
 
+**Before step 4, `Read` both `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`**
+(the glyph vocabulary, the indentation contract, the decision block) **and
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`** (shape **B**, which step 4 emits).
+Naming a path is not reading it, and unread they produce free prose. Do this while the
+checkpoint work is in flight, not after — you stop immediately once step 4 is written.
+
 ## 1. Reach a safe checkpoint (never mid-edit)
 
 Inspect the loop's working tree — the single local checkout, currently on the
@@ -158,7 +164,7 @@ into the check-in below.
 ## 4. Emit the stop report, then stop
 
 A pause is a stop, so the human gets the **stop report** — shape B in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` (the plugin produces reports; the
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (the plugin produces reports; the
 frontend delivers them — ADR 0003/0004). Fill it from what you already know; do not
 re-open the repo to embellish it:
 

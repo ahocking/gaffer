@@ -10,6 +10,14 @@ Bootstrap a new spec-driven repo. The human is the product owner and approves th
 first commit — you do not commit. Work through the stages in order; skip one only
 if it is genuinely unnecessary and say why.
 
+**Before the closing summary and approval request, `Read`
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
+indentation contract, and the decision block that every human-facing report in this
+plugin owes. That summary has **no shape of its own**, so those conventions *are* its
+format; naming the path is not reading it, and unread they produce free prose. You do
+**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+emits.
+
 The **authoritative setup brief is `spec-setup.md`**, which the overlay ships to
 the new repo root. This chain implements its Installation Tasks and Initial Setup
 Checklist for Claude Code. If anything here appears to conflict with
@@ -128,7 +136,7 @@ empty one would add nothing. Mention it exists when you report — it is what un
 
 ## 6. Summarize and request approval (Chief Engineer)
 
-Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — glyph
+Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` — glyph
 vocabulary, sections flush left with facts inside a `>` quote bar, one line per thing,
 empty sections omitted, no header tally (a bootstrap is not a run). **✅** what was
 laid down, **⚠️** anything that needs the human's eye (an installer prompt you paused

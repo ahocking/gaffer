@@ -401,10 +401,49 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
-- **There are two report layers, and they have different readers.**
+- **There are THREE report files, and the split is by reader and by need** (ADR 0023).
   `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
   Engineer returns it and the scheduler *parses* it, so its keys are stable and it
-  stays machine-shaped. `templates/human-report.md` is what the **human** reads:
+  stays machine-shaped. `templates/report-conventions.md` holds the **conventions**
+  every human-facing report owes (glyph vocabulary, indentation contract, decision
+  block, header tally, the four rules). `templates/report-templates.md` holds only the
+  loop's three **shapes** and assumes the conventions file. Skills with no shape of
+  their own (`review-change`, `metrics`, `migrate`, `new-project`) read the
+  conventions and **not** the shapes — that split is the whole point of splitting.
+  `templates/report-conventions-card.md` is a fourth thing and not a fourth contract:
+  a ~2.9k-char distillation that is the always-on layer, and the ONE source both L2
+  (consumer `CLAUDE.md`) and L3 (the hook) copy from.
+  **The contract must be DELIVERED, not referenced** — this is the fix ADR 0023
+  exists for, and it is the failure mode to watch for anywhere else in this plugin.
+  Every skill named `report-templates.md` **by path** and none said `Read`, so an agent
+  rendered from the one-line paraphrase in the SKILL.md and had never seen the
+  contract; free prose in consumer repos was the rules never arriving, not an agent
+  ignoring them. Naming a path is not delivering a file. Scope the `Read` two ways or
+  it gets expensive: **by role** (only whoever writes to the *human* — a relay-
+  dispatched Chief Engineer or a lane returns the wire format, and reading the shapes
+  would cost ~5k/packet for something it never emits) and **by need** (conventions vs
+  shapes). The three delivery layers are deliberately redundant and **L2 suppresses
+  L3** via the `gaffer:report-conventions` marker, so a session never pays twice:
+  L1 the skills' `Read`; L2 `migrate.sh apply` stamping the card into the consumer's
+  `CLAUDE.md` byte-verbatim (strongest — a repo's own `CLAUDE.md` is the *human's
+  standing instruction*, obeyed as such); L3 `hooks/report-conventions.sh` injecting
+  it at SessionStart (weakest — injected context is untrusted *data*, ADR 0017's
+  probe had subagents read an injected "stop" and decline it — but it is the only
+  layer that upgrades with the plugin). Never describe L3 as enforcing the format.
+  A `Stop`-hook validator was **rejected, not overlooked**: most turns are not
+  reports, and "is this a report?" is exactly the judgment a regex cannot make.
+  It is a **separate `hooks.json` SessionStart entry** from `session-start.sh` because
+  the matchers must differ — the card re-fires on `clear|compact` (context is lost
+  there), while `session-start.sh` must not, since it reads `status: running` as "the
+  previous session died" and would announce a crash that never happened mid-run.
+  Regression sweep: `scripts/test-report-conventions.sh` (JSON validity of the
+  hand-escaped envelope — the card is full of quotes, backticks, `→` and emoji, and a
+  malformed envelope is dropped *silently*; L2-suppresses-L3; fail-open in four
+  directions; and a byte-comparison against the overlay copy, since three copies of
+  one contract is this design's standing risk). `scripts/test-migrate.sh` covers the
+  stamp. **Scope is REPORTS, not responses** — a glyph tally on a two-line answer is
+  decoration, and decoration is what teaches a reader to stop trusting the glyphs.
+  What the human reads:
   one shared **decision block** plus three shapes — **C** kickoff (before the first
   packet, and on resume), **A** check-in (a packet or wave came back), **B** stop
   report (the loop stopped, for any reason). The main-context agent renders them from
@@ -596,7 +635,8 @@ scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a lane wor
 scripts/test-parallel-pause-e2e.sh  # ADR 0017 parallel-pause choreography (real worktree.sh + runstate.sh)
 scripts/test-metrics.sh        # ADR 0019 run-metrics: event log -> trailer/wave/token join -> packet, fail-soft
 scripts/test-gspec-backlog.sh  # ADR 0020 gspec adapter: version pin, derived completion, nodes, interlock
-scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, and the packet-count check
+scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, the packet-count check, and the CLAUDE.md conventions stamp
+scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies
 ```
 
 When adding a new risky pattern to `guard.sh`, add a matching allow/deny pair to

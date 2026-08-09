@@ -10,6 +10,14 @@ Read-only pre-merge review: do not fix, commit, or merge anything — produce a
 verdict the human acts on. The scope is one of two modes; decide from $ARGUMENTS
 in step 1.
 
+**Before you write the verdict in step 5, `Read`
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
+indentation contract, and the decision block that every human-facing report in this
+plugin owes. The verdict has **no shape of its own**, so those conventions *are* its
+format; naming the path is not reading it, and unread they produce free prose. You do
+**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+emits.
+
 ## 1. Collect the diff (Chief Engineer)
 Delegate to the **chief-engineer** agent to gather the change set and pull in the
 relevant spec/acceptance criteria or task packet so the review has a contract to
@@ -66,7 +74,7 @@ updated.
 ## 5. Verdict (Chief Engineer)
 The **chief-engineer** consolidates into one report. This verdict has no shape of its
 own, but it owes every convention in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — the glyph vocabulary, the
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` — the glyph vocabulary, the
 indentation contract (sections flush left, facts inside a `>` quote bar, bullets only
 for choices), plain-English titles before any id, one line per thing, empty sections
 omitted rather than written as "none", and no diff or test-output dumps:

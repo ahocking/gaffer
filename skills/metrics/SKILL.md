@@ -15,6 +15,14 @@ over `${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh`. See
 The **Chief Engineer** runs this. All four verbs are read-only analysis over local
 bookkeeping — none crosses a gate.
 
+**Before you print anything, `Read`
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
+indentation contract, and the decision block that every human-facing report in this
+plugin owes. This skill has **no shape of its own**, so those conventions *are* its
+format; naming the path is not reading it, and unread they produce free prose. You do
+**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+emits (and see step 3 — this report takes no header tally).
+
 ## 1. Resolve intent from `$ARGUMENTS` (trim/lowercase)
 
 - **empty / `show`** → print the latest packet (step 3).
@@ -62,7 +70,7 @@ per-packet table to the user.
 This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
 the tally means "this is a run and here is its state", and there is nothing to count
 here. The rest of the conventions in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` still apply: plain-English titles
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` still apply: plain-English titles
 before packet ids, one line per finding, empty sections omitted, and no restating of
 the raw JSON. Where a number is *unmeasured* rather than zero (`null` on a legacy
 run), say so in words — a `0` the human reads as "clean" is the exact failure v3.3
@@ -123,7 +131,7 @@ concurrently", or "reviewer spends 2× the implementer in cacheCreation — hold
 context across packets"), most-impactful first, each tied to the metric that motivates it.
 
 **A recommendation that is really a trade-off is a decision block**
-(`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`), not a bullet. "Widen
+(`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`), not a bullet. "Widen
 file-disjointness" costs review confidence; "hold the reviewer's context" costs
 freshness. Where you are recommending something the human gives up something for, give
 them the two options, what follows from each, your lean, and the default — the same

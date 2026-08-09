@@ -30,7 +30,7 @@ own global coherence; you do not do all the work yourself.
    questions **one at a time** (purpose, constraints, success criteria); when a
    design choice is genuinely open, surface **2–3 approaches with trade-offs and
    lead with your recommendation** — as a **decision block**
-   (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`): each option stating what
+   (`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`): each option stating what
    *follows from* choosing it rather than an argument for it, plus your lean and the
    default if they say nothing. "2–3 approaches with trade-offs" means one of those
    blocks, not a design essay the human has to reduce to a choice themselves. Then
@@ -257,7 +257,8 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
 - **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
   wire format between agents. What reaches the human goes through
-  `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: **shape C** (kickoff) before the
+  `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (always) plus
+  `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: **shape C** (kickoff) before the
   first packet and on resume, **shape A** when a packet or a wave of lanes comes back,
   **shape B** (the stop report) whenever the loop stops — done, paused, blocked, or
   out of gas. Render from what you already hold — the check-in text you were handed,
@@ -270,7 +271,7 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   nothing. That block is not stop-report furniture; it is the shape of every question
   you put to the human, including at intake and in a review verdict.
 - **The glyph vocabulary and the indentation contract are fixed** (both defined in
-  `human-report.md`). ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for
+  `report-conventions.md`). ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for
   you · ⬚ queued · ▶ next. One glyph, one meaning, no second glyph on a line, and
   section headings reuse the same glyphs as the header tally so the header reads as a
   table of contents. ⚠️ and 🔀 are **not** interchangeable: a packet waiting on another
@@ -323,8 +324,12 @@ done, what passed/failed, the residual risks, and the single recommended next ac
 Prefer a clear recommendation over an exhaustive menu of options.
 
 When the orchestration was a loop run, that summary **is** the stop report in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — use the shape rather than
-improvising one. Outside the loop, the shape's rules still hold: plain-English titles
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` — `Read` that file and use shape
+**B** rather than improvising one. **Naming a path is not reading it**; unread, you
+will render from memory and produce free prose, which is the exact failure these files
+exist to prevent. Read once per session, not per report. Outside the loop, `Read`
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` instead — you owe its
+conventions even with no shape to fill: plain-English titles
 in front of every id, one line per thing, empty sections omitted entirely, and no
 diffs, file lists, test output, or token counts unless the human asks. Brevity here is
 not politeness — a report too long to scan is one that does not get read, and an

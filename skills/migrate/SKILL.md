@@ -20,6 +20,14 @@ cheerfully reports a finished project. Measured on two production repos: a pure
 rename yielded **0 packets from 31 plan files**. So a migration is not done when the
 files have moved. It is done when packets come out the other end.
 
+**Before the closing summary and approval request, `Read`
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
+indentation contract, and the decision block that every human-facing report in this
+plugin owes. That summary has **no shape of its own**, so those conventions *are* its
+format; naming the path is not reading it, and unread they produce free prose. You do
+**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+emits.
+
 ## 1. Preflight
 
 - **Resolve the target repo** from `$ARGUMENTS`, else the current working directory.
@@ -96,6 +104,20 @@ it is the operating brief every session reads. Replace descriptions of the two-t
 `${CLAUDE_PLUGIN_ROOT}/templates/spec-driven-base/CLAUDE.md` as the reference
 wording. Keep everything project-specific.
 
+**The report conventions are stamped in for you.** `migrate.sh apply` copies
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions-card.md` into `CLAUDE.md`
+byte-verbatim when the marker `gaffer:report-conventions` is absent, and reports
+`STAMPED=report conventions…`. Leave it exactly as inserted — **do not reword or
+summarize it**. The marker is what stops `hooks/report-conventions.sh` injecting the
+same text again at every session start, and a paraphrase drifts from the plugin's own
+contract. This is the layer that makes reports come out in the house format *without
+the human asking each session*; a repo without it gets free prose on every turn that
+is not inside a gaffer skill.
+
+The **one** case left to you: the marker is present at an **older version**
+(`v1`, `v2`, …). `apply` will not touch it — replace that whole section with the
+current card rather than merging the two.
+
 **d. Removed skills.** If the repo's docs reference `/gaffer:implement-feature`
 or the `test-driven-development` / `systematic-debugging` /
 `verification-before-completion` skills, they are gone (ADR 0020 D7). Point feature
@@ -135,7 +157,7 @@ reproduced verbatim and only unchecked work is re-decomposed.
 
 ## 7. Report
 
-Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` — the
+Follow the conventions in `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` — the
 glyph vocabulary, sections flush left with facts inside a `>` quote bar, plain-English
 titles before any id, one line per thing, empty sections omitted. No header tally: a
 migration is not a run and has nothing to count.

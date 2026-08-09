@@ -31,6 +31,15 @@ jobs:
       - name: Run-metrics assembly sweep (ADR 0019)
         run: bash scripts/test-metrics.sh
 
+      - name: gspec adapter sweep (ADR 0020)
+        run: bash scripts/test-gspec-backlog.sh
+
+      - name: Consumer-repo retrofit sweep (v2.0.0)
+        run: bash scripts/test-migrate.sh
+
+      - name: Report-conventions delivery sweep (L2/L3)
+        run: bash scripts/test-report-conventions.sh
+
       - name: Validate plugin manifest & structure (best-effort)
         run: |
           if command -v claude >/dev/null 2>&1; then

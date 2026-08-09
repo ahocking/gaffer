@@ -18,6 +18,13 @@ This is **read-mostly**: you read the backlog through the adapter and write only
 the graph artifact. Do not touch code, and do not write to `gspec/` — it is
 gspec's to own (ADR 0020 D1).
 
+**Before you print the plan, `Read` both
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** (the glyph vocabulary, the
+indentation contract, the header tally, the decision block) **and
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`** — the plan this skill prints **is
+a kickoff**, so it uses shape **C** verbatim rather than a format of its own. Naming a
+path is not reading it, and unread they produce free prose.
+
 ## 0. Resolve scope
 
 - **A feature slug in `$ARGUMENTS`** → analyze that feature's packets, plus enough
@@ -134,7 +141,7 @@ usually: *"run `/gaffer:run-loop --parallel` to execute it"* (at
 `full-autonomy` it will also integrate lanes; below that it stops at
 branches-ready). See ADR 0016.
 
-**Render it as the kickoff shape** (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`,
+**Render it as the kickoff shape** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`,
 shape C) — this output *is* a plan, and the human reads it to decide whether to run
 it. So **name each wave by what it builds, not by its index** (`**Wave 1 — speed** ·
 ⬚ Stream large imports · ⬚ Paginate the list`), and give every packet a plain-English

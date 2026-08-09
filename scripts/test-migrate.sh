@@ -199,6 +199,59 @@ has 'and named as the real failure' 'nothing to do' "$out"
 has 'verify reports problems'       'VERIFY=problems' "$out"
 [ "$rc" = 3 ] && ok 'verify exits 3 on a problem' || bad 'verify exit 3' "rc=$rc"
 
+printf '\n== apply: report conventions are stamped into CLAUDE.md ==\n'
+# The consumer-facing half of the report-format fix. A repo whose CLAUDE.md does not
+# carry the conventions reports in free prose on every turn outside a gaffer skill,
+# so `detect` names it and `apply` stamps it VERBATIM (a paraphrase drifts from the
+# plugin's contract, and the marker is what suppresses the SessionStart hook).
+R="$TMP/conv"; mk_repo "$R" legacy-a
+out="$("$MIG" detect "$R" 2>&1)"
+has 'detect names the missing conventions' 'FINDING=report-conventions' "$out"
+out="$("$MIG" apply "$R" 2>&1)"
+has 'apply reports the stamp'      'STAMPED_CONVENTIONS=' "$out"
+has 'the marker lands'             'gaffer:report-conventions' "$(cat "$R/CLAUDE.md")"
+has 'the glyph vocabulary lands'   '✅ landed' "$(cat "$R/CLAUDE.md")"
+has 'the decision block lands'     '**→ Pick A**' "$(cat "$R/CLAUDE.md")"
+has 'the project prose survives'   'Execution runs off' "$(cat "$R/CLAUDE.md")"
+# BYTE-VERBATIM, not "close enough": drift between the card, the CLAUDE.md overlay
+# and the hook injection is the whole failure this layering exists to prevent.
+card="$HERE/../templates/report-conventions-card.md"
+if diff <(tail -n +2 "$card") <(awk '/gaffer:report-conventions/{f=1;next} f' "$R/CLAUDE.md") >/dev/null 2>&1; then
+  ok 'the card is inserted byte-verbatim'
+else
+  bad 'the card is inserted byte-verbatim' "stamped CLAUDE.md differs from templates/report-conventions-card.md"
+fi
+out="$("$MIG" detect "$R" 2>&1)"
+hasnt 'and detect stops reporting it' 'FINDING=report-conventions' "$out"
+
+printf '\n== apply: the card lands BEFORE the routing section when there is one ==\n'
+# The overlay keeps it there, so a migrated repo should end up matching a bootstrapped
+# one. Appending is only the fallback for a CLAUDE.md with no routing section.
+R="$TMP/conv-routing"; mk_repo "$R" legacy-a
+printf '# Repo brief\nExecution runs off gspec/roadmap.md + per-feature .plan.md.\n\n## Routing — how to engage the team\n\nroute things here.\n' > "$R/CLAUDE.md"
+git -C "$R" add -A >/dev/null 2>&1; git -C "$R" -c user.email=t@e -c user.name=t commit -qm rt >/dev/null 2>&1
+"$MIG" apply "$R" >/dev/null 2>&1
+marker_line="$(grep -n 'gaffer:report-conventions' "$R/CLAUDE.md" | cut -d: -f1)"
+routing_line="$(grep -n '^## Routing' "$R/CLAUDE.md" | cut -d: -f1)"
+[ -n "$marker_line" ] && [ -n "$routing_line" ] && [ "$marker_line" -lt "$routing_line" ] \
+  && ok 'the card is inserted above the routing section' \
+  || bad 'card placement' "marker=$marker_line routing=$routing_line"
+has 'the routing section survives intact' 'route things here.' "$(cat "$R/CLAUDE.md")"
+
+printf '\n== apply: an existing marker is never double-stamped ==\n'
+R="$TMP/conv-twice"; mk_repo "$R" legacy-a
+"$MIG" apply "$R" >/dev/null 2>&1
+"$MIG" apply "$R" --force >/dev/null 2>&1
+n="$(grep -c 'gaffer:report-conventions' "$R/CLAUDE.md")"
+[ "$n" = 1 ] && ok 'the marker appears exactly once' || bad 'double-stamped' "marker count=$n"
+
+printf '\n== apply: a repo with no CLAUDE.md is left alone ==\n'
+R="$TMP/conv-none"; mk_repo "$R" legacy-a; rm -f "$R/CLAUDE.md"
+git -C "$R" add -A >/dev/null 2>&1; git -C "$R" -c user.email=t@e -c user.name=t commit -qm rm >/dev/null 2>&1
+out="$("$MIG" apply "$R" 2>&1)"
+hasnt 'nothing is stamped'   'STAMPED_CONVENTIONS=' "$out"
+[ -f "$R/CLAUDE.md" ] && bad 'a CLAUDE.md was created' || ok 'no CLAUDE.md is created out of thin air'
+
 printf '\n== idempotence: a second apply changes nothing ==\n'
 R="$TMP/twice"; mk_repo "$R" legacy-a
 "$MIG" apply "$R" >/dev/null 2>&1

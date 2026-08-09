@@ -5,6 +5,11 @@
 > reaches this from SKILL.md's "Parallel or sequential" section when `$ARGUMENTS` contains
 > `--parallel`. `§0`/`§1`/`§3`/`§4` references point at run-loop/SKILL.md — which the driver
 > and each dispatched lane still read. Content below is unchanged from the former SKILL.md §P.
+>
+> **You are the scheduler, so you write to the human** — SKILL.md's "report contract"
+> section still binds you: `Read` `templates/report-conventions.md` and
+> `templates/report-templates.md` once, before the kickoff below. Your **lanes** do not;
+> they return the wire format and you render it.
 
 ## P. Parallel worktree lanes (`--parallel`, ADR 0016)
 
@@ -31,7 +36,7 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
   subagent, `Read` its `SKILL.md` path — you have no `Skill` tool), then
   `packet-graph.sh validate .agents/packet-graph.yaml` (a cycle → stop and surface it).
 - **Kickoff before the first wave.** Once the graph validates and autonomy resolves,
-  emit shape C from `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`. Parallel mode
+  emit shape C from `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`. Parallel mode
   is where this matters most: the human is about to have `max_parallel` lanes running
   against their repo at once, so the plan states **how many waves and how wide**, and
   `Won't touch:` earns its place — file-disjointness is the invariant the whole mode
@@ -111,7 +116,7 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
      Prefix ids with the lane's task-id (`<task-id>-<n>`) so two lanes cannot collide
      on a name; `add-finding` refuses a duplicate id rather than merging into it.
    Then **report the wave to the human as ONE check-in**, not N relayed lane reports:
-   the human check-in shape in `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`
+   the human check-in shape in `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`
    (shape A) is built for exactly this — one line per lane, marker first, every packet
    id carrying a plain-English title, and the lanes that need a decision visible
    without scrolling. A wave of five verbatim lane check-ins is five times the reading
@@ -138,7 +143,7 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
   run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — best-effort,
   ADR 0019; the parallel run is exactly where the packet is most worth having, since it
   captures every lane's per-agent spend and wave concurrency), and a final **stop
-  report** (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B).
+  report** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B).
   Below `full-autonomy`: stop at branches-ready, with the same stop report — each
   branch named by what it *does*, not just by its `orch/<task-id>`.
 - **Any hard gate, merge conflict, blocking question, or a granted pause (ADR 0017)**
@@ -155,7 +160,7 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
      (`runstate.sh clear-pause .agents/pause`) so resume starts clean. **Snapshot
      run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` —
      best-effort, ADR 0019; never let it affect the pause). Emit the **stop report**
-     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B) — every lane's
+     (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B) — every lane's
      landing (green SHA or rolled-back) as one line each under *Shipped* / *Not done*,
      the reason for the pause in the opening sentence, and whatever forced it written
      as an answerable decision. Then stop.

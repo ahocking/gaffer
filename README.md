@@ -73,6 +73,7 @@ layer.
 | `templates/spec-driven-base/` | The stack-agnostic overlay `new-project` copies into a fresh repo. |
 | `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; autonomy-aware soft gates for `git commit` (≥ supervised) and `git merge`/`rebase`/`push` onto non-`main` (full-autonomy). |
 | `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005). |
+| `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
 | `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. |
 | `scripts/statusline-pause-sensor.sh` | A `statusLine` command that reads the 5-hour + 7-day usage percentages and arms the ADR 0017 pause sentinel when either crosses its threshold (ADR 0018). Opt-in, Pro/Max only. |
 | `.mcp.json` | Stubbed git / github / filesystem MCP servers (tokens via env vars only). |

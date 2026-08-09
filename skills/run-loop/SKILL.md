@@ -28,6 +28,28 @@ packets at once, each isolated in its own git worktree lane; it requires a packe
 dependency graph and reintroduces worktrees for isolation — **opt-in and never the
 default**. Otherwise run the sequential loop below (§0 decides relay vs inline).
 
+## The report contract — `Read` it before you emit anything
+
+**`Read` both of these now, once, before the kickoff:**
+
+- `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` — the glyph vocabulary, the
+  indentation contract, the header tally, and the decision block. Every human-facing
+  report owes them.
+- `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` — shapes **C** (kickoff), **A**
+  (check-in) and **B** (stop report), which this loop emits in that order.
+
+**Naming a path is not reading it.** The steps below reference these files by path at
+each emission point; unless you have actually loaded them you will render from memory
+and produce free prose, which is the exact failure they exist to prevent. **One read
+covers the whole run** — your context persists across packets, so do not re-read them
+per packet.
+
+**This applies to whoever is writing to the HUMAN — and only them.** A dispatched
+Chief Engineer (relay mode) or worktree lane (`--parallel`) returns the machine-shaped
+wire format (`templates/check-in.md`) to the scheduler, which renders it; those agents
+must **not** read either file, or every packet pays ~5k tokens for a shape it never
+emits.
+
 ## 0. Relay or inline — decided by backlog size (ADR 0012)
 
 **Decide this first, before touching the repo, and say which you chose.** The loop
@@ -100,7 +122,7 @@ Per packet, do exactly this:
    **10%** of `Read` calls carried **50%** of all read volume, and `Read` totalled
    **7.6x** every shell search combined; whole-file reads of long ADRs are that tail.
 3. **Render the returned check-in into the human check-in shape** in
-   `${CLAUDE_PLUGIN_ROOT}/templates/human-report.md` (shape A) — a few lines, every
+   `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shape A) — a few lines, every
    id given a plain-English title, no machinery. **Render from the returned text and
    nothing else:** do not re-derive it, comment on it, or verify it by reading the
    repo, the diff, or the test output yourself — *that* is how this context refills,
@@ -186,7 +208,7 @@ re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
 .agents/pause` (ADR 0017).
 
 **Then emit the kickoff — before the first packet.** Shape C in
-`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`: the packet list in plain words,
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: the packet list in plain words,
 the one assumption most likely to be wrong, which packets you expect will need a
 decision, the hard gates this backlog gets near, the autonomy level, and where the
 run stops. Emit it **here**, after preflight and after the backlog resolves, so it
@@ -284,7 +306,7 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`) — and if the human is reading
      you directly (inline mode, or you are the session they are talking to), emit it
      in the **human check-in shape** instead
-     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape A): a few lines, every
+     (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A): a few lines, every
      id titled, no diff and no file list.
 
      Then close the packet out — both of these, every time:
@@ -318,7 +340,7 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      `/gaffer:pause` (roll to the last green commit, discard non-checkpoint
      scratch, never leave the tree dirty) and **stop**. Emit the blocking-question
      check-in — and to the human, the **stop report**
-     (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B), with the
+     (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B), with the
      ambiguity written as an answerable decision: the two real options and what
      follows from each, not a description of the problem.
 
@@ -381,7 +403,7 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   `.agents/metrics/<run-id>/run-metrics.json` from the run's event spine + commit
   trailers + transcripts. **Non-critical bookkeeping**: if it errors or `jq` is
   absent, ignore it — it must never affect termination. Then emit the **stop report**
-  (`${CLAUDE_PLUGIN_ROOT}/templates/human-report.md`, shape B): what shipped in plain
+  (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): what shipped in plain
   words, anything left undone, any decision still open, the single recommended next
   action, and `branch <orch/task-id>` **ready for review** as the state line
   (optionally fold in a `metrics.sh show` one-liner). **Stop there.**

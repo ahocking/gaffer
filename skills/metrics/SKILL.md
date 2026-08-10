@@ -122,6 +122,12 @@ Look for, and cite the figures behind, at least:
   so failed and rolled-back work is structurally absent. Where `edits` is present,
   `contended_files` (one file touched by more than one role) is the rework signal —
   it separates correction from division of labour, which per-role edit counts cannot.
+- **`self_host`** — a boolean indicating whether this run measured the plugin's own
+  repository (dogfooding) rather than a consumer application. Self-host and consumer
+  runs must NOT be averaged together, since this repo's loop feeds the measurement
+  corpus that benchmarks the plugin, and the populations are incomparable. Absent
+  `self_host` key means unmeasured; treat unknown distinctly from measured consumer
+  runs.
 
 **Honesty about the token source is mandatory:** if `token_source` is `none` or
 `transcript`, say so and scope the token-based claims accordingly (structural claims —

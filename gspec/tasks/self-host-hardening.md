@@ -20,7 +20,7 @@ comes up, so the decomposition reflects the repo as it is then.
 - [x] **T2** **P0** Add allow/deny cases to `scripts/test-guard.sh` proving each reflexive path asks and that consumer-repo defaults are unchanged
   - deps: T1
   - covers: P0 self-modification gated
-- [ ] **T3** **P0** Make the matching regression sweep a required acceptance criterion in the task-packet template
+- [x] **T3** **P0** Make the matching regression sweep a required acceptance criterion in the task-packet template
   - deps: —
   - covers: P0 sweep is an acceptance criterion
 - [ ] **T4** **P1** Add a session-boundary declaration to the task-packet template for packets touching hooks or agents

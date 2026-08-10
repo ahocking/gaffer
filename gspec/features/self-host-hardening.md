@@ -35,7 +35,7 @@ would be reviewed by a loop still running the old guard.
   - deliberately ASK and not `.agents/guard-extra-paths` (hard deny) — a hard floor there makes most of this repo's real backlog unexecutable
   - a consumer repo is unaffected: the file is repo-local and the plugin's built-in defaults do not change
 
-- [ ] **P0**: A packet that touches a script cannot land without its regression sweep
+- [x] **P0**: A packet that touches a script cannot land without its regression sweep
   - the matching `scripts/test-*.sh` is an acceptance criterion on the packet, not an honour-system house rule
   - covers the existing CLAUDE.md rule "a behavior worth having is a behavior worth a test in its sweep"
 

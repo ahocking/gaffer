@@ -72,6 +72,36 @@ tier_reason: <e.g. schema shape is unresolved until the query paths are written>
 # plugin does not ship a testing method of its own (ADR 0020 D7).
 method: <tdd | direct>
 
+# Some changes cannot be verified in the run that made them, because the harness
+# loaded the thing being changed before the run started. Three load timings exist,
+# and only one of them is a session boundary:
+#   - code invoked fresh each time it runs (e.g. a script called per command) takes
+#     effect MID-RUN, in the run that edited it — verifiable now, in this session.
+#   - a definition the harness reads when it dispatches a specialist (an agent or
+#     skill definition) takes effect at the NEXT DISPATCH — declare it here ONLY IF
+#     this run does not dispatch through the changed definition again; when it
+#     does, that later dispatch exercises the edit and no session boundary is
+#     crossed.
+#   - anything the harness loads at SESSION START — a hook, or the settings/config
+#     file that registers hooks — does NOT take effect in this session at all. A
+#     break here is invisible in-session and only surfaces in the next one. THIS is
+#     the session boundary this field exists for. It also covers which components
+#     exist at all, and the frontmatter the harness registers for them (name,
+#     description, tools, model): adding, removing, or changing that crosses the
+#     boundary even though editing a definition's body, above, does not.
+#
+# REQUIRED for a packet whose `allowed_files` touches a surface loaded at session
+# start (as above). Omit otherwise, like `tier_reason`. For a hook, its LOGIC is
+# already exercised in-run by its regression sweep (the first bullet's timing) —
+# what crosses the boundary is the WIRING: that the harness still loads the hook
+# and still fires it. State what specifically could not be verified in this run
+# and what the next session must check to confirm it — this is a declaration of
+# consequence, not a boolean.
+#
+# A green result on a packet like this means nothing IN THIS RUN contradicted the
+# change — it does NOT mean the change works. Only the next session's check does.
+session_boundary: <e.g. changes a hook's wiring; confirm next session it still fires>
+
 # The ONLY files this task may create or edit. Keep this as narrow as possible.
 # Globs allowed. Anything outside this list requires escalation, not self-widening.
 allowed_files:

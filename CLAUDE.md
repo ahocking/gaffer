@@ -91,7 +91,14 @@ passing sweeps.
   path patterns cannot express, and the reviewer plus the PR gate as the real
   review boundary. `.agents/guard-extra-review` is **kept, not deleted**: it costs
   nothing while the bypass is on, it documents what the reflexive surface is,
-  `test-guard.sh` still pins its behaviour, and one line re-arms it.
+  `test-guard.sh` still pins its behaviour, and one line re-arms it. **What
+  specifically stopped, and it is the sharpest part:** T2 added ask cases for the
+  guard's own *configuration* on the rationale that a rule which can be silently
+  deleted is not a rule. All four of those are now silent-allow here —
+  `.agents/guard-extra-*`, `project-overrides.yaml` (which carries the bypass
+  itself), `.agents/autonomy`, and `.claude/settings.json`. That is the control
+  over the control, so the reviewer and the PR boundary are not a second line of
+  defence for this surface; they are the only one.
 - **Hard-denying `hooks/guard.sh` was proposed and rejected — and the flip above
   does not touch that.** This repo exists to develop the guard, so a hard floor
   over it makes the repo's central artifact unmaintainable. Same for

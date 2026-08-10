@@ -30,8 +30,9 @@ would be reviewed by a loop still running the old guard.
 
 ## Capabilities
 
-- [ ] **P0**: Self-modification of the reflexive surface is human-gated, not silent
-  - `hooks/`, `scripts/`, `agents/`, `skills/` and `.claude-plugin/` route through `.agents/guard-extra-review` (ASK tier)
+- [x] **P0**: Self-modification of the reflexive surface is human-gated, not silent
+  - `hooks/`, `scripts/`, `agents/`, `skills/` and `.claude-plugin/` are enumerated in `.agents/guard-extra-review` at the REVIEW/ASK tier, so the surface is declared and one line re-arms it
+  - that tier is currently bypassed here (`bypass-ask-tier: true`), so the gate in force is the reviewer plus the pull-request boundary — the hard-deny floor (secrets, key material, recursive deletes, history rewrite) and the git gates to `main` are unaffected, and `escalate_to_human_on` covers the judgement calls a path pattern cannot express
   - deliberately ASK and not `.agents/guard-extra-paths` (hard deny) — a hard floor there makes most of this repo's real backlog unexecutable
   - a consumer repo is unaffected: the file is repo-local and the plugin's built-in defaults do not change
 

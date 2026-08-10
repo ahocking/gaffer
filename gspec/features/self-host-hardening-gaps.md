@@ -31,7 +31,7 @@ model, and does it more reliably than before.
 
 ## Capabilities
 
-- [ ] **P0**: The load-timing model matches what the harness actually does, in every place that states it
+- [x] **P0**: The load-timing model matches what the harness actually does, in every place that states it
   - hooks are registered as commands, so a hook's body is spawned per event and its change is live on the next tool call; only the hook registration, the settings that load it, and which agents/skills exist with what registered frontmatter cross a session boundary
   - the four places that carry the old model are corrected **together**, so no uncorrected copy is left to re-derive the others from: `CLAUDE.md` (the reflexivity bullet), `templates/task-packet.yaml` (the `session_boundary:` field's session-start bullet and its hook attribution), `.agents/guard-extra-review` (the per-surface timing table in its rationale header), and `gspec/features/self-host-hardening.md` (the parent feature's own prose) — the parent's prose **is in scope**, because it is the most quotable statement of the wrong model and correcting prose alters no capability checkbox and no checked task
   - `CLAUDE.md` no longer contradicts itself: the older claim that hooks load at session start and the newer claim that only their registration does cannot both remain

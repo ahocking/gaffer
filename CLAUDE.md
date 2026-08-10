@@ -65,10 +65,14 @@ passing sweeps.
   consumer repo** — there the plugin sits outside the working tree. Here the loop
   edits what it runs from, and the timing differs per surface: `scripts/*.sh` take
   effect **mid-run, in the run that made the edit** (`runstate.sh` is the loop's
-  own single writer); `hooks/*` load at **session start**, so a break is invisible
-  until the next session; `agents/*.md` and `skills/*/SKILL.md` are read at
-  dispatch. `hooks/guard.sh` is the sharpest case — a packet weakening the guard
-  would be reviewed by a loop still running the old guard. Closing this is
+  own single writer); a **hook body is spawned per event**, so it takes effect the
+  same way — mid-run, on the next tool call, in the run that edited it — and only
+  its registration (`hooks/hooks.json`, `.claude/settings.json`) crosses a session
+  boundary; `agents/*.md` and `skills/*/SKILL.md` are read at dispatch.
+  `hooks/guard.sh` is the sharpest case: it is the plugin's own safety floor, and
+  here it is a first-class edit target at `full-autonomy` — a packet weakening the
+  guard is live on the next matching tool call, in the same run, not caught by a
+  loop still running an old copy. Closing this is
   `self-host-hardening`, and it is ordered first for that reason. Its T1/T2
   landed in `348f1cc`: `.agents/guard-extra-review` now routes that whole surface
   to the ASK tier, with 25 cases in `test-guard.sh`.

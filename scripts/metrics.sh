@@ -237,6 +237,27 @@ cmd_collect() {
     fi
   fi
 
+  # --- self-host detection: is THIS collector measuring its OWN repo? -----------
+  # Resolved from the SCRIPT'S OWN PATH, not the working directory and not
+  # ${CLAUDE_PLUGIN_ROOT} (not dependable in every context this runs in, cf. the
+  # statusline sensor) -- the working directory is the thing being MEASURED, not
+  # the thing doing the measuring. self_host is true only when BOTH git top-levels
+  # resolve, are the SAME directory, AND that directory carries
+  # .claude-plugin/plugin.json -- the manifest check is what stops a coincidence
+  # (e.g. a nested checkout with no plugin) from reading as self-host. Every git
+  # call is best-effort under `2>/dev/null || true`; on any doubt this is false.
+  # This is bookkeeping and must never be able to break `collect`.
+  local self_host="false" self_script_dir="" self_repo_root="" driven_repo_root=""
+  self_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P 2>/dev/null || true)"
+  if [ -n "$self_script_dir" ]; then
+    self_repo_root="$(git -C "$self_script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    driven_repo_root="$(git -C "$main_root" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$self_repo_root" ] && [ "$self_repo_root" = "$driven_repo_root" ] \
+       && [ -f "$self_repo_root/.claude-plugin/plugin.json" ]; then
+      self_host="true"
+    fi
+  fi
+
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
 
   # --- 1. events spine: SELECT this run's session logs, then concat -----------
@@ -931,6 +952,7 @@ cmd_collect() {
     --arg token_source "$token_source" \
     --arg mode "$mode" \
     --arg autonomy "$autonomy" \
+    --argjson self_host "$self_host" \
     --arg run_start "$win_start" \
     --arg run_end "$win_end" \
     --argjson wall "$wall" \
@@ -989,6 +1011,10 @@ cmd_collect() {
       },
       mode: $mode,
       autonomy: $autonomy,
+      # Purely additive (schema stays 2): a packet collected before this field
+      # existed simply has no `self_host` key, and absent MUST read as UNKNOWN,
+      # never as false -- a legacy packet is not evidence a run was a consumer run.
+      self_host: $self_host,
       sessions: ($sids[0] // [] | map(.session_id) | unique),
       window: { start: (($run_start|select(.!="")) // null), end: (($run_end|select(.!="")) // null),
                 wall_seconds: $wall, active_seconds: ($act.active|floor), idle_seconds: ($act.idle|floor) },
@@ -1082,7 +1108,8 @@ cmd_collect() {
          | if ($lab|not) then "labels: NO packet in this run carries a [orch tier:]/[orch impl:] trailer — routing is entirely UNMEASURED for this run (legacy or convention off), not clean; per-packet unlabelled flags are suppressed (run-loop §3.2/§3.4)."
            elif $miss > 0 then "labels: \($miss) of \(($pkn|length)) packets are missing a [orch tier:]/[orch impl:] trailer — their routing is UNMEASURED, not clean (run-loop §3.2/§3.4)."
            else empty end),
-        (if $instrumented then empty else "instrumentation: no event carries `ok` — this run PREDATES the ok/model hook capture, so failed_tool_calls and dispatches_with_model_override are null (unmeasured), NOT zero." end)
+        (if $instrumented then empty else "instrumentation: no event carries `ok` — this run PREDATES the ok/model hook capture, so failed_tool_calls and dispatches_with_model_override are null (unmeasured), NOT zero." end),
+        (if $self_host then "self_host: this run is the plugin driving its OWN repo (dogfooding), not a consumer app -- do not average it with consumer-repo runs." else empty end)
       ] | map(select(. != null and . != "")))
     }
     ' > "$out" 2>/dev/null || die "failed to assemble packet"
@@ -1103,7 +1130,7 @@ cmd_show() {
   [ -n "$f" ] && [ -f "$f" ] || die "no run-metrics packet found (run: metrics.sh collect)"
   command -v jq >/dev/null 2>&1 || { cat "$f"; return; }
   jq -r '
-    "run: \(.run_id)   mode: \(.mode)   autonomy: \(.autonomy // "?")   token_source: \(.token_source)",
+    "run: \(.run_id)   mode: \(.mode)   autonomy: \(.autonomy // "?")   token_source: \(.token_source)\(if .self_host == true then "   self-host: yes" else "" end)",
     "window: \(.window.wall_seconds)s wall (active \(.window.active_seconds // "?")s / idle \(.window.idle_seconds // "?")s)   packets: \(.totals.packets)   tool_calls: \(.totals.tool_calls) (+\(.totals.unattributed_tool_calls // 0) unattributed)",
     "tokens: in=\(.totals.tokens.input) out=\(.totals.tokens.output) cacheR=\(.totals.tokens.cache_read) cacheC=\(.totals.tokens.cache_creation)   cache_hit_ratio: \(.totals.cache_hit_ratio // "n/a")",
     # Surface WHY the token half is missing/low-confidence, rather than leaving a

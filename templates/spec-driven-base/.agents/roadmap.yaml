@@ -17,7 +17,7 @@
 
 schema: 1
 
-# Four fields, and only four:
+# Five fields, and only five:
 #   slug        must match gspec/features/<slug>.md
 #   order       lower runs first; unlisted features sort after all listed ones
 #   why         REQUIRED — one line of sequencing rationale. This is the whole
@@ -27,11 +27,22 @@ schema: 1
 #               frontmatter once gspec adopts it (upstream proposal U5); until
 #               then it lives here. The PRD field WINS when both exist — they are
 #               never merged.
+#   deferred    OPTIONAL. `true` means the loop must not pick this up yet:
+#               `next` and `nodes-all` skip it. It still appears in `features`,
+#               and it still BLOCKS anything that depends on it — deferring is
+#               "not now", never "treat as done". Only a literal `true`/`yes`
+#               defers; anything else reads as not-deferred, so a typo costs an
+#               unwanted pickup you can see rather than silent disappearance.
+#               Reversing it is a one-line edit. Put the reason in `why`.
 #
 # DO NOT add `status` or `parallel_group`. Both are DERIVED, and storing them is
 # how they drift:
 #   completion  -> every capability checkbox in the PRD is `[x]`
 #   concurrency -> computed per run by scripts/packet-graph.sh
+#
+# `deferred` is not an exception to that rule — it is derived from neither. It is
+# a human planning decision, which is exactly what this file owns, and it answers
+# "should the loop start this?", never "is this done?".
 #
 features: []
 

@@ -178,6 +178,141 @@ check 'PRD depends_on wins over the roadmap entry' 'other' "$out"
 refute 'roadmap dep is not merged in'              'gate|other' "$out"
 
 # =============================================================================
+printf '\n== roadmap: deferred is a human "not now", never a derived status ==\n'
+R="$TMPROOT/defer"; mkdir -p "$R/.agents"
+mk_prd "$R" live 0 1
+mk_prd "$R" later 0 1
+mk_plan "$R" later <<'EOF'
+- [ ] **T1** **P0** deferred work that must not be scheduled
+  - deps: —
+EOF
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: later
+    order: 10
+    why: waiting on evidence
+    deferred: true
+  - slug: live
+    order: 20
+    why: actually queued
+EOF
+out="$("$ADAPTER" features "$R")"
+dfl="$(printf '%s\n' "$out" | awk -F'\t' '$1=="later"{print $7}')"
+dfv="$(printf '%s\n' "$out" | awk -F'\t' '$1=="live"{print $7}')"
+[ "$dfl" = "1" ] && ok 'deferred feature reports deferred=1' || bad 'deferred=1' "got=$dfl"
+[ "$dfv" = "0" ] && ok 'non-deferred reports deferred=0'    || bad 'deferred=0' "got=$dfv"
+check 'a deferred feature is still LISTED, not hidden' 'later' "$out"
+
+out="$("$ADAPTER" next "$R")"
+check 'next skips the deferred feature despite its lower order' 'NEXT=live' "$out"
+
+# nodes-all must not schedule deferred work, or build-packet-dependency-tree
+# plans waves of packets the human explicitly decided not to start.
+out="$("$ADAPTER" nodes-all "$R" 2>/dev/null)"
+refute 'nodes-all emits nothing for a deferred feature' 'later-t1' "$out"
+# ...but an EXPLICIT single-feature request is still honoured: naming a slug is a
+# human asking for it, which is the same authority that set `deferred` in the first place.
+out="$("$ADAPTER" nodes later "$R" 2>/dev/null)"
+check 'an explicit nodes <slug> still works on a deferred feature' 'later-t1' "$out"
+
+printf '\n== deferred: blocks dependents, and never reads as complete ==\n'
+R="$TMPROOT/defdep"; mkdir -p "$R/.agents"
+mk_prd "$R" base 0 1
+mk_prd "$R" dependent 0 1 base
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: base
+    order: 10
+    why: deferred prerequisite
+    deferred: true
+  - slug: dependent
+    order: 20
+    why: needs base
+EOF
+blk="$("$ADAPTER" features "$R" | awk -F'\t' '$1=="dependent"{print $4}')"
+[ "$blk" = "1" ] && ok 'a deferred prerequisite still BLOCKS its dependent' \
+  || bad 'deferred still blocks' "blocked=$blk (deferring is not completion)"
+out="$("$ADAPTER" next "$R")"
+check 'all-deferred/blocked does not masquerade as complete' 'REASON=every' "$out"
+refute 'and specifically never says all features complete' 'all features complete' "$out"
+
+# Everything remaining deferred is its OWN reported state — collapsing it into
+# "blocked" or "complete" is how a stopped loop gets misread as a finished one.
+R="$TMPROOT/alldef"; mkdir -p "$R/.agents"
+mk_prd "$R" only 0 1
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: only
+    order: 10
+    why: parked pending a decision
+    deferred: true
+EOF
+out="$("$ADAPTER" next "$R")"
+check 'all-deferred reports the deferred reason' 'REASON=every remaining feature is deferred' "$out"
+check 'and names which one, with its why'        'DEFERRED=only why=parked pending a decision' "$out"
+check 'and says how to undo it'                  'HINT=remove' "$out"
+
+# A gating field must fail VISIBLE, not silent: a typo cannot vanish work.
+R="$TMPROOT/deftypo"; mkdir -p "$R/.agents"
+mk_prd "$R" typo 0 1
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: typo
+    order: 10
+    why: t
+    deferred: ture
+EOF
+out="$("$ADAPTER" next "$R")"
+check 'a malformed deferred value does NOT defer (wrong-visible beats wrong-invisible)' 'NEXT=typo' "$out"
+out="$("$ADAPTER" features "$R" | awk -F'\t' '$1=="typo"{print $7}')"
+[ "$out" = "0" ] && ok 'malformed deferred reports 0' || bad 'malformed deferred reports 0' "got=$out"
+
+# An EMPTY depends_on must not shift the trailing fields. TAB is IFS-whitespace,
+# so `while IFS=$'\t' read -r a b c ...` collapses consecutive tabs into one
+# delimiter and every field after the first empty one shifts left. That silently
+# broke `deferred` (field 7) for exactly the rows with no dependency, while
+# leaving done/blocked correct because they sit before the collapse point.
+R="$TMPROOT/defempty"; mkdir -p "$R/.agents"
+mk_prd "$R" nodeps 0 1            # no depends_on at all => field 5 is empty
+mk_plan "$R" nodeps <<'EOF'
+- [ ] **T1** **P0** must not be scheduled
+  - deps: —
+EOF
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: nodeps
+    order: 10
+    why: deferred and dependency-free
+    deferred: true
+EOF
+df="$("$ADAPTER" features "$R" | awk -F'\t' '$1=="nodeps"{print $7}')"
+[ "$df" = "1" ] && ok 'deferred survives an EMPTY depends_on field' \
+  || bad 'deferred survives an empty depends_on' "got=[$df] — trailing fields shifted"
+out="$("$ADAPTER" nodes-all "$R" 2>/dev/null)"
+refute 'nodes-all still skips it with no dependency present' 'nodeps-t1' "$out"
+out="$("$ADAPTER" next "$R")"
+refute 'next still skips it with no dependency present' 'NEXT=nodeps' "$out"
+
+# Absent `deferred` must behave exactly as before it existed — the field is
+# additive, and every roadmap written before it stays correct.
+R="$TMPROOT/defabsent"; mkdir -p "$R/.agents"
+mk_prd "$R" plain 0 1
+cat > "$R/.agents/roadmap.yaml" <<'EOF'
+schema: 1
+features:
+  - slug: plain
+    order: 10
+    why: no deferred key at all
+EOF
+out="$("$ADAPTER" next "$R")"
+check 'a roadmap with no deferred key is unaffected' 'NEXT=plain' "$out"
+
+# =============================================================================
 printf '\n== next: the no-roadmap fallback keeps D4 honest ==\n'
 R="$TMPROOT/norm"; mkdir -p "$R"
 mk_prd "$R" bbb 0 1

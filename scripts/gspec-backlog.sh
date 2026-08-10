@@ -21,7 +21,9 @@
 #                              from them (ADR 0020 D2 — never stored). Optional
 #                              frontmatter `depends_on:` (forward-compat with U5).
 #   .agents/roadmap.yaml       PLUGIN-OWNED sequencing (order/why, interim
-#                              depends_on). An OVERRIDE, never a prerequisite.
+#                              depends_on, and `deferred` — a human "not now",
+#                              which is NOT the derived `status` D2 prohibits;
+#                              see _roadmap_rows). An OVERRIDE, never a prerequisite.
 #   .agents/task-files.yaml    PLUGIN-OWNED file scope per task (ADR 0020 U1-local).
 #                              gspec task lines carry no file scope, so this is
 #                              where `allowed_files` comes from until (or unless)
@@ -43,10 +45,14 @@
 #                            Exit 3 on a version mismatch; 0 when clean or when no
 #                            gspec project is present (gspec is OPTIONAL — D4).
 #   features [root]          TSV, one feature per line, order asc then slug asc:
-#                              <slug>\t<order>\t<done>\t<blocked>\t<depends_on>\t<why>
-#                            done/blocked are 1/0. depends_on is '|'-separated.
+#                              <slug>\t<order>\t<done>\t<blocked>\t<depends_on>\t<why>\t<deferred>
+#                            done/blocked/deferred are 1/0. depends_on is
+#                            '|'-separated. `deferred` is LAST so every existing
+#                            column index keeps its meaning.
 #   next [root]              print NEXT=<slug> (lowest order among
-#                            unblocked-and-incomplete) or NEXT=none, plus REASON=.
+#                            unblocked-and-incomplete-and-not-deferred) or
+#                            NEXT=none, plus REASON= distinguishing blocked from
+#                            deferred from complete.
 #   nodes <slug> [root]      emit packet-graph NODES TSV for one feature's UNCHECKED
 #                            tasks (feed to `packet-graph.sh build`).
 #   nodes-all [root]         the same for every incomplete, unblocked feature.
@@ -224,19 +230,42 @@ _feature_done() {
 
 # --- .agents/roadmap.yaml (plugin-owned, OPTIONAL) ---------------------------
 # Constrained shape only (ADR 0020 D2): schema + a `features:` list of flat maps
-# with slug/order/why/depends_on. Not a general YAML parser, by design.
+# with slug/order/why/depends_on/deferred. Not a general YAML parser, by design.
+#
+# `deferred: true` is NOT the `status` field ADR 0020 D2 prohibits, and the
+# distinction is the rule's own reasoning rather than a loophole. That prohibition
+# names two fields and says why: completion is DERIVED from the PRD's capability
+# checkboxes and concurrency is DERIVED by packet-graph.sh, so storing either is a
+# drift source. `deferred` is derived from neither — it is a HUMAN planning
+# decision, which is precisely what this file owns. It answers "should the loop
+# pick this up yet?", never "is this done?".
+#
+# It exists because the alternative for deferred-but-recorded work is worse in
+# both directions: leave it out of the roadmap and `next` still reaches it (order
+# only sequences, it does not gate), or leave the PRD out entirely and the
+# deferral has no status at all — which is the tracking gap the backlog exists to
+# close. Deferral is recorded, visible in `features`, and skipped by `next`.
 _roadmap_rows() {
   local rm="$1"
   [ -f "$rm" ] || return 0
   awk '
-    function flush(){ if (slug != "") printf "%s\t%s\t%s\t%s\n", slug, (order==""?"":order), deps, why;
-                      slug=""; order=""; deps=""; why="" }
+    function flush(){ if (slug != "") printf "%s\t%s\t%s\t%s\t%s\n", slug, (order==""?"":order), deps, why, deferred;
+                      slug=""; order=""; deps=""; why=""; deferred="" }
     function val(l){ sub(/^[^:]*:[[:space:]]*/,"",l); gsub(/^["'"'"']|["'"'"']$/,"",l);
                      sub(/[[:space:]]+$/,"",l); return l }
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*-[[:space:]]+slug[[:space:]]*:/ { flush(); l=$0; sub(/^[[:space:]]*-[[:space:]]+/,"",l); slug=val(l); next }
     /^[[:space:]]+order[[:space:]]*:/ { order=val($0); next }
     /^[[:space:]]+why[[:space:]]*:/   { why=val($0);   next }
+    # Only an explicit, unambiguous true defers. Anything else — false, absent,
+    # a typo — reads as NOT deferred, so a malformed entry costs an unwanted
+    # pickup the human can see and fix, never silent disappearance from the
+    # backlog. Wrong-visible beats wrong-invisible for a gating field.
+    /^[[:space:]]+deferred[[:space:]]*:/ {
+      l=tolower(val($0))
+      deferred = (l == "true" || l == "yes") ? "1" : ""
+      next
+    }
     /^[[:space:]]+depends_on[[:space:]]*:/ {
       l=val($0)
       if (l ~ /^\[/) { gsub(/^\[|\]$/,"",l); n=split(l,a,","); deps="";
@@ -287,7 +316,7 @@ cmd_features() {
   local tmp_rm; tmp_rm="$(mktemp)"; _roadmap_rows "$rm" > "$tmp_rm"
 
   local tmp; tmp="$(mktemp)"
-  local prd slug order why deps done
+  local prd slug order why deps done deferred
   for prd in "$root"/gspec/features/*.md; do
     [ -f "$prd" ] || continue
     slug="$(basename "$prd" .md)"
@@ -300,25 +329,32 @@ cmd_features() {
     # fallback. Never merged — a stale roadmap entry must not re-block a feature
     # whose PRD says it is clear (ADR 0020 Consequences, watch item e).
     deps="$(_fm_list "$prd" 'depends_on')"
-    order=""; why=""
+    order=""; why=""; deferred=""
     if [ -s "$tmp_rm" ]; then
       local row; row="$(awk -F'\t' -v s="$slug" '$1==s {print; exit}' "$tmp_rm")"
       if [ -n "$row" ]; then
         order="$(printf '%s' "$row" | cut -f2)"
         [ -n "$deps" ] || deps="$(printf '%s' "$row" | cut -f3)"
         why="$(printf '%s' "$row" | cut -f4)"
+        deferred="$(printf '%s' "$row" | cut -f5)"
       fi
     fi
     # Unlisted features sort after every explicitly ordered one, then by slug.
     [ -n "$order" ] || order=9999
-    printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$order" "$done" "$deps" "$why" >> "$tmp"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$order" "$done" "$deps" "$why" "$deferred" >> "$tmp"
   done
   rm -f "$tmp_rm"
 
   # blocked = any dependency that is not done. Computed after the full set is
   # known, so a dependency's completion is read from the same snapshot.
+  #
+  # A DEFERRED feature still blocks its dependents, exactly like any other
+  # incomplete one. Deferring says "not now", not "pretend it is done" — letting
+  # it satisfy a dependency would release work whose prerequisite nobody built.
+  # `deferred` is appended as the LAST field so every existing column index in
+  # this TSV keeps its meaning for anything already parsing it.
   awk -F'\t' '
-    { slug[NR]=$1; ord[NR]=$2; dn[NR]=$3; dep[NR]=$4; why[NR]=$5; isdone[$1]=$3; n=NR }
+    { slug[NR]=$1; ord[NR]=$2; dn[NR]=$3; dep[NR]=$4; why[NR]=$5; df[NR]=$6; isdone[$1]=$3; n=NR }
     END {
       for (i=1; i<=n; i++) {
         blocked=0
@@ -326,7 +362,7 @@ cmd_features() {
           m=split(dep[i], d, "|")
           for (j=1; j<=m; j++) if (d[j] != "" && isdone[d[j]] != "1") blocked=1
         }
-        printf "%s\t%s\t%s\t%s\t%s\t%s\n", slug[i], ord[i], dn[i], blocked, dep[i], why[i]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", slug[i], ord[i], dn[i], blocked, dep[i], why[i], (df[i]=="1"?"1":"0")
       }
     }
   ' "$tmp" | sort -t"$(printf '\t')" -k2,2n -k1,1
@@ -346,11 +382,21 @@ cmd_next() {
     printf 'NEXT=none\nREASON=no feature PRDs under gspec/features/\n'; return 0
   fi
   local pick
-  pick="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $4=="0" {print $1; exit}')"
+  pick="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $4=="0" && $7!="1" {print $1; exit}')"
   if [ -z "$pick" ]; then
-    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0"' | grep -q .; then
+    # Three distinct nothing-to-do states, reported distinctly. Collapsing them
+    # is how "the loop has stopped picking work up" gets misread as "the backlog
+    # is finished" — the deferred case in particular is a human decision that can
+    # be reversed by editing one line, and the reader has to be told which it is.
+    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1"' | grep -q .; then
       printf 'NEXT=none\nREASON=every incomplete feature is blocked by an unfinished dependency\n'
-      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" {printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
+      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1" {printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
+      return 0
+    fi
+    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1"' | grep -q .; then
+      printf 'NEXT=none\nREASON=every remaining feature is deferred in .agents/roadmap.yaml\n'
+      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1" {printf "DEFERRED=%s why=%s\n", $1, $6}'
+      printf 'HINT=remove `deferred: true` from an entry to bring it back into the backlog\n'
       return 0
     fi
     printf 'NEXT=none\nREASON=all features complete\n'; return 0
@@ -537,11 +583,22 @@ cmd_nodes_all() {
   local root; root="$(_root "${1:-}")"
   _has_gspec "$root" || return 0
   local slug
-  while IFS=$'\t' read -r slug _ done blocked _ _; do
-    [ "$done" = "0" ] || continue
-    [ "$blocked" = "0" ] || continue
+  # Deferred features emit no nodes, for the same reason `next` skips them:
+  # otherwise /gaffer:build-packet-dependency-tree schedules waves of work the
+  # human has explicitly decided not to start.
+  #
+  # The filter is awk, NOT `while IFS=$'\t' read -r a b c ...`, and that is a bug
+  # fix rather than a style choice. TAB is an IFS *whitespace* character, so bash
+  # collapses a run of them into ONE delimiter even when IFS is set to tab alone:
+  # a row with an empty `depends_on` (field 5) silently shifts every later field
+  # left. The old read form survived only because `done`/`blocked` sit BEFORE the
+  # first field that can be empty; `deferred` sits after it and broke immediately.
+  # awk -F'\t' does not collapse empty fields, so it stays correct as fields are
+  # added. Any future reader of this TSV must use awk for the same reason.
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
     _nodes_for "$root" "$slug"
-  done < <(cmd_features "$root")
+  done < <(cmd_features "$root" | awk -F'\t' '$3=="0" && $4=="0" && $7!="1" {print $1}')
 }
 
 # --- interlock: is a `gspec build` already driving this repo? (D5) -----------

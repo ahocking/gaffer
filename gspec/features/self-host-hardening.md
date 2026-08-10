@@ -47,7 +47,7 @@ would be reviewed by a loop still running the old guard.
   - lets file-disjoint packets run concurrently under `--parallel` instead of serializing on empty scope
   - every entry fingerprinted, so a re-decomposed task drops to empty scope rather than a stale narrow one
 
-- [ ] **P2**: A self-host run is distinguishable in the metrics corpus
+- [x] **P2**: A self-host run is distinguishable in the metrics corpus
   - this repo's own loop runs feed the same corpus used to make claims about the plugin's cost
   - without a marker, dogfooding runs and consumer runs are averaged together
 </content>

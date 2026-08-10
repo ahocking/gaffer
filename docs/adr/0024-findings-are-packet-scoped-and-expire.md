@@ -1,6 +1,6 @@
 # ADR 0024 — Findings are packet-scoped and expire
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-10
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) — its index-hot/body-cold split

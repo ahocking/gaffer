@@ -34,6 +34,16 @@ features:
     why: "gates running the loop on this repo at all; the reflexive surface (guard, runstate, agent prompts) is editable here in a way it never is in a consumer repo, so this comes before any other self-driven work"
     depends_on: []
 
+  - slug: self-host-hardening-gaps
+    order: 15
+    why: "three defects its parent's whole-branch review found; ordered first because two of them degrade every run until fixed — the load-timing model is wrong in the two documents every packet reads, and the packet rules shipped today may not reach the scoping agent at all, so later features get scoped under machinery that is still broken"
+    depends_on: [self-host-hardening]
+
+  - slug: run-state-cleanup
+    order: 18
+    why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"
+    depends_on: []
+
   - slug: metrics-coverage-gaps
     order: 20
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"

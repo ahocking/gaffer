@@ -26,7 +26,7 @@ comes up, so the decomposition reflects the repo as it is then.
 - [x] **T4** **P1** Add a session-boundary declaration to the task-packet template for packets touching hooks or agents
   - deps: T3
   - covers: P1 session boundary declared
-- [ ] **T5** **P1** Populate `.agents/task-files.yaml` with fingerprinted file scope for this repo's packets
+- [x] **T5** **P1** Populate `.agents/task-files.yaml` with fingerprinted file scope for this repo's packets
   - deps: —
   - covers: P1 fingerprinted file scope
 - [ ] **T6** **P2** Mark self-host runs in the collected run packet so dogfooding and consumer runs are not averaged together

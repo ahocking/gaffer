@@ -39,7 +39,7 @@ would be reviewed by a loop still running the old guard.
   - the matching `scripts/test-*.sh` is an acceptance criterion on the packet, not an honour-system house rule
   - covers the existing CLAUDE.md rule "a behavior worth having is a behavior worth a test in its sweep"
 
-- [ ] **P1**: Packets touching session-loaded surfaces declare that they need a session boundary
+- [x] **P1**: Packets touching session-loaded surfaces declare that they need a session boundary
   - a change to `hooks/` or `agents/` cannot be verified in the run that made it
   - the packet says so rather than implying in-run verification it did not perform
 

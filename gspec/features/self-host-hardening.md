@@ -43,7 +43,7 @@ would be reviewed by a loop still running the old guard.
   - a change to `hooks/` or `agents/` cannot be verified in the run that made it
   - the packet says so rather than implying in-run verification it did not perform
 
-- [ ] **P1**: `.agents/task-files.yaml` carries fingerprinted file scope for this repo's packets
+- [x] **P1**: `.agents/task-files.yaml` carries fingerprinted file scope for this repo's packets
   - lets file-disjoint packets run concurrently under `--parallel` instead of serializing on empty scope
   - every entry fingerprinted, so a re-decomposed task drops to empty scope rather than a stale narrow one
 

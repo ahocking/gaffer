@@ -29,7 +29,7 @@ comes up, so the decomposition reflects the repo as it is then.
 - [x] **T5** **P1** Populate `.agents/task-files.yaml` with fingerprinted file scope for this repo's packets
   - deps: —
   - covers: P1 fingerprinted file scope
-- [ ] **T6** **P2** Mark self-host runs in the collected run packet so dogfooding and consumer runs are not averaged together
+- [x] **T6** **P2** Mark self-host runs in the collected run packet so dogfooding and consumer runs are not averaged together
   - deps: —
   - covers: P2 self-host runs distinguishable
 - [ ] **T7** **P2** Add a `scripts/test-metrics.sh` case asserting the self-host marker is present and does not alter any existing field

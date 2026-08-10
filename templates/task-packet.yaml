@@ -85,11 +85,17 @@ context:
   - <src/api/Transactions/Transaction.cs>
 
 # Concrete, checkable conditions. The reviewer verifies each of these.
+#
+# REQUIRED: if `allowed_files` touches enforcement or automation code — a hook, a
+# guard/policy script, CI logic — the matching regression sweep MUST be listed
+# here as its own acceptance criterion — not implied by "tests pass". A sweep is
+# what makes a change to enforcement code reviewable, so this is not optional.
 acceptance_criteria:
   - <detects monthly recurring transactions>
   - <supports merchant normalization>
   - <includes unit tests>
   - <does not alter auth behavior>
+  - <the regression sweep covering the area you changed passes, with a new case for this change>
 
 # Interface contract with neighboring packets. A fresh implementer sees ONLY this
 # packet, so name the exact signatures it may rely on and must expose — this is how
@@ -112,9 +118,12 @@ forbidden:
   - <touch frontend>            # task-specific extras
 
 # Commands the agent runs to verify its work. Output must be reported verbatim.
+# If a regression sweep is listed above under acceptance_criteria, `test` must
+# also invoke it — an acceptance criterion nobody runs is not a gate. The
+# sweeps exit 0 on pass.
 commands:
   build: <dotnet build>
-  test: <dotnet test>
+  test: <dotnet test && ./scripts/test-<area>.sh>
 
 # Actions that must NOT happen without explicit human approval first.
 approval_required_before:

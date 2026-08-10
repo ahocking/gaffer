@@ -1,6 +1,6 @@
 # ADR 0025 — The gspec checkbox is the completion record; `backlog.done` is removed
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-10
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0005](0005-crash-safe-resume.md) (the sequential run-state schema),

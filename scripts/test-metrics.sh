@@ -1120,17 +1120,29 @@ check "show: self_host=false renders no self-host segment" "0" \
   "$(printf '%s\n' "$("$METRICS" show "$OUT" 2>/dev/null)" | grep -c 'self-host')"
 
 # no-git fallback: with a non-git --main-root, self_host must read false REGARDLESS of
-# the collector's own working directory ("on any doubt, false"). The self side always
-# resolves ($METRICS is a real file inside a real git repo — BASH_SOURCE[0] alone
-# determines it, so only the DRIVEN side's git resolution ever fails here); the case
-# this guards is the driven-side `|| echo .` substitution, which `cd`d to the
-# COLLECTOR's process cwd instead of failing, and so silently invented a root. That bug
-# was directory-dependent, not a plain failure to resolve — reproduced here: launched
+# the collector's own working directory ("on any doubt, false"). EITHER side's git
+# resolution can fail — the self side (BASH_SOURCE[0] resolves to a non-git script
+# copy) or the driven side (--main-root is not a git repo, or is one git cannot
+# resolve) — and an unresolved side must now yield NO root at all, never a root
+# synthesized from self_script_dir or main_root, so the comparison cannot succeed
+# either way. The two fixtures immediately below cover the reachable space between
+# them: Fixture A fails BOTH sides at once (a non-git plugin copy driven at a
+# non-git root under it), Fixture B fails the driven side ALONE while the self side
+# resolves. Self-alone is not a reachable false positive — a self-side failure means
+# the collector has no ancestor repo, so any driven root that DOES resolve is
+# necessarily a different directory. The case the two HSNOGIT checks just below
+# guard is narrower but still real: the
+# driven-side `|| echo .` substitution, which `cd`d to the COLLECTOR's process cwd
+# instead of failing, and so silently invented a root. That bug was
+# directory-dependent, not a plain failure to resolve — reproduced here: launched
 # from $HERE (this repo's own scripts/ dir) it read self_host=true (the launch
 # directory happened to be a real self-host checkout with a manifest); launched from an
 # unrelated tmp dir it read false. Asserting both from fixed working directories is
 # what turns this from a case the old bug could still pass into a real regression
-# guard.
+# guard. These fixtures (and Fixture A below) assume $ROOT -- mktemp -d, i.e. TMPDIR
+# -- has NO ancestor git repository; sited inside a checkout, the "non-git" roots
+# would resolve after all and test something else. That fails loudly rather than
+# silently (the checks read true and fail), so it is a note, not a guard.
 HSNOGIT="$ROOT/hs-nogit"; mkdir -p "$HSNOGIT"
 HSNOGITOUT_HERE="$ROOT/hs-nogit-here.json"
 ( cd "$HERE" && "$METRICS" collect --main-root "$HSNOGIT" --projects-dir "$ROOT/none" --out "$HSNOGITOUT_HERE" >/dev/null 2>&1 )
@@ -1141,6 +1153,58 @@ HSNOGITOUT_CWD="$ROOT/hs-nogit-cwd.json"
 ( cd "$HSCWD" && "$METRICS" collect --main-root "$HSNOGIT" --projects-dir "$ROOT/none" --out "$HSNOGITOUT_CWD" >/dev/null 2>&1 )
 check "self_host: --main-root not a git repo -> false, launched from an unrelated tmp dir" "false" \
   "$(jq -r '.self_host' "$HSNOGITOUT_CWD" 2>/dev/null)"
+
+# --- Fixture A: a non-git PLUGIN COPY (the finding's exact case) -------------
+# An archive/tarball install of the plugin — a copy of metrics.sh plus the manifest,
+# but no .git at all — means the SELF side's rev-parse fails. Driven with
+# --main-root pointing at a non-git directory under that same plugin root, the
+# DRIVEN side's rev-parse fails too. Before the fix, both sides fell back to
+# self_script_dir / main_root respectively, which happen to share a parent here, so
+# this read self_host=true PLUS the dogfooding note — a consumer/archive run
+# labelled self-host. Follows the HSSELFREPO construction above (a manifest plus a
+# copy of metrics.sh at scripts/metrics.sh) but omits `git init`. Canonicalized via
+# `pwd -P` up front: self_script_dir is always resolved through `pwd -P`
+# (physical/symlink-free) regardless of invocation path, so on a host where the tmp
+# root sits behind a symlink (e.g. macOS /var -> /private/var) an uncanonicalized
+# fixture root would make the two sides' paths differ by that symlink alone and the
+# check would pass FALSE for the wrong reason, before the fix and after it alike.
+HSNOGITSELF="$ROOT/hs-nogit-self-repo"
+mkdir -p "$HSNOGITSELF/scripts" "$HSNOGITSELF/.claude-plugin" "$HSNOGITSELF/sub"
+HSNOGITSELF="$(cd "$HSNOGITSELF" && pwd -P)"
+echo '{}' > "$HSNOGITSELF/.claude-plugin/plugin.json"
+cp "$METRICS" "$HSNOGITSELF/scripts/metrics.sh"
+chmod +x "$HSNOGITSELF/scripts/metrics.sh"
+HSNOGITSELFOUT="$ROOT/hs-nogit-self.json"
+( cd "$HERE" && "$HSNOGITSELF/scripts/metrics.sh" collect --main-root "$HSNOGITSELF/sub" \
+  --projects-dir "$ROOT/none" --out "$HSNOGITSELFOUT" >/dev/null 2>&1 )
+check "self_host: non-git plugin copy (finding's exact case) -> false" "false" \
+  "$(jq -r '.self_host' "$HSNOGITSELFOUT" 2>/dev/null)"
+check "self_host: non-git plugin copy -> no self_host note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("self_host:"))]|length' "$HSNOGITSELFOUT" 2>/dev/null)"
+
+# --- Fixture B: a non-git --main-root sited UNDER a real plugin root --------
+# Mirror of Fixture A from the other side. The SELF side resolves normally (reuses
+# the real git-initialised HSSELFREPO collector copy built above), but --main-root
+# points at a directory git cannot resolve: a `.git` FILE containing a gitdir
+# pointer to a path that does not exist (the shape left behind by a submodule whose
+# superproject's .git/modules was discarded, or a linked worktree copied away from
+# the main repo it pointed at -- NOT an uninitialised submodule, which has no .git
+# entry at all). `git rev-parse` there exits 128 rather than
+# walking up to a parent .git, so the DRIVEN side fails to resolve while sitting
+# directly under a real plugin root — before the fix this fell back to $main_root
+# itself, which of course carries the manifest, so it also read self_host=true.
+# Canonicalized for the same reason as Fixture A: git's own rev-parse output for the
+# self side is always physical/symlink-free, so the driven side's literal fallback
+# path must be built from an equally canonicalized root or the two would differ by
+# a symlink component alone rather than by the thing under test.
+HSSELFREPO_REAL="$(cd "$HSSELFREPO" && pwd -P)"
+HSBROKENSUB="$HSSELFREPO_REAL/broken-submodule"; mkdir -p "$HSBROKENSUB"
+printf 'gitdir: /nonexistent/nowhere\n' > "$HSBROKENSUB/.git"
+HSBROKENOUT="$ROOT/hs-broken-submodule.json"
+( cd "$HERE" && "$HSSELFREPO/scripts/metrics.sh" collect --main-root "$HSBROKENSUB" \
+  --projects-dir "$ROOT/none" --out "$HSBROKENOUT" >/dev/null 2>&1 )
+check "self_host: non-git --main-root under a real plugin root -> false" "false" \
+  "$(jq -r '.self_host' "$HSBROKENOUT" 2>/dev/null)"
 
 echo
 if [ "$fail" -eq 0 ]; then

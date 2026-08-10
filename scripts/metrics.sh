@@ -266,28 +266,37 @@ cmd_collect() {
       # --path-format is a newer git; fall back to the relative form and resolve it
       # with cd+pwd — but ONLY when rev-parse actually produced something. Piping a
       # failed/empty result through `|| echo .` would cd to the COLLECTOR's own
-      # working directory and silently invent a root, so an empty result here falls
-      # through to the self_script_dir fallback below instead.
+      # working directory and silently invent a root, so an empty result here is
+      # left empty instead.
       gcd_raw="$(git -C "$self_script_dir" rev-parse --git-common-dir 2>/dev/null || true)"
       [ -n "$gcd_raw" ] && self_gcd="$(cd "$self_script_dir/$gcd_raw" 2>/dev/null && pwd || true)"
     fi
-    [ -n "$self_gcd" ] || self_gcd="$self_script_dir"
-    self_repo_root="$(dirname "$self_gcd")"
+    # No fallback to self_script_dir: an unresolved self_gcd (e.g. a non-git
+    # archive/tarball copy of the plugin) must leave self_repo_root EMPTY, never
+    # `dirname` a synthesized root — "on any doubt this is false" applies to a
+    # missing answer too, not only a mismatched one.
+    [ -n "$self_gcd" ] && self_repo_root="$(dirname "$self_gcd")"
 
     driven_gcd="$(git -C "$main_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     if [ -z "$driven_gcd" ]; then
       # Same rule, driven side: only cd+pwd a NON-EMPTY rev-parse result. When git
-      # genuinely fails (e.g. --main-root is not a git repo at all), fall through to
-      # the intended main_root fallback below rather than resolving the collector's
-      # cwd — that substitution made a non-git --main-root read self_host=true or
-      # false depending on the directory `collect` happened to be launched from.
+      # genuinely fails (e.g. --main-root is not a git repo at all, or is a broken
+      # submodule/worktree pointer git cannot resolve), the result is left empty
+      # instead of resolving the collector's cwd — that substitution made a non-git
+      # --main-root read self_host=true or false depending on the directory
+      # `collect` happened to be launched from.
       gcd_raw="$(git -C "$main_root" rev-parse --git-common-dir 2>/dev/null || true)"
       [ -n "$gcd_raw" ] && driven_gcd="$(cd "$main_root/$gcd_raw" 2>/dev/null && pwd || true)"
     fi
-    [ -n "$driven_gcd" ] || driven_gcd="$main_root"
-    driven_repo_root="$(dirname "$driven_gcd")"
+    # No fallback to main_root either: an unresolved driven_gcd must leave
+    # driven_repo_root EMPTY, never `dirname` --main-root itself — that fallback is
+    # exactly what let a non-git --main-root sited under a real plugin root read
+    # self_host=true (driven_repo_root landed on the plugin root by construction,
+    # not by resolving anything).
+    [ -n "$driven_gcd" ] && driven_repo_root="$(dirname "$driven_gcd")"
 
-    if [ -n "$self_repo_root" ] && [ "$self_repo_root" = "$driven_repo_root" ] \
+    if [ -n "$self_repo_root" ] && [ -n "$driven_repo_root" ] \
+       && [ "$self_repo_root" = "$driven_repo_root" ] \
        && [ -f "$self_repo_root/.claude-plugin/plugin.json" ]; then
       self_host="true"
     fi

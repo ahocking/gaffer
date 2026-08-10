@@ -37,7 +37,7 @@ model, and does it more reliably than before.
   - `CLAUDE.md` no longer contradicts itself: the older claim that hooks load at session start and the newer claim that only their registration does cannot both remain
   - the corrected guidance attributes in-run verifiability of a hook to the hook being executed, not to its regression sweep — the sweep is the deliberate check, not the mechanism
 
-- [ ] **P0**: The self-host marker yields no answer rather than a wrong one when it cannot resolve a repository root
+- [x] **P0**: The self-host marker yields no answer rather than a wrong one when it cannot resolve a repository root
   - when both root resolutions fail, the comparison cannot succeed and the marker reports not-self-host, honouring the stated "on any doubt, false" rule instead of synthesizing a root from the collector's own location
   - a non-git install of the plugin (an archive extraction rather than a checkout) with the driven root under the plugin root no longer reports self-host, and no longer emits the dogfooding note
   - the matching regression sweep covers it, with a fixture that omits the repository metadata so the previously unreachable path is exercised, and the sweep comment no longer claims the path is unreachable — the rest of that comment, which records why the guard asserts from two fixed working directories, stands

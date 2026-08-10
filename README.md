@@ -348,7 +348,8 @@ them on every push.
 git clone https://github.com/ahocking/gaffer.git
 cd gaffer
 
-# Start Claude Code with this directory loaded as a plugin
+# Start Claude Code with this directory loaded as a plugin.
+# REQUIRED here — see "Which copy of the plugin is running?" below.
 claude --plugin-dir .
 
 # Inside the session, after editing plugin files:
@@ -357,6 +358,39 @@ claude --plugin-dir .
 # Validate the manifest & structure
 claude plugin validate .
 ```
+
+### Which copy of the plugin is running?
+
+Working *on* gaffer is not like consuming it, and getting this wrong is silent.
+
+`gaffer` is normally installed from its marketplace, which copies a **snapshot**
+into `~/.claude/plugins/cache/gaffer-marketplace/gaffer/<version>/` pinned to one
+commit. Every skill and agent reaches `scripts/` and `templates/` through
+`${CLAUDE_PLUGIN_ROOT}`, so in a session using that install, **your working tree
+is not what runs** — the snapshot is. Editing `scripts/` or `skills/` changes
+nothing, and the loop executes whatever the snapshot froze.
+
+Note the marketplace `source` is this very directory, so it *looks* live. It is
+not: install still snapshots to the cache, and the copy only moves when you
+reinstall.
+
+This repo therefore commits `.claude/settings.json` with:
+
+```json
+{ "enabledPlugins": { "gaffer@gaffer-marketplace": false } }
+```
+
+Project scope overrides user scope, so the installed copy is **off here and on
+everywhere else** — other repos keep using their installed version, untouched.
+The live plugin comes from `--plugin-dir .`.
+
+The trade-off is deliberate: forget the flag and this repo has *no* gaffer
+skills, which is loud and obvious. The alternative — silently running a months-old
+snapshot against a current checkout — is the failure that costs you an afternoon.
+
+To confirm which copy is live, run something whose behaviour changed recently. If
+`/gaffer:run-loop`'s kickoff schedules features marked `deferred: true` in
+`.agents/roadmap.yaml`, you are on a snapshot older than that feature.
 
 ### This repo self-hosts its own backlog
 

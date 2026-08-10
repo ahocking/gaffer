@@ -232,8 +232,17 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    else `develop`, else `main`/`master`). If `orch/<task-id>` already exists
    (resuming), just `git switch orch/<task-id>`. No worktree, no separate
    directory — all work happens here.
-2. **Scope.** Fill a task packet from
-   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` — narrow `allowed_files`,
+2. **Scope.** `Read`
+   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before you fill anything
+   in — naming a path is not reading it (ADR 0023's report-format precedent):
+   the template carries rules you cannot fill from memory, including which
+   acceptance criterion is REQUIRED when the packet touches enforcement or
+   automation code, and when `session_boundary` must be declared. One read
+   (~2.4k tokens) covers this context — do not re-read it per packet within
+   it. This applies to whoever **fills**
+   a packet (you, here, or a relay-dispatched Chief Engineer / parallel lane)
+   — not to the `implementer`/`reviewer`/`doc-writer`, who are handed an
+   already-filled packet. Then fill it: narrow `allowed_files`,
    acceptance criteria, `forbidden`, build/test commands, and the packet
    `autonomy`. **Set `tier` here** — `mechanical` (fully-specified, one file),
    `integration` (multi-file/wiring, design settled), `design-heavy` (the design

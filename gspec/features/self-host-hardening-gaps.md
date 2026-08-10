@@ -42,7 +42,7 @@ model, and does it more reliably than before.
   - a non-git install of the plugin (an archive extraction rather than a checkout) with the driven root under the plugin root no longer reports self-host, and no longer emits the dogfooding note
   - the matching regression sweep covers it, with a fixture that omits the repository metadata so the previously unreachable path is exercised, and the sweep comment no longer claims the path is unreachable — the rest of that comment, which records why the guard asserts from two fixed working directories, stands
 
-- [ ] **P0**: The packet-scoping rules are delivered to the agent that applies them, not referenced by path
+- [x] **P0**: The packet-scoping rules are delivered to the agent that applies them, not referenced by path
   - the agent that scopes a packet has the packet template's content in context before it fills the fields in — naming a file by path is not delivering it
   - both rules added by the parent feature are in force at scoping time: that a packet touching a script carries its regression sweep as an acceptance criterion, and that a packet touching a session-loaded surface declares the session boundary
   - a packet that edits a script and ships with no sweep case is the observed failure this closes: `self-host-hardening-t6` edited `scripts/metrics.sh` and landed with no case in `scripts/test-metrics.sh`, which arrived only in the packet after it — under the rule that forbids exactly that

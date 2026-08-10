@@ -248,7 +248,7 @@ cmd_collect() {
   # call is best-effort under `2>/dev/null || true`; on any doubt this is false.
   # This is bookkeeping and must never be able to break `collect`.
   local self_host="false" self_script_dir="" self_repo_root="" driven_repo_root=""
-  local self_gcd="" driven_gcd=""
+  local self_gcd="" driven_gcd="" gcd_raw=""
   # BASH_SOURCE[0] must be non-empty. Falling back to $0 (e.g. "bash" when this
   # file is piped in) would dirname to ".", i.e. the WORKING directory — exactly
   # the basis this design rejected, so there is no fallback: absent means false.
@@ -262,12 +262,28 @@ cmd_collect() {
     # side's normalised root read false for a self-host run collected through a
     # worktree lane's own copy of this script.
     self_gcd="$(git -C "$self_script_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    [ -n "$self_gcd" ] || self_gcd="$(cd "$(git -C "$self_script_dir" rev-parse --git-common-dir 2>/dev/null || echo .)" 2>/dev/null && pwd || true)"
+    if [ -z "$self_gcd" ]; then
+      # --path-format is a newer git; fall back to the relative form and resolve it
+      # with cd+pwd — but ONLY when rev-parse actually produced something. Piping a
+      # failed/empty result through `|| echo .` would cd to the COLLECTOR's own
+      # working directory and silently invent a root, so an empty result here falls
+      # through to the self_script_dir fallback below instead.
+      gcd_raw="$(git -C "$self_script_dir" rev-parse --git-common-dir 2>/dev/null || true)"
+      [ -n "$gcd_raw" ] && self_gcd="$(cd "$self_script_dir/$gcd_raw" 2>/dev/null && pwd || true)"
+    fi
     [ -n "$self_gcd" ] || self_gcd="$self_script_dir"
     self_repo_root="$(dirname "$self_gcd")"
 
     driven_gcd="$(git -C "$main_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    [ -n "$driven_gcd" ] || driven_gcd="$(cd "$(git -C "$main_root" rev-parse --git-common-dir 2>/dev/null || echo .)" 2>/dev/null && pwd || true)"
+    if [ -z "$driven_gcd" ]; then
+      # Same rule, driven side: only cd+pwd a NON-EMPTY rev-parse result. When git
+      # genuinely fails (e.g. --main-root is not a git repo at all), fall through to
+      # the intended main_root fallback below rather than resolving the collector's
+      # cwd — that substitution made a non-git --main-root read self_host=true or
+      # false depending on the directory `collect` happened to be launched from.
+      gcd_raw="$(git -C "$main_root" rev-parse --git-common-dir 2>/dev/null || true)"
+      [ -n "$gcd_raw" ] && driven_gcd="$(cd "$main_root/$gcd_raw" 2>/dev/null && pwd || true)"
+    fi
     [ -n "$driven_gcd" ] || driven_gcd="$main_root"
     driven_repo_root="$(dirname "$driven_gcd")"
 

@@ -12,8 +12,8 @@
   boundary is deliberately placed on the existing crash boundary, so a fresh
   Chief Engineer per packet is the already-tested resume path rather than a new
   mechanism.
-- Constrained by [ADR 0003](0003-defer-custom-voice-frontend.md): the plugin
-  produces check-ins and builds no notification transport. That rules out the
+- Constrained by the plugin's standing frontend-agnostic rule: it produces
+  check-ins and builds **no notification transport**. That rules out the
   otherwise-obvious progress designs — see Rejected alternatives.
 
 ## Context
@@ -156,7 +156,7 @@ driving the whole backlog is therefore a **black box for the duration of the run
 no check-in reaches the human until the last packet lands. Dispatching per packet
 makes each check-in surface the moment its packet lands, using no transport beyond
 the subagent's own return value — which is the only progress mechanism available
-that does not violate ADR 0003.
+that builds no notification transport.
 
 It is also mechanically cheap to *build*, because `.agents/run-state.yaml` is
 *already* the durable memory designed to survive session death (ADR 0004/0005). A
@@ -328,7 +328,7 @@ Two things the model deliberately does not capture, both favoring the relay:
   premise is semi-attended operation.
 - **Long-running CE + check-ins written to disk, relay tails the file.** Restores
   the progress reporting, but it is a notification transport in everything but
-  name — precisely what ADR 0003 defers. It also adds a second durable state file
+  name — precisely what this plugin does not build. It also adds a second durable state file
   alongside run-state, with its own torn-write story. Per-packet dispatch gets the
   same visibility from a mechanism that already exists.
 - **Rename `Task` → `Agent` in the agent frontmatter.** Proposed on the false

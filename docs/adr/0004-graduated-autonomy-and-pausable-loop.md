@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-04
 - Deciders: user (tech lead), orchestration plugin
-- Relates to: [ADR 0003](0003-defer-custom-voice-frontend.md) (frontend-agnostic
-  stance; the check-in delivery surface). Supersedes, in part, the placement of
+- Frontend-agnostic: this plugin **produces** check-ins and builds no delivery
+  transport. Supersedes, in part, the placement of
   the "graduated-autonomy revisit" as a sub-bullet of the API-specialists phase
   in the original roadmap — that work is promoted here to its own phase
   (roadmap **Phase 4**).
@@ -117,7 +117,7 @@ exactly why **Phase 3 worktree isolation is a prerequisite**.
 
 ### 5. The plugin produces check-ins; the frontend delivers them
 
-Consistent with ADR 0003 (frontend-agnostic). The plugin's job is to **produce**
+The plugin is frontend-agnostic. Its job is to **produce**
 well-formed check-ins at the right moments — **status updates** at checkpoints and
 **severity-tagged blocking questions** at hard gates or genuine ambiguity.
 **Delivery** stays the frontend's job: Claude Desktop on the MacBook, synced to

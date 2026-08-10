@@ -1,4 +1,4 @@
-# Human-facing report SHAPES — what the HUMAN reads (ADR 0003 / 0012)
+# Human-facing report SHAPES — what the HUMAN reads (ADR 0012)
 # -----------------------------------------------------------------------------
 # **Read `report-conventions.md` (this directory) first — this file assumes it.**
 # The glyph vocabulary, the indentation contract, the decision block, the header

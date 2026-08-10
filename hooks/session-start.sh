@@ -16,7 +16,7 @@
 #   - This hook is purely additive and MUST fail open: any error, or no in-flight
 #     run, or a completed run -> exit 0 with no output. It never blocks a session.
 #
-# This only PRODUCES context; delivery/action stays the session's job (ADR 0003).
+# This only PRODUCES context; delivery/action stays the session's job.
 # =============================================================================
 
 set -uo pipefail

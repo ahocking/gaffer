@@ -1,4 +1,4 @@
-# Report conventions — the layer EVERY human-facing report owes (ADR 0003 / 0012)
+# Report conventions — the layer EVERY human-facing report owes (ADR 0012)
 # -----------------------------------------------------------------------------
 # There are three report layers in this plugin, and they have different readers:
 #

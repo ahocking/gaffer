@@ -165,7 +165,7 @@ into the check-in below.
 
 A pause is a stop, so the human gets the **stop report** — shape B in
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (the plugin produces reports; the
-frontend delivers them — ADR 0003/0004). Fill it from what you already know; do not
+frontend delivers them — ADR 0004). Fill it from what you already know; do not
 re-open the repo to embellish it:
 
 - the opening sentence — why it stopped ("$ARGUMENTS", if given) and whether

@@ -3,9 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-09
 - Deciders: user (tech lead), orchestration plugin
-- Relates to: [ADR 0003](0003-defer-custom-voice-frontend.md) (the plugin produces
-  reports; the frontend delivers them),
-  [ADR 0012](0012-delegated-loop-driver.md) (the wire/human report split, and the
+- Relates to: [ADR 0012](0012-delegated-loop-driver.md) (the wire/human report split, and the
   "render, don't relay" amendment),
   [ADR 0005](0005-crash-safe-resume.md) (the SessionStart hook this adds a sibling to),
   [ADR 0017](0017-graceful-cooperative-pause.md) (why hook-injected context is

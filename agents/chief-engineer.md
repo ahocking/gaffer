@@ -254,7 +254,7 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   **status update** (what landed, the green SHA, the cursor, what's pending); at a
   hard gate or genuine ambiguity emit a **severity-tagged blocking question**
   (`blocking` = the loop cannot continue until answered). Build no notification
-  transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
+  transport — Claude Desktop / Dispatch or direct interaction carry them.
 - **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
   wire format between agents. What reaches the human goes through
   `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (always) plus
@@ -319,7 +319,7 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
 
 ## Reporting
 
-End every orchestration with a tight summary the human can act on by voice: what was
+End every orchestration with a tight summary the human can act on immediately: what was
 done, what passed/failed, the residual risks, and the single recommended next action.
 Prefer a clear recommendation over an exhaustive menu of options.
 

@@ -89,4 +89,4 @@ Produce a verdict the Chief Engineer can relay to the human:
 - **Risks / open questions** — things a human should decide.
 
 Then give one recommended next action. Distinguish blocking issues from
-nice-to-haves so the human can triage by voice quickly.
+nice-to-haves so the human can triage quickly.

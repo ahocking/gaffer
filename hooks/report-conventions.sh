@@ -52,7 +52,7 @@
 # it after a mid-run compact would announce a crash that never happened and push
 # a live run into reconcile. Same event, different triggers, so: two entries.
 #
-# This only PRODUCES context; delivery/action stays the session's job (ADR 0003).
+# This only PRODUCES context; delivery/action stays the session's job.
 # =============================================================================
 
 set -uo pipefail

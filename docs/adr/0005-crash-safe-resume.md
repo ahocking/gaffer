@@ -4,9 +4,8 @@
 - Date: 2026-07-04
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md) (the
-  pausable/resumable loop and durable `.agents/run-state.yaml` this hardens) and
-  [ADR 0003](0003-defer-custom-voice-frontend.md) (produce check-ins/context; do
-  not build delivery).
+  pausable/resumable loop and durable `.agents/run-state.yaml` this hardens).
+  Frontend-agnostic throughout: produce check-ins/context; do not build delivery.
 - Superseded in part by: [ADR 0009](0009-single-directory-feature-branch-workflow.md).
   The crash signal, atomic writes, and write-ahead orphan-commit **reconcile
   decision table all stand** — only the mechanics change for a single checkout:
@@ -63,8 +62,8 @@ exists with `status != done`, it injects `additionalContext` describing the run
 `status` — `running` → "treat as a crash, reconcile first"; `blocked` → "surface
 the blocking question and wait"; `paused` → "resume normally". This makes
 reopening Claude *spin the run back up* (offer to resume; auto-resume only under
-`autonomous`) instead of waiting for the human to remember. Consistent with ADR
-0003, the hook only **produces context** — the session acts on it; no bespoke
+`autonomous`) instead of waiting for the human to remember. The hook only
+**produces context** — the session acts on it; no bespoke
 delivery transport is built. The hook is purely additive and **fails open**: any
 error, or no in-flight run, yields exit 0 with no output and never blocks a
 session. It is jq-free (reads the repo root from `$CLAUDE_PROJECT_DIR`).

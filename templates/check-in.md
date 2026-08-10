@@ -1,4 +1,4 @@
-# Check-in shapes — what the guided loop PRODUCES (ADR 0003 / 0004)
+# Check-in shapes — what the guided loop PRODUCES (ADR 0004)
 # -----------------------------------------------------------------------------
 # The plugin produces well-formed check-ins at the right moments; it does NOT
 # deliver them. Delivery is the frontend's job — Claude Desktop on the MacBook

@@ -14,10 +14,10 @@ comes up, so the decomposition reflects the repo as it is then.
 
 ## Plan
 
-- [ ] **T1** **P0** Add `.agents/guard-extra-review` listing the reflexive surface so self-modification lands in the ASK tier
+- [x] **T1** **P0** Add `.agents/guard-extra-review` listing the reflexive surface so self-modification lands in the ASK tier
   - deps: —
   - covers: P0 self-modification gated
-- [ ] **T2** **P0** Add allow/deny cases to `scripts/test-guard.sh` proving each reflexive path asks and that consumer-repo defaults are unchanged
+- [x] **T2** **P0** Add allow/deny cases to `scripts/test-guard.sh` proving each reflexive path asks and that consumer-repo defaults are unchanged
   - deps: T1
   - covers: P0 self-modification gated
 - [ ] **T3** **P0** Make the matching regression sweep a required acceptance criterion in the task-packet template

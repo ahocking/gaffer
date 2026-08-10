@@ -31,6 +31,46 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   relative or absolute machine path.
 - Hook scripts must be executable (`chmod +x`).
 - **No hardcoded secrets** anywhere. Tokens come from env vars (`${VAR}`).
+- **`gspec/` at the root is this repo's OWN backlog, not shipped content.** It is
+  not a template and not part of the plugin — consumers never receive it, and
+  nothing under `templates/` may reference it. This repo self-hosts (see below);
+  `templates/spec-driven-base/` remains the only thing a consumer gets.
+
+## This repo self-hosts its own backlog
+
+`gaffer` drives its own development through its own adapter. The backlog is
+**forward-only, plus one retro-spec** — the 25 shipped ADRs are deliberately not
+retro-specced, because that is archaeology over decisions that already have
+passing sweeps.
+
+- **The one retro-spec is `run-metrics`** (ADR 0019, v1→v3.4), and it exists
+  because that ADR is the clearest case in the repo of a **decision record being
+  used as a status tracker**: 866 lines carrying five stacked `v3.x` revision
+  sections, mirrored again in this file, with **no ADR in the repo having a
+  status field at all**. That absence is what the backlog fixes. All its
+  capabilities and tasks are checked, so it yields **zero** packets and reads as
+  derived-done.
+- **Known gaps of a shipped feature are a SEPARATE feature** (`metrics-coverage-gaps`,
+  not an unchecked capability on `run-metrics`). Completion is derived from
+  capability checkboxes, so folding a gap in would make a shipped collector read
+  as incomplete and — via the dependency rule — block everything downstream of it
+  forever. This is the modelling trap to avoid every time a shipped feature has
+  a known hole.
+- **A specced feature with no `gspec/tasks/<slug>.md` is the intended state for
+  deferred work**, not an omission: the adapter reports `PLAN=none` plus the
+  `/gspec-plan` hint. Decompose when the work comes up, so the decomposition
+  reflects the repo as it is then rather than as it was when the ADR was written.
+  Only `self-host-hardening` has a plan today.
+- **Reflexivity is the risk self-hosting adds, and it has no analogue in a
+  consumer repo** — there the plugin sits outside the working tree. Here the loop
+  edits what it runs from, and the timing differs per surface: `scripts/*.sh` take
+  effect **mid-run, in the run that made the edit** (`runstate.sh` is the loop's
+  own single writer); `hooks/*` load at **session start**, so a break is invisible
+  until the next session; `agents/*.md` and `skills/*/SKILL.md` are read at
+  dispatch. `hooks/guard.sh` is the sharpest case — a packet weakening the guard
+  would be reviewed by a loop still running the old guard. Closing this is
+  `self-host-hardening`, and it is ordered first for that reason. **Do not run
+  `/gaffer:run-loop` here at `full-autonomy` until its T1/T2 land.**
 
 ## Conventions
 
@@ -652,3 +692,105 @@ scripts: a behavior worth having is a behavior worth a test in its sweep.
   deps, deploys, git history) — do NOT add domain-specific patterns (money,
   Plaid, PHI, …) to `hooks/guard.sh`. Those belong in the consumer repo's
   `.agents/guard-extra-bash` / `.agents/guard-extra-paths`.
+
+<!-- gspec:preamble -->
+## gspec — Living Specification Sync
+
+This project uses **gspec** for living product specifications stored in `gspec/`.
+
+These specs define what the product is, how it should look, what technology it uses, and what features it supports. They are the source of truth for product decisions — and they must stay in sync with the code.
+
+### Prefer gspec commands over ad-hoc work
+
+Because `gspec/` exists in this project, **route the user's request through the matching `gspec-*` command** instead of producing the equivalent output ad hoc. This applies even when the user's phrasing is casual (e.g. "just build it", "let's code this", "write a quick spec"). Each command runs the right specialist (architect, product, designer, engineer, QA reviewer) with a built-in **quality-review gate** — a separate checker validates the result before it's done (skip with `--no-qa`) — plus the phased execution, checkpointing, and checkbox updates that freeform responses skip.
+
+The `gspec-*` names below are your harness's slash commands / skills, **not shell programs** — never try to execute `gspec-implement` (or any other `gspec-*` name) in the shell; it does not exist as a binary. The only shell CLI is `gspec` itself (`npx gspec`).
+
+Use this mapping whenever the user's intent matches:
+
+- **Building, implementing, coding, scaffolding, shipping, or "making it real"** — invoke `gspec-implement`. This is the most commonly-missed command. If the user asks you to write code for anything the specs describe (or a new capability that should be specced), route through `gspec-implement` rather than editing files directly. Generic prompts like "build it", "go", "keep going", "continue", or "do the next phase" should also invoke it when recent conversation has been about specs or planning. **Exception:** if `.gspec/build/run.json` exists, an autonomous build run is in progress or paused and owns the flow — those same generic prompts mean *resume it* (`gspec build --resume` in the shell), not `gspec-implement`.
+- **Building an entire product from an idea, end-to-end and mostly unattended** — run `gspec-build` (`gspec build "<idea>"`), which drives profile → stack → practices → style → features → architecture → plan → implementation, gating each spec through QA and pausing once before implementation for a human spec review (skip with `--no-review`). Best for greenfield "build me X" requests; it generates only the specs that are missing.
+- **Defining the product, users, or vision** — invoke `gspec-profile`.
+- **Planning or writing a new feature / PRD** — invoke `gspec-feature`.
+- **Producing an ordered plan from a feature PRD (with explicit dependencies and parallel-execution markers)** — invoke `gspec-plan`. Run before `gspec-implement` for non-trivial features; when a plan file exists, `gspec-implement` skips its own plan-mode step.
+- **Choosing or revising the tech stack** — invoke `gspec-stack`.
+- **Defining visual design, tokens, or theme** — invoke `gspec-style`.
+- **Setting coding standards, testing, or workflow conventions** — invoke `gspec-practices`.
+- **Designing project structure, data model, or API shape** — invoke `gspec-architect`.
+- **Researching competitors or finding feature gaps** — invoke `gspec-research`.
+- **Finding contradictions between specs** — invoke `gspec-analyze`.
+- **Checking specs against the actual codebase (drift audit)** — invoke `gspec-audit`.
+- **Checking a spec's quality against its bar** — invoke `gspec-qa` (one spec, or all of them). Every spec-writing command already runs this as a gate when it produces a spec (skip with `--no-qa`); use `gspec-qa` to re-check on demand.
+- **Upgrading outdated spec files** — invoke `gspec-migrate`.
+
+If the user explicitly asks you to skip the command and just do the work, honor that — but by default, prefer the command.
+
+### Asking the user multiple questions
+
+When a skill needs feedback on more than one question, first preview all of them as a numbered list so the user knows the full scope, then ask them **one at a time** in the conversation. Never present multiple questions as a single numbered list expecting one combined reply — that forces the user to retype each question number alongside their answer. One question per turn keeps replies short and natural.
+
+### When you make code changes, follow these rules:
+
+> **Apply the project's practices and style as you code.** `gspec/practices.md` (engineering standards, testing philosophy, definition of done) and `gspec/style.md` / `gspec/style.html` (design tokens, component styling) are this project's **coding rules** — follow them on *every* code change, in any flow, not only when running `gspec-implement`. `gspec/stack.md`'s "Technology-Specific Practices" section governs framework idioms. These specs define *how* code is written here; treat them as always-on conventions.
+
+1. **Read the specs first** — Before making non-trivial changes, read the relevant gspec documents to understand existing decisions and constraints. At minimum, scan `gspec/profile.md` and any feature PRDs in `gspec/features/` related to your work.
+
+2. **Spec before you build** — If the user asks for a feature or capability that isn't covered by an existing feature PRD in `gspec/features/`, run the `gspec-feature` command to create a new feature PRD before implementing it. Every feature should be specified before it's built — don't skip straight to code.
+
+3. **Update feature checkboxes** — When you implement a capability defined in a feature PRD (`gspec/features/*.md`), change its checkbox from `- [ ]` to `- [x]`. **If a plan file exists** at `gspec/features/<feature>.plan.md`, also flip the checkbox of each completed task in that file. Only flip the PRD capability checkbox once every task whose `covers:` references it is checked.
+
+4. **Update specs that your changes contradict** — If your code change makes a spec statement incorrect (e.g., you changed the data model, switched a dependency, altered a UI pattern, or added a new API endpoint), update the spec to reflect reality. Common candidates:
+   - `gspec/architecture.md` — project structure, data model, API routes, component hierarchy
+   - `gspec/stack.md` — dependencies, frameworks, infrastructure
+   - `gspec/style.md` **or** `gspec/style.html` — design tokens, component styling, visual conventions (the style guide may be in either format; update whichever exists)
+   - `gspec/practices.md` — coding standards, testing conventions, workflows
+   - `gspec/profile.md` — product scope, target users, value proposition (rarely changes)
+
+   **The `gspec/design/` folder is read-only to you** — it contains visual mockups (HTML, SVG, PNG, JPG) from external design tools. Do not edit or generate mockups; treat them as authoritative visual guidance to reason through during implementation. Before building or modifying UI for a screen, check whether a matching mockup exists in `gspec/design/` and honor its layout within the style guide's token constraints.
+
+5. **Be surgical** — Change only what is necessary. Preserve the existing voice, structure, and formatting of each spec document. Do not rewrite sections that are still accurate.
+
+6. **Announce spec updates** — When you update a spec, briefly mention what changed and why in your response. Never silently modify specs.
+
+7. **Preserve version metadata** — Markdown gspec files use YAML frontmatter with a `spec-version` field. `gspec/style.html` uses a first-line HTML comment in the form `<!-- spec-version: v1 -->` before the `<!DOCTYPE html>`. Preserve either format when editing. If a file lacks the version marker, leave it as-is.
+
+8. **Don't create new foundation specs** — Only update existing spec files. If you believe a new spec document is needed, suggest it to the user rather than creating it yourself.
+
+<!-- gspec:preamble -->
+
+## Scope override for the gspec preamble above
+
+The block between the `<!-- gspec:preamble -->` markers is **written by the gspec
+installer, not by this repo**, and it is re-stamped on every `npx gspec@<pin>
+--target claude`. Never edit inside it — corrections go here, outside the markers,
+or they are silently lost on the next install.
+
+It is correct about specs and **wrong about execution in this repo**, because it
+is written for a generic consumer that does not have this plugin. ADR 0020 draws
+the seam: **gspec owns _what to build and in what order_; this plugin owns _how a
+unit of work is safely executed_** — guardrail, autonomy levels, checkpointing,
+worktree isolation, measurement. The preamble's routing advice claims that second
+half for gspec. In this repo:
+
+- **`gspec-implement` and `gspec-build` are NOT the execution path.** Execution is
+  `/gaffer:run-loop` (and `/gaffer:resume`), which runs packets through the guard,
+  the autonomy gates, and run-state checkpointing. `gspec-build` in particular
+  drives profile → … → implementation unattended, which would bypass every one of
+  those. The adapter's `interlock` subcommand exists precisely because two drivers
+  must not run at once.
+- **`gspec-plan` and `gspec-feature` ARE the right tools**, and are how the four
+  deferred features get decomposed when their time comes.
+- **`gspec-plan` must not be run against `gspec/tasks/run-metrics.md`.** It is a
+  retro-spec of shipped work with every task checked; regeneration re-decomposes
+  unchecked work and would destroy the record it exists to hold.
+- **Ignore the preamble's "read the specs first" list where it names files this
+  repo does not have.** `gspec/profile.md`, `stack.md`, `practices.md` and
+  `style.md` are not present — this repo's equivalents are this file, the ADRs,
+  and the regression sweeps. Do not generate them to satisfy the preamble.
+
+The gspec hooks now installed under `.claude/hooks/` (spec-integrity, task-
+immutability, practices-enforce, …) are registered in `.claude/settings.json` and
+compose with — they do not replace — the plugin's own `hooks/guard.sh`. Both fire;
+the guard's hard-deny floor is unaffected. Note that `task-immutability` will
+refuse edits to the checked tasks in `gspec/tasks/run-metrics.md`, which is the
+behaviour we want.

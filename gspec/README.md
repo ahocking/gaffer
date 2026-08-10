@@ -1,0 +1,388 @@
+# gspec
+
+**Living specs, and an agent team that builds from them.**
+
+AI coding tools are powerful, but they build better software when they understand *what* you're building and *why*. gspec gives your AI tools that context — a set of living specification documents that define your product, guide implementation, and stay in sync as your project evolves.
+
+Without structured context, AI tools guess. They make assumptions about your audience, your tech stack, your design language, and your quality standards. gspec eliminates that guesswork by creating a shared specification layer that any AI coding tool can read and follow.
+
+## The Problem
+
+Two things go wrong when building with AI:
+
+1. **AI tools lack product context.** They don't know your target audience, your design system, your architectural decisions, or your engineering standards. Every prompt starts from zero.
+2. **Specs drift from reality.** Even when you write great specs upfront, they fall out of sync as the project evolves — leading to inconsistency, rework, and compounding confusion.
+
+gspec solves both problems. It provides a structured specification workflow that gives AI tools rich context, and keeps that context accurate as your codebase changes.
+
+## How It Works
+
+gspec installs as a set of slash commands (skills) in your AI coding tool. Each command plays a specific role — business strategist, product manager, architect, designer, engineer — and produces a structured Markdown document in your project's `gspec/` directory.
+
+These documents become the shared context for all subsequent AI interactions. When you implement features, your AI reads the specs. When the code changes, gspec's always-on spec sync keeps them in sync automatically.
+
+There are two ways to work with gspec: let it **build autonomously** from an idea, or drive the **spec-by-spec** workflow yourself. Both produce the same living specs.
+
+### Autonomous build
+
+New in 2.0: `/gspec-build` turns a plain-language idea into a working, spec-backed codebase in a single run. Answer a short intake interview (or pass the idea directly) and gspec drives the whole pipeline unattended — profile, stack, practices, style, feature PRDs, architecture, an ordered plan, and the implementation — with an independent validator gating every stage and a deterministic `verify.sh` check on the build. Before any code is written, the run pauses once so you can review the finished specs; continue with `--resume`, or pass `--no-review` for a fully unattended run. Want richer requirements out of the gate? Pass `--research` to add a competitive-research stage right after the profile — the build researches your competitors on the web, writes `gspec/research.md`, and feeds the auto-accepted findings into the feature PRDs.
+
+A long unattended run has to be able to say how it ended, so it never stops in silence. Every ending gets its own exit code — `0` complete, `1` failed a gate, `2` paused for spec review, `3` crashed — and its own record in `.gspec/build/status.json`; `gspec build --status` prints it and exits with that code, so a script (or an agent watching the run) branches on a number rather than reading the log. A build killed mid-stage still leaves that record, and a run whose process is simply gone is reported as crashed rather than as still working.
+
+The quality loop is tuned to converge and to resume cheaply. A gate fails only on a **blocker/major** finding — minor/nit notes pass with the notes recorded as advisory — so it reaches a finished state instead of polishing forever. Every failing verdict, including ones a self-heal recovers from, is kept in full in `.gspec/build/qa-failures.md` so you can study and tune the loop, and each stage reports its elapsed time. On `--resume`, a stage you left failed is **re-validated in place** (honoring any hand-edit you made to unblock it) rather than restarted from scratch, and feature PRDs that already passed — or were already written — are skipped instead of regenerated.
+
+```bash
+/gspec-build                    # in your harness — brief interview, then unattended
+/gspec-build "a URL shortener"  # skip the interview, pass the idea directly
+```
+
+It also runs headless from the CLI, for CI or scripted project setup:
+
+```bash
+gspec build "a URL shortener"                   # engine defaults to the installed target
+gspec build "a URL shortener" --engine codex    # or pick one: claude · codex · pi
+gspec build --dry-run "an idea"                 # preview the stage plan
+gspec build --resume                            # continue a paused run (or approve the spec review)
+gspec build --status                            # how did the last run end? exits 0/1/2/3 to say so
+gspec build --no-review "an idea"               # skip the spec-review pause entirely
+gspec build --qa-retries 3 "an idea"            # give each QA gate 3 self-heal revisions (default 1)
+gspec build --research "an idea"                # competitive research up front, for richer feature PRDs
+gspec build --scope small "an idea"             # size the specs to the product: small · standard · large
+```
+
+The autonomous build has a wired engine for **Claude Code**, **Codex**, and **Pi**. On other harnesses, use the spec-by-spec workflow below.
+
+**Spec size (`--scope`).** Specs are written to a size budget, so the specification matches the product rather than the writers' appetite — a one-level game does not need a 65 KB feature PRD, and every downstream agent pays to read whatever gets written. The intake asks how big the product is and records the tier in the brief; `--scope small|standard|large` overrides it, scaling every budget by ×0.6 / ×1 / ×1.5. The driver measures each spec as it lands and prints its size against the budget. **Going over is advisory** — it is reported in the log and noted by QA as a `[minor]` finding, and never fails a stage.
+
+**Per-agent models (cost control).** The build runs each stage as its own agent, and you can assign each a model — so the checkers and foundations can run on a cheaper model while architecture and implementation keep the strong one. Add a `models` map to `.gspec/config.json` (this project) or `~/.gspec/config.json` (your global default; the project file overrides it). Selectors resolve most-specific-first — exact agent name, then role tier (`writer`, `qa`, `planner`, `implementer`, `researcher`, `inspector`), then `default`:
+
+```jsonc
+// ~/.gspec/config.json
+{
+  "models": {
+    "default": "claude-sonnet-5",           // any agent with no better match
+    "qa":      "claude-haiku-4-5",           // every *-validator
+    "architecture-writer": "claude-opus-4-8", // one specific agent
+    "implementer":         "claude-opus-4-8"
+  }
+}
+```
+
+With no `models` map, every agent runs on the engine/CLI default, unchanged. The model string passes straight to the engine's `--model`, so any model your CLI accepts works.
+
+**Recommended starting points.** The idea is the same on every engine, expressed with the `writer` and `qa` role tiers plus two overrides:
+
+- **`writer` → a balanced model** — the everyday authoring (profile, stack, practices, style, feature, research PRDs).
+- **`qa` → a cheap/fast model** — every `*-validator`; checking a spec needs far less horsepower than writing one.
+- **`architecture-writer` and `implementer` → a strong model** — the two load-bearing jobs (the system design and the code), pinned by name so they beat the `writer`/`default` tier.
+- **`default` → the balanced model** — catches the planners and anything else.
+
+- **Claude engine** — strong `claude-opus-4-8`, balanced `claude-sonnet-5`, cheap `claude-haiku-4-5`:
+
+  ```jsonc
+  // ~/.gspec/config.json
+  {
+    "models": {
+      "default": "claude-sonnet-5",             // planners and anything unlisted
+      "writer":  "claude-sonnet-5",             // every *-writer (balanced)
+      "qa":      "claude-haiku-4-5",            // every *-validator (cheap)
+      "architecture-writer": "claude-opus-4-8", // override: the system design
+      "implementer":         "claude-opus-4-8"  // override: the code
+    }
+  }
+  ```
+
+- **Codex engine** — same shape, using the model IDs your `codex` CLI accepts (run `codex --help` / check your Codex config for the exact strings): a strong reasoning model for `architecture-writer`/`implementer`, a mid model for the `writer` tier and `default`, and a small/fast model for `qa`. For example:
+
+  ```jsonc
+  // .gspec/config.json  (target: codex)
+  {
+    "models": {
+      "default": "gpt-5",                 // planners and anything unlisted
+      "writer":  "gpt-5",                 // every *-writer (balanced)
+      "qa":      "gpt-5-mini",            // every *-validator (cheap)
+      "architecture-writer": "gpt-5-codex", // override: the system design
+      "implementer":         "gpt-5-codex"  // override: the code
+    }
+  }
+  ```
+
+  Model names shown are illustrative — use whatever your installed `codex` accepts for `--model`; gspec passes the string through unchanged.
+
+### The spec-by-spec workflow
+
+Driving each step yourself, or applying gspec to an existing codebase? Run the commands one at a time. The only commands you *need* are the four fundamentals and `/gspec-implement`; everything else exists to help when your project calls for it.
+
+The fundamentals give your AI tool enough context to build well — it knows what the product is, how it should look, what technologies to use, and what engineering standards to follow. From there, `/gspec-implement` can take a plain-language description and start building. The remaining commands — `/gspec-research`, `/gspec-feature`, `/gspec-architect`, `/gspec-plan`, `/gspec-analyze`, and `/gspec-audit` — add structure and rigor when the scope or complexity warrants it.
+
+```mermaid
+flowchart LR
+    Define["1. Define
+    profile · style
+    stack · practices"]
+
+    Research["2. Research
+    competitive analysis"]
+
+    Specify["3. Specify
+    feature"]
+
+    Architect["4. Architect
+    technical blueprint"]
+
+    Plan["5. Plan
+    ordered plan"]
+
+    Analyze["6. Analyze &amp; Audit
+    reconcile specs
+    check specs vs code"]
+
+    Build["7. Build
+    implement"]
+
+    Define --> Research
+    Define --> Specify
+    Define --> Build
+    Research --> Specify
+    Research --> Build
+    Specify --> Architect
+    Specify --> Plan
+    Specify --> Build
+    Architect --> Plan
+    Architect --> Analyze
+    Architect --> Build
+    Plan --> Build
+    Analyze --> Build
+    Build --> Define
+
+    style Define fill:#4a9eff,color:#fff,stroke:none
+    style Research fill:#a855f7,color:#fff,stroke:none
+    style Specify fill:#f59e0b,color:#fff,stroke:none
+    style Architect fill:#f59e0b,color:#fff,stroke:none
+    style Plan fill:#f59e0b,color:#fff,stroke:none
+    style Analyze fill:#f59e0b,color:#fff,stroke:none
+    style Build fill:#22c55e,color:#fff,stroke:none
+```
+
+> **Blue** = required foundation. **Purple/Yellow** = optional depth. **Green** = implementation.
+> Every path starts with Define and passes through Build. The steps in between depend on your project's complexity.
+
+**1. Define the Fundamentals** — Establish the foundation that drives every decision.
+
+| Command | Role | What it produces |
+|---|---|---|
+| `/gspec-profile` | Business Strategist | Product identity, audience, value proposition, positioning |
+| `/gspec-style` | UI/UX Designer | Visual design language, design tokens, component patterns. Produces either a renderable `style.html` design system or a `style.md` Markdown guide |
+| `/gspec-stack` | Software Architect | Technology stack, frameworks, infrastructure, architecture |
+| `/gspec-practices` | Engineering Lead | Development standards, code quality, testing, workflows |
+
+**2. Research the Market** *(optional)* — Understand the competitive landscape before building.
+
+| Command | Role | What it produces |
+|---|---|---|
+| `/gspec-research` | Product Strategist | Competitive analysis, feature matrix, gap identification, and additional feature proposals |
+
+Use `/gspec-research` when you want to understand what competitors offer, identify table-stakes features you might be missing, find differentiation opportunities, and **propose additional features** that serve your product's mission. It reads competitors from your product profile, produces a persistent `gspec/research.md` file, and can optionally generate feature PRDs from its findings and proposals. This is where new feature ideas are surfaced and vetted — not during implementation.
+
+**3. Specify What to Build** *(optional)* — Define features and requirements.
+
+| Command | Role | What it produces |
+|---|---|---|
+| `/gspec-feature` | Product Manager | One or more feature PRDs with prioritized capabilities |
+
+Use `/gspec-feature` when you want detailed PRDs with prioritized capabilities and acceptance criteria before building. It handles both single features and larger bodies of work — if the scope is large enough, it will propose a multi-feature breakdown for your approval. For smaller tasks or rapid prototyping, you can skip straight to `/gspec-implement` with a plain-language description.
+
+**4. Architect** *(optional)* — Translate specs into a concrete technical blueprint.
+
+| Command | Role | What it produces |
+|---|---|---|
+| `/gspec-architect` | Senior Architect | Technical architecture document with data models, API design, project structure, auth flows, technical gap analysis, and Mermaid diagrams. Multi-deployable systems get a two-tier layout: a system-level `architecture.md` plus one `architecture/<name>.md` per deployable |
+
+Use `/gspec-architect` when your feature involves significant technical complexity — new data models, service boundaries, auth flows, or integration points that benefit from upfront design. It also **identifies technical gaps and ambiguities** in your specs and proposes solutions, so that `/gspec-implement` can focus on building rather than making architectural decisions. For straightforward features, `/gspec-implement` can make sound architectural decisions on its own using your `stack` and `practices` specs.
+
+**5. Plan** *(optional)* — Decompose a feature PRD into ordered work.
+
+| Command | Role | What it produces |
+|---|---|---|
+| `/gspec-plan` | Engineering Lead | A `gspec/tasks/<feature>.md` file with stable task IDs, explicit `deps:` lines, and `[P]` markers for parallel-safe work |
+
+Use `/gspec-plan` after `/gspec-feature` (and after `/gspec-architect` when it exists) for any feature large enough that build order matters or that has work which could legitimately run in parallel. The output is what `/gspec-implement` consumes — when every in-scope feature has a plan file, `/gspec-implement` skips its own plan-mode step and executes the plan file directly (the plan was already approved during `/gspec-plan`). Trivial features can skip this step and go straight to `/gspec-implement`, which falls back to PRD-checkbox-driven planning with its own plan-mode approval.
+
+**6. Analyze & Audit** *(optional)* — Reconcile discrepancies before building, and keep specs honest as the codebase evolves.
+
+| Command | Role | What it does |
+|---|---|---|
+| `/gspec-analyze` | Specification Analyst | Cross-references specs against **each other**, identifies contradictions, and walks you through reconciling each one. Optionally takes a feature slug to scope to one PRD and add an ambiguity sweep against the document itself |
+| `/gspec-audit` | Specification Auditor | Cross-references specs against the **actual codebase**, finds drift (stack mismatches, stale data models, design tokens that don't match the stylesheet, capability checkboxes that lie), and walks you through updating specs to match reality |
+
+Use `/gspec-analyze` after `/gspec-architect` (or any time multiple specs exist) to catch spec-to-spec conflicts before `/gspec-implement` sees them — for example, if the stack says PostgreSQL but the architecture references MongoDB. Pass a feature slug (`/gspec-analyze user-authentication`) to scope the run to one PRD and surface ambiguity inside it — missing acceptance criteria, vague verbs, undefined nouns, implicit state assumptions, missing edge cases, and unmeasurable success metrics. Especially useful on aged or imported PRDs that may have accumulated unstated assumptions.
+
+Use `/gspec-audit` periodically — before a major release, after a long sprint, or any time you suspect docs have drifted from code. Audit reads package manifests, configs, source files, and test output, then asks you per-finding whether to update the spec to match the code, keep the spec and fix the code separately, or defer. Each finding is presented one at a time with the spec quote and the code evidence side by side. Audit never modifies code.
+
+**7. Build** — Implement with full context.
+
+| Command | Role | What it does |
+|---|---|---|
+| `/gspec-implement` | Senior Engineer | Reads all specs (including any `gspec/tasks/*.md` plan files), plans the build order, and implements |
+
+**Spec Sync** — gspec includes always-on spec sync that automatically keeps your specification documents in sync as the code evolves. This is installed alongside the skills and requires no manual intervention — when code changes affect spec-documented behavior, the sync rules prompt your AI tool to update the relevant gspec files.
+
+**Design-tool integration** — The style guide supports both Markdown (`style.md`) and a renderable HTML design system (`style.html`) that design-aware AI tools can open, render, and reason about directly. Drop mockups from external design tools (Figma, v0, Framer AI, etc.) into `gspec/design/` and `/gspec-implement` will use them as authoritative visual guidance when building UI.
+
+**Maintenance** — Keep specs up to date with the latest gspec format.
+
+| Command | Role | What it does |
+|---|---|---|
+| `/gspec-migrate` | Migration Specialist | Updates existing gspec documents to the current format when you upgrade gspec, preserving all content |
+
+Each command is self-contained and will ask clarifying questions when essential information is missing.
+
+## Installation
+
+Run from your project root:
+
+```bash
+npx gspec
+```
+
+The CLI will ask which platform you're installing for:
+
+| Platform | Install path |
+|---|---|
+| Claude Code | `.claude/skills/` |
+| Cursor | `.cursor/commands/` |
+| Antigravity | `.agent/skills/` |
+| Codex | `.agents/skills/` |
+| Open Code | `.opencode/commands/` + `.opencode/skills/` |
+| Pi | `.pi/prompts/` + `.pi/skills/` + `.pi/agents/` |
+
+> **Pi requires the [pi-subagents](https://pi.dev/packages/pi-subagents) extension.** gspec delegates its workflow to sub-agents in `.pi/agents/`, which Pi only understands with that extension installed: `pi install npm:pi-subagents`. The installer prints this reminder after a Pi install.
+
+You can skip the prompt by passing a target directly:
+
+```bash
+npx gspec --target claude
+npx gspec --target cursor
+npx gspec --target antigravity
+npx gspec --target codex
+npx gspec --target opencode
+npx gspec --target pi
+```
+
+That's it. The commands are immediately available in your AI tool.
+
+If you have saved specs in `~/.gspec/` from a previous project, the installer will offer to seed your new project from them — either from a playbook or by picking individual specs.
+
+## Save & Restore
+
+Once you've built specs you're happy with, save them for reuse across projects:
+
+```bash
+gspec save        # Save a spec from the current project to ~/.gspec/
+gspec restore     # Restore a saved spec into the current project
+gspec playbook    # Bundle multiple saved specs into a reusable playbook
+```
+
+Saved specs are organized by type in `~/.gspec/` (profiles, stacks, styles, practices, features). Playbooks bundle multiple specs together so you can seed an entire project with one command:
+
+```bash
+gspec restore playbook/my-starter
+```
+
+### Templates — saved specs seed the ones gspec writes
+
+`restore` copies a saved spec in verbatim. Your library also does a second job that needs no command at all: when gspec **writes** a spec, it first looks for a saved one to start from. Four spec types have a template library:
+
+| Folder | Seeds |
+|---|---|
+| `~/.gspec/stacks/` | `gspec/stack.md` |
+| `~/.gspec/styles/` | `gspec/style.md` · `style.html` |
+| `~/.gspec/practices/` | `gspec/practices.md` |
+| `~/.gspec/features/` | `gspec/features/<slug>.md` |
+
+`profile.md` and `architecture.md` are deliberately excluded — both are inherently specific to one project, so neither is ever seeded. (A profile can still be saved and restored; it just isn't used as a starting point for a written one.)
+
+Matching is on each file's frontmatter `name` and `description`, so a useful description is worth writing — it's what gspec reads to decide whether a template fits. In a command (`/gspec-stack`, `/gspec-style`, `/gspec-practices`, `/gspec-feature`) any match is offered by name and description and **you** choose: start from it, adapt it, or write fresh. In an autonomous `gspec build` there's nobody to ask, so the run reports what it found (`templates: practices 1 · stacks 2`) and the writer adopts the single best fit, or writes fresh if none clearly fits.
+
+Either way a template is a starting point, never a verbatim answer: the writer reconciles every choice against the current project, keeps the spec free of the original project's identity, brings its frontmatter current, and reports which template seeded the result. An absent or empty folder simply means no templates — gspec writes from scratch and says nothing about it.
+
+## Extensions
+
+Author your own skills and have them auto-installed alongside the built-in `gspec-*` commands in every project. Extensions live in `~/.gspec/extensions/` as Markdown files with `name` and `description` frontmatter and the same shape as anything in `plugin/commands/`.
+
+```bash
+gspec extension save ./my-deploy.md   # Install a local skill file as a user extension
+gspec extension list                  # See what's installed
+gspec extension remove my-deploy      # Delete from ~/.gspec/extensions/
+```
+
+When you next run `npx gspec` in a project, the installer copies the built-in skills first, then emits each valid extension into the same per-platform install directory using the same formatting. Extension names that collide with built-in `gspec-*` skills are rejected with an error; malformed or duplicate extensions are skipped with a warning.
+
+## Output Structure
+
+All specifications live in a `gspec/` directory at your project root:
+
+```
+project-root/
+└── gspec/
+    ├── profile.md          # Product identity and positioning
+    ├── style.html          # Visual design language (HTML — renderable design system)
+    │                       # or style.md if you prefer a Markdown style guide
+    ├── stack.md            # Technology stack and architecture
+    ├── practices.md        # Development standards
+    ├── architecture.md     # Technical architecture blueprint (system tier + index)
+    ├── architecture/       # Only for multi-deployable systems — one file per deployable
+    │   ├── frontend.md
+    │   ├── backend.md
+    │   └── ...
+    ├── research.md         # Competitive analysis and feature gaps
+    ├── design/             # Optional — external mockups read during implementation
+    │   ├── dashboard.html
+    │   ├── checkout-flow.png
+    │   └── ...
+    ├── features/           # Feature PRDs (what & why)
+    │   ├── user-authentication.md
+    │   ├── dashboard-analytics.md
+    │   └── ...
+    └── tasks/              # Ordered, dependency-aware plans (one per feature)
+        ├── user-authentication.md
+        ├── dashboard-analytics.md
+        └── ...
+```
+
+Most specs are Markdown. The style guide can also be a self-contained HTML file (`style.html`) that renders the design system as live swatches, typography specimens, and styled component previews — ideal for design-aware AI tools. The optional `gspec/design/` folder holds mockups (HTML, SVG, PNG, JPG) exported from external design tools like Figma, v0, or Framer AI; `/gspec-implement` reads them to reason about layout and visual intent. All files live in your repo, are version-controlled with your code, and are readable by both humans and AI tools.
+
+## Key Design Decisions
+
+**Spec-first development.** Every implementation decision traces back to a specification. AI tools don't guess — they follow documented decisions about your product, stack, design, and standards.
+
+**Living documents.** Specifications aren't write-once artifacts. The always-on spec sync keeps them in sync as your project evolves, so they remain a reliable source of truth.
+
+**Role-based commands.** Each command adopts a specific professional perspective — product manager, architect, designer, engineer. This ensures specifications are comprehensive and consider multiple viewpoints.
+
+**Incremental implementation.** Feature PRDs use checkboxes to track which capabilities have been built. The `implement` command reads these to know what's done and what's remaining, so it can be run multiple times as your project grows.
+
+**Research and architecture own discovery.** Feature proposals and technical gap analysis happen *before* implementation — in `/gspec-research` and `/gspec-architect` respectively. `/gspec-research` surfaces new feature ideas through competitive analysis and product-driven reasoning. `/gspec-architect` identifies technical gaps and resolves ambiguities. This separation keeps `/gspec-implement` focused on building what the specs define, rather than proposing scope changes mid-build.
+
+**Platform-agnostic.** A single source tree builds for Claude Code, Cursor, Antigravity, Codex, Open Code, and Pi. The build system handles platform-specific formatting so the commands stay consistent across tools.
+
+## Supported Platforms
+
+| Platform | Version | Status |
+|---|---|---|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Skills format | Supported |
+| [Cursor](https://www.cursor.com/) | Commands format | Supported |
+| [Antigravity](https://www.antigravity.dev/) | Skills format | Supported |
+| [Codex](https://developers.openai.com/codex/cli/) | Skills format | Supported |
+| [Open Code](https://opencode.ai/) | Commands + skills | Supported |
+| [Pi](https://pi.dev/) | Prompts + skills + agents | Supported (needs [pi-subagents](https://pi.dev/packages/pi-subagents)) |
+
+## Project Status
+
+gspec is early-stage and actively evolving. The core workflow is stable, but commands and output formats may change as AI tool capabilities expand and user feedback comes in.
+
+If you run into issues or have ideas, please [open an issue](https://github.com/gballer77/gspec/issues).
+
+## License
+
+[MIT](LICENSE)

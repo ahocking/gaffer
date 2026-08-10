@@ -1,0 +1,71 @@
+# gaffer — feature sequencing (plugin ADR 0020 D2)
+# ---------------------------------------------------------------------------
+# gspec owns WHAT to build: the PRDs (`gspec/features/<slug>.md`) and the ordered
+# per-feature task plans (`gspec/tasks/<slug>.md`). It has no CROSS-feature
+# ordering, so this file supplies it.
+#
+# It lives here and NOT under `gspec/` on purpose: gspec's spec-integrity floor
+# governs every `.md` under `gspec/` and would flag a file gspec does not own.
+#
+# Read through the adapter, never by hand:
+#   scripts/gspec-backlog.sh next
+#   scripts/gspec-backlog.sh features
+#
+# ADOPTION NOTE. This backlog is FORWARD-ONLY plus one retro-spec. The 25 ADRs of
+# already-shipped work are not retro-specced — that is archaeology over decisions
+# that already have passing sweeps. `run-metrics` is the single exception, because
+# ADR 0019's five stacked `v3.x` revision sections were the clearest case of a
+# decision record being used as a status tracker.
+#
+# DO NOT add `status` or `parallel_group`. Both are DERIVED:
+#   completion  -> every capability checkbox in the PRD is `[x]`
+#   concurrency -> computed per run by scripts/packet-graph.sh
+
+schema: 1
+
+features:
+  - slug: run-metrics
+    order: 0
+    why: "retro-spec of shipped work (ADR 0019 v1-v3.4); ordered first so its derived-done state is what unblocks the three metrics features that depend on it"
+    depends_on: []
+
+  - slug: self-host-hardening
+    order: 10
+    why: "gates running the loop on this repo at all; the reflexive surface (guard, runstate, agent prompts) is editable here in a way it never is in a consumer repo, so this comes before any other self-driven work"
+    depends_on: []
+
+  - slug: metrics-coverage-gaps
+    order: 20
+    why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"
+    depends_on: [run-metrics]
+
+  # --- deferred ------------------------------------------------------------
+  # `next` and `nodes-all` skip these, so the loop will not pick them up. They
+  # still appear in `features`, and they still block anything that depends on
+  # them — deferring is "not now", not "treat as done".
+  # Reversing one is a one-line edit: delete its `deferred: true`.
+
+  - slug: coercive-pause-enforcement
+    order: 30
+    why: "DEFERRED — ADR 0017 gates this on evidence that parallel lanes overshoot poll checkpoints, and that evidence does not exist yet; building it now would be building against a hypothesis"
+    depends_on: []
+    deferred: true
+
+  - slug: metrics-tier2-compression
+    order: 40
+    why: "DEFERRED — ADR 0019 gates Tier 2 on Tier 1 numbers, and those numbers now point away from the originally-assumed lever (command output, ~0.18%) toward read volume; reopen with a written before/after, and 'do not build' is a valid outcome"
+    depends_on: [run-metrics]
+    deferred: true
+
+  - slug: metrics-otel-tier0
+    order: 50
+    why: "DEFERRED — optional in ADR 0019 and it mostly re-sources numbers Tier 1 already reports rather than revealing anything new; reopen only if transcript fragility starts costing real data"
+    depends_on: [run-metrics]
+    deferred: true
+
+  - slug: codex-harness-overlay
+    order: 60
+    why: "DEFERRED — accepted in ADR 0007 but entirely unbuilt; large, self-contained, and single-harness is not currently costing anything, so it waits until a second harness is actually wanted"
+    depends_on: []
+    deferred: true
+</content>

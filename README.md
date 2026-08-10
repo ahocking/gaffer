@@ -252,7 +252,7 @@ recovered — the SessionStart hook surfaces the in-flight run when you reopen
 Claude, and `runstate.sh reconcile` adopts or discards whatever the crash left
 behind (ADR 0005). Check-ins are **produced** by the plugin and **delivered** by
 the frontend (Claude Desktop / Dispatch) — there is no notification transport
-here (ADR 0003).
+here.
 
 ### Auto-pause before a usage limit (ADR 0018)
 
@@ -357,6 +357,29 @@ claude --plugin-dir .
 # Validate the manifest & structure
 claude plugin validate .
 ```
+
+### This repo self-hosts its own backlog
+
+`gaffer` drives its own development through its own gspec adapter. The backlog
+lives in `gspec/` (feature PRDs + task plans) sequenced by `.agents/roadmap.yaml`.
+Inspect it without a session:
+
+```bash
+scripts/gspec-backlog.sh features
+```
+
+**gspec is pinned to 2.7.0.** gspec does not stamp its own version into a project
+and this repo has no `package.json`, so this line and
+`GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh` are the only durable records
+of which gspec produced these specs. Reinstall exactly that version — never bare
+`npx gspec`, which installs whatever is current and silently defeats the pin:
+
+```bash
+npx --yes gspec@2.7.0 --target claude
+```
+
+Raising the pin is a deliberate, reviewed change: bump it, extend the supported
+`spec-version` set, re-run `scripts/test-gspec-backlog.sh`, and amend ADR 0020.
 
 Try it out inside the session:
 

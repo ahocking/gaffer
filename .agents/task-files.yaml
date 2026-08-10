@@ -1,0 +1,51 @@
+# gaffer — per-task file scope (plugin ADR 0020 U1-local)
+# ---------------------------------------------------------------------------
+# gspec task lines carry no file scope, so this sidecar is where `allowed_files`
+# comes from. Precedence: a plan-authored `files:` sub-bullet > a fingerprint-
+# matched entry here > empty.
+#
+# THE FINGERPRINT IS REQUIRED, and it is not ceremony. gspec preserves task IDs
+# on regenerate but RE-DECOMPOSES unchecked work, so a `T5` can keep its id while
+# its text becomes different work. An unguarded entry would then hand a stale,
+# NARROW scope to two lanes that actually collide. A missing or mismatched
+# fingerprint drops the entry to empty scope, and packet-graph.sh then serializes
+# the packet: wrong-wide costs parallelism, wrong-narrow costs correctness.
+#
+# The fingerprint is the task's description text. Comparison is normalized for
+# case, markdown emphasis and whitespace, so reformatting a task does not
+# invalidate its entry — but rewording it does, which is the point.
+#
+# Audit these against the live plans with:
+#   scripts/gspec-backlog.sh files-status
+
+schema: 1
+
+tasks:
+  - task: self-host-hardening#T1
+    files: [.agents/guard-extra-review]
+    fingerprint: Add `.agents/guard-extra-review` listing the reflexive surface so self-modification lands in the ASK tier
+
+  - task: self-host-hardening#T2
+    files: [scripts/test-guard.sh]
+    fingerprint: Add allow/deny cases to `scripts/test-guard.sh` proving each reflexive path asks and that consumer-repo defaults are unchanged
+
+  - task: self-host-hardening#T3
+    files: [templates/task-packet.yaml]
+    fingerprint: Make the matching regression sweep a required acceptance criterion in the task-packet template
+
+  - task: self-host-hardening#T4
+    files: [templates/task-packet.yaml]
+    fingerprint: Add a session-boundary declaration to the task-packet template for packets touching hooks or agents
+
+  - task: self-host-hardening#T5
+    files: [.agents/task-files.yaml]
+    fingerprint: Populate `.agents/task-files.yaml` with fingerprinted file scope for this repo's packets
+
+  - task: self-host-hardening#T6
+    files: [scripts/metrics.sh]
+    fingerprint: Mark self-host runs in the collected run packet so dogfooding and consumer runs are not averaged together
+
+  - task: self-host-hardening#T7
+    files: [scripts/test-metrics.sh]
+    fingerprint: Add a `scripts/test-metrics.sh` case asserting the self-host marker is present and does not alter any existing field
+</content>

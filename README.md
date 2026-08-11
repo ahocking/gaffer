@@ -57,7 +57,7 @@ layer.
 | `agents/doc-writer.md` | **haiku** documentation/summarization agent; writes README/setup/usage docs and changelog-style summaries from established fact under `allowed_paths.docs`. Never touches code, tests, ADRs, or design decisions. |
 | `skills/new-project/SKILL.md` | Chain: bootstrap a spec-driven repo — generic overlay + **version-pinned** gspec + a seeded `.agents/roadmap.yaml` — stops before the initial commit. |
 | `skills/review-change/SKILL.md` | Chain: review uncommitted changes → ready/issues/risks/next-step. |
-| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 20 packets — ADR 0012). |
+| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 40 packets — ADR 0012). |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
 | `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session; picks relay vs inline from what **remains** (ADR 0012). |
 | `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
@@ -205,8 +205,17 @@ not have to choose, and the mode is announced in one line before the run starts.
 
 | Backlog | Mode | Why |
 | --- | --- | --- |
-| **< 20 packets** | **inline** — the session runs the loop itself | Relaying costs ~29% more tokens and ~40% more wall clock at this size and prevents nothing. |
-| **≥ 20 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Past the measured crossover the relay is *both* cheaper (~27% at 33 packets, ~50% at 52) **and** the only mode that finishes: an inline coordinator grows ~6.7k tokens/packet and hits a forced, lossy compaction near packet ~28. |
+| **< 40 packets** | **inline** — the session runs the loop itself | The default, and the only mode any production run has needed. Relaying costs more here and prevents nothing. |
+| **≥ 40 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Inline's coordinator grows and hits a forced, lossy compaction near packet ~28, so past that a relay is the only mode that finishes a long run. |
+
+> **On the numbers:** the crossover was **raised from 20 to 40 on 2026-08-10**, when the
+> first real production comparison (62 packets across two repos) measured relay at
+> **1.84x inline per packet** — the opposite direction to the token extrapolation that
+> set the original 20. Relay is *retained rather than deleted* because that figure is
+> not clean: 65–96% of tool duration in those runs sits in the coordinator's own
+> context, much of it busy-wait polling, and each poll re-caches the standing context
+> being measured. A clean two-arm A/B is the open question, and **deleting relay is a
+> legitimate outcome of it**. Do not treat relay as the cheaper mode at any size.
 
 Override either way with **`--relay`** or **`--inline`**:
 

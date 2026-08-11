@@ -104,7 +104,9 @@ Look for, and cite the figures behind, at least:
 - **Parallel efficiency** (parallel runs) — packets per wave and their wall-times;
   flag waves that serialized when the graph allowed concurrency.
 - **The relay-vs-inline crossover** — whether this run's shape supports or contradicts
-  the ADR 0012 "20-packet" assumption.
+  ADR 0012's 40-packet crossover (raised from 20 in its v2 revision). A run below the
+  crossover cannot unseat it in either direction; say so rather than reading one arm as
+  a verdict.
 - **Standing-context size, via `by_agent_role.<role>.cc_shape`** — prefer this over
   cacheCreation totals, which are too noisy to steer by (measured: 1.76x spread across
   untouched same-regime runs, 9x overall). `median` is the cost of one more turn;

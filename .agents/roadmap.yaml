@@ -41,8 +41,9 @@ features:
 
   - slug: loop-cost-controls
     order: 16
-    why: "measured, not speculative: one 6-packet run on 2026-08-10 spent 51% of its wall clock (7,135s) in agent busy-wait loops producing nothing, and the relay coordinator layer took 63% of all cache creation to emit 20k output tokens. Ordered ahead of run-state-cleanup because that feature is 21 packets long and every one of them pays this overhead until it is fixed — but it does NOT block run-state-cleanup, which was already mid-flight when this was written and finished under a hand-applied mitigation. Baseline: docs/metrics/2026-08-10-loop-cost-baseline.json (tracked)"
+    why: "DEFERRED 2026-08-11 — both P0s fix RELAY-mode behaviour, and relay has never engaged in production. Measured this session: the busy-wait is 30 `until` calls / 7,134,666ms in the relay baseline against 2 calls / 528ms inline, and the coordinator role carrying 63% of cache creation simply does not exist in an inline run (baseline chief-engineer cc_max 142,170 with 20 turns >50k; inline `main` 5,902 with none). The crossover is 40 packets and the largest real run is 9, so this optimises a mode that does not run. Its second P0 is a measurement campaign whose value is deciding relay's fate, not saving tokens. Reopen when a backlog actually crosses 40, or to settle relay by measurement. Note the inline lever it does NOT address: the implementer hit cc_max 265,478 this session, above the relay coordinator's max — inline relocates the large context rather than removing it, and read-scoping is where that lives. Original rationale and baseline: docs/metrics/2026-08-10-loop-cost-baseline.json (tracked)"
     depends_on: []
+    deferred: true
 
   - slug: run-state-cleanup
     order: 18

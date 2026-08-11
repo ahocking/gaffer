@@ -482,8 +482,33 @@ passing sweeps.
   both a legal id char and a metachar, so `f.001` matched `f-001`. Same rule made
   `trim-note` re-emit the note as a **literal block scalar**: the cut is a byte cut, and
   only a block scalar is truncatable at any byte — cutting `note: "…"` severed the
-  closing quote. **`test-runstate.sh` now asserts a real YAML *parse* after each mutating
-  subcommand; grep is what let all of this through.**
+  closing quote. **`test-runstate.sh` asserts a real YAML *parse* after each mutating
+  subcommand; grep is what let all of this through** — and that assertion was itself
+  vacuous until 2026-08-11: the helper fell back to `return 0` when PyYAML was absent,
+  so on a stock host (python3 present, PyYAML is not stdlib) **21 cases passed while
+  checking nothing** and the sweep still reported 213/0 green. It now skips **loudly**,
+  counted and named in the summary line, and CI declares PyYAML rather than hoping the
+  runner ships it.
+- **`runstate.sh` quotes EVERY value it writes and strips symmetrically on read**
+  (ADR 0027 / `runstate-write-integrity`). `cmd_set` and `cmd_add_finding` share one
+  encoder, so hardening one cannot leave the other behind — the split that created the
+  original bug. **There is deliberately no plain-scalar allowlist**, and reintroducing
+  one as a cosmetic optimisation is a regression: it was built and deleted the same day
+  after producing two classes of silent wrongness, values ending in `:` writing an
+  unparseable file with `rc=0`, and `no`/`00`/`0755` parsing cleanly but returning
+  `False`/`0`/`493`. Neither was reachable from any caller of the day, and that is the
+  point — an allowlist is a claim about every *future* value, and it was wrong twice in
+  one afternoon. Compatibility now lives in the **reader**, which is why `cmd_get`'s
+  strip is load-bearing rather than tidy-up: without it a crashed run reads as
+  `status: 'running'` and `hooks/session-start.sh`'s `case` falls through to
+  `paused|*`, telling the human it "was paused cleanly". **`cmd_write` validates
+  structurally** (empty, whitespace-only, no `schema:`, malformed column-0 line) and
+  keeps `.agents/run-state-prev.yaml` as the last known good — because the checks
+  cannot see a transform that dies *between* lines, and `schema: 3` + `status: running`
+  is exactly the 26 bytes the live truncation left. A shrinkage guard was designed and
+  rejected: the findings triage legitimately shrinks run-state 61%. The backup **must**
+  stay gitignored in both files — an untracked one is swept by the pause stash and
+  discarded by `reconcile` as scratch, destroyed by the recovery path it serves.
   Bodies are **gitignored** (both `.gitignore`s), with run-state. Not just for symmetry:
   untracked ≠ ignored here — `git stash --include-untracked` (the pause path) sweeps an
   untracked finding and `reconcile` reads it in `git status --porcelain` as scratch on

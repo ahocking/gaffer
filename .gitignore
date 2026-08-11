@@ -52,6 +52,14 @@ scratch/
 # install target and is the only in-repo trace that gspec is wired up here.
 .gspec/build/
 
+# gspec agent-run logs — per-run validator/QA feedback, rewritten on every agent
+# run. Same category as `.gspec/build/` above, plus one reason of its own: each
+# entry's `SPEC:` line carries an ABSOLUTE local path (`/Users/<name>/...`), so
+# committing it would publish one machine's directory layout from a repo whose
+# whole point is being portable. Nothing reads it programmatically — it is human
+# review output, and it regenerates.
+.gspec/agent-runs/
+
 # OS cruft
 .DS_Store
 .DS_Store?

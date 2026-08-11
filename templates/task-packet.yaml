@@ -75,28 +75,33 @@ method: <tdd | direct>
 # Some changes cannot be verified in the run that made them, because the harness
 # loaded the thing being changed before the run started. Three load timings exist,
 # and only one of them is a session boundary:
-#   - code invoked fresh each time it runs (e.g. a script called per command) takes
-#     effect MID-RUN, in the run that edited it — verifiable now, in this session.
+#   - code invoked fresh each time it runs (e.g. a script called per command, or a
+#     hook body — the harness spawns it per matching event) takes effect MID-RUN,
+#     on the very next invocation, in the run that edited it — verifiable now, in
+#     this session.
 #   - a definition the harness reads when it dispatches a specialist (an agent or
 #     skill definition) takes effect at the NEXT DISPATCH — declare it here ONLY IF
 #     this run does not dispatch through the changed definition again; when it
 #     does, that later dispatch exercises the edit and no session boundary is
 #     crossed.
-#   - anything the harness loads at SESSION START — a hook, or the settings/config
-#     file that registers hooks — does NOT take effect in this session at all. A
-#     break here is invisible in-session and only surfaces in the next one. THIS is
-#     the session boundary this field exists for. It also covers which components
-#     exist at all, and the frontmatter the harness registers for them (name,
-#     description, tools, model): adding, removing, or changing that crosses the
-#     boundary even though editing a definition's body, above, does not.
+#   - anything the harness loads ONCE at SESSION START — `hooks/hooks.json` and the
+#     settings/config file that registers hooks, i.e. which hooks exist and what
+#     they match, NOT a hook's own body — does NOT take effect in this session at
+#     all. A break here is invisible in-session and only surfaces in the next one.
+#     THIS is the session boundary this field exists for. It also covers which
+#     components exist at all, and the frontmatter the harness registers for them
+#     (name, description, tools, model): adding, removing, or changing that crosses
+#     the boundary even though editing a definition's body, above, does not.
 #
 # REQUIRED for a packet whose `allowed_files` touches a surface loaded at session
 # start (as above). Omit otherwise, like `tier_reason`. For a hook, its LOGIC is
-# already exercised in-run by its regression sweep (the first bullet's timing) —
-# what crosses the boundary is the WIRING: that the harness still loads the hook
-# and still fires it. State what specifically could not be verified in this run
-# and what the next session must check to confirm it — this is a declaration of
-# consequence, not a boolean.
+# already exercised in-run because the harness runs it fresh on every matching
+# event (the first bullet's timing) — its regression sweep is the deliberate check
+# of that logic, not the reason it is live. What crosses the boundary is the
+# WIRING: that the harness still loads the hook's registration and still fires it.
+# State what specifically could not be verified in this run and what the next
+# session must check to confirm it — this is a declaration of consequence, not a
+# boolean.
 #
 # A green result on a packet like this means nothing IN THIS RUN contradicted the
 # change — it does NOT mean the change works. Only the next session's check does.

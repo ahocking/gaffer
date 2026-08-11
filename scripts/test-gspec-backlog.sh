@@ -617,6 +617,327 @@ out="$("$ADAPTER" interlock "$R")"
 check 'unparseable status.json => unknown, never a block' 'INTERLOCK=unknown' "$out"
 
 # =============================================================================
+printf '\n== check-task: the adapter'"'"'s one write (ADR 0025 D1 / ADR 0020 D2) ==\n'
+R="$TMPROOT/checktask"; mkdir -p "$R/gspec/tasks"
+# A deliberately hostile plan file: a literal `[ ]` inside a description, markdown
+# noise (backticks, nested bold, an em dash, trailing whitespace), an
+# already-checked task, a legacy shape-A task line, and a `- deps:` sub-bullet.
+{
+  printf -- '---\nspec-version: v1\nfeature: widget\n---\n\n# Plan: widget\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task whose description mentions [ ] a literal checkbox later\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** backticks `code`, **nested bold**, an em dash \342\200\224 and trailing whitespace  \n'
+  printf -- '  - deps: T1\n'
+  printf -- '- [x] **T3** **P0** already checked, must stay byte-identical\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T003 legacy shape with id and description sharing one bold span.**\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T5** **P0** has a deps sub-bullet\n'
+  printf -- '  - deps: T1, T2\n'
+} > "$R/gspec/tasks/widget.md"
+cp "$R/gspec/tasks/widget.md" "$TMPROOT/widget.before.md"
+
+out="$("$ADAPTER" check-task 'widget#T1' "$R")"; rc=$?
+check 'flip reports the canonical token' 'CHECKED=widget#T1' "$out"
+check 'flip reports the relative file'   'FILE=gspec/tasks/widget.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a successful flip' || bad 'exit 0 on a successful flip' "rc=$rc"
+
+# --- byte-level preservation: not a line count, an actual byte diff -----------
+d="$(diff "$TMPROOT/widget.before.md" "$R/gspec/tasks/widget.md")"
+lt="$(printf '%s\n' "$d" | grep -c '^<' || true)"
+gt="$(printf '%s\n' "$d" | grep -c '^>' || true)"
+[ "$lt" = "1" ] && [ "$gt" = "1" ] && ok 'exactly one line changed' \
+  || bad 'exactly one line changed' "diff:
+$d"
+before_line="$(printf '%s\n' "$d" | grep '^<' | sed 's/^< //')"
+after_line="$(printf '%s\n' "$d" | grep '^>' | sed 's/^> //')"
+reverted="$(printf '%s' "$after_line" | sed 's/\[x\]/[ ]/')"
+[ "$reverted" = "$before_line" ] && ok 'the changed line differs ONLY by the checkbox character' \
+  || bad 'the changed line differs only by the checkbox character' "before: $before_line
+after:  $after_line"
+
+# The inline `[ ]` inside T1's own description must survive untouched.
+grep -qF 'mentions [ ] a literal checkbox later' "$R/gspec/tasks/widget.md" \
+  && ok 'a [ ] inside the description is NOT flipped' \
+  || bad 'a [ ] inside the description is NOT flipped' "$(cat "$R/gspec/tasks/widget.md")"
+
+# Every other task line -- including the hostile-text and already-checked ones --
+# is byte-identical. diff already proved this (exactly one changed pair); assert
+# the specific hostile lines directly too.
+grep -qF 'backticks `code`, **nested bold**, an em dash — and trailing whitespace  ' \
+  "$R/gspec/tasks/widget.md" \
+  && ok 'hostile markdown/whitespace line is untouched' \
+  || bad 'hostile markdown/whitespace line is untouched' "$(cat "$R/gspec/tasks/widget.md")"
+grep -qF -- '- [x] **T3** **P0** already checked, must stay byte-identical' \
+  "$R/gspec/tasks/widget.md" \
+  && ok 'already-checked task text is untouched' \
+  || bad 'already-checked task text is untouched' "$(cat "$R/gspec/tasks/widget.md")"
+
+cp "$R/gspec/tasks/widget.md" "$TMPROOT/widget.after1.md"
+
+# --- idempotence ---------------------------------------------------------------
+out="$("$ADAPTER" check-task 'widget#T1' "$R")"; rc=$?
+check 'a second flip reports already' 'CHECKED=already' "$out"
+check 'and still reports the file'    'FILE=gspec/tasks/widget.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an idempotent re-flip' || bad 'exit 0 on an idempotent re-flip' "rc=$rc"
+cmp -s "$TMPROOT/widget.after1.md" "$R/gspec/tasks/widget.md" \
+  && ok 'idempotent re-flip changes no bytes' \
+  || bad 'idempotent re-flip changes no bytes' "$(diff "$TMPROOT/widget.after1.md" "$R/gspec/tasks/widget.md")"
+
+# --- packet-id form resolves to the same task -----------------------------------
+out="$("$ADAPTER" check-task 'widget-t2' "$R")"; rc=$?
+check 'the packet-id form (<feature>-t<n>) flips the same task' 'CHECKED=widget#T2' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on the packet-id form' || bad 'exit 0 on the packet-id form' "rc=$rc"
+grep -qF -- '- [x] **T2** **P0** backticks `code`, **nested bold**, an em dash — and trailing whitespace  ' \
+  "$R/gspec/tasks/widget.md" \
+  && ok 'packet-id flip preserves the hostile text' \
+  || bad 'packet-id flip preserves the hostile text' "$(cat "$R/gspec/tasks/widget.md")"
+
+# --- legacy shape-A task line ----------------------------------------------------
+out="$("$ADAPTER" check-task 'widget#T003' "$R")"; rc=$?
+check 'a legacy shape-A task line can be flipped' 'CHECKED=widget#T003' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a legacy-shape flip' || bad 'exit 0 on a legacy-shape flip' "rc=$rc"
+grep -qF -- '- [x] **T003 legacy shape with id and description sharing one bold span.**' \
+  "$R/gspec/tasks/widget.md" \
+  && ok 'legacy-shape text is preserved' \
+  || bad 'legacy-shape text is preserved' "$(cat "$R/gspec/tasks/widget.md")"
+
+# --- gspec is optional: every "skip" case is exit 0, never a failure -----------
+R2="$TMPROOT/checktask-nogspec"; mkdir -p "$R2"
+out="$("$ADAPTER" check-task 'widget#T1' "$R2")"; rc=$?
+check 'no gspec/ directory => CHECKED=none' 'CHECKED=none' "$out"
+check 'and explains why'                    'gspec is optional' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no gspec/ directory' || bad 'exit 0 with no gspec/ directory' "rc=$rc"
+
+# The gspec-is-optional early return must win over the path-containment guard --
+# a canonical slug with a path separator, against a root with NO gspec/ project,
+# must still report CHECKED=none/exit 0 (D4), not die(1). Containment refusal is
+# proven separately below, once a gspec project actually exists.
+out="$("$ADAPTER" check-task 'a/b#T1' "$R2")"; rc=$?
+check 'gspec-is-optional wins over the containment guard: still CHECKED=none' 'CHECKED=none' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a path-separator slug when gspec is absent (D4 short-circuits first)' \
+  || bad 'exit 0 on a path-separator slug when gspec is absent (D4 short-circuits first)' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" check-task 'fix-login-bug' "$R")"; rc=$?
+check 'an id that does not parse as a gspec task id => CHECKED=none' 'CHECKED=none' "$out"
+check 'and says so, skipped not failed'                               'not a gspec task id' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an unparseable task id' || bad 'exit 0 on an unparseable task id' "rc=$rc"
+
+out="$("$ADAPTER" check-task 'other#T1' "$R")"; rc=$?
+check 'no plan file for that feature slug => CHECKED=none' 'CHECKED=none' "$out"
+check 'and names the missing plan'                          'no gspec/tasks/other.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
+
+# --- genuine drift is loud: exit 4 -----------------------------------------------
+out="$("$ADAPTER" check-task 'widget#T99' "$R")"; rc=$?
+check 'a task id absent from an EXISTING plan => CHECKED=none' 'CHECKED=none' "$out"
+check 'and names the slug and the plan'                         'widget' "$out"
+[ "$rc" -eq 4 ] && ok 'exit 4 on genuine drift (task id not found in an existing plan)' \
+  || bad 'exit 4 on genuine drift' "rc=$rc"
+
+# --- end to end: the flipped task disappears from nodes output ------------------
+out="$("$ADAPTER" nodes widget "$R" 2>/dev/null)"
+refute 'a flipped task is no longer a backlog node' 'widget-t1' "$out"
+refute 'a flipped task (packet-id form) is no longer a backlog node' 'widget-t2' "$out"
+check 'an unflipped task is still a backlog node'   'widget-t5' "$out"
+
+# --- finding 1: a legacy shape-B id that itself contains a hyphen -------------
+# _nodes_for emits `<feature>-<id>`. Before the fix, peeling a trailing
+# `-t<digits>` off the packet-id token read `ser-ser-t1` as slug `ser-ser` /
+# id `t1` and silently matched nothing (CHECKED=none, exit 0 -- the loop then
+# re-runs the packet forever with no error explaining why).
+mk_plan "$R" ser <<'EOF'
+- [ ] **ser-t1** **P0** a legacy shape-B id that itself contains a hyphen
+  - deps: —
+EOF
+out="$("$ADAPTER" nodes ser "$R" 2>/dev/null)"
+check 'a shape-B id with a hyphen in it emits the expected node id' 'ser-ser-t1' "$out"
+
+cp "$R/gspec/tasks/ser.md" "$TMPROOT/ser.before.md"
+out="$("$ADAPTER" check-task 'ser-ser-t1' "$R")"; rc=$?
+check 'the packet-id form resolves a hyphenated id via filename, not surgery' 'CHECKED=ser#ser-t1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping a hyphenated shape-B id' || bad 'exit 0 flipping a hyphenated shape-B id' "rc=$rc"
+d="$(diff "$TMPROOT/ser.before.md" "$R/gspec/tasks/ser.md")"
+lt="$(printf '%s\n' "$d" | grep -c '^<' || true)"
+gt="$(printf '%s\n' "$d" | grep -c '^>' || true)"
+[ "$lt" = "1" ] && [ "$gt" = "1" ] && ok 'ser.md text is byte-identical apart from the checkbox' \
+  || bad 'ser.md text is byte-identical apart from the checkbox' "diff:
+$d"
+out="$("$ADAPTER" nodes ser "$R" 2>/dev/null)"
+refute 'the flipped hyphenated task disappears from nodes' 'ser-ser-t1' "$out"
+
+# --- finding 1: prefer the LONGEST matching slug -------------------------------
+# A feature whose own slug ends in -t<digits> (phase-t2) must not be shadowed
+# by a shorter decoy slug (phase) that also happens to match as a prefix.
+mk_plan "$R" phase <<'EOF'
+- [ ] **t2-t1** **P0** decoy in the shorter-slug plan — must NOT be the one flipped
+  - deps: —
+EOF
+mk_plan "$R" phase-t2 <<'EOF'
+- [ ] **T1** **P0** the longer-slug plan — this is the one that must be flipped
+  - deps: —
+EOF
+out="$("$ADAPTER" check-task 'phase-t2-t1' "$R")"; rc=$?
+check 'the longest matching slug wins over a shorter decoy' 'CHECKED=phase-t2#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 preferring the longest matching slug' || bad 'exit 0 preferring the longest matching slug' "rc=$rc"
+grep -qF -- '- [ ] **t2-t1** **P0** decoy in the shorter-slug plan — must NOT be the one flipped' \
+  "$R/gspec/tasks/phase.md" \
+  && ok 'the shorter-slug decoy plan is untouched' \
+  || bad 'the shorter-slug decoy plan is untouched' "$(cat "$R/gspec/tasks/phase.md")"
+
+# --- finding 2: the write is confined to gspec/, never a path escape ----------
+mkdir -p "$R/outside"
+printf -- '- [ ] **T1** victim line — must never be touched by check-task\n' > "$R/outside/victim.md"
+cp "$R/outside/victim.md" "$TMPROOT/victim.before.md"
+out="$("$ADAPTER" check-task '../../outside/victim#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug containing a path separator/.. is refused, not resolved' \
+  || bad 'a slug containing a path separator/.. is refused, not resolved' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+cmp -s "$TMPROOT/victim.before.md" "$R/outside/victim.md" \
+  && ok 'the file outside gspec/ is byte-identical afterward' \
+  || bad 'the file outside gspec/ is byte-identical afterward' "$(diff "$TMPROOT/victim.before.md" "$R/outside/victim.md")"
+
+out="$("$ADAPTER" check-task 'foo/bar#T1' "$R")"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a plain slug containing / is likewise refused' \
+  || bad 'a plain slug containing / is likewise refused' "rc=$rc, out=$out"
+
+# --- finding 3: no byte is added to a plan with no final newline --------------
+mkdir -p "$R/gspec/tasks"
+printf -- '---\nspec-version: v1\nfeature: nonl\n---\n\n# Plan: nonl\n\n## Plan\n\n- [ ] **T1** a task in a plan with no trailing newline' \
+  > "$R/gspec/tasks/nonl.md"
+before_size="$(wc -c < "$R/gspec/tasks/nonl.md")"
+out="$("$ADAPTER" check-task 'nonl#T1' "$R")"; rc=$?
+check 'flips a plan that has no trailing newline' 'CHECKED=nonl#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping a plan with no trailing newline' || bad 'exit 0 flipping a plan with no trailing newline' "rc=$rc"
+after_size="$(wc -c < "$R/gspec/tasks/nonl.md")"
+[ "$before_size" -eq "$after_size" ] && ok 'the byte count is unchanged apart from the flip' \
+  || bad 'the byte count is unchanged apart from the flip' "before=$before_size after=$after_size"
+if [ -n "$(tail -c1 "$R/gspec/tasks/nonl.md")" ]; then
+  ok 'the file still lacks a trailing newline'
+else
+  bad 'the file still lacks a trailing newline' 'a trailing newline was added'
+fi
+grep -qF -- '[x] **T1** a task in a plan with no trailing newline' "$R/gspec/tasks/nonl.md" \
+  && ok 'the flip itself landed correctly' \
+  || bad 'the flip itself landed correctly' "$(cat "$R/gspec/tasks/nonl.md")"
+
+# --- finding 4: the plan file's mode survives the flip (not narrowed to 0600) -
+mk_plan "$R" modetest <<'EOF'
+- [ ] **T1** a task used only to verify the plan's file mode survives the flip
+  - deps: —
+EOF
+chmod 644 "$R/gspec/tasks/modetest.md"
+before_mode="$(ls -l "$R/gspec/tasks/modetest.md" | awk '{print $1}')"
+out="$("$ADAPTER" check-task 'modetest#T1' "$R")"; rc=$?
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping the mode-check fixture' || bad 'exit 0 flipping the mode-check fixture' "rc=$rc"
+after_mode="$(ls -l "$R/gspec/tasks/modetest.md" | awk '{print $1}')"
+[ "$before_mode" = "$after_mode" ] && ok 'the plan file mode survives the flip (not narrowed to mktemp 0600)' \
+  || bad 'the plan file mode survives the flip' "before=$before_mode after=$after_mode"
+
+# --- finding 5: no stray temp files are left behind after a run ---------------
+leftover="$(find "$R/gspec" -name '.gspec-check-task.*' 2>/dev/null)"
+[ -z "$leftover" ] && ok 'no stray check-task temp files remain after a run' \
+  || bad 'no stray check-task temp files remain after a run' "$leftover"
+
+# --- finding 5, real trap coverage: the case above only exercises the SUCCESS
+# path, where a bare `mv` would remove the temp file with no trap involved at
+# all. Shim a failing `mv`/`cp` onto PATH -- each in its own directory,
+# prepended for a single invocation only, so the rest of the sweep is
+# unaffected -- and prove the trap itself fires: the call fails, the plan file
+# is untouched, and no temp file survives. -------------------------------------
+mk_plan "$R" trapmv <<'EOF'
+- [ ] **T1** **P0** a task used to prove the write-side trap cleans up when mv fails
+  - deps: —
+EOF
+cp "$R/gspec/tasks/trapmv.md" "$TMPROOT/trapmv.before.md"
+SHIMDIR_MV="$TMPROOT/shim-mv"; mkdir -p "$SHIMDIR_MV"
+printf '#!/bin/sh\nexit 1\n' > "$SHIMDIR_MV/mv"
+chmod +x "$SHIMDIR_MV/mv"
+out="$(PATH="$SHIMDIR_MV:$PATH" "$ADAPTER" check-task 'trapmv#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a failing mv makes check-task fail loudly, not silently succeed' \
+  || bad 'a failing mv makes check-task fail loudly, not silently succeed' "rc=$rc, out=$out"
+cmp -s "$TMPROOT/trapmv.before.md" "$R/gspec/tasks/trapmv.md" \
+  && ok 'the plan file is byte-identical when mv fails' \
+  || bad 'the plan file is byte-identical when mv fails' "$(diff "$TMPROOT/trapmv.before.md" "$R/gspec/tasks/trapmv.md")"
+leftover="$(find "$R/gspec" -name '.gspec-check-task.*' 2>/dev/null)"
+[ -z "$leftover" ] && ok 'the trap removes the temp file even when mv fails' \
+  || bad 'the trap removes the temp file even when mv fails' "$leftover"
+
+mk_plan "$R" trapcp <<'EOF'
+- [ ] **T1** **P0** a task used to prove the write-side trap cleans up when cp fails
+  - deps: —
+EOF
+cp "$R/gspec/tasks/trapcp.md" "$TMPROOT/trapcp.before.md"
+SHIMDIR_CP="$TMPROOT/shim-cp"; mkdir -p "$SHIMDIR_CP"
+printf '#!/bin/sh\nexit 1\n' > "$SHIMDIR_CP/cp"
+chmod +x "$SHIMDIR_CP/cp"
+out="$(PATH="$SHIMDIR_CP:$PATH" "$ADAPTER" check-task 'trapcp#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a failing cp -p makes check-task fail loudly, not silently succeed' \
+  || bad 'a failing cp -p makes check-task fail loudly, not silently succeed' "rc=$rc, out=$out"
+cmp -s "$TMPROOT/trapcp.before.md" "$R/gspec/tasks/trapcp.md" \
+  && ok 'the plan file is byte-identical when cp -p fails' \
+  || bad 'the plan file is byte-identical when cp -p fails' "$(diff "$TMPROOT/trapcp.before.md" "$R/gspec/tasks/trapcp.md")"
+leftover="$(find "$R/gspec" -name '.gspec-check-task.*' 2>/dev/null)"
+[ -z "$leftover" ] && ok 'the trap removes the temp file even when cp -p fails' \
+  || bad 'the trap removes the temp file even when cp -p fails' "$leftover"
+
+# --- finding 6: a duplicate id whose CHECKED copy sorts before the unchecked one
+mk_plan "$R" dup <<'EOF'
+- [x] **T1** **P0** a checked copy that sorts BEFORE the real, unchecked task
+  - deps: —
+- [ ] **T1** **P0** the real, unchecked task — this is the one that must flip
+  - deps: —
+EOF
+cp "$R/gspec/tasks/dup.md" "$TMPROOT/dup.before.md"
+out="$("$ADAPTER" check-task 'dup#T1' "$R")"; rc=$?
+check 'a duplicate id prefers the first UNCHECKED match, not "already"' 'CHECKED=dup#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping the unchecked duplicate' || bad 'exit 0 flipping the unchecked duplicate' "rc=$rc"
+grep -qF -- '- [x] **T1** **P0** a checked copy that sorts BEFORE the real, unchecked task' \
+  "$R/gspec/tasks/dup.md" \
+  && ok 'the earlier already-checked duplicate line is untouched' \
+  || bad 'the earlier already-checked duplicate line is untouched' "$(cat "$R/gspec/tasks/dup.md")"
+grep -qF -- '- [x] **T1** **P0** the real, unchecked task — this is the one that must flip' \
+  "$R/gspec/tasks/dup.md" \
+  && ok 'the later, previously-unchecked duplicate line is now flipped' \
+  || bad 'the later, previously-unchecked duplicate line is now flipped' "$(cat "$R/gspec/tasks/dup.md")"
+d="$(diff "$TMPROOT/dup.before.md" "$R/gspec/tasks/dup.md")"
+lt="$(printf '%s\n' "$d" | grep -c '^<' || true)"
+gt="$(printf '%s\n' "$d" | grep -c '^>' || true)"
+[ "$lt" = "1" ] && [ "$gt" = "1" ] && ok 'exactly one line changed on the duplicate-id plan' \
+  || bad 'exactly one line changed on the duplicate-id plan' "diff:
+$d"
+
+# --- two UNCHECKED duplicates of the same id: recorded behaviour, not a bug ---
+# Malformed gspec (a duplicated id), same as finding 6 above, but both copies
+# start unchecked. One invocation flips one of them, so `nodes` still emits the
+# node and the loop re-runs the packet once per duplicate. It converges after
+# exactly as many invocations as there are duplicates -- unlike the infinite
+# no-op bug that was already fixed -- so this is intentional, not a regression.
+mk_plan "$R" dupunchecked <<'EOF'
+- [ ] **T1** **P0** first unchecked copy of a duplicate id
+  - deps: —
+- [ ] **T1** **P0** second unchecked copy of a duplicate id
+  - deps: —
+EOF
+out="$("$ADAPTER" nodes dupunchecked "$R" 2>/dev/null)"
+count_before="$(printf '%s\n' "$out" | grep -c 'dupunchecked-t1' || true)"
+[ "$count_before" = "2" ] && ok 'both unchecked duplicates appear as backlog nodes before any flip' \
+  || bad 'both unchecked duplicates appear as backlog nodes before any flip' "count=$count_before
+$out"
+
+out="$("$ADAPTER" check-task 'dupunchecked#T1' "$R")"; rc=$?
+check 'the first invocation flips one of the two unchecked duplicates' 'CHECKED=dupunchecked#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping the first unchecked duplicate' || bad 'exit 0 flipping the first unchecked duplicate' "rc=$rc"
+out="$("$ADAPTER" nodes dupunchecked "$R" 2>/dev/null)"
+check 'the node is STILL emitted -- one unchecked duplicate remains (re-run, not skipped)' 'dupunchecked-t1' "$out"
+
+out="$("$ADAPTER" check-task 'dupunchecked#T1' "$R")"; rc=$?
+check 'a second invocation flips the remaining duplicate, converging' 'CHECKED=dupunchecked#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping the second unchecked duplicate' || bad 'exit 0 flipping the second unchecked duplicate' "rc=$rc"
+out="$("$ADAPTER" nodes dupunchecked "$R" 2>/dev/null)"
+refute 'once both duplicates are checked the node no longer appears -- it converges' 'dupunchecked-t1' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

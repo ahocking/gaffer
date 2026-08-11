@@ -67,12 +67,17 @@ Pick, in this order:
 2. **Otherwise count the backlog** — `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
    summary .agents/run-state.yaml` (pending + the cursor), else the node count from
    `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes-all`:
-   - **< 20 packets → INLINE.** Below the measured crossover the relay costs ~29%
-     more tokens and ~40% more wall clock and buys nothing: the context never gets
-     near the window.
-   - **≥ 20 packets → RELAY.** Past the crossover the relay is *both* cheaper
-     (~27% at 33 packets, ~50% at 52) and the only mode that finishes without
-     compaction. Real backlogs reach this often — 33 and 52 packets observed.
+   - **< 40 packets → INLINE. This is the default, and it covers nearly every
+     real backlog.** Measured across 62 packets of production runs, relay costs
+     **1.84x inline per packet** in cache creation, and the coordinator role
+     carries a `cc_shape` max of 142k–240k with 9–55 turns over 50k in *every*
+     relay run — a standing context re-cached on each turn. Inline has no such
+     role.
+   - **≥ 40 packets → RELAY.** Only a backlog long enough to actually threaten
+     the context window justifies paying that. Inline's forced compaction sits
+     around packet **~28**, and the largest run ever observed is **14 packets** —
+     so this branch is deliberately rare, and reaching it is a signal the backlog
+     should probably be split rather than relayed.
 3. **State the mode and the packet count in one line** before you start, so the
    human can override with the flag.
 
@@ -232,8 +237,17 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    else `develop`, else `main`/`master`). If `orch/<task-id>` already exists
    (resuming), just `git switch orch/<task-id>`. No worktree, no separate
    directory — all work happens here.
-2. **Scope.** Fill a task packet from
-   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` — narrow `allowed_files`,
+2. **Scope.** `Read`
+   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before you fill anything
+   in — naming a path is not reading it (ADR 0023's report-format precedent):
+   the template carries rules you cannot fill from memory, including which
+   acceptance criterion is REQUIRED when the packet touches enforcement or
+   automation code, and when `session_boundary` must be declared. One read
+   (~2.4k tokens) covers this context — do not re-read it per packet within
+   it. This applies to whoever **fills**
+   a packet (you, here, or a relay-dispatched Chief Engineer / parallel lane)
+   — not to the `implementer`/`reviewer`/`doc-writer`, who are handed an
+   already-filled packet. Then fill it: narrow `allowed_files`,
    acceptance criteria, `forbidden`, build/test commands, and the packet
    `autonomy`. **Set `tier` here** — `mechanical` (fully-specified, one file),
    `integration` (multi-file/wiring, design settled), `design-heavy` (the design
@@ -393,9 +407,37 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   review** (opus) over the *integrated* diff — the whole feature vs its base
   (`git diff <base>...HEAD`, or the integration branch vs its base at
   `full-autonomy`). Per-packet reviews are scoped to one packet each and miss
-  cross-packet integration issues; this final pass is the net for them. File any
-  Critical/Important finding as a new packet (append to the backlog, cursor back)
-  rather than shipping over it. Once the whole-branch review is clean, set
+  cross-packet integration issues; this final pass is the net for them. For any
+  Critical/Important finding (ADR 0026), route by scope in two arms tried in order,
+  never editing the completed record and never bypassing the immutability control with a
+  shell append (`cat >>`, `printf >>`).
+
+  - **Arm 1** applies when **some feature in the backlog** — not necessarily the one this
+    run built — is **incomplete**, has a plan file with at least one **unchecked** task
+    line, and an **unchecked capability in its PRD covers the finding** — both tests must
+    hold separately. Append a new unchecked task line to
+    `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying a
+    truthful `covers:` naming that capability. The immutability hook still runs and still
+    adjudicates: every checked task's **block** (its task line plus its `deps:`/`covers:`
+    follow-on lines, up to the next task line) must survive byte-identically in the
+    resulting file; a rejection is a **signal** that a checked block was disturbed, or
+    that arm 1 was the wrong arm. Write bounds: append only, never modifying an existing
+    line, never touching a PRD capability checkbox. Cursor back to the appended task.
+    Choose the plan by **scope match**, never by proximity, recency, or convenience.
+
+  - **Arm 2** is everything else, including every case where the parent plan is fully
+    checked: the finding becomes a **new feature**. A dispatched context has no `Skill`
+    tool (ADR 0012), so hand off on the `normal`-severity question block in
+    `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`: `gate:` records arm-2, `question:`
+    names the proposed slug, scope, and parent, `state:` stays `continuing on other
+    packets` (meaning the question does not block the run — at §4 the backlog is
+    complete). Main-context session runs `/gspec-feature`, adds a `.agents/roadmap.yaml`
+    entry (`depends_on:` the parent, `order` after it), and writes **no plan file** until
+    the work comes up. Never use the check-in's `Findings:` key — "this should be
+    built/fixed" is backlog (ADR 0022), not a finding. **`-gaps` does not stack** — a
+    second-order gap gets a slug naming its scope.
+
+  Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh set
   .agents/run-state.yaml status done`) so a later session does not try to resume a
   finished run. Then **snapshot run-metrics (best-effort, ADR 0019):**

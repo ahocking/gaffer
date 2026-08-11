@@ -16,6 +16,11 @@
 #                              `- deps:` / `- covers:` / `- supersedes:` and an
 #                              OPTIONAL `- files:` (forward-compat with upstream
 #                              proposal U1 — gspec does not emit it today).
+#                              WRITTEN as well as read (ADR 0025 D1): `check-task`
+#                              flips ONE task line's `[ ]` to `[x]` and nothing
+#                              else — never the text, never any other line. This
+#                              is the adapter's one write; it records that a unit
+#                              of work executed, not what to build (ADR 0020 D2).
 #   gspec/features/<slug>.md   the PRD. Capability lines
 #                              `- [ ] **P<n>**: <text>`; completion is DERIVED
 #                              from them (ADR 0020 D2 — never stored). Optional
@@ -61,6 +66,15 @@
 #   files-status [root]      audit `.agents/task-files.yaml` against the live plans:
 #                            one `<state> <task>` line per entry
 #                            (ok|stale|unfingerprinted|done|orphan) + a summary.
+#   check-task <task> [root] the adapter's ONE write (ADR 0025 D1): flip a single
+#                            task's checkbox from `[ ]` to `[x]` in
+#                            gspec/tasks/<slug>.md, and touch nothing else — not
+#                            the task text, not any other line. `<task>` accepts
+#                            either `<feature>#T<n>` or the packet-id form
+#                            `<feature>-t<n>` the loop actually holds at packet
+#                            close. Idempotent (CHECKED=already); every "gspec is
+#                            optional" case exits 0; a task id absent from an
+#                            EXISTING plan is genuine drift and exits 4.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -573,6 +587,208 @@ cmd_files_status() {
   [ $((stale+unfp)) -eq 0 ] || printf 'NOTE=ignored entries do not break the run — those packets just serialize (wrong-wide, never wrong-narrow)\n'
 }
 
+# --- check-task: the adapter's ONE write (ADR 0025 D1 / ADR 0020 D2) ---------
+# Flip exactly one task's checkbox `[ ]` -> `[x]` in gspec/tasks/<slug>.md, and
+# NOTHING else. Every outcome except the last exits 0, because gspec is OPTIONAL
+# (D4) -- a non-gspec backlog has no checkbox to flip, and its absence is not a
+# failure. Only a task id that names an EXISTING plan but no such task is loud
+# (exit 4): that is genuine drift -- a packet naming a gspec task that does not
+# exist -- and drift must not be silent.
+#
+# <task> accepts two forms so no call site has to do its own id surgery:
+#   canonical  <feature>#T<n>     (e.g. run-state-cleanup#T1)
+#   packet-id  <feature>-t<n>     (e.g. run-state-cleanup-t1 -- the node id
+#                                  _nodes_for emits, and what the loop actually
+#                                  holds at packet close)
+cmd_check_task() {
+  local task="${1:-}"; [ -n "$task" ] || die "check-task: need a task id"
+  local root; root="$(_root "${2:-}")"
+
+  local slug="" id=""
+  case "$task" in
+    *'#'*)
+      slug="${task%%#*}"
+      id="${task#*#}"
+      ;;
+    *)
+      : # resolved below, once we know gspec/ is even present to resolve against
+      ;;
+  esac
+
+  if ! _has_gspec "$root"; then
+    printf 'CHECKED=none\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    return 0
+  fi
+
+  if [ -n "$slug" ]; then
+    # The canonical form's slug is caller-supplied text, not a resolved
+    # filename -- unlike the packet-id form below, nothing guarantees it
+    # stays inside gspec/tasks/. Reject a path separator or a '..'
+    # component before any file test (ADR 0025 D1: the adapter's one write
+    # is confined to gspec/tasks/<slug>.md). This runs after the
+    # gspec-is-optional early return above -- and can safely do so, because
+    # that return only ever tests $root/gspec, never the caller-supplied
+    # slug -- so every gspec-optional case still exits 0 regardless of what
+    # the caller passed as a slug.
+    case "$slug" in
+      */*|*'..'*)
+        die "check-task: refusing a task id whose feature slug contains a path separator — the adapter's one write is confined to gspec/tasks/<slug>.md (ADR 0025 D1)"
+        ;;
+    esac
+  fi
+
+  if [ -z "$slug" ]; then
+    # packet-id form: <feature>-<id>. Ids are NOT guaranteed to be hyphen-free
+    # -- a legacy shape-B plan line (`- [ ] **ser-t1** ...`) has id `ser-t1`,
+    # so peeling a trailing `-t<digits>` off the token is unsound (it would
+    # read `ser-ser-t1` as slug `ser-ser`, id `t1`, and silently match
+    # nothing). Resolve against the plan filenames that actually exist
+    # instead: the token matches iff it is exactly "<slug>-<remainder>" for
+    # some real plan basename, and the remainder is then the task id. This
+    # also means the resolved slug is always a real basename on disk, so --
+    # unlike the canonical form above -- it is structurally incapable of
+    # containing a path separator or '..'; no separate check needed here.
+    local best="" f cand
+    for f in "$root"/gspec/tasks/*.md "$root"/gspec/features/*.plan.md; do
+      [ -f "$f" ] || continue
+      cand="$(basename "$f" .md)"; cand="${cand%.plan}"
+      case "$task" in
+        "$cand"-*)
+          # Prefer the LONGEST matching slug, so a feature whose slug itself
+          # ends in -t<digits> (e.g. phase-t2, task phase-t2-t1) still
+          # resolves to the right plan and id instead of the shorter decoy.
+          # This is also why the ambiguity is safe: `nodes` emits
+          # <feature>-<tolower(id)>, so feature `phase` task `t2-t1` and
+          # feature `phase-t2` task `T1` both produce the node id
+          # `phase-t2-t1` -- a pre-existing namespace collision. Longest-wins
+          # always picks the longer slug here; when the live task is
+          # actually in the shorter-slug plan, resolution against that
+          # slug's id then fails and the result is a loud rc=4 "no such
+          # task", never a wrong flip.
+          if [ "${#cand}" -gt "${#best}" ]; then best="$cand"; fi
+          ;;
+      esac
+    done
+    if [ -n "$best" ]; then
+      slug="$best"
+      id="${task#"$best"-}"
+    fi
+  fi
+
+  if [ -z "$slug" ] || [ -z "$id" ]; then
+    printf 'CHECKED=none\nREASON=not a gspec task id — nothing to flip (ADR 0020 D4: gspec is optional)\n'
+    return 0
+  fi
+
+  local plan relplan
+  if [ -f "$root/gspec/tasks/$slug.md" ]; then
+    plan="$root/gspec/tasks/$slug.md"; relplan="gspec/tasks/$slug.md"
+  elif [ -f "$root/gspec/features/$slug.plan.md" ]; then
+    plan="$root/gspec/features/$slug.plan.md"; relplan="gspec/features/$slug.plan.md"
+  else
+    printf 'CHECKED=none\nREASON=no gspec/tasks/%s.md — nothing to flip\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+
+  # Pass 1: READ-ONLY lookup. Determines whether the target task exists and,
+  # if so, whether it is already checked -- without touching the file. This is
+  # what makes the idempotent and not-found paths provably byte-identical: the
+  # file is never opened for writing unless a real flip is about to happen.
+  # Prefers the FIRST UNCHECKED match over an earlier checked one: a malformed
+  # plan with a duplicate id (`- [x] **T1**` sorted above `- [ ] **T1**`) must
+  # not report "already" while leaving the real, unchecked task live for
+  # `nodes` to keep re-emitting forever. Only when no unchecked match exists
+  # anywhere in the file does an earlier checked match count as "already".
+  local lookup status="notfound" foundid=""
+  lookup="$(awk -v want="$idlc" '
+    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
+      desc = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*/, "", desc)
+      match(desc, /^[A-Za-z][A-Za-z0-9_-]*[0-9]+/)
+      lid = substr(desc, 1, RLENGTH)
+      if (tolower(lid) == want) {
+        checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+        if (!checked) { print "flip " lid; found = 1; exit }
+        if (checked_id == "") checked_id = lid
+      }
+    }
+    END {
+      if (!found && checked_id != "") print "already " checked_id
+    }
+  ' "$plan")"
+  if [ -n "$lookup" ]; then
+    status="${lookup%% *}"
+    foundid="${lookup#* }"
+  fi
+
+  if [ "$status" = "notfound" ]; then
+    printf 'CHECKED=none\nREASON=%s has no task %s in %s\n' "$slug" "$id" "$relplan"
+    return 4
+  fi
+
+  if [ "$status" = "already" ]; then
+    printf 'CHECKED=already\nFILE=%s\n' "$relplan"
+    return 0
+  fi
+
+  # Pass 2: the actual write. Rewrite ONLY the leading `[ ]` marker of the
+  # matched line -- a plain `sub()` against the untouched `$0` copy, never a
+  # field-rebuild, so every other byte on that line (and every byte of every
+  # other line) survives verbatim. Only the first UNCHECKED matching id is
+  # flipped -- the same gate as pass 1, so the two passes cannot disagree
+  # about which line a duplicated id resolves to.
+  # Atomic: build into a temp file in the same directory, then `mv` over the
+  # original -- a reader never observes a partially-written plan file.
+  # `cp -p` (not a bare empty `mktemp` file) carries the plan's own mode onto
+  # the temp file, so the later `mv` doesn't narrow it to mktemp's 0600 --
+  # git tracks only the exec bit, so a silent 0644->0600 would be invisible
+  # to `git diff` and to review.
+  local tmp tmp2=""
+  tmp="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
+  # No process-wide trap: scoped to this write only, set as soon as the temp
+  # file exists and disarmed right after the final `mv` succeeds, so a
+  # stranded temp file under set -euo pipefail (cp, awk, or mv failing) can't
+  # survive as untracked scratch inside gspec/tasks/.
+  trap 'rm -f "$tmp" "$tmp2"' EXIT
+  cp -p "$plan" "$tmp"
+  awk -v want="$idlc" '
+    BEGIN { done = 0 }
+    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ && !done {
+      desc = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*/, "", desc)
+      match(desc, /^[A-Za-z][A-Za-z0-9_-]*[0-9]+/)
+      lid = substr(desc, 1, RLENGTH)
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      if (tolower(lid) == want && !checked) {
+        line = $0
+        sub(/\[ \]/, "[x]", line)   # leftmost "[ ]" on the line is always the
+        print line                 # leading marker -- the header regex above
+        done = 1                   # already confirmed this line is unchecked.
+        next
+      }
+    }
+    { print }
+  ' "$plan" > "$tmp"
+
+  # awk's print always terminates the record it writes, so a plan lacking a
+  # final newline would gain one byte here. Drop that byte before the mv so
+  # the write really does touch nothing else in the file.
+  if [ -n "$(tail -c1 "$plan")" ]; then
+    local sz; sz="$(wc -c < "$tmp")"; sz=$((sz - 1))
+    tmp2="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
+    head -c "$sz" "$tmp" > "$tmp2"
+    cat "$tmp2" > "$tmp"           # rewrite tmp's own inode -- keeps its mode
+    rm -f "$tmp2"; tmp2=""
+  fi
+
+  mv "$tmp" "$plan"
+  trap - EXIT
+
+  printf 'CHECKED=%s#%s\nFILE=%s\n' "$slug" "$foundid" "$relplan"
+}
+
 cmd_nodes() {
   local slug="${1:-}"; [ -n "$slug" ] || die "nodes: need a feature slug"
   local root; root="$(_root "${2:-}")"
@@ -639,5 +855,6 @@ case "${1:-}" in
   nodes-all) shift; cmd_nodes_all "$@" ;;
   interlock) shift; cmd_interlock "$@" ;;
   files-status) shift; cmd_files_status "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status} [root]" ;;
+  check-task) shift; cmd_check_task "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status|check-task <task>} [root]" ;;
 esac

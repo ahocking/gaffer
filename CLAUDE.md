@@ -65,10 +65,14 @@ passing sweeps.
   consumer repo** — there the plugin sits outside the working tree. Here the loop
   edits what it runs from, and the timing differs per surface: `scripts/*.sh` take
   effect **mid-run, in the run that made the edit** (`runstate.sh` is the loop's
-  own single writer); `hooks/*` load at **session start**, so a break is invisible
-  until the next session; `agents/*.md` and `skills/*/SKILL.md` are read at
-  dispatch. `hooks/guard.sh` is the sharpest case — a packet weakening the guard
-  would be reviewed by a loop still running the old guard. Closing this is
+  own single writer); a **hook body is spawned per event**, so it takes effect the
+  same way — mid-run, on the next tool call, in the run that edited it — and only
+  its registration (`hooks/hooks.json`, `.claude/settings.json`) crosses a session
+  boundary; `agents/*.md` and `skills/*/SKILL.md` are read at dispatch.
+  `hooks/guard.sh` is the sharpest case: it is the plugin's own safety floor, and
+  here it is a first-class edit target at `full-autonomy` — a packet weakening the
+  guard is live on the next matching tool call, in the same run, not caught by a
+  loop still running an old copy. Closing this is
   `self-host-hardening`, and it is ordered first for that reason. Its T1/T2
   landed in `348f1cc`: `.agents/guard-extra-review` now routes that whole surface
   to the ASK tier, with 25 cases in `test-guard.sh`.
@@ -121,12 +125,23 @@ passing sweeps.
   implementation and research, haiku = the summarizer/doc agent (`doc-writer`).
 - **Skills** (`skills/<name>/SKILL.md`): frontmatter with `name`, `description`,
   `argument-hint`. Reference shared files via `${CLAUDE_PLUGIN_ROOT}/...`.
-- **The loop skills choose relay vs inline by backlog size** (`run-loop`, `resume`
-  — ADR 0012): **≥ 20 packets** → dispatch a fresh `chief-engineer` per packet and
-  relay its check-in verbatim (context stays flat; ~27–50% cheaper on the 33- and
-  52-packet backlogs real repos actually carry); **< 20** → run it inline (the
-  relay costs ~29% more there and prevents nothing). `--relay`/`--inline` override.
-  **20 is a measured crossover, not a taste** — if you change the brief or
+- **INLINE IS THE DEFAULT; relay is for backlogs ≥ 40 packets** (`run-loop`,
+  `resume` — ADR 0012, **crossover raised from 20 to 40 on 2026-08-10**).
+  `--relay`/`--inline` override. The original 20 came from a *token extrapolation*
+  (k≈21) with no production comparator. The first real one — 62 packets across two
+  repos, `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent`
+  history — says **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
+  cacheCreation), and names the mechanism: the coordinator role carries a
+  `cc_shape` max of **142k–240k with 9–55 turns over 50k in every relay run**,
+  while no inline run has such a role. **The number is still not clean, and that is
+  why relay was kept rather than deleted:** 65–96% of tool duration in those runs
+  sits in the coordinator's own context, much of it **busy-wait polling** (33
+  `until` loops = 51% of one run's wall clock), so each poll re-caches that
+  standing context and inflates the very figure being compared. Fix the busy-wait,
+  then re-measure as a two-arm A/B — that is `loop-cost-controls` P0, and deleting
+  relay outright is the legitimate outcome if the gap survives. Note the regime the
+  relay was built for has **never been reached**: inline compacts around packet
+  ~28 and the largest run ever observed is **14**. If you change the brief or
   re-measure, update the ADR and both skills together.
 - **Parallel mode is opt-in and worktree-isolated** (`run-loop`/`resume --parallel`
   — ADR 0016, amends ADR 0009). The default loop is single-checkout sequential and
@@ -481,6 +496,31 @@ passing sweeps.
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **A finding discovered after a plan is complete routes by scope in two arms tried in
+  order, and the completed record is never edited** (ADR 0026). **Arm 1** applies when
+  **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**
+  task line, and an **unchecked capability in its PRD covers the finding** — both tests
+  separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
+  task line to `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying
+  truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
+  parent plans) becomes a **new feature**: a PRD via `/gspec-feature`, a `.agents/roadmap.yaml`
+  entry (`depends_on:` the parent, `order` after it), and **no plan file** until the work
+  comes up. Loop contexts lack `Skill`, so arm 2 splits: hand off on the `normal`-severity
+  question block in `templates/check-in.md`, and main-context runs `/gspec-feature`.
+  **The recorded diagnosis was WRONG, and that is the part to keep**: the immutability
+  hook asks only that every checked task's **block** (its line through the next task
+  line) survives byte-identically, so additive appends already pass mechanically;
+  policy forbids it because a derived-done feature must not carry unshipped work
+  (ADR 0020 D2) — the appended task would emit no packet node and never be scheduled.
+  A hook rejection is a **signal** the edit disturbed a checked block or arm 1 was
+  wrong, never a cue to bypass with shell or patch the vendored hook (it is re-stamped
+  at install). `/gspec-plan` regeneration is unreachable from a dispatched context and
+  would require reopening the feature. Arm 1 widens the plugin's write into `gspec/`
+  past ADR 0025's `[ ]` → `[x]` flip, bounded to: append only,
+  never modify existing lines, never touch capability checkboxes, always carry truthful
+  `covers:`. The arm-1 scope test is prompt-enforced — nothing mechanically checks fit; the
+  detector is a task whose `covers:` does not match, and the boundary is the packet's PR
+  review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
 - **There are THREE report files, and the split is by reader and by need** (ADR 0023).
   `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
   Engineer returns it and the scheduler *parses* it, so its keys are stable and it

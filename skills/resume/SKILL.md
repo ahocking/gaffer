@@ -47,10 +47,10 @@ sequential resume.
    If there is no run-state, say so and stop — reconstruction (§1) is the executing
    Chief Engineer's job, not the relay's.
 2. **Count what REMAINS, not what the run started with** — `pending` + the cursor.
-   A run that began at 40 packets and has 4 left is a *small* backlog now, and the
-   relay would cost ~29% more to finish it.
-   - **`--inline` / `--relay` in `$ARGUMENTS` wins**, else: **< 20 remaining →
-     inline** (run §1–§4 yourself); **≥ 20 remaining → relay** (below).
+   A run that began at 60 packets and has 4 left is a *small* backlog now, and the
+   relay would cost 1.84x per packet to finish it.
+   - **`--inline` / `--relay` in `$ARGUMENTS` wins**, else: **< 40 remaining →
+     inline** (run §1–§4 yourself, the default); **≥ 40 remaining → relay** (below).
    - Say which you chose and the remaining count in one line.
 3. **Relay mode — dispatch a fresh `gaffer:chief-engineer`** with a brief
    containing **only**: the repo root, the resolved autonomy level, the run-state

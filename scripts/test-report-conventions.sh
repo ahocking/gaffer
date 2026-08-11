@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# test-report-conventions.sh — the report-format delivery layers (L2/L3)
+# test-report-conventions.sh — contract delivery: the report format (L2/L3) and
+#                               the packet contract
 # =============================================================================
 # Synthetic repos on disk, no live agent. Exit 0 = all passed.
 #
@@ -19,6 +20,14 @@
 #   4. The card, the CLAUDE.md overlay copy and the full contract do not DRIFT.
 #      Three copies of one contract is the standing risk of this design; the
 #      byte-comparison is what keeps it a single source in practice.
+#   5. CONTRACT DELIVERY BY `Read`, for `templates/task-packet.yaml`. Same failure
+#      as 1-4, one layer down: both packet-scoping sites named the template's path
+#      without saying `Read`, so an agent filling a packet had never seen the two
+#      REQUIRED rules the file carries. Observed cost: packet `self-host-hardening-t6`
+#      edited `scripts/metrics.sh` and landed with no case in `scripts/test-metrics.sh`
+#      — under the very rule this delivery exists to apply. Asserted from BOTH ends:
+#      the scoping sites carry an imperative `Read`, and the template still carries
+#      the two REQUIRED rules that `Read` exists to deliver.
 # =============================================================================
 
 set -uo pipefail
@@ -138,6 +147,97 @@ ok 'every glyph the card names exists in the full contract'
 chars="$(wc -c < "$CARD" | tr -d ' ')"
 [ "$chars" -lt 4000 ] && ok "the card stays small (${chars} chars)" \
   || bad 'the card has grown' "${chars} chars — detail belongs in templates/report-conventions.md"
+
+printf '\n== the packet contract is delivered, not just referenced ==\n'
+PACKET_TMPL="$ROOT/templates/task-packet.yaml"
+# The exact two-span adjacency below is deliberate: it is what makes a bare
+# path mention fail, and a benign rewording like "`Read` the packet template
+# at `<path>`" will also fail it — accepted, because it fails loud with a
+# self-describing message rather than passing on a paraphrase. Do not loosen
+# this to a looser/fuzzier match.
+IMPERATIVE='Read` `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml'
+
+# Whitespace-squeeze each file so a markdown line break between the two
+# backticked spans does not cause a false failure. CR is stripped FIRST, or a
+# CRLF checkout (core.autocrlf=true, no .gitattributes here) leaves a
+# trailing \r glued to the first span and the token sequence never matches —
+# see the CRLF regression case below (ADR 0019 v3.1 paid for this class once
+# already).
+_squeeze() { tr -d '\r' < "$1" | tr '\n' ' ' | tr -s ' '; }
+
+blob_runloop="$(_squeeze "$ROOT/skills/run-loop/SKILL.md")"
+case "$blob_runloop" in
+  *"$IMPERATIVE"*) ok 'run-loop SKILL.md Reads the packet template before scoping' ;;
+  *) bad 'run-loop SKILL.md Reads the packet template before scoping' \
+      "expected token sequence: $IMPERATIVE" ;;
+esac
+
+blob_ce="$(_squeeze "$ROOT/agents/chief-engineer.md")"
+case "$blob_ce" in
+  *"$IMPERATIVE"*) ok 'chief-engineer.md Reads the packet template before scoping' ;;
+  *) bad 'chief-engineer.md Reads the packet template before scoping' \
+      "expected token sequence: $IMPERATIVE" ;;
+esac
+
+has 'the template still carries the REQUIRED sweep-as-acceptance-criterion rule' \
+  'REQUIRED: if `allowed_files` touches enforcement or automation code' \
+  "$(cat "$PACKET_TMPL")"
+
+has 'the template still carries the REQUIRED session_boundary rule' \
+  'REQUIRED for a packet whose `allowed_files` touches a surface loaded at session' \
+  "$(cat "$PACKET_TMPL")"
+
+has 'the template still declares the session_boundary key' \
+  'session_boundary:' \
+  "$(cat "$PACKET_TMPL")"
+
+# Cost invariant (ADR 0023 by-role scoping): agents that RECEIVE a filled packet
+# must not carry the imperative Read — only whoever FILLS a packet does. A bare
+# descriptive mention of the path is fine and must stay passing.
+recv_fail=""
+for f in "$ROOT/agents/implementer.md" "$ROOT/agents/reviewer.md" "$ROOT/agents/doc-writer.md"; do
+  blob="$(_squeeze "$f")"
+  case "$blob" in
+    *"$IMPERATIVE"*) recv_fail="$recv_fail $(basename "$f")" ;;
+  esac
+done
+[ -z "$recv_fail" ] && ok 'packet-receiving agents (implementer/reviewer/doc-writer) do not carry the Read' \
+  || bad 'packet-receiving agents (implementer/reviewer/doc-writer) do not carry the Read' \
+      "found the imperative in:$recv_fail"
+
+# Anchor for the assertion above: its discriminating power depends on
+# implementer.md still carrying the BARE descriptive path mention. Without
+# this, deleting that sentence upstream would leave the negative assertion
+# passing while testing nothing.
+has 'the anchor for the negative assertion above still holds (implementer.md still mentions the bare path)' \
+  '${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml' \
+  "$(cat "$ROOT/agents/implementer.md")"
+
+printf '\n== CRLF checkout does not break site-delivery detection ==\n'
+# core.autocrlf=true + no .gitattributes here means a Windows checkout can
+# hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never
+# touch the real files) and assert the same two site-delivery checks still
+# pass. The shim is written in awk, not `sed 's/$/\r/'` — BSD/macOS sed
+# inserts a literal `r` there, which would make this case pass vacuously on
+# exactly the machine where it matters.
+CRLF_DIR="$TMP/crlf"; mkdir -p "$CRLF_DIR"
+_to_crlf() { awk '{printf "%s\r\n", $0}' "$1" > "$2"; }
+_to_crlf "$ROOT/skills/run-loop/SKILL.md" "$CRLF_DIR/run-loop-SKILL.md"
+_to_crlf "$ROOT/agents/chief-engineer.md" "$CRLF_DIR/chief-engineer.md"
+
+blob_runloop_crlf="$(_squeeze "$CRLF_DIR/run-loop-SKILL.md")"
+case "$blob_runloop_crlf" in
+  *"$IMPERATIVE"*) ok 'run-loop SKILL.md still Reads the packet template under CRLF' ;;
+  *) bad 'run-loop SKILL.md still Reads the packet template under CRLF' \
+      "expected token sequence: $IMPERATIVE" ;;
+esac
+
+blob_ce_crlf="$(_squeeze "$CRLF_DIR/chief-engineer.md")"
+case "$blob_ce_crlf" in
+  *"$IMPERATIVE"*) ok 'chief-engineer.md still Reads the packet template under CRLF' ;;
+  *) bad 'chief-engineer.md still Reads the packet template under CRLF' \
+      "expected token sequence: $IMPERATIVE" ;;
+esac
 
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"

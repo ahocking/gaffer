@@ -153,4 +153,3 @@ tasks:
   - task: run-state-cleanup#T21
     files: [CLAUDE.md]
     fingerprint: Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
-</content>

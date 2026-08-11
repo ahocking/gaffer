@@ -1,0 +1,116 @@
+run: self-host-hardening-gaps-t5   mode: sequential   autonomy: full-autonomy   token_source: transcript   self-host: yes
+window: 14062s wall (active 11020s / idle 3042s)   packets: 6   tool_calls: 818 (+38 unattributed)
+tokens: in=9380 out=103804 cacheR=56906582 cacheC=5035030   cache_hit_ratio: 0.918
+
+by model:
+  claude-haiku-4-5-20251001: out=205 cacheC=291124 cacheR=3017465
+  claude-opus-5: out=86085 cacheC=4044362 cacheR=42077152
+  claude-sonnet-5: out=17514 cacheC=699544 cacheR=11811965
+
+by effort:
+  high: turns=670 out=103599 cacheC=4743906
+
+by role:
+  gaffer:architect: out=3336 cacheR=811285 cacheC=110796   models=claude-opus-5
+  gaffer:chief-engineer: out=20415 cacheR=24078737 cacheC=3177474   models=claude-opus-5
+  gaffer:doc-writer: out=205 cacheR=3017465 cacheC=291124   models=claude-haiku-4-5-20251001
+  gaffer:implementer: out=17514 cacheR=11811965 cacheC=699544   models=claude-sonnet-5
+  gaffer:reviewer: out=3324 cacheR=6742527 cacheC=642021   models=claude-opus-5
+  main: out=59010 cacheR=10444603 cacheC=114071   models=claude-opus-5
+
+cc_shape — payload per turn, NOT agent cost (flat median + large max = a big standing context being re-cached):
+  gaffer:architect: median=1009 p90=34904 max=35631   turns>50k=0 (0 cacheC)
+  gaffer:chief-engineer: median=2032 p90=27647 max=142170   turns>50k=20 (2302438 cacheC)
+  gaffer:doc-writer: median=1050 p90=17790 max=29786   turns>50k=0 (0 cacheC)
+  gaffer:implementer: median=944 p90=7361 max=40310   turns>50k=0 (0 cacheC)
+  gaffer:reviewer: median=2603 p90=8451 max=33484   turns>50k=0 (0 cacheC)
+  main: median=1239 p90=3774 max=9225   turns>50k=0 (0 cacheC)
+
+by skill (tool_calls / duration):
+  run-loop: 818 calls / 8180248ms
+
+by tool (selection, not cost):
+  Bash: 467 calls / 8175182ms
+  Read: 231 calls / 4571ms
+  Edit: 85 calls / 320ms
+  Agent: 34 calls / 172ms
+  Write: 1 calls / 3ms
+
+by command class (rtk-targeting: calls / duration):
+  until: 30 calls / 7134666ms
+  for: 8 calls / 590763ms
+  claude: 11 calls / 113307ms
+  bash: 28 calls / 111567ms
+  echo: 38 calls / 58313ms
+  test-metrics.sh: 5 calls / 44997ms
+  git checkout: 1 calls / 24972ms
+  test-gspec-backlog.sh: 8 calls / 17195ms
+  set: 15 calls / 16466ms
+  test-guard.sh: 1 calls / 14834ms
+  cp: 4 calls / 10940ms
+  du: 1 calls / 8889ms
+  test-packet-graph.sh: 2 calls / 3751ms
+  test-migrate.sh: 1 calls / 3425ms
+  mkdir: 13 calls / 3224ms
+  runstate.sh: 39 calls / 2624ms
+  test-report-conventions.sh: 4 calls / 2349ms
+  gspec-backlog.sh: 14 calls / 1581ms
+  git status: 25 calls / 1271ms
+  git -C: 2 calls / 1129ms
+  grep: 69 calls / 1021ms
+  git diff: 37 calls / 852ms
+  python3 -: 8 calls / 852ms
+  ls: 13 calls / 679ms
+  old-metrics.sh: 1 calls / 663ms
+  git branch: 6 calls / 653ms
+  git add: 8 calls / 574ms
+  status: 1 calls / 486ms
+  python3 -c: 2 calls / 466ms
+  cat: 8 calls / 457ms
+  awk: 7 calls / 373ms
+  git switch: 7 calls / 366ms
+  sed: 24 calls / 324ms
+  git --version: 1 calls / 198ms
+  git commit: 3 calls / 198ms
+  git log: 6 calls / 171ms
+  rev-parse: 1 calls / 110ms
+  node: 1 calls / 76ms
+  wc: 2 calls / 74ms
+  printf: 2 calls / 71ms
+  git check-ignore: 1 calls / 69ms
+  metrics.sh: 1 calls / 47ms
+  git show: 1 calls / 44ms
+  find: 1 calls / 24ms
+  date: 1 calls / 23ms
+  git rev-parse: 1 calls / 22ms
+  head: 1 calls / 11ms
+  tail: 1 calls / 11ms
+  sleep: 2 calls / 4ms
+
+routing audit (opus orchestrator edits vs implementer dispatches; label present):
+  orchestrator_impl_edits=3   implementer_dispatches=10   by_tier={"design-heavy":1,"docs":1,"integration":4}
+  tier labels: 6/6 packets labelled
+  dispatches=34 (explicit model overrides: 0)   by_dispatch_model_override={}
+  failed_tool_calls=0   human_interactions=0 (interactivity confound)
+  ⚠ self-host-hardening-gaps-t1: waste:integration-tier-edited-inline-on-opus
+  ⚠ self-host-hardening-gaps-t4: suspect:design-heavy-label-with-2-review-rounds
+  ⚠ run-state-cleanup-t1: waste:integration-tier-edited-inline-on-opus
+  ⚠ self-host-hardening-gaps-t5: leak:orchestrator-edited-on-opus-without-delegating(1); label-contradiction:impl=delegated-but-no-implementer-dispatch; waste:docs-tier-edited-inline-on-opus-not-doc-writer
+
+packets (id | wave | outcome | tool_calls | active | dur | out-tok):
+  self-host-hardening-gaps-t1 | wave ? | green | 120 calls | 1161s | 166926ms | 15455
+  self-host-hardening-gaps-t2 | wave ? | green | 83 calls | 1319s | 810657ms | 12153
+  self-host-hardening-gaps-t3 | wave ? | green | 113 calls | 1663s | 1200895ms | 8416
+  self-host-hardening-gaps-t4 | wave ? | green | 104 calls | 1288s | 446981ms | 9548
+  run-state-cleanup-t1 | wave ? | green | 186 calls | 2859s | 3782509ms | 23826
+  self-host-hardening-gaps-t5 | wave ? | green | 174 calls | 2250s | 1770683ms | 22183
+
+edits per packet (rework signal — an edit count means little without the contention):
+  self-host-hardening-gaps-t1: 14 edits across 7 file(s), contended=0
+  self-host-hardening-gaps-t2: 5 edits across 3 file(s), contended=0
+  self-host-hardening-gaps-t3: 12 edits across 3 file(s), contended=0
+  self-host-hardening-gaps-t4: 13 edits across 1 file(s), contended=1  ⚠ same file touched by gaffer:architect+gaffer:implementer (1)
+  run-state-cleanup-t1: 24 edits across 4 file(s), contended=0
+  self-host-hardening-gaps-t5: 17 edits across 4 file(s), contended=0
+
+packet: /Users/ahocking/workspace/gaffer/.agents/metrics/self-host-hardening-gaps-t5/run-metrics.json

@@ -15,10 +15,13 @@
 #   scripts/*.sh   invoked fresh per Bash call -> an edit takes effect MID-RUN, in
 #                  the run that made it. runstate.sh is the loop's own single
 #                  writer of durable state.
-#   hooks/*        loaded at session start -> a break is invisible in-session and
-#                  surfaces in the NEXT session. guard.sh is the safety floor: a
-#                  packet weakening it would be reviewed by a loop still running
-#                  the old guard.
+#   hooks/*        a hook body is spawned fresh per matching event -> same as
+#                  scripts/*.sh, an edit takes effect MID-RUN, on the very next
+#                  event, in the run that made it. Only its registration
+#                  (hooks.json, .claude/settings.json) loads at session start.
+#                  guard.sh is the safety floor, and it is the sharpest case: a
+#                  packet weakening it is live on the next matching tool call, in
+#                  the same run, not caught by a loop still running the old guard.
 #   agents/*.md    read at dispatch -> a mid-run edit changes how later packets in
 #   skills/*       the same run behave.
 #

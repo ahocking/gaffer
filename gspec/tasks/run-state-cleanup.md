@@ -34,25 +34,25 @@ sequences T11 and T13 already rewrite.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Add `gspec-backlog.sh check-task` flipping one task's checkbox and never its text, name that write in ADR 0020's boundary section, and cover it in `test-gspec-backlog.sh`
+- [x] **T1** [P] **P0** Add `gspec-backlog.sh check-task` flipping one task's checkbox and never its text, name that write in ADR 0020's boundary section, and cover it in `test-gspec-backlog.sh`
   - deps: —
   - covers: The gspec task checkbox is the completion record, and the loop maintains it
 - [ ] **T2** **P1** Add a read-only adapter subcommand that, for a given set of packet ids, reports which name a still-unchecked gspec task and emits the finished set for `findings --stale` to consume, with a sweep case
   - deps: T1
   - covers: A drifted completion record is reported at preflight
-- [ ] **T3** [P] **P0** Make `add-finding` refuse without `--packets`, write the ids into the index entry, and name the four non-finding homes in its refusal, with `test-runstate.sh` cases
+- [x] **T3** [P] **P0** Make `add-finding` refuse without `--packets`, write the ids into the index entry, and name the four non-finding homes in its refusal, with `test-runstate.sh` cases
   - deps: —
   - covers: A finding is scoped to packets, and there is no run-wide finding
-- [ ] **T4** **P1** Write a finding body only when `add-finding` is passed `--body`, dropping the three-heading stub default, with a sweep case
+- [x] **T4** **P1** Write a finding body only when `add-finding` is passed `--body`, dropping the three-heading stub default, with a sweep case
   - deps: T3
   - covers: Finding bodies are opt-in
-- [ ] **T5** **P0** Add `runstate.sh drop-finding` removing index entry and body atomically, with sweep cases proving no orphan in either direction
+- [x] **T5** **P0** Add `runstate.sh drop-finding` removing index entry and body atomically, with sweep cases proving no orphan in either direction
   - deps: T3
   - covers: A finding is dropped at the packet boundary, and both halves go or neither
-- [ ] **T6** **P0** Add `findings --stale` taking the finished set as input rather than reading gspec, applying the finished/pending/unknown rule and the `ORCH_FINDINGS_INDEX_MAX_BYTES` threshold, with a sweep case pinning that an unsupplied set reads as `unknown` throughout and expires nothing
+- [x] **T6** **P0** Add `findings --stale` taking the finished set as input rather than reading gspec, applying the finished/pending/unknown rule and the `ORCH_FINDINGS_INDEX_MAX_BYTES` threshold, with a sweep case pinning that an unsupplied set reads as `unknown` throughout and expires nothing
   - deps: T3
   - covers: A resolved finding is captured before it is dropped, by the session that resolved it
-- [ ] **T7** **P1** Give `reconstruct`'s `DONE=` note the clause that no run-state field is populated from it, with a `test-runstate.sh` assertion on the new clause
+- [x] **T7** **P1** Give `reconstruct`'s `DONE=` note the clause that no run-state field is populated from it, with a `test-runstate.sh` assertion on the new clause
   - deps: —
   - covers: `reconstruct` keeps `DONE=`, and nothing is populated from it
 - [ ] **T8** [P] **P0** Remove `done:` from the `backlog` block in `templates/run-state.yaml`, leaving `cursor` and `pending` only
@@ -91,7 +91,7 @@ sequences T11 and T13 already rewrite.
 - [ ] **T19** [P] **P0** Add the one-entry-at-a-time findings triage with its three outcomes to `skills/migrate/SKILL.md` §5
   - deps: T5, T18
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
-- [ ] **T20** **P0** Add a `test-runstate.sh` legacy fixture carrying `done:` and packet-less findings, plus a `done:`-free write asserted to parse, asserting a real parse after every mutating subcommand
+- [x] **T20** **P0** Add a `test-runstate.sh` legacy fixture carrying `done:` and packet-less findings, plus a `done:`-free write asserted to parse, asserting a real parse after every mutating subcommand
   - deps: T4, T5, T6, T7
   - covers: Every changed behaviour has a case in its regression sweep
 - [ ] **T21** **P1** Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion

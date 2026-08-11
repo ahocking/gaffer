@@ -21,6 +21,40 @@
 #   set      <file> <key> <value>    atomically set/insert a flat top-level key.
 #   touch    <file>                  atomically stamp updated_at = now (UTC).
 #   write    <file>                  atomically write full contents from stdin.
+#   add-finding <file> <id> <summary> --packets <id[,id...]> [--body]
+#                                    record a PACKET-SCOPED finding (ADR 0024): a
+#                                    constraint on a packet that has not executed
+#                                    yet, recorded because there is nowhere
+#                                    permanent to put it until that packet runs.
+#                                    --packets is REQUIRED — there is no run-wide
+#                                    finding, because an entry that cannot expire
+#                                    is the thing this rule removes. If it is not
+#                                    that: a durable fact about the environment/
+#                                    tools/agents/policy -> the repo's own
+#                                    committed files or agent memory; a question
+#                                    only the human can answer -> pending_questions:;
+#                                    where this session stopped -> note: (one
+#                                    line); "this should be built/fixed" -> the
+#                                    backlog (a gspec task). --body also writes
+#                                    the .agents/findings/<id>.md stub (default:
+#                                    index entry only, no body — most findings
+#                                    never need one).
+#   findings <file> [--stale] [--finished <id[,id...]>] [--max-bytes <n>]
+#                                    list the finding index: id/summary/file/
+#                                    packets, tab-separated, one per line. --stale
+#                                    reports which entries are expired against a
+#                                    SUPPLIED finished-packet set (unsupplied ->
+#                                    every named packet reads unknown -> nothing
+#                                    expires) plus INDEX_BYTES/OVER_THRESHOLD
+#                                    against a budget (default 4096, override via
+#                                    --max-bytes or $ORCH_FINDINGS_INDEX_MAX_BYTES)
+#                                    — a BACKSTOP for when the drop-at-packet-close
+#                                    discipline slips, not the intended path.
+#   drop-finding <file> <id>        remove a finding's index entry AND its body,
+#                                    both or neither (same-directory atomic
+#                                    rename + temp-file swap). A forced failure
+#                                    mid-drop restores the set-aside body and
+#                                    leaves the index entry in place.
 #   claim-driver <file> [pid]        mark the run as actively driven (host +
 #                                    since + heartbeat). Pass a pid ONLY if you
 #                                    have a genuinely long-lived one.
@@ -47,6 +81,11 @@
 #                                    cursor/pending come from the committed task
 #                                    backlog and pending_questions cannot be
 #                                    recovered from git — the CALLER supplies those.
+#                                    DONE is informational only — no run-state
+#                                    field is populated from it automatically; it
+#                                    is what a human rebuilding a lost run-state
+#                                    reads to see the packet identities already
+#                                    landed.
 #   reconcile <file> <work-tree>     READ-ONLY. Compare the durable checkpoint to
 #                                    the working tree's real git state (pass the
 #                                    local checkout, e.g. `.`) and print the
@@ -264,11 +303,86 @@ cmd_trim_note() {
   printf 'TRIMMED=yes\nBYTES_BEFORE=%s\nMAX=%s\nARCHIVE=%s\n' "$size" "$max" "$arch"
 }
 
+# --- shared id-set helpers (ADR 0024) -----------------------------------------
+# `--packets`/`--finished` both take a comma- and/or-whitespace-separated id list;
+# these are the ONE place that splits/validates/dedupes them, used by add-finding,
+# drop-finding and findings --stale alike.
+
+# Print the full usage + finding-definition text (ADR 0024). Used BOTH as the
+# add-finding usage-error message AND as the refusal when --packets is missing —
+# they are the same message because the refusal IS the usage rule. A heredoc with
+# an unquoted-but-inert delimiter avoids any shell-quoting trouble from the
+# apostrophes/quotes the definition text itself contains.
+_finding_usage() {
+  cat <<'USAGE'
+usage: add-finding <run-state-file> <id> <one-line summary> --packets <id[,id...]> [--body]
+
+a finding is a constraint on a packet that has not executed yet, recorded because
+there is nowhere permanent to put it until that packet runs. --packets <id[,id...]>
+is required; there is no run-wide finding, because an entry that cannot expire is
+the thing this rule removes. If it is not that, it goes somewhere else:
+  - a durable fact about the environment, tools, agents or standing policy -> the
+    repo's own committed files (CLAUDE.md, a comment at the site it constrains) or
+    agent memory
+  - a question only the human can answer -> pending_questions:
+  - where this session stopped -> note: (one line)
+  - "this should be built/fixed" -> the backlog (a gspec task)
+USAGE
+}
+
+# Split a comma-and/or-whitespace-separated string into one id per line. No
+# validation here — callers that need charset enforcement (add-finding's
+# --packets) layer it on; callers that are just testing membership (findings
+# --stale's --finished) don't need it, since an invalid value simply never
+# matches a real packet id.
+_split_ids() {
+  printf '%s\n' "$1" | awk '{
+    n = split($0, a, /[,[:space:]]+/)
+    for (i = 1; i <= n; i++) if (a[i] != "") print a[i]
+  }'
+}
+
+# Split + validate + de-duplicate (first-seen order preserved) a --packets value.
+# Dies on any id outside [a-zA-Z0-9._-] — these ids are written unquoted into a
+# YAML flow sequence and are also used as filenames elsewhere in this file.
+_normalize_id_list() {
+  local raw="$1" out="" seen="," id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!a-zA-Z0-9._-]*) die "packet id '${id}' must be [a-zA-Z0-9._-] (it is written into a YAML flow sequence)" ;;
+    esac
+    case "$seen" in *",${id},"*) continue ;; esac
+    seen="${seen}${id},"
+    out="${out:+${out},}${id}"
+  done <<EOF
+$(_split_ids "$raw")
+EOF
+  printf '%s' "$out"
+}
+
+# Is $1 present (exact match) in the newline-separated set $2?
+_id_in_set() { printf '%s\n' "$2" | grep -qxF "$1"; }
+
+# Restore a set-aside finding body on a failed drop-finding — best-effort, never
+# fails the caller (the caller is already mid-`die`).
+_restore_aside() {
+  [ -n "${1:-}" ] && [ -f "${1:-}" ] && mv -f "$1" "$2" 2>/dev/null
+  return 0
+}
+
 # --- add a finding: one-line index entry here, body in .agents/findings/ ------
-# ADR 0022. Run-state is read by EVERY packet and sits in the standing context for a
-# whole dispatch, so content useful to one packet is paid for by all of them. The
-# summary stays hot so an agent can decide whether it needs the body; the body goes
-# cold in .agents/findings/<id>.md.
+# ADR 0022/0024. Run-state is read by EVERY packet and sits in the standing context
+# for a whole dispatch, so content useful to one packet is paid for by all of them.
+# The summary stays hot so an agent can decide whether it needs the body; the body
+# (opt-in, --body) goes cold in .agents/findings/<id>.md.
+#
+# PACKET-SCOPED, NOT RUN-WIDE (ADR 0024). A finding is a constraint on a packet
+# that has not executed yet — see _finding_usage for the full definition and the
+# four non-finding homes. --packets is mandatory so every entry can expire once
+# the packets it names have all run; an entry that names nothing could never be
+# recognized as stale by `findings --stale` and would accumulate forever, which is
+# exactly the failure this rule removes.
 #
 # A script rather than "the agent edits the YAML": appending to a list is the one
 # edit that reliably produces malformed run-state (wrong indent, a second `findings:`
@@ -285,13 +399,42 @@ cmd_trim_note() {
 # `note:` or `pending_questions:`. Newest-first also happens to be the right read
 # order for an index that gets scanned rather than paged through.
 cmd_add_finding() {
-  local f="${1:-}" id="${2:-}" summary="${3:-}"
-  [ -n "$f" ] && [ -n "$id" ] && [ -n "$summary" ] \
-    || die "usage: add-finding <run-state-file> <id> <one-line summary>"
+  local f="" id="" summary="" packets_raw="" want_body=0 pos=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --packets)   packets_raw="${2:-}"; shift 2 ;;
+      --packets=*) packets_raw="${1#--packets=}"; shift ;;
+      --body)      want_body=1; shift ;;
+      # Only a `--`-prefixed (long-option) token is treated as a flag: the
+      # summary is free text and legitimately may start with a single `-`
+      # (e.g. "- leading dash reads as a list item"), which must land as the
+      # positional summary, not be rejected as an unrecognized option.
+      --*)         die "$(_finding_usage) (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) id="$1" ;;
+          2) summary="$1" ;;
+          *) die "$(_finding_usage) (too many arguments)" ;;
+        esac
+        pos=$((pos + 1))
+        shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$id" ] && [ -n "$summary" ] || die "$(_finding_usage)"
   need_file "$f"
   case "$id" in
     *[!a-zA-Z0-9._-]*|'') die "finding id must be [a-zA-Z0-9._-] (it becomes a filename)" ;;
   esac
+
+  # --packets is validated (including the "missing" refusal) BEFORE the
+  # duplicate-id check and before anything is written — an argument error must
+  # never write a partial entry.
+  [ -n "$packets_raw" ] || die "$(_finding_usage)"
+  local packets_csv
+  packets_csv="$(_normalize_id_list "$packets_raw")"
+  [ -n "$packets_csv" ] || die "$(_finding_usage)"
+
   # A newline in the summary would break the single-line YAML scalar and, worse, could
   # inject a sibling key. Collapse rather than reject: the caller is an agent mid-loop.
   summary="$(printf '%s' "$summary" | tr '\n\r' '  ')"
@@ -333,53 +476,180 @@ cmd_add_finding() {
   dir="$(dirname "$f")"
   body="${dir}/findings/${id}.md"
   rel="$(basename "$dir")/findings/${id}.md"
-  mkdir -p "${dir}/findings" 2>/dev/null || die "cannot create ${dir}/findings"
-  if [ ! -f "$body" ]; then
-    { printf '# %s\n\n' "$id"
-      printf '> %s\n\n' "$summary"
-      printf -- '- recorded: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf '## What was found\n\n<the detail that did NOT belong in run-state>\n\n'
-      printf '## Why it matters / what to do about it\n\n<so a later packet can act on it>\n\n'
-      printf '## Scope\n\n<which packets or areas this applies to; "run-wide" if general>\n'
-    } > "$body" || die "cannot write ${body}"
+
+  # The body is OPT-IN (--body, ADR 0024): measured, a real body ran ~6,789 bytes
+  # against a ~362-byte summary — hand an agent three empty headings and it fills
+  # them, whether the finding needed the detail or not. Most findings need only
+  # the index entry; `file:` appears in the entry ONLY when a body was actually
+  # written, so `findings` never points at a file that doesn't exist.
+  if [ "$want_body" = 1 ]; then
+    mkdir -p "${dir}/findings" 2>/dev/null || die "cannot create ${dir}/findings"
+    if [ ! -f "$body" ]; then
+      { printf '# %s\n\n' "$id"
+        printf '> %s\n\n' "$summary"
+        printf -- '- recorded: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '## What was found\n\n<the detail that did NOT belong in run-state>\n\n'
+        printf '## Why it matters / what to do about it\n\n<so a later packet can act on it>\n\n'
+        printf '## Scope\n\n<the evidence tying this finding to the packet(s) already recorded in the index entry above>\n'
+      } > "$body" || die "cannot write ${body}"
+    fi
   fi
+
+  # Build the new index entry as one string (real newlines, command substitution
+  # strips only the trailing one) so it can be injected through ENVIRON as a single
+  # value — never `awk -v`, which processes backslash escapes in the VALUE and would
+  # re-open the exact injection the `tr` collapse above exists to close.
+  # The trailing `:` below always exits 0. Under `set -e`, `var=$(...)` propagates
+  # the subshell's exit status, and the conditional printf above returns 1
+  # (skipped) when --body was not given, which would silently kill the whole
+  # script right here. (No comment inside the $(...) itself: an apostrophe in a
+  # comment nested inside a command substitution confuses bash's lexer for the
+  # matching close-paren — a real, reproducible bash quirk, not a style choice.)
+  local packets_flow entry
+  packets_flow="$(printf '%s' "$packets_csv" | sed 's/,/, /g')"
+  entry="$(
+    printf '  - id: %s\n' "$id"
+    printf "    summary: '%s'\n" "$q_summary"
+    printf '    packets: [%s]\n' "$packets_flow"
+    if [ "$want_body" = 1 ]; then printf '    file: %s' "$rel"; fi
+    :
+  )"
 
   local tmp
   tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
-  # ENVIRON, never `awk -v`. `-v` processes backslash escapes in the VALUE, so a summary
-  # containing a literal `\n` became a real newline AFTER the `tr` collapse above had
-  # already run — re-opening the exact injection the collapse exists to close, one line
-  # later. ENVIRON passes the bytes through untouched.
   if grep -qE '^findings:' "$f"; then
-    ID="$id" SUM="$q_summary" REL="$rel" awk '
+    ENTRY="$entry" awk '
       { print }
-      /^findings:[[:space:]]*$/ && !done {
-        printf "  - id: %s\n    summary: '\''%s'\''\n    file: %s\n",
-               ENVIRON["ID"], ENVIRON["SUM"], ENVIRON["REL"]; done=1 }
+      /^findings:[[:space:]]*$/ && !done { printf "%s\n", ENVIRON["ENTRY"]; done=1 }
     ' "$f" > "$tmp"
   else
     # No findings key yet (a run-state from an older template): create the section at
     # the end rather than guessing an insertion point mid-file.
     { cat "$f"
-      printf "findings:\n  - id: %s\n    summary: '%s'\n    file: %s\n" "$id" "$q_summary" "$rel"
+      printf 'findings:\n'
+      printf '%s\n' "$entry"
     } > "$tmp"
   fi
   mv -f "$tmp" "$f"
-  printf 'ADDED=yes\nID=%s\nFILE=%s\n' "$id" "$body"
+  # ONE write, not two: a caller piping this into `grep -q` (common in the test
+  # sweep) can close its end the instant it matches the first line, and a SECOND
+  # printf attempting to write into that already-closed pipe gets killed by
+  # SIGPIPE — under `pipefail` that reports a false failure even though the
+  # match succeeded. A single call is atomic up to PIPE_BUF, so there is no
+  # window for a reader to close between two writes that never happen.
+  local out="ADDED=yes
+ID=${id}
+PACKETS=${packets_csv}"
+  [ "$want_body" = 1 ] && out="${out}
+FILE=${body}"
+  printf '%s\n' "$out"
+  return 0
+}
+
+# --- drop a finding: remove the index entry AND the body, both or neither -----
+# ADR 0024. Mechanics: locate the entry by a LITERAL match on the exact line
+# `  - id: <id>`, scoped to the findings block (same reasoning as the add-finding
+# duplicate check — `.` is a legal id char and a regex metachar, and schema-3
+# `packets:` entries share the `- id:` shape). If a body exists, set it aside to a
+# SIBLING temp name in ITS OWN directory (.agents/findings/) — same-directory
+# rename is atomic, and keeping it out of the run-state's own directory means a
+# forced failure building the run-state's temp file (step 3) or replacing
+# run-state (step 4) can restore the body from a location the failure never
+# touched. Order: set aside -> build new run-state -> swap it in -> delete the
+# set-aside body. Any failure in the middle restores the body and dies, leaving
+# BOTH the index entry and the body present — never one without the other.
+cmd_drop_finding() {
+  local f="${1:-}" id="${2:-}"
+  [ -n "$f" ] && [ -n "$id" ] || die "usage: drop-finding <run-state-file> <id>"
+  need_file "$f"
+  case "$id" in
+    *[!a-zA-Z0-9._-]*|'') die "finding id must be [a-zA-Z0-9._-] (it is a filename)" ;;
+  esac
+
+  local in_findings
+  in_findings="$(awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf { print }' "$f" 2>/dev/null || true)"
+  if ! printf '%s\n' "$in_findings" | grep -qxF "  - id: ${id}"; then
+    printf 'DROPPED=no\nREASON=not-found\nID=%s\n' "$id"; return 0
+  fi
+
+  local dir findingsdir body aside=""
+  dir="$(dirname "$f")"
+  findingsdir="${dir}/findings"
+  body="${findingsdir}/${id}.md"
+  if [ -f "$body" ]; then
+    aside="$(mktemp "${findingsdir}/.${id}.aside.XXXXXX")" || die "cannot create temp file in ${findingsdir}"
+    mv -f "$body" "$aside" || die "cannot set aside ${body}"
+  fi
+
+  local tmp
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" \
+    || { _restore_aside "$aside" "$body"; die "cannot create temp file in ${dir}"; }
+  ID="$id" awk '
+    BEGIN { target = "  - id: " ENVIRON["ID"] }
+    /^findings:[[:space:]]*$/ { print; inf = 1; next }
+    inf && /^[A-Za-z_][A-Za-z0-9_]*:/ { inf = 0; skip = 0; print; next }
+    inf && /^[[:space:]]*- id:/ {
+      skip = ($0 == target) ? 1 : 0
+      if (!skip) print
+      next
+    }
+    inf && skip { next }
+    { print }
+  ' "$f" > "$tmp" || { rm -f "$tmp"; _restore_aside "$aside" "$body"; die "failed to build updated run-state"; }
+  mv -f "$tmp" "$f" || { rm -f "$tmp"; _restore_aside "$aside" "$body"; die "cannot replace run-state"; }
+  [ -n "$aside" ] && rm -f "$aside"
+
+  if [ -n "$aside" ]; then
+    printf 'DROPPED=yes\nID=%s\nBODY=removed\n' "$id"
+  else
+    printf 'DROPPED=yes\nID=%s\nBODY=none\n' "$id"
+  fi
 }
 
 # --- list the finding index (ids + summaries only, never the bodies) ----------
 # The read side of the same contract: an agent checks THIS, then opens only the
 # bodies it needs. Printing summaries here — and nothing else — is what keeps the
 # "index hot, body cold" split from silently collapsing back into "read everything".
+#
+# `--stale` is a BACKSTOP for when the drop-at-packet-close discipline slips, not
+# the intended path — the intended path is `drop-finding` right after the packet(s)
+# a finding names have landed. It answers "which entries could be dropped" against
+# a caller-SUPPLIED finished-packet set; unsupplied, every named packet reads
+# `unknown` and nothing expires (ADR 0024's safety property: a caller that skips
+# the wiring expires nothing rather than expiring the wrong thing).
 cmd_findings() {
-  local f="${1:-}"
-  [ -n "$f" ] || die "usage: findings <run-state-file>"
+  local f="" stale=0 finished_raw="" max_bytes=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --stale)          stale=1; shift ;;
+      --finished)       finished_raw="${2:-}"; shift 2 ;;
+      --finished=*)     finished_raw="${1#--finished=}"; shift ;;
+      --max-bytes)      max_bytes="${2:-}"; shift 2 ;;
+      --max-bytes=*)    max_bytes="${1#--max-bytes=}"; shift ;;
+      --*) die "usage: findings <run-state-file> [--stale] [--finished <id[,id...]>] [--max-bytes <n>] (unknown option: $1)" ;;
+      *)
+        [ -z "$f" ] || die "usage: findings <run-state-file> [--stale] [--finished <id[,id...]>] [--max-bytes <n>] (too many arguments)"
+        f="$1"; shift ;;
+    esac
+  done
+  [ -n "$f" ] || die "usage: findings <run-state-file> [--stale] [--finished <id[,id...]>] [--max-bytes <n>]"
   need_file "$f"
+  if [ "$stale" = 1 ]; then
+    _findings_stale "$f" "$finished_raw" "$max_bytes"
+  else
+    _findings_default "$f"
+  fi
+}
+
+# id / summary(decoded) / file / packets(csv) — one TSV row per entry, index order.
+_findings_default() {
   awk '
     /^findings:[[:space:]]*$/ { inf=1; next }
     /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
-    inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" sum "\t" file; sum=""; file="";
+    inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" sum "\t" file "\t" pkts; sum=""; file=""; pkts="";
                                      sub(/^[[:space:]]*- id:[[:space:]]*/, ""); id=$0; next }
     inf && /^[[:space:]]*summary:/ { line=$0; sub(/^[[:space:]]*summary:[[:space:]]*/, "", line);
                                      # Undo the single-quoted encoding the write side
@@ -390,9 +660,119 @@ cmd_findings() {
                                        line = substr(line, 2, length(line) - 2)
                                        gsub(/'"''"'/, "'"'"'", line) }
                                      sum=line; next }
+    inf && /^[[:space:]]*packets:/ { line=$0; sub(/^[[:space:]]*packets:[[:space:]]*/, "", line);
+                                     sub(/^\[/, "", line); sub(/\]$/, "", line);
+                                     gsub(/, */, ",", line); pkts=line; next }
     inf && /^[[:space:]]*file:/    { line=$0; sub(/^[[:space:]]*file:[[:space:]]*/, "", line); file=line; next }
-    END { if (id != "") print id "\t" sum "\t" file }
-  ' "$f" | grep -v '^<' || true
+    END { if (id != "") print id "\t" sum "\t" file "\t" pkts }
+  ' "$1" | grep -v '^<' || true
+}
+
+# id \t packets(csv, "" when absent) — one row per entry, index order. Feeds the
+# three-state (finished/pending/unknown) scan in _findings_stale.
+_findings_entries() {
+  awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" pkts; pkts="";
+                                     sub(/^[[:space:]]*- id:[[:space:]]*/, ""); id=$0; next }
+    inf && /^[[:space:]]*packets:/ { line=$0; sub(/^[[:space:]]*packets:[[:space:]]*/, "", line);
+                                     sub(/^\[/, "", line); sub(/\]$/, "", line);
+                                     gsub(/, */, ",", line); pkts=line; next }
+    END { if (id != "") print id "\t" pkts }
+  ' "$1"
+}
+
+# The ids named by `backlog: cursor:` + `backlog: pending:` in THIS run-state —
+# runstate.sh reads no other file and shells out to nothing, so this is the whole
+# "pending" universe it can see.
+_findings_pending_ids() {
+  local f="$1" cursor
+  cursor="$(cmd_cursor "$f")"
+  { [ -n "$cursor" ] && printf '%s\n' "$cursor"
+    awk '/^[[:space:]]*pending:/{f=1;next} /^[^[:space:]]/{f=0}
+         f && /^[[:space:]]*-[[:space:]]*/ { line=$0; sub(/^[[:space:]]*-[[:space:]]*/,"",line); print line }' "$f"
+  } | awk 'NF'
+}
+
+# Byte size of the whole `findings:` block: its key line through the last line
+# before the next column-0 key (or EOF). Same start/end technique as trim-note's
+# note-block bound, applied to a different key.
+_findings_index_bytes() {
+  local f="$1" start end total
+  start="$(grep -n '^findings:' "$f" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+  [ -n "$start" ] || { printf 0; return 0; }
+  total="$(wc -l < "$f" | tr -d ' ')"
+  end="$(awk -v s="$start" 'NR>s && /^[A-Za-z_][A-Za-z0-9_]*:/ {print NR-1; exit}' "$f")"
+  [ -n "$end" ] || end="$total"
+  awk -v s="$start" -v e="$end" 'NR>=s && NR<=e' "$f" | wc -c | tr -d ' '
+}
+
+# --- findings --stale: which entries are expired against a SUPPLIED finished set --
+# THE SAFETY PROPERTY: the finished set comes ONLY from --finished. There is no
+# fallback to gspec, git, or `backlog.done` — runstate.sh calls no other script and
+# never reads gspec/, so a caller that forgets to wire --finished gets STALE_COUNT=0
+# for every run, never a false expiry. "Absence is never finished": a packet named
+# by an entry but not in the finished set, not in this file's own backlog cursor/
+# pending either, reads `unknown` and blocks expiry exactly like a pending one.
+_findings_stale() {
+  local f="$1" finished_raw="$2" max_bytes="$3"
+  max_bytes="${max_bytes:-${ORCH_FINDINGS_INDEX_MAX_BYTES:-4096}}"
+  case "$max_bytes" in ''|*[!0-9]*) die "max-bytes must be a number" ;; esac
+
+  local finished_set pending_set
+  finished_set="$(_split_ids "$finished_raw")"
+  pending_set="$(_findings_pending_ids "$f")"
+
+  # Accumulate every line and print ONCE at the end (see the same note on
+  # cmd_add_finding's final printf): a caller piping this into `grep -q` on an
+  # EARLY line (e.g. one FINDING= row) can close the pipe before the later rows
+  # and the STALE_COUNT trailer are written, killing this function with SIGPIPE
+  # and reporting a false failure under `pipefail` even though the match hit.
+  local stale_count=0 entries id pkts_csv out=""
+  entries="$(_findings_entries "$f")"
+  while IFS="$(printf '\t')" read -r id pkts_csv; do
+    [ -n "$id" ] || continue
+    if [ -z "$pkts_csv" ]; then
+      out="${out}FINDING=${id} STALE=no blocked_by=<none>:unknown packets=
+"
+      continue
+    fi
+    local is_stale=1 blocked_pkt="" blocked_state="" p state
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if _id_in_set "$p" "$finished_set"; then state=finished
+      elif _id_in_set "$p" "$pending_set"; then state=pending
+      else state=unknown
+      fi
+      if [ "$state" != finished ]; then
+        is_stale=0
+        [ -n "$blocked_pkt" ] || { blocked_pkt="$p"; blocked_state="$state"; }
+      fi
+    done <<EOF
+$(printf '%s' "$pkts_csv" | tr ',' '\n')
+EOF
+    if [ "$is_stale" = 1 ]; then
+      out="${out}FINDING=${id} STALE=yes packets=${pkts_csv}
+"
+      stale_count=$((stale_count + 1))
+    else
+      out="${out}FINDING=${id} STALE=no blocked_by=${blocked_pkt}:${blocked_state} packets=${pkts_csv}
+"
+    fi
+  done <<EOF
+$entries
+EOF
+
+  local ibytes over
+  ibytes="$(_findings_index_bytes "$f")"
+  over=no
+  [ "$ibytes" -gt "$max_bytes" ] && over=yes
+  out="${out}STALE_COUNT=${stale_count}
+INDEX_BYTES=${ibytes}
+MAX_BYTES=${max_bytes}
+OVER_THRESHOLD=${over}"
+  printf '%s\n' "$out"
 }
 
 # --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
@@ -787,8 +1167,9 @@ cmd_reconstruct() {
 
   printf 'RECONSTRUCT=ok\nBRANCH=%s\nTIP=%s\nBASE=%s\nDONE=%s\n' \
     "$branch" "$tip" "${base:-<none>}" "$done_csv"
-  printf 'note: %s\n' \
-    "TIP is a CANDIDATE last_green_commit — verify build+tests are green before trusting it; cursor/pending come from the committed task backlog; pending_questions cannot be recovered from git."
+  printf 'note: %s %s\n' \
+    "TIP is a CANDIDATE last_green_commit — verify build+tests are green before trusting it; cursor/pending come from the committed task backlog; pending_questions cannot be recovered from git." \
+    "DONE is informational only — no run-state field is populated from it automatically; it is the fallback a human rebuilding a lost run-state reads to see the packet identities already committed."
 }
 
 # =============================================================================
@@ -899,6 +1280,7 @@ case "$cmd" in
   trim-note)     cmd_trim_note     "$@" ;;
   record-outcome) cmd_record_outcome "$@" ;;
   add-finding)   cmd_add_finding   "$@" ;;
+  drop-finding)  cmd_drop_finding  "$@" ;;
   findings)      cmd_findings      "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;
@@ -908,6 +1290,6 @@ case "$cmd" in
   request-pause)      cmd_request_pause     "$@" ;;
   clear-pause)        cmd_clear_pause       "$@" ;;
   pause-status)       cmd_pause_status      "$@" ;;
-  -h|--help|help|"") sed -n '2,114p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '2,157p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

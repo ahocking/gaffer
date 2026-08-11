@@ -230,6 +230,11 @@ assert_true "reconstruct names the branch"          "[ \"\$(rcf BRANCH)\" = '$BR
 assert_true "reconstruct tip == HEAD"               "[ \"\$(rcf TIP)\" = '$RC_TIP' ]"
 assert_true "reconstruct base = main"               "[ \"\$(rcf BASE)\" = main ]"
 assert_true "reconstruct done: trailers ordered+deduped" "[ \"\$(rcf DONE)\" = 'pkt-a,pkt-b' ]"
+# T7 (ADR 0024): DONE is informational only — nothing in run-state is populated
+# from it automatically; a human rebuilding a lost run-state reads it for the
+# identities.
+assert_true "reconstruct's note states DONE is informational only" \
+  "rc | grep -qi 'informational only'"
 git -C "$REPO" switch -q main
 assert_true "reconstruct escalates off an orch branch" "[ \"\$(rcf RECONSTRUCT)\" = escalate ]"
 assert_true "reconstruct lists orch candidates"        "rc | grep -q '$BRANCH'"
@@ -534,8 +539,8 @@ FD="$(mktemp -d)/.agents"; mkdir -p "$FD"
 printf 'status: running\npending_questions:\n  - id: q-001\n    severity: blocking\nfindings:\nnote: green\n' \
   > "$FD/run-state.yaml"
 assert_true "add-finding reports success" \
-  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'runner wedges on a per-session flag' | grep -q '^ADDED=yes'"
-assert_true "add-finding creates the body file" \
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'runner wedges on a per-session flag' --packets pkt-a --body | grep -q '^ADDED=yes'"
+assert_true "add-finding creates the body file (--body)" \
   "[ -s \"$FD/findings/f-001.md\" ]"
 assert_true "the SUMMARY lands in run-state (single-quoted)" \
   "grep -q \"summary: 'runner wedges on a per-session flag'\" \"$FD/run-state.yaml\""
@@ -550,17 +555,17 @@ assert_true "entry lands inside findings, not pending_questions" \
 assert_true "keys after findings survive" \
   "grep -q '^note: green' \"$FD/run-state.yaml\""
 assert_true "second finding coexists with the first" \
-  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-002 'rounding differs' >/dev/null && [ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 2 ]"
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-002 'rounding differs' --packets pkt-b >/dev/null && [ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 2 ]"
 assert_true "duplicate id is refused, not duplicated" \
-  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'other text' | grep -q 'duplicate-id'"
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-001 'other text' --packets pkt-a | grep -q 'duplicate-id'"
 assert_true "duplicate refusal leaves ONE index entry" \
   "[ \"\$(grep -c '\- id: f-001' \"$FD/run-state.yaml\")\" = 1 ]"
 # an id becomes a filename — reject path traversal and separators outright
 assert_true "a traversing id is rejected" \
-  "! \"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" '../escape' 'x' 2>/dev/null"
+  "! \"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" '../escape' 'x' --packets pkt-a 2>/dev/null"
 # a newline in the summary would inject a sibling YAML key
 assert_true "a multi-line summary cannot inject a key" \
-  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-003 \"\$(printf 'one\\nstatus: hacked')\" >/dev/null && [ \"\$(grep -c '^status:' \"$FD/run-state.yaml\")\" = 1 ]"
+  "\"\$RUNSTATE\" add-finding \"$FD/run-state.yaml\" f-003 \"\$(printf 'one\\nstatus: hacked')\" --packets pkt-c >/dev/null && [ \"\$(grep -c '^status:' \"$FD/run-state.yaml\")\" = 1 ]"
 # the READ side must return the index only, never body content
 assert_true "findings returns one line per finding" \
   "[ \"\$(\"\$RUNSTATE\" findings \"$FD/run-state.yaml\" | wc -l | tr -d ' ')\" = 3 ]"
@@ -592,7 +597,7 @@ for case_name in colon hash quote backslash dashlead brace; do
   esac
   printf 'schema: 3\nfindings:\nstatus: running\n' > "$FY/rs-$case_name.yaml"
   assert_true "hostile summary ($case_name) keeps run-state parseable" \
-    "\"\$RUNSTATE\" add-finding \"$FY/rs-$case_name.yaml\" f-1 \"\$s\" >/dev/null && yamlok \"$FY/rs-$case_name.yaml\""
+    "\"\$RUNSTATE\" add-finding \"$FY/rs-$case_name.yaml\" f-1 \"\$s\" --packets pkt-1 >/dev/null && yamlok \"$FY/rs-$case_name.yaml\""
   assert_true "hostile summary ($case_name) round-trips through findings" \
     "[ \"\$(\"\$RUNSTATE\" findings \"$FY/rs-$case_name.yaml\" | cut -f2)\" = \"\$s\" ]"
   assert_true "hostile summary ($case_name) injects no sibling key" \
@@ -604,12 +609,132 @@ done
 # about is the natural name, so this silently refused real findings.
 printf 'schema: 3\npackets:\n  - id: feature-001-scope\n    status: green\nfindings:\n' > "$FY/pk.yaml"
 assert_true "a finding may share a name with a packet" \
-  "\"\$RUNSTATE\" add-finding \"$FY/pk.yaml\" feature-001-scope 'gotcha about that packet' | grep -q '^ADDED=yes'"
+  "\"\$RUNSTATE\" add-finding \"$FY/pk.yaml\" feature-001-scope 'gotcha about that packet' --packets pkt-a | grep -q '^ADDED=yes'"
 # `.` is a legal id character AND a regex metachar: an unanchored regex match made
 # `f.001` collide with `f-001`.
 printf 'schema: 3\nfindings:\n' > "$FY/rx.yaml"
 assert_true "a dot in an id does not match a dash" \
-  "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two | grep -q '^ADDED=yes'"
+  "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one --packets pkt-a >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two --packets pkt-a | grep -q '^ADDED=yes'"
+
+echo
+echo "== findings: packet-scoped and opt-in bodies (ADR 0024, T3/T4) =="
+FS="$(mktemp -d)/.agents"; mkdir -p "$FS"
+printf 'status: running\nfindings:\nnote: green\n' > "$FS/run-state.yaml"
+assert_true "add-finding with no --packets fails" \
+  "! \"\$RUNSTATE\" add-finding \"$FS/run-state.yaml\" fx-1 'no packets given' 2>/dev/null"
+assert_true "the --packets refusal writes NO index entry" \
+  "\"\$RUNSTATE\" add-finding \"$FS/run-state.yaml\" fx-1 'no packets given' >/dev/null 2>&1; ! grep -q 'id: fx-1' \"$FS/run-state.yaml\""
+assert_true "the --packets refusal writes NO body file" \
+  "[ ! -f \"$FS/findings/fx-1.md\" ]"
+REFUSAL="$("$RUNSTATE" add-finding "$FS/run-state.yaml" fx-1 'no packets given' 2>&1 >/dev/null)"
+assert_true "the refusal names CLAUDE.md (durable-fact home)" \
+  "printf '%s' \"\$REFUSAL\" | grep -q 'CLAUDE.md'"
+assert_true "the refusal names pending_questions: (human-question home)" \
+  "printf '%s' \"\$REFUSAL\" | grep -q 'pending_questions:'"
+assert_true "the refusal names note: (where-session-stopped home)" \
+  "printf '%s' \"\$REFUSAL\" | grep -q 'note:'"
+assert_true "the refusal names the backlog (build/fix home)" \
+  "printf '%s' \"\$REFUSAL\" | grep -q 'backlog'"
+"$RUNSTATE" add-finding "$FS/run-state.yaml" f-001 'dup body irrelevant' --packets pkt-a --body >/dev/null
+DUP_ERR="$("$RUNSTATE" add-finding "$FS/run-state.yaml" f-001 'no packets, duplicate id' 2>&1 >/dev/null)"
+assert_true "--packets refusal (not duplicate-id) fires when both apply" \
+  "printf '%s' \"\$DUP_ERR\" | grep -q 'pending_questions:' && ! printf '%s' \"\$DUP_ERR\" | grep -q duplicate-id"
+assert_true "the duplicate id is still unchanged after the refusal" \
+  "[ \"\$(grep -c 'id: f-001' \"$FS/run-state.yaml\")\" = 1 ]"
+assert_true "--packets ids land as a YAML flow sequence" \
+  "grep -q '^    packets: \[pkt-a\]$' \"$FS/run-state.yaml\""
+assert_true "a bad packet-id charset is rejected" \
+  "! \"\$RUNSTATE\" add-finding \"$FS/run-state.yaml\" f-bad 'x' --packets 'pkt a/b' 2>/dev/null"
+assert_true "--packets normalises and de-duplicates" \
+  "\"\$RUNSTATE\" add-finding \"$FS/run-state.yaml\" f-norm 'x' --packets 'a, b , a' >/dev/null && grep -q '^    packets: \[a, b\]$' \"$FS/run-state.yaml\""
+
+assert_true "without --body no body file exists" \
+  "[ ! -f \"$FS/findings/f-norm.md\" ]"
+assert_true "without --body the entry has no file: line" \
+  "awk '/- id: f-norm/{f=1;next} /- id:/{f=0} f && /file:/{bad=1} END{exit bad}' \"$FS/run-state.yaml\""
+assert_true "with --body the body exists and file: resolves to it" \
+  "[ -s \"\$(dirname \"$FS\")/\$(grep -m1 'file:' \"$FS/run-state.yaml\" | sed 's/.*file: //')\" ]"
+assert_true "findings prints an entry with no body without mangling the row" \
+  "\"\$RUNSTATE\" findings \"$FS/run-state.yaml\" | awk -F'\t' '\$1==\"f-norm\" && NF==4 {ok=1} END{exit !ok}'"
+
+echo
+echo "== drop-finding: both-or-neither, atomic (ADR 0024, T5) =="
+FDR="$(mktemp -d)/.agents"; mkdir -p "$FDR"
+printf 'status: running\nfindings:\nnote: keep-me\n' > "$FDR/run-state.yaml"
+"$RUNSTATE" add-finding "$FDR/run-state.yaml" keep-1 'a surviving entry' --packets pkt-a --body >/dev/null
+"$RUNSTATE" add-finding "$FDR/run-state.yaml" drop-1 'an entry to drop' --packets pkt-b --body >/dev/null
+BEFORE_DROP="$(cat "$FDR/run-state.yaml")"
+assert_true "drop-finding of an unknown id removes nothing" \
+  "\"\$RUNSTATE\" drop-finding \"$FDR/run-state.yaml\" no-such-id | grep -q '^REASON=not-found'"
+assert_true "unknown-id drop leaves the file byte-identical" \
+  "[ \"\$(cat \"$FDR/run-state.yaml\")\" = \"\$BEFORE_DROP\" ]"
+assert_true "drop-finding removes the index entry" \
+  "\"\$RUNSTATE\" drop-finding \"$FDR/run-state.yaml\" drop-1 | grep -q '^DROPPED=yes' && ! grep -q 'id: drop-1' \"$FDR/run-state.yaml\""
+assert_true "drop-finding removes the body" \
+  "[ ! -f \"$FDR/findings/drop-1.md\" ]"
+assert_true "drop-finding reports BODY=removed" \
+  "\"\$RUNSTATE\" add-finding \"$FDR/run-state.yaml\" drop-2 'x' --packets pkt-c --body >/dev/null && \"\$RUNSTATE\" drop-finding \"$FDR/run-state.yaml\" drop-2 | grep -q '^BODY=removed'"
+assert_true "drop of an entry with no body succeeds and leaves no stray file" \
+  "\"\$RUNSTATE\" add-finding \"$FDR/run-state.yaml\" drop-3 'x' --packets pkt-d >/dev/null && \"\$RUNSTATE\" drop-finding \"$FDR/run-state.yaml\" drop-3 | grep -q '^BODY=none' && [ ! -f \"$FDR/findings/drop-3.md\" ]"
+assert_true "surrounding entries survive a drop" \
+  "grep -q 'id: keep-1' \"$FDR/run-state.yaml\""
+assert_true "keys before/after the findings block survive a drop" \
+  "grep -q '^status: running' \"$FDR/run-state.yaml\" && grep -q '^note: keep-me' \"$FDR/run-state.yaml\""
+assert_true "yamlok after a drop" \
+  "yamlok \"$FDR/run-state.yaml\""
+
+# forced failure: chmod the run-state's OWN directory (not findings/) unwritable so
+# building the run-state temp file fails; the body must already be safely set aside
+# in findings/ (its OWN directory) before that point, so it comes back intact.
+FDF="$(mktemp -d)/.agents"; mkdir -p "$FDF"
+printf 'status: running\nfindings:\nnote: forced-failure\n' > "$FDF/run-state.yaml"
+"$RUNSTATE" add-finding "$FDF/run-state.yaml" force-1 'has a body' --packets pkt-f --body >/dev/null
+FDF_BEFORE="$(cat "$FDF/run-state.yaml")"
+chmod 500 "$FDF"
+assert_true "a forced failure mid-drop is refused (nonzero)" \
+  "! \"\$RUNSTATE\" drop-finding \"$FDF/run-state.yaml\" force-1 2>/dev/null"
+chmod 700 "$FDF"
+assert_true "forced failure: the body is restored" \
+  "[ -s \"$FDF/findings/force-1.md\" ]"
+assert_true "forced failure: the index entry survives" \
+  "grep -q 'id: force-1' \"$FDF/run-state.yaml\""
+assert_true "forced failure: run-state is unchanged" \
+  "[ \"\$(cat \"$FDF/run-state.yaml\")\" = \"\$FDF_BEFORE\" ]"
+assert_true "forced failure: no leftover temp file in the run-state dir" \
+  "! ls \"$FDF\"/.run-state.* >/dev/null 2>&1"
+assert_true "forced failure: no leftover aside file in findings/" \
+  "! ls \"$FDF/findings\"/.*.aside.* >/dev/null 2>&1"
+
+echo
+echo "== findings --stale: SUPPLIED finished set only (ADR 0024, T6) =="
+FSS="$(mktemp -d)/.agents"; mkdir -p "$FSS"
+printf 'status: running\nbacklog:\n  cursor: pkt-cur\n  pending:\n    - pkt-cur\n    - pkt-pend\nfindings:\nnote: x\n' \
+  > "$FSS/run-state.yaml"
+"$RUNSTATE" add-finding "$FSS/run-state.yaml" s-both 'both packets finish' --packets pkt-done1,pkt-done2 >/dev/null
+"$RUNSTATE" add-finding "$FSS/run-state.yaml" s-mixed 'one finished, one pending' --packets pkt-done1,pkt-pend >/dev/null
+"$RUNSTATE" add-finding "$FSS/run-state.yaml" s-unknown 'one finished, one unheard-of' --packets pkt-done1,pkt-ghost >/dev/null
+# THE PINNED SAFETY PROPERTY: with no --finished, NOTHING is stale, even though
+# pkt-done1/pkt-done2 are genuinely finished elsewhere — a caller that forgets to
+# wire --finished must expire nothing, never guess from git/gspec/backlog.done.
+assert_true "no --finished => STALE_COUNT=0 even when packets are genuinely done" \
+  "\"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale | grep -q '^STALE_COUNT=0'"
+assert_true "no --finished => every entry reads STALE=no" \
+  "! \"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale | grep -q 'STALE=yes'"
+STALE_ALL="$("$RUNSTATE" findings "$FSS/run-state.yaml" --stale --finished pkt-done1,pkt-done2)"
+assert_true "a finished set covering all of an entry's packets => STALE=yes" \
+  "printf '%s\n' \"\$STALE_ALL\" | grep -q '^FINDING=s-both STALE=yes packets=pkt-done1,pkt-done2$'"
+assert_true "one finished + one pending packet => STALE=no, blocked_by the pending one" \
+  "printf '%s\n' \"\$STALE_ALL\" | grep -q '^FINDING=s-mixed STALE=no blocked_by=pkt-pend:pending packets=pkt-done1,pkt-pend$'"
+assert_true "a packet neither finished nor pending reads unknown and blocks expiry" \
+  "printf '%s\n' \"\$STALE_ALL\" | grep -q '^FINDING=s-unknown STALE=no blocked_by=pkt-ghost:unknown packets=pkt-done1,pkt-ghost$'"
+assert_true "STALE_COUNT counts only the fully-finished entry" \
+  "printf '%s\n' \"\$STALE_ALL\" | grep -q '^STALE_COUNT=1$'"
+assert_true "OVER_THRESHOLD=no comfortably under the default budget" \
+  "\"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale | grep -q '^OVER_THRESHOLD=no$'"
+assert_true "OVER_THRESHOLD flips at a tiny --max-bytes" \
+  "\"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale --max-bytes 10 | grep -q '^OVER_THRESHOLD=yes$'"
+assert_true "ORCH_FINDINGS_INDEX_MAX_BYTES is honoured" \
+  "ORCH_FINDINGS_INDEX_MAX_BYTES=10 \"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale | grep -q '^OVER_THRESHOLD=yes$'"
 
 # --- trim-note must survive EVERY note encoding -------------------------------
 # The cut is a byte cut, so the encoding decides whether it is safe: a quoted scalar
@@ -640,7 +765,92 @@ assert_true "template placeholder is not a real finding" \
   "cp \"\${HERE}/../templates/run-state.yaml\" \"$FD/t.yaml\" && [ -z \"\$(\"\$RUNSTATE\" findings \"$FD/t.yaml\")\" ]"
 # an older run-state with no findings key must gain one rather than fail
 assert_true "a run-state without a findings key gains one" \
-  "printf 'status: running\\n' > \"$FD/old.yaml\" && \"\$RUNSTATE\" add-finding \"$FD/old.yaml\" f-9 'x' | grep -q '^ADDED=yes' && grep -q '^findings:' \"$FD/old.yaml\""
+  "printf 'status: running\\n' > \"$FD/old.yaml\" && \"\$RUNSTATE\" add-finding \"$FD/old.yaml\" f-9 'x' --packets pkt-a | grep -q '^ADDED=yes' && grep -q '^findings:' \"$FD/old.yaml\""
+
+echo
+echo "== sweep hardening: legacy shapes + a real YAML parse after every mutation (T20) =="
+# The legacy fixture pins the PRE-ADR-0025 backlog shape (a done: list alongside
+# cursor/pending) and the PRE-ADR-0024 findings shape (no packets:, no file:) side
+# by side with a new-shape entry, so every mutating subcommand is proven against
+# the shape a real, older repo actually carries — not just a freshly-written one.
+legacy_fixture() {
+  cat <<'LEGACY'
+schema: 3
+status: running
+branch: orch/legacy
+last_green_commit: deadbeef
+backlog:
+  cursor: pkt-b
+  done:
+    - pkt-a
+  pending:
+    - pkt-b
+    - pkt-c
+findings:
+  - id: old-1
+    summary: 'old-shape entry one'
+    file: .agents/findings/old-1.md
+  - id: old-2
+    summary: 'old-shape entry two'
+  - id: new-1
+    summary: 'new-shape entry'
+    packets: [pkt-a, pkt-b]
+pending_questions:
+  - id: q-1
+    severity: blocking
+    question: something?
+note: legacy fixture note
+LEGACY
+}
+LEGACY_DIR="$(mktemp -d)/.agents"; mkdir -p "$LEGACY_DIR"
+legacy_fixture > "$LEGACY_DIR/run-state.yaml"
+assert_true "legacy fixture (done: + packet-less findings) is valid YAML itself" \
+  "yamlok \"$LEGACY_DIR/run-state.yaml\""
+
+# A real parse after EVERY mutating subcommand, each against its OWN fresh copy of
+# the legacy fixture. record-outcome/request-pause/clear-pause/pause-status do NOT
+# mutate run-state (record-outcome writes a separate outcomes/ log; the pause
+# sentinel is its own file) so they are not exercised here.
+for mut in set touch write trim-note add-finding drop-finding claim-driver heartbeat; do
+  LC="$(mktemp -d)/.agents"; mkdir -p "$LC"
+  legacy_fixture > "$LC/run-state.yaml"
+  case "$mut" in
+    set)          mut_cmd="\"\$RUNSTATE\" set \"$LC/run-state.yaml\" note updated" ;;
+    touch)        mut_cmd="\"\$RUNSTATE\" touch \"$LC/run-state.yaml\"" ;;
+    write)        mut_cmd="legacy_fixture | \"\$RUNSTATE\" write \"$LC/run-state.yaml\"" ;;
+    trim-note)    mut_cmd="\"\$RUNSTATE\" trim-note \"$LC/run-state.yaml\" 5" ;;
+    add-finding)  mut_cmd="\"\$RUNSTATE\" add-finding \"$LC/run-state.yaml\" new-2 'legacy add' --packets pkt-z" ;;
+    drop-finding) mut_cmd="\"\$RUNSTATE\" drop-finding \"$LC/run-state.yaml\" old-1" ;;
+    claim-driver) mut_cmd="\"\$RUNSTATE\" claim-driver \"$LC/run-state.yaml\"" ;;
+    heartbeat)    mut_cmd="\"\$RUNSTATE\" heartbeat \"$LC/run-state.yaml\"" ;;
+  esac
+  assert_true "'$mut' on the legacy fixture succeeds and stays valid YAML" \
+    "$mut_cmd >/dev/null && yamlok \"$LC/run-state.yaml\""
+done
+
+# A done:-free write (the ADR 0025 shape) must parse and carry no done: key at all.
+WD="$(mktemp -d)/.agents"; mkdir -p "$WD"
+printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: pkt-z\n  pending:\n    - pkt-z\n    - pkt-y\n' \
+  | "$RUNSTATE" write "$WD/run-state.yaml"
+assert_true "a done:-free write parses" \
+  "yamlok \"$WD/run-state.yaml\""
+assert_true "a done:-free write: cursor round-trips" \
+  "[ \"\$(rs_cursor \"$WD/run-state.yaml\")\" = pkt-z ]"
+assert_true "a done:-free write carries no done: key" \
+  "! grep -qE '^[[:space:]]*done:' \"$WD/run-state.yaml\""
+
+# The legacy fixture's packet-less findings must NEVER read STALE=yes, no matter
+# how complete the supplied finished set is — only the new-shape entry (which
+# names packets) can ever expire.
+SD="$(mktemp -d)/.agents"; mkdir -p "$SD"
+legacy_fixture > "$SD/run-state.yaml"
+STALE_LEGACY="$("$RUNSTATE" findings "$SD/run-state.yaml" --stale --finished pkt-a,pkt-b,pkt-c)"
+assert_true "legacy packet-less entry old-1 reads STALE=no, blocked_by=<none>:unknown" \
+  "printf '%s\n' \"\$STALE_LEGACY\" | grep -q '^FINDING=old-1 STALE=no blocked_by=<none>:unknown packets=\$'"
+assert_true "legacy packet-less entry old-2 reads STALE=no, blocked_by=<none>:unknown" \
+  "printf '%s\n' \"\$STALE_LEGACY\" | grep -q '^FINDING=old-2 STALE=no blocked_by=<none>:unknown packets=\$'"
+assert_true "only the new-shape entry counts toward STALE_COUNT" \
+  "printf '%s\n' \"\$STALE_LEGACY\" | grep -q '^STALE_COUNT=1\$'"
 
 echo
 echo "-----------------------------------------"

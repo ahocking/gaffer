@@ -55,13 +55,13 @@ sequences T11 and T13 already rewrite.
 - [x] **T7** **P1** Give `reconstruct`'s `DONE=` note the clause that no run-state field is populated from it, with a `test-runstate.sh` assertion on the new clause
   - deps: —
   - covers: `reconstruct` keeps `DONE=`, and nothing is populated from it
-- [ ] **T8** [P] **P0** Remove `done:` from the `backlog` block in `templates/run-state.yaml`, leaving `cursor` and `pending` only
+- [x] **T8** [P] **P0** Remove `done:` from the `backlog` block in `templates/run-state.yaml`, leaving `cursor` and `pending` only
   - deps: —
   - covers: `backlog.done` is deleted, with no counter, tail, or replacement
-- [ ] **T9** **P0** Document in `templates/run-state.yaml` that `packets:` is required on write, bodies are opt-in, and schema stays 3 with a legacy `done:` ignored
+- [x] **T9** **P0** Document in `templates/run-state.yaml` that `packets:` is required on write, bodies are opt-in, and schema stays 3 with a legacy `done:` ignored
   - deps: T8
   - covers: Neither change bumps the run-state schema, and there is no flag day
-- [ ] **T10** [P] **P0** Add the one-line stale-findings field to `templates/check-in.md`, emitted only when the index exceeds the threshold, and require packet ids on the `Findings:` line so the scheduler can record a lane's finding under the new `--packets` rule
+- [x] **T10** [P] **P0** Add the one-line stale-findings field to `templates/check-in.md`, emitted only when the index exceeds the threshold, and require packet ids on the `Findings:` line so the scheduler can record a lane's finding under the new `--packets` rule
   - deps: T6
   - covers: A resolved finding is captured before it is dropped, by the session that resolved it
 - [ ] **T11** **P0** Rewrite `run-loop` §3.3 packet close to drop the `done` append, flip the checkbox of a gspec-sourced packet in the packet commit (skipped, not failed, when the backlog is not gspec), then — after the run-state write, for the same reason `add-finding` is — apply the capture-then-drop test to that packet's findings, where filing a backlog task is the capture and a spent sign-off is not, dropping only the spent ones and passing packet ids to the `add-finding` site in that block
@@ -79,7 +79,7 @@ sequences T11 and T13 already rewrite.
 - [ ] **T15** [P] **P0** Remove the two `backlog.done` sites from `skills/pause/SKILL.md`, including the run-state heredoc
   - deps: —
   - covers: `backlog.done` is deleted, with no counter, tail, or replacement
-- [ ] **T16** [P] **P0** State in `templates/report-conventions.md` and both loop shapes that ✅ counts what this session landed, with the whole-backlog rule restated as forward-only
+- [x] **T16** [P] **P0** State in `templates/report-conventions.md` and both loop shapes that ✅ counts what this session landed, with the whole-backlog rule restated as forward-only
   - deps: —
   - covers: The tally's ✅ bucket is this session, everywhere
 - [x] **T17** **P0** Add `backlog-done` detection to `scripts/migrate.sh` reporting unchecked tasks via the existing `$ADAPTER` before `apply` drops the block and `verify` asserts it gone, with `test-migrate.sh` cases

@@ -20,6 +20,9 @@
 # ONE block that matches `mode`, and delete the other block + these comments.
 
 schema: 3
+# Stays 3 for both of ADR 0025 and ADR 0024's changes: they constrain what is
+# WRITTEN, and a file predating them still parses. There is no flag day — new
+# writes obey the new rules, `/gaffer:migrate` drains what predates them.
 
 # Lifecycle status — the PRIMARY crash-vs-clean signal a resuming session reads.
 #   running  the loop is mid-flight. Seeing this at the start of a FRESH session
@@ -62,11 +65,16 @@ branch: orch/<task-id>
 # single clean orphan whose trailer matches the cursor. See ADR 0005.
 last_green_commit: <full-sha>
 
-# Where we are in the backlog of task packets.
+# Where we are in the backlog of task packets. There is no `done:` list here (ADR
+# 0025) — it duplicated the gspec task checkbox and the `[orch packet:<id>]` commit
+# trailer, reproduced in full from memory on every write, with no reader. Nothing
+# replaces it: no `landed:` counter, no bounded tail of recent ids. A resume
+# reconstructs the same information as "`pending` = the committed backlog minus what
+# the checkbox/trailers show finished, in order" — the same computation, no stored
+# copy. `pending` is NOT the next field this reasoning removes: it carries the
+# *chosen* order, a real decision, not state derivable from git or gspec.
 backlog:
   cursor: <feature-001-scope>          # next packet to pick up; null when done
-  done:                                # packets completed AND committed green
-    - <feature-000-scope>
   pending:                             # packets not yet started, in order
     - <feature-001-scope>
     - <feature-002-scope>
@@ -145,8 +153,14 @@ pending_questions:
 # unschema'd `resolved_questions:` list to 21,664 chars because there was nowhere else
 # to put them; record the decision and its rationale as a finding and link it.
 #
-# Write with `runstate.sh add-finding <file> <id> <summary>` — it appends here and
-# creates the body stub, so nobody hand-edits YAML lists.
+# Write with `runstate.sh add-finding <file> <id> <summary> --packets <id[,id...]>
+# [--body]` — it appends here so nobody hand-edits YAML lists. `--packets` is
+# REQUIRED (ADR 0024): there is no run-wide finding and no `--run-wide` escape
+# hatch, because an entry that can never expire is the thing being removed —
+# `add-finding`'s own refusal names the four homes that are not a finding.
+# `--body` creates the body file — it is OPT-IN, the three-heading stub is no
+# longer written by default, and `file:` appears in the entry only when `--body`
+# was passed; most findings are fully carried by their summary.
 #
 # `summary` is a SINGLE-QUOTED scalar, always, and `add-finding` emits it that way.
 # A finding about code very often contains `: `, which a plain (unquoted) YAML scalar
@@ -157,8 +171,8 @@ pending_questions:
 findings:
   - id: <f-001>
     summary: '<ONE line: what was found, specific enough to decide on without opening it>'
-    file: .agents/findings/<f-001>.md
-    packets: [<feature-002-scope>]     # optional: who this is for; omit if run-wide
+    packets: [<feature-002-scope>]     # REQUIRED; add-finding refuses without it
+    file: .agents/findings/<f-001>.md  # present only when --body was passed
 
 # Optional freeform note the resuming session should read first.
 #

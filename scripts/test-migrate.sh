@@ -180,6 +180,10 @@ has 'finds the in-gspec roadmap'       'FINDING=roadmap' "$out"
 has 'finds stale allowed_paths'        'FINDING=overrides' "$out"
 has 'finds the stale CLAUDE.md'        'FINDING=claudemd' "$out"
 has 'finds the pause-sentinel gap'     'FINDING=gitignore' "$out"
+# The write backup (runstate.sh write's last-known-good copy) must be ignored too, or
+# it lands as `?? .agents/` and reconcile discards it as scratch on the green
+# checkpoint — the backup destroyed by the recovery path it exists to serve.
+has 'finds the write-backup ignore gap' 'FINDING=writebackup-ignore' "$out"
 [ "$rc" = 2 ] && ok 'detect exits 2 when migration is needed' || bad 'detect exit 2' "rc=$rc"
 
 printf '\n== detect: a current repo is left alone ==\n'
@@ -187,7 +191,7 @@ R="$TMP/current"; mkdir -p "$R/gspec/tasks" "$R/gspec/features" "$R/.agents"
 printf -- '---\nspec-version: v1\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a.md"
 printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
-printf '.agents/pause\n' > "$R/.gitignore"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
 has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"

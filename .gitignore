@@ -36,6 +36,16 @@ scratch/
 .agents/findings/
 .agents/run-state-note-archive.md
 
+# The last-known-good copy `write` takes before replacing run-state. It exists
+# because run-state is gitignored: a botched upstream transform in a pipe used to
+# destroy it permanently, with no `git restore` to fall back on. Recovery beats
+# detection here — classifying every valid and invalid document correctly, forever,
+# is not a thing we can do, but keeping the previous copy needs no classification.
+# It MUST be ignored for the reason the block above spells out: an untracked file is
+# swept by the pause path's stash and discarded by reconcile as scratch, so an
+# unignored backup would be destroyed by the very recovery path it serves.
+.agents/run-state-prev.yaml
+
 # Orchestration run-metrics — the event spine + assembled run packets (ADR 0019
 # Tier 1). Local run bookkeeping, NOT product history; gitignored for the same
 # ADR 0009 reasons as run-state (the loop's `git add -A` / `git stash -u` must

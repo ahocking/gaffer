@@ -535,6 +535,21 @@ _findings() {
     n=$((n+1))
   fi
 
+  # 6b. Missing run-state-prev ignore. `runstate.sh write` now keeps a last-known-good
+  # copy beside run-state before replacing it, so a repo whose .gitignore predates that
+  # gets `?? .agents/` on the first write — which reconcile reads as scratch on the green
+  # checkpoint and DISCARDS, and the pause path's `git stash -u` sweeps. That destroys
+  # the backup via the exact recovery path it exists to serve, and dirties every run
+  # until the line is added. Reported, not auto-fixed: `apply` never edits a consumer's
+  # .gitignore (same rule as the pause finding above).
+  if [ -f "$root/.gitignore" ] && ! grep -q 'run-state-prev' "$root/.gitignore" 2>/dev/null; then
+    # Token is deliberately NOT `gitignore-prev`: `has`/`grep` matching is substring-
+    # based, so that name would also satisfy an assertion looking for `FINDING=gitignore`
+    # and the pause finding could pass on this one alone.
+    printf 'FINDING=writebackup-ignore\t.gitignore does not ignore .agents/run-state-prev.yaml\tthe write backup would dirty the tree every run, and reconcile would discard it as scratch -- add the line by hand\n'
+    n=$((n+1))
+  fi
+
   # 7. CLAUDE.md missing the report conventions — why reports come out as free prose.
   if [ -f "$root/CLAUDE.md" ] && ! grep -q 'gaffer:report-conventions' "$root/CLAUDE.md" 2>/dev/null; then
     printf 'FINDING=report-conventions\tCLAUDE.md does not carry the report conventions\twithout them every turn outside a gaffer skill reports in free prose; the skills read the full contract, but nothing else does\n'

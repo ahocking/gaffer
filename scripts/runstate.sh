@@ -20,7 +20,19 @@
 #   cursor   <file>                  print backlog.cursor (nested).
 #   set      <file> <key> <value>    atomically set/insert a flat top-level key.
 #   touch    <file>                  atomically stamp updated_at = now (UTC).
-#   write    <file>                  atomically write full contents from stdin.
+#   write    <file>                  atomically write full contents from stdin,
+#                                    refusing structurally invalid input (empty,
+#                                    whitespace-only, no `schema:` key, or a
+#                                    malformed column-0 line) with the target
+#                                    left byte-untouched. STRUCTURAL, not a
+#                                    parse: catches truncation and gross
+#                                    malformation, not a well-formed-but-wrong
+#                                    document (runstate-write-integrity cap. 2).
+#                                    Before REPLACING an existing file, copies
+#                                    it to a sibling run-state-prev.yaml (last
+#                                    known good) -- the recovery path for a
+#                                    structurally-perfect-but-truncated write
+#                                    the checks above cannot catch.
 #   add-finding <file> <id> <summary> --packets <id[,id...]> [--body]
 #                                    record a PACKET-SCOPED finding (ADR 0024): a
 #                                    constraint on a packet that has not executed
@@ -202,14 +214,104 @@ cmd_cursor() {
   printf '%s\n' "$(_yaml_decode_value "$raw")"
 }
 
+# --- structural validation for `write` (runstate-write-integrity capability 2,
+# --- defect 2) ----------------------------------------------------------------
+# `write` used to be `cat > "$tmp"` followed by `mv -f`, replacing the file with
+# WHATEVER reached stdin and validating nothing. A failed transform upstream in
+# the pipe silently truncated run-state to a stub; it fired live when an `awk`
+# aborted on a missing `strftime` and left a 26-byte file over a working
+# run-state -- gitignored, so there was no `git restore`, only manual
+# reconstruction.
+#
+# THE BOUND, STATED HONESTLY (do not let this comment or the refusal message
+# below overclaim): this is a STRUCTURAL check, not a parse. It catches
+# TRUNCATION and GROSS MALFORMATION -- the two failure modes that have fired
+# live -- nothing more. A document that is well-formed but WRONG (a stale
+# `cursor`, a `: `-injected sibling key that is itself valid YAML) passes this
+# check by design and is out of this feature's reach. Overclaiming here would
+# be the exact defect this feature exists to remove, one file over (defect 3:
+# a check that looks like it is running and is not).
+#
+# POSIX shell only -- grep/sed, no jq/python3/yq, nothing gated on
+# `command -v`. runstate.sh stays at the same dependency tier as
+# hooks/guard.sh: a check that disables itself when a tool is missing is
+# defect 3 in a different file.
+#
+# Checks the INPUT, never the TARGET -- `write` is how a run-state comes into
+# existence, so a first write to a path that does not yet exist must still
+# succeed; validating the target would break bootstrap.
+#
+# Refused:
+#   - empty input
+#   - whitespace-only input
+#   - input carrying no `schema:` key at column 0
+#   - any column-0 line that is not a well-formed `key:` line, a comment
+#     (`#...`), or a document marker (`---`/`...`) -- blank/whitespace-only
+#     lines and every INDENTED (nested) line are untouched by this check, only
+#     column 0 is structural in this format
+#
+# Prints the name of the failed check on stdout and returns 1; prints nothing
+# and returns 0 when the input passes.
+_write_check() {
+  local tmp="$1" bad
+  [ -s "$tmp" ] || { printf 'empty input'; return 1; }
+  grep -qE '[^[:space:]]' "$tmp" || { printf 'whitespace-only input'; return 1; }
+  grep -qE '^schema:' "$tmp" || { printf 'no schema: key'; return 1; }
+  # Column-0 candidates (no leading whitespace -- blank/indented lines never
+  # reach this filter) that are NOT a comment, a document marker, or a
+  # `key:`-shaped line. `|| true` keeps a clean file (no bad lines -> grep -v
+  # finds nothing -> exit 1) from tripping `set -e`/pipefail here.
+  bad="$(grep -nE '^[^[:space:]]' "$tmp" \
+    | grep -vE '^[0-9]+:(#.*|---[[:space:]]*|\.\.\.[[:space:]]*|[A-Za-z_][A-Za-z0-9_-]*:.*)$' \
+    | head -1 || true)"
+  if [ -n "$bad" ]; then
+    printf 'malformed line at %s' "${bad%%:*}"
+    return 1
+  fi
+  return 0
+}
+
 # --- atomic write of the whole file from stdin -------------------------------
+# LAST-KNOWN-GOOD COPY (runstate-write-integrity capability 2, added once the
+# structural checks above were shown NOT to close the incident they exist for):
+# a transform that dies BETWEEN lines -- not mid-line -- yields a structurally
+# PERFECT document, and `schema: 3\nstatus: running\n` is exactly the 26 bytes
+# the live incident's stub left. `_write_check` cannot catch that without
+# correctly classifying every valid and invalid document forever; a copy needs
+# no classification. A shrinkage guard was designed and rejected for the same
+# reason from the other direction: `/gaffer:migrate` findings triage shrinks a
+# real run-state 61% (the findings index alone is 87% of the file) doing
+# legitimate, shipped work, so any threshold that catches the stub also
+# refuses that -- wrong in both directions.
+#
+# So: on REPLACE only (an existing file at $f), AFTER the input has already
+# passed `_write_check`, copy the pre-write target to a sibling
+# run-state-prev.yaml BEFORE the atomic rename. A first write (no existing
+# file) makes no copy -- `write` is how a run-state comes into existence, and
+# there is nothing prior to preserve. A refused write never reaches this line
+# at all, so both the target and any existing backup are left untouched.
+#
+# `run-state-prev.yaml` is gitignored in BOTH .gitignore files, and that is
+# load-bearing, not tidiness: an UNignored backup would be untracked scratch
+# on the pause path's `git stash --include-untracked`, and `reconcile` reads
+# untracked scratch on the green checkpoint as discardable -- so an unignored
+# backup would be destroyed by the very recovery path it exists to serve.
+# Same-machine, same reasons as run-state.yaml itself (ADR 0009).
 cmd_write() {
   local f="${1:-}"
   [ -n "$f" ] || die "usage: write <file>   (contents on stdin)"
-  local dir tmp; dir="$(dirname "$f")"
+  local dir tmp reason prev; dir="$(dirname "$f")"
   [ -d "$dir" ] || mkdir -p "$dir"
   tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
   cat > "$tmp"
+  if ! reason="$(_write_check "$tmp")"; then
+    rm -f "$tmp"
+    die "write refused: ${reason} -- structural check only (catches truncation/gross malformation, not a well-formed-but-wrong document); existing file left untouched"
+  fi
+  if [ -f "$f" ]; then
+    prev="${dir}/run-state-prev.yaml"
+    cp "$f" "$prev"
+  fi
   mv -f "$tmp" "$f"          # rename is atomic on the same filesystem
 }
 

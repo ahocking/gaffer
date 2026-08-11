@@ -47,7 +47,7 @@ model, and does it more reliably than before.
   - both rules added by the parent feature are in force at scoping time: that a packet touching a script carries its regression sweep as an acceptance criterion, and that a packet touching a session-loaded surface declares the session boundary
   - a packet that edits a script and ships with no sweep case is the observed failure this closes: `self-host-hardening-t6` edited `scripts/metrics.sh` and landed with no case in `scripts/test-metrics.sh`, which arrived only in the packet after it — under the rule that forbids exactly that
 
-- [ ] **P1**: A review finding discovered after a plan is fully complete reliably reaches the backlog
+- [x] **P1**: A review finding discovered after a plan is fully complete reliably reaches the backlog
   - the outcome is specified, not the mechanism: findings from a completed plan land as tracked work through a supported path, without editing the completed record and without routing around the control that protects it
   - the loop's own instruction is updated to name that path, so the next run does not rediscover the dead end and fall back to reporting findings in prose
   - if the chosen mechanism changes a script, the matching regression sweep covers the new behaviour

@@ -23,29 +23,72 @@ bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 has() { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "expected: $2
      got: $3";; esac; }
 hasnt() { case "$3" in *"$2"*) bad "$1" "should not contain: $2";; *) ok "$1";; esac; }
+# have_yaml -- true if a real YAML parser (python3 + PyYAML) is available. The one
+# place this probe lives; yamlok(), yaml_cursor() and the notice below all call it
+# rather than each carrying their own copy to drift out of sync.
+have_yaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
+
+# YAML_SKIP_COUNT -- how many parse-assertion helpers (below) had to loudly skip
+# for lack of a parser on this host. Surfaced in the summary line at the bottom so
+# a parser-less green-looking run cannot be mistaken for one that actually parsed.
+YAML_SKIP_COUNT=0
+
 # yamlok <file> -- true if some available parser accepts it. Same technique as
 # test-runstate.sh (ADR 0022): "it usually parses" is not a property worth having
 # for run-state, the loop's only durable state, so a mutating subcommand earns a
-# real parse assertion, not a grep.
+# real parse assertion, not a grep -- and LOUDLY skips (a counted, reported FAIL,
+# never a silent pass) when no parser is available on this host.
 yamlok() {
-  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  if have_yaml; then
     python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$1" 2>/dev/null
-  else return 0; fi   # no parser available -> do not fail the sweep on this host
+  else
+    YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+    return 1   # no parser available -> the caller's own bad() reports a real FAIL
+  fi
 }
-# yaml_cursor <file> -- the REAL parsed value of backlog.cursor, or empty if no
-# parser is available. `yamlok` only proves the file parses; the blank-line
-# corruption case (T##) parses cleanly while silently folding the following
-# orphaned list item into `cursor` as a multi-line string, so only reading the
-# resolved value back out (not grepping the source line, which is untouched
-# byte-for-byte) can catch it.
+# yaml_cursor <file> -- prints the REAL parsed value of backlog.cursor. `yamlok`
+# only proves the file parses; the blank-line corruption case (T##) parses cleanly
+# while silently folding the following orphaned list item into `cursor` as a
+# multi-line string, so only reading the resolved value back out (not grepping the
+# source line, which is untouched byte-for-byte) can catch it. Exits 2 (distinct
+# from a legitimately empty cursor) when no parser is available, so a caller can
+# tell "no parser" apart from "cursor parsed to empty" -- collapsing those two into
+# one "empty string" return was the sharper defect this helper had: a caller
+# comparing only the printed value, never the exit status, read a no-parser skip as
+# a pass. NOTE: every real caller reads this exit status through `$(yaml_cursor …)`
+# command substitution, which forks a subshell -- so YAML_SKIP_COUNT is bumped by
+# the CALLER on rc=2, not in here, or the increment would be lost with the subshell.
 yaml_cursor() {
-  command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null || return 0
+  if ! have_yaml; then
+    return 2
+  fi
   python3 -c "
 import yaml, sys
 d = yaml.safe_load(open(sys.argv[1])) or {}
 b = d.get('backlog') or {}
 sys.stdout.write(str(b.get('cursor', '')))
 " "$1" 2>/dev/null
+}
+if ! have_yaml; then
+  YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+  bad 'a YAML parser is available for the parse-assertion cases below' \
+      'no python3+PyYAML on this host — not asserting vacuously; every yamlok()/yaml_cursor() case below now correctly reports FAIL instead of silently passing'
+fi
+# yaml_cursor_is <desc> <file> <expected> -- asserts the REAL parsed backlog.cursor
+# equals <expected>. yaml_cursor's exit 2 (no parser) is reported as its own loud,
+# counted FAIL here rather than being read as agreement with <expected> -- the
+# defect this pairing exists to avoid.
+yaml_cursor_is() {
+  local desc="$1" file="$2" want="$3" got rc
+  got="$(yaml_cursor "$file")"; rc=$?
+  if [ "$rc" = 2 ]; then
+    YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+    bad "$desc" 'no python3+PyYAML on this host — not asserting vacuously'
+  elif [ "$got" = "$want" ]; then
+    ok "$desc"
+  else
+    bad "$desc" "got: $got"
+  fi
 }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -292,8 +335,9 @@ mkdir -p "$R/.agents/findings"
 # exact shape runstate.sh's own single-quoted encoding produces, ADR 0022) is
 # the fixture the post-apply YAML-parse assertion needs: _drop_backlog_done is
 # a new mutation of this file, and a mutating subcommand earns a real parse
-# assertion, not a grep (same rule test-runstate.sh applies to every one of
-# ITS mutating subcommands).
+# assertion (or a loud, counted FAIL in place of one on a parser-less host,
+# never a silent pass), not a grep (same rule test-runstate.sh applies to every
+# one of ITS mutating subcommands).
 cat > "$R/.agents/run-state.yaml" <<'EOF'
 schema: 3
 status: paused
@@ -389,10 +433,8 @@ rs="$(cat "$R/.agents/run-state.yaml")"
 has 'cursor survives untouched'  'cursor: alpha-t2' "$rs"
 has 'pending survives untouched' 'pending:'         "$rs"
 has 'and its one entry survives' '- alpha-t2'       "$rs"
-cur="$(yaml_cursor "$R/.agents/run-state.yaml")"
-[ -z "$cur" ] || [ "$cur" = "alpha-t2" ] \
-  && ok 'the PARSED cursor value is still exactly alpha-t2, not corrupted' \
-  || bad 'the parsed cursor value is still exactly alpha-t2' "got: $cur"
+yaml_cursor_is 'the PARSED cursor value is still exactly alpha-t2, not corrupted' \
+  "$R/.agents/run-state.yaml" alpha-t2
 
 printf '\n== apply: a BLANK line INSIDE the done: list must not orphan it (Important 1) ==\n'
 R="$TMP/backlogdone-blank"; mk_repo "$R" canonical
@@ -417,10 +459,15 @@ grep -q '^[[:space:]]*done:[[:space:]]*$' "$R/.agents/run-state.yaml" \
   || ok 'apply drops the done: block with a blank line inside it'
 # This is the dangerous case: yamlok alone is not enough, because the bug
 # still parses -- it silently folds the orphaned list item into `cursor` as a
-# multi-line string. Only reading the resolved value back out catches it.
-cur="$(yaml_cursor "$R/.agents/run-state.yaml")"
-if [ -z "$cur" ]; then
-  : # no python/yaml available on this host -- yamlok below is the fallback
+# multi-line string. Only reading the resolved value back out catches it, and on
+# a parser-less host that resolved value cannot be read at all -- a loud, counted
+# FAIL, not a silent skip (yamlok below is a real but weaker fallback: it only
+# proves the file parses, not that `cursor` holds the right value).
+cur="$(yaml_cursor "$R/.agents/run-state.yaml")"; cur_rc=$?
+if [ "$cur_rc" = 2 ]; then
+  YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+  bad 'the resume cursor is not silently rewritten by the blank line' \
+      'no python3+PyYAML on this host — not asserting vacuously'
 else
   [ "$cur" = "alpha-t2" ] \
     && ok 'the resume cursor is NOT silently rewritten by the blank line (Important 1)' \
@@ -514,10 +561,8 @@ grep -q '^[[:space:]]*done:[[:space:]]*$' "$R/.agents/run-state.yaml" \
 yamlok "$R/.agents/run-state.yaml" \
   && ok 'the result is REAL-parseable YAML (Defect 1)' \
   || bad 'the result is real-parseable YAML (own-indent)' "$(cat "$R/.agents/run-state.yaml")"
-cur="$(yaml_cursor "$R/.agents/run-state.yaml")"
-[ -z "$cur" ] || [ "$cur" = "alpha-t2" ] \
-  && ok 'the PARSED cursor value is exactly alpha-t2' \
-  || bad 'the parsed cursor value is alpha-t2 (own-indent)' "got: $cur"
+yaml_cursor_is 'the PARSED cursor value is exactly alpha-t2 (own-indent)' \
+  "$R/.agents/run-state.yaml" alpha-t2
 rs="$(cat "$R/.agents/run-state.yaml")"
 has 'pending survives untouched' '- alpha-t2' "$rs"
 [ "$rc" = 0 ] && ok 'apply+verify converge to exit 0' || bad 'apply+verify exit 0 (own-indent)' "rc=$rc"
@@ -677,10 +722,8 @@ grep -q '^[[:space:]]*done:[[:space:]]*$' "$R/.agents/run-state.yaml" \
 yamlok "$R/.agents/run-state.yaml" \
   && ok 'the result is REAL-parseable YAML (multi-line scalar continuation)' \
   || bad 'the result is real-parseable YAML (multi-line scalar continuation)' "$(cat "$R/.agents/run-state.yaml")"
-cur="$(yaml_cursor "$R/.agents/run-state.yaml")"
-[ -z "$cur" ] || [ "$cur" = "alpha-t2" ] \
-  && ok 'the PARSED cursor value is unchanged at alpha-t2 (multi-line scalar continuation)' \
-  || bad 'the parsed cursor value is alpha-t2 (multi-line scalar continuation)' "got: $cur"
+yaml_cursor_is 'the PARSED cursor value is unchanged at alpha-t2 (multi-line scalar continuation)' \
+  "$R/.agents/run-state.yaml" alpha-t2
 [ "$rc" = 0 ] && ok 'apply+verify converge to exit 0 (multi-line scalar continuation)' \
   || bad 'apply+verify exit 0 (multi-line scalar continuation)' "rc=$rc"
 
@@ -787,10 +830,8 @@ has 'pending survives untouched' 'pending:' "$rs"
 yamlok "$R/.agents/run-state.yaml" \
   && ok 'the result is REAL-parseable YAML (trailing comment banner)' \
   || bad 'the result is real-parseable YAML (trailing comment banner)' "$rs"
-cur="$(yaml_cursor "$R/.agents/run-state.yaml")"
-[ -z "$cur" ] || [ "$cur" = "alpha-t2" ] \
-  && ok 'the PARSED cursor value is exactly alpha-t2 (trailing comment banner)' \
-  || bad 'the parsed cursor value is alpha-t2 (trailing comment banner)' "got: $cur"
+yaml_cursor_is 'the PARSED cursor value is exactly alpha-t2 (trailing comment banner)' \
+  "$R/.agents/run-state.yaml" alpha-t2
 [ "$rc" = 0 ] && ok 'apply+verify converge to exit 0' || bad 'apply+verify exit 0 (trailing comment banner)' "rc=$rc"
 
 printf '\n== detect: an EMPTY done: key reads differently from "0 ids parsed" (round 4, Defect 7) ==\n'
@@ -931,5 +972,10 @@ has   'a packet with a REAL trailer commit still reads dead (the anchor still ma
   'ENTRY=f-real PACKETS=yes VERDICT=dead' "$out"
 
 printf '\n----------------------------------------\n'
-printf 'migrate: %d passed, %d failed\n' "$PASS" "$FAIL"
+if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
+  printf 'migrate: %d passed, %d failed   (no python3+PyYAML on this host — %d parse assertion(s) could not assert; not asserting vacuously)\n' \
+    "$PASS" "$FAIL" "$YAML_SKIP_COUNT"
+else
+  printf 'migrate: %d passed, %d failed\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ] || exit 1

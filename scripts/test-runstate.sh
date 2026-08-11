@@ -19,7 +19,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass + 1)); }
-bad() { printf 'FAIL %s\n' "$1"; fail=$((fail + 1)); }
+bad() { printf 'FAIL %s\n' "$1"; if [ -n "${2:-}" ]; then printf '     %s\n' "$2"; fi; fail=$((fail + 1)); }
 assert_true() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 
 # flat top-level value:  rs_get <file> <key>
@@ -579,12 +579,34 @@ assert_true "findings strips the YAML quoting it wrote" \
 # --- the summary is UNTRUSTED TEXT: it must not be able to break the file ----
 # Every case below produced an unparseable run-state before the single-quoted
 # encoding. run-state is the loop's ONLY durable state, so "it usually parses" is
-# not a property worth having — each of these asserts a real YAML parse, not a grep.
-yamlok() {  # yamlok <file> -- true if some available parser accepts it
-  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+# not a property worth having — each of these asserts a real YAML parse, not a grep,
+# and LOUDLY skips (a counted, reported FAIL, never a silent pass) when no parser is
+# available on this host. (test-runstate.sh:267 already requires python3
+# unconditionally, so a host with none fails this sweep regardless — the check
+# below only matters for the python3-present/PyYAML-absent case.)
+# have_yaml -- true if a real YAML parser (python3 + PyYAML) is available. The one
+# place this probe lives; yamlok() and the notice below both call it rather than
+# each carrying their own copy to drift out of sync.
+have_yaml() { command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; }
+# YAML_SKIP_COUNT -- how many yamlok() calls had to loudly skip for lack of a
+# parser on this host. Surfaced in the summary line at the bottom of the sweep so
+# a parser-less green-looking run cannot be mistaken for one that actually parsed.
+YAML_SKIP_COUNT=0
+yamlok() {  # yamlok <file> -- true if some available parser accepts it; returns
+            # nonzero (never a silent pass) when no parser is present, so every
+            # caller's own assert_true/bad reports a real, counted FAIL
+  if have_yaml; then
     python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$1" 2>/dev/null
-  else return 0; fi   # no parser available -> do not fail the sweep on this host
+  else
+    YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+    return 1   # no parser available -> fail loudly; see the one-time notice below
+  fi
 }
+if ! have_yaml; then
+  YAML_SKIP_COUNT=$((YAML_SKIP_COUNT + 1))
+  bad 'a YAML parser is available for the parse-assertion cases below' \
+      'no python3+PyYAML on this host — not asserting vacuously; every yamlok() case below now correctly reports FAIL instead of silently passing'
+fi
 FY="$(mktemp -d)/.agents"; mkdir -p "$FY"
 for case_name in colon hash quote backslash dashlead brace; do
   case "$case_name" in
@@ -768,7 +790,7 @@ assert_true "a run-state without a findings key gains one" \
   "printf 'status: running\\n' > \"$FD/old.yaml\" && \"\$RUNSTATE\" add-finding \"$FD/old.yaml\" f-9 'x' --packets pkt-a | grep -q '^ADDED=yes' && grep -q '^findings:' \"$FD/old.yaml\""
 
 echo
-echo "== sweep hardening: legacy shapes + a real YAML parse after every mutation (T20) =="
+echo "== sweep hardening: legacy shapes + a real YAML parse (or a loud, counted skip) after every mutation (T20) =="
 # The legacy fixture pins the PRE-ADR-0025 backlog shape (a done: list alongside
 # cursor/pending) and the PRE-ADR-0024 findings shape (no packets:, no file:) side
 # by side with a new-shape entry, so every mutating subcommand is proven against
@@ -807,8 +829,9 @@ legacy_fixture > "$LEGACY_DIR/run-state.yaml"
 assert_true "legacy fixture (done: + packet-less findings) is valid YAML itself" \
   "yamlok \"$LEGACY_DIR/run-state.yaml\""
 
-# A real parse after EVERY mutating subcommand, each against its OWN fresh copy of
-# the legacy fixture. record-outcome/request-pause/clear-pause/pause-status do NOT
+# A real parse after EVERY mutating subcommand (or a loud, counted FAIL in place of
+# one — see yamlok() above — never a silent pass), each against its OWN fresh copy
+# of the legacy fixture. record-outcome/request-pause/clear-pause/pause-status do NOT
 # mutate run-state (record-outcome writes a separate outcomes/ log; the pause
 # sentinel is its own file) so they are not exercised here.
 for mut in set touch write trim-note add-finding drop-finding claim-driver heartbeat; do
@@ -854,5 +877,10 @@ assert_true "only the new-shape entry counts toward STALE_COUNT" \
 
 echo
 echo "-----------------------------------------"
-printf 'passed: %s   failed: %s\n' "$pass" "$fail"
+if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
+  printf 'passed: %s   failed: %s   (no python3+PyYAML on this host — %s parse assertion(s) could not assert; not asserting vacuously)\n' \
+    "$pass" "$fail" "$YAML_SKIP_COUNT"
+else
+  printf 'passed: %s   failed: %s\n' "$pass" "$fail"
+fi
 [ "$fail" = 0 ] || exit 1

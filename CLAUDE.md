@@ -485,6 +485,31 @@ passing sweeps.
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **A finding discovered after a plan is complete routes by scope in two arms tried in
+  order, and the completed record is never edited** (ADR 0026). **Arm 1** applies when
+  **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**
+  task line, and an **unchecked capability in its PRD covers the finding** — both tests
+  separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
+  task line to `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying
+  truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
+  parent plans) becomes a **new feature**: a PRD via `/gspec-feature`, a `.agents/roadmap.yaml`
+  entry (`depends_on:` the parent, `order` after it), and **no plan file** until the work
+  comes up. Loop contexts lack `Skill`, so arm 2 splits: hand off on the `normal`-severity
+  question block in `templates/check-in.md`, and main-context runs `/gspec-feature`.
+  **The recorded diagnosis was WRONG, and that is the part to keep**: the immutability
+  hook asks only that every checked task's **block** (its line through the next task
+  line) survives byte-identically, so additive appends already pass mechanically;
+  policy forbids it because a derived-done feature must not carry unshipped work
+  (ADR 0020 D2) — the appended task would emit no packet node and never be scheduled.
+  A hook rejection is a **signal** the edit disturbed a checked block or arm 1 was
+  wrong, never a cue to bypass with shell or patch the vendored hook (it is re-stamped
+  at install). `/gspec-plan` regeneration is unreachable from a dispatched context and
+  would require reopening the feature. Arm 1 widens the plugin's write into `gspec/`
+  past ADR 0025's `[ ]` → `[x]` flip, bounded to: append only,
+  never modify existing lines, never touch capability checkboxes, always carry truthful
+  `covers:`. The arm-1 scope test is prompt-enforced — nothing mechanically checks fit; the
+  detector is a task whose `covers:` does not match, and the boundary is the packet's PR
+  review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
 - **There are THREE report files, and the split is by reader and by need** (ADR 0023).
   `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
   Engineer returns it and the scheduler *parses* it, so its keys are stable and it

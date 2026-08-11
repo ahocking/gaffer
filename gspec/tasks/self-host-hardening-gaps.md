@@ -42,6 +42,6 @@ missing one only costs parallelism.
 - [ ] **T4** [P] **P1** Choose and record in a new ADR which mechanism carries a finding discovered after a plan is fully checked into the backlog — regeneration through the supported planning path, a purely-additive-at-EOF allowance, or routing to a new feature — naming why the two rejected candidates are rejected, and noting that the immutability hook is vendored and re-stamped on install so a local patch to it would be silently reverted
   - deps: —
   - covers: P1 findings from a completed plan reach the backlog
-- [ ] **T5** **P1** Update the loop's termination instruction (`skills/run-loop/SKILL.md` §4 and `skills/run-loop/parallel.md`) to name the mechanism T4 chose rather than "append to the backlog", and add the one `CLAUDE.md` conventions bullet naming it
+- [x] **T5** **P1** Update the loop's termination instruction (`skills/run-loop/SKILL.md` §4 and `skills/run-loop/parallel.md`) to name the mechanism T4 chose rather than "append to the backlog", and add the one `CLAUDE.md` conventions bullet naming it
   - deps: T3, T4
   - covers: P1 findings from a completed plan reach the backlog

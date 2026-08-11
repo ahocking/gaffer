@@ -402,9 +402,37 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   review** (opus) over the *integrated* diff — the whole feature vs its base
   (`git diff <base>...HEAD`, or the integration branch vs its base at
   `full-autonomy`). Per-packet reviews are scoped to one packet each and miss
-  cross-packet integration issues; this final pass is the net for them. File any
-  Critical/Important finding as a new packet (append to the backlog, cursor back)
-  rather than shipping over it. Once the whole-branch review is clean, set
+  cross-packet integration issues; this final pass is the net for them. For any
+  Critical/Important finding (ADR 0026), route by scope in two arms tried in order,
+  never editing the completed record and never bypassing the immutability control with a
+  shell append (`cat >>`, `printf >>`).
+
+  - **Arm 1** applies when **some feature in the backlog** — not necessarily the one this
+    run built — is **incomplete**, has a plan file with at least one **unchecked** task
+    line, and an **unchecked capability in its PRD covers the finding** — both tests must
+    hold separately. Append a new unchecked task line to
+    `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying a
+    truthful `covers:` naming that capability. The immutability hook still runs and still
+    adjudicates: every checked task's **block** (its task line plus its `deps:`/`covers:`
+    follow-on lines, up to the next task line) must survive byte-identically in the
+    resulting file; a rejection is a **signal** that a checked block was disturbed, or
+    that arm 1 was the wrong arm. Write bounds: append only, never modifying an existing
+    line, never touching a PRD capability checkbox. Cursor back to the appended task.
+    Choose the plan by **scope match**, never by proximity, recency, or convenience.
+
+  - **Arm 2** is everything else, including every case where the parent plan is fully
+    checked: the finding becomes a **new feature**. A dispatched context has no `Skill`
+    tool (ADR 0012), so hand off on the `normal`-severity question block in
+    `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`: `gate:` records arm-2, `question:`
+    names the proposed slug, scope, and parent, `state:` stays `continuing on other
+    packets` (meaning the question does not block the run — at §4 the backlog is
+    complete). Main-context session runs `/gspec-feature`, adds a `.agents/roadmap.yaml`
+    entry (`depends_on:` the parent, `order` after it), and writes **no plan file** until
+    the work comes up. Never use the check-in's `Findings:` key — "this should be
+    built/fixed" is backlog (ADR 0022), not a finding. **`-gaps` does not stack** — a
+    second-order gap gets a slug naming its scope.
+
+  Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh set
   .agents/run-state.yaml status done`) so a later session does not try to resume a
   finished run. Then **snapshot run-metrics (best-effort, ADR 0019):**

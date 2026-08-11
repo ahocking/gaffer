@@ -138,14 +138,18 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
 
 ### P3. Terminate / pause
 - **DAG exhausted** (`full-autonomy`): after the last lane integrates, run **one broad
-  whole-DAG review** over the integration branch vs its base (§4's net); file any
-  Critical/Important finding as a new packet; then `status: done`, **snapshot
-  run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — best-effort,
-  ADR 0019; the parallel run is exactly where the packet is most worth having, since it
-  captures every lane's per-agent spend and wave concurrency), and a final **stop
-  report** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B).
-  Below `full-autonomy`: stop at branches-ready, with the same stop report — each
-  branch named by what it *does*, not just by its `orch/<task-id>`.
+  whole-DAG review** over the integration branch vs its base (§4's net); route any
+  Critical/Important finding by scope per §4 (ADR 0026); never edit the completed
+  record. The **scheduler** does this routing — a lane reports the finding in its
+  check-in and never writes to `gspec/` itself — and surfaces an arm-2 proposal (a new
+  feature: slug, scope, parent) in the **stop report's decision block**, not the wire
+  question block, because at P3 nothing downstream parses its output. Then `status:
+  done`, **snapshot run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect ||
+  true` — best-effort, ADR 0019; the parallel run is exactly where the packet is most
+  worth having, since it captures every lane's per-agent spend and wave concurrency),
+  and a final **stop report** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`,
+  shape B). Below `full-autonomy`: stop at branches-ready, with the same stop report —
+  each branch named by what it *does*, not just by its `orch/<task-id>`.
 - **Any hard gate, merge conflict, blocking question, or a granted pause (ADR 0017)**
   → pause at a safe multi-lane checkpoint. For **every lane that was in flight**,
   record its outcome so the whole run is resumable (you are the single writer):

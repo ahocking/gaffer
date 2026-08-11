@@ -824,13 +824,25 @@ cmd_check_task() {
   # the temp file, so the later `mv` doesn't narrow it to mktemp's 0600 --
   # git tracks only the exec bit, so a silent 0644->0600 would be invisible
   # to `git diff` and to review.
-  local tmp tmp2=""
-  tmp="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
+  # These are GLOBALS, deliberately, and must not be made `local` again. An EXIT
+  # trap fires while the shell is unwinding, and whether a function-local is still
+  # in scope at that point is bash-version-dependent: 3.2 (macOS) still sees it, so
+  # `trap 'rm -f "$tmp"' EXIT` cleaned up and the sweep passed; 5.2 (Linux, CI) does
+  # not, and under `set -u` the trap died with `tmp: unbound variable` before
+  # reaching the `rm`, stranding the temp file inside gspec/tasks/. Reproduced in
+  # both versions. The `${x:-}` guards keep the trap safe even if it somehow fires
+  # before either assignment.
+  _ct_tmp=""; _ct_tmp2=""
+  _ct_tmp="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
   # No process-wide trap: scoped to this write only, set as soon as the temp
   # file exists and disarmed right after the final `mv` succeeds, so a
   # stranded temp file under set -euo pipefail (cp, awk, or mv failing) can't
   # survive as untracked scratch inside gspec/tasks/.
-  trap 'rm -f "$tmp" "$tmp2"' EXIT
+  trap 'for _f in "${_ct_tmp:-}" "${_ct_tmp2:-}"; do [ -n "$_f" ] && rm -f "$_f"; done; :' EXIT
+  # Aliases so the body below reads unchanged. `tmp2` is deliberately NOT aliased:
+  # it is assigned mid-body, and a local copy would leave the trap holding the
+  # empty initial value — the same scope trap this fix exists for, one variable over.
+  local tmp; tmp="$_ct_tmp"
   cp -p "$plan" "$tmp"
   awk -v want="$idlc" '
     BEGIN { done = 0 }
@@ -856,10 +868,10 @@ cmd_check_task() {
   # the write really does touch nothing else in the file.
   if [ -n "$(tail -c1 "$plan")" ]; then
     local sz; sz="$(wc -c < "$tmp")"; sz=$((sz - 1))
-    tmp2="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
-    head -c "$sz" "$tmp" > "$tmp2"
-    cat "$tmp2" > "$tmp"           # rewrite tmp's own inode -- keeps its mode
-    rm -f "$tmp2"; tmp2=""
+    _ct_tmp2="$(mktemp "$(dirname "$plan")/.gspec-check-task.XXXXXX")"
+    head -c "$sz" "$tmp" > "$_ct_tmp2"
+    cat "$_ct_tmp2" > "$tmp"       # rewrite tmp's own inode -- keeps its mode
+    rm -f "$_ct_tmp2"; _ct_tmp2=""
   fi
 
   mv "$tmp" "$plan"

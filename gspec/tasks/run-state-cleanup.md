@@ -94,7 +94,7 @@ sequences T11 and T13 already rewrite.
 - [x] **T20** **P0** Add a `test-runstate.sh` legacy fixture carrying `done:` and packet-less findings, plus a `done:`-free write asserted to parse, asserting a real parse after every mutating subcommand
   - deps: T4, T5, T6, T7
   - covers: Every changed behaviour has a case in its regression sweep
-- [ ] **T21** **P1** Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
+- [x] **T21** **P1** Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
   - deps: T11, T13, T16, T19
   - covers: Neither change bumps the run-state schema, and there is no flag day
 - [x] **T22** **P0** Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision

@@ -912,6 +912,96 @@ for case_name in colon quote newline dashlead hash brackets pipe trailspace colo
     "[ \"\$(rs_get \"$FY/rs-set-$case_name.yaml\" target | cut -c1)\" = \"'\" ]"
 done
 
+echo
+echo "== set: a BLOCK-SCALAR TARGET must not strand its body (T10) =="
+# cmd_set used to replace only the column-0 HEADER of a multi-line block-scalar
+# VALUE, stranding its indented body below the new header -- a syntax error, not
+# a corrupted round-trip, since the key-count check cannot see it (no key is
+# added). Every introducer is covered: |, >, and their chomping/indent variants
+# |-, |+, >-, >+. Fixtures carry a key BEFORE and a key AFTER the block, same
+# reason as the hostile-value loop above.
+for case_name in pipe pipedash pipeplus fold folddash foldplus; do
+  case "$case_name" in
+    pipe)      intro='|'  ;;
+    pipedash)  intro='|-' ;;
+    pipeplus)  intro='|+' ;;
+    fold)      intro='>'  ;;
+    folddash)  intro='>-' ;;
+    foldplus)  intro='>+' ;;
+  esac
+  BF="$FY/rs-block-$case_name.yaml"
+  printf 'before: 1\ntarget: %s\n  body line one\n  body line two\nafter: 1\n' "$intro" > "$BF"
+  before_count="$(_top_key_count "$BF")"
+  assert_true "set over a block-scalar target ($case_name) keeps run-state parseable" \
+    "\"\$RUNSTATE\" set \"$BF\" target 'replaced value' >/dev/null && yamlok \"$BF\""
+  assert_true "set over a block-scalar target ($case_name) round-trips through a real YAML parse" \
+    "yamlok \"$BF\" && [ \"\$(_yaml_value \"$BF\" target)\" = 'replaced value' ]"
+  assert_true "set over a block-scalar target ($case_name) round-trips through cmd_get" \
+    "[ \"\$(\"\$RUNSTATE\" get \"$BF\" target)\" = 'replaced value' ]"
+  assert_true "set over a block-scalar target ($case_name) strands no body line" \
+    "! grep -q 'body line' \"$BF\""
+  assert_true "set over a block-scalar target ($case_name) leaves the key count unchanged" \
+    "[ \"\$(_top_key_count \"$BF\")\" = \"$before_count\" ]"
+  assert_true "set over a block-scalar target ($case_name) preserves the key before" \
+    "grep -q '^before: 1' \"$BF\""
+  assert_true "set over a block-scalar target ($case_name) preserves the key after" \
+    "grep -q '^after: 1' \"$BF\""
+done
+# A block body that runs to EOF (no trailing key) -- the boundary cmd_trim_note
+# uses (and cmd_set now reuses) is "next column-0 key, or EOF", so EOF must
+# close the block just as reliably as a following key does.
+BE="$FY/rs-block-eof.yaml"
+printf 'before: 1\ntarget: |-\n  body line one\n  body line two\n' > "$BE"
+assert_true "set over a block-scalar target running to EOF keeps run-state parseable" \
+  "\"\$RUNSTATE\" set \"$BE\" target 'replaced at eof' >/dev/null && yamlok \"$BE\""
+assert_true "set over a block-scalar target running to EOF round-trips" \
+  "yamlok \"$BE\" && [ \"\$(_yaml_value \"$BE\" target)\" = 'replaced at eof' ]"
+assert_true "set over a block-scalar target running to EOF strands no body line" \
+  "! grep -q 'body line' \"$BE\""
+
+echo
+echo "== set: the LIVE reproduction sequence -- trim-note, then set (T10) =="
+# The exact sequence from the runstate-write-integrity capability: trim-note
+# re-emits note: as a |- block by design, then an ordinary `set <file> note
+# <one line>` right after is the reachable path that stranded the old body.
+TR="$(mktemp -d)/.agents"; mkdir -p "$TR"
+{ printf 'status: running\nnote: '
+  i=0; while [ "$i" -lt 200 ]; do printf 'packet %s narrative. ' "$i"; i=$((i+1)); done
+  printf '\nbranch: main\n'
+} > "$TR/run-state.yaml"
+"$RUNSTATE" trim-note "$TR/run-state.yaml" 200 >/dev/null
+assert_true "the live sequence's trim-note really produced a block scalar" \
+  "grep -q '^note: |-' \"$TR/run-state.yaml\""
+assert_true "set after trim-note keeps run-state parseable" \
+  "\"\$RUNSTATE\" set \"$TR/run-state.yaml\" note 'a fresh one-line note' >/dev/null && yamlok \"$TR/run-state.yaml\""
+assert_true "set after trim-note round-trips through a real YAML parse" \
+  "yamlok \"$TR/run-state.yaml\" && [ \"\$(_yaml_value \"$TR/run-state.yaml\" note)\" = 'a fresh one-line note' ]"
+assert_true "set after trim-note round-trips through cmd_get" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$TR/run-state.yaml\" note)\" = 'a fresh one-line note' ]"
+assert_true "set after trim-note preserves the key before" \
+  "grep -q '^status: running' \"$TR/run-state.yaml\""
+assert_true "set after trim-note preserves the key after" \
+  "grep -q '^branch: main' \"$TR/run-state.yaml\""
+
+echo
+echo "== set: the ORDINARY single-line replace is unchanged (T10 non-regression) =="
+# A positive control, not a defect reproduction -- it is expected to pass
+# whether or not the T10 fix is present, because the ordinary path was never
+# broken. Kept explicit per the task's own instruction, and to pin that the
+# new block-scalar detection cannot start misfiring on a plain scalar target.
+OS="$FY/rs-ordinary.yaml"
+printf 'before: 1\ntarget: original value\nafter: 1\n' > "$OS"
+assert_true "set over an ordinary single-line target still parses" \
+  "\"\$RUNSTATE\" set \"$OS\" target 'new value' >/dev/null && yamlok \"$OS\""
+assert_true "set over an ordinary single-line target round-trips" \
+  "yamlok \"$OS\" && [ \"\$(_yaml_value \"$OS\" target)\" = 'new value' ]"
+assert_true "set over an ordinary single-line target replaces exactly one line" \
+  "[ \"\$(wc -l < \"$OS\" | tr -d ' ')\" = 3 ]"
+assert_true "set over an ordinary single-line target preserves the key before" \
+  "grep -q '^before: 1' \"$OS\""
+assert_true "set over an ordinary single-line target preserves the key after" \
+  "grep -q '^after: 1' \"$OS\""
+
 # Anti-drift pin: `set` and `add-finding` now call the SAME encoder, so the
 # same hostile value must come out byte-identical from both -- pinned
 # mechanically, not by comment, so a future change that hardens one and not

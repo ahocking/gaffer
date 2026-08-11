@@ -410,6 +410,20 @@ _yaml_decode_value() {
 # plain scalar. `: ` in the value opened a sibling mapping key and broke the
 # file; it fired live at a packet close whose note read "... blocked on the
 # commit: the harness denied it" (runstate-write-integrity capability 1).
+#
+# T10: the hazard on the TARGET's side, not the value's. A single column-0
+# line replacement strands the indented body when the CURRENT value is a
+# multi-line block scalar (`|`, `>`, and their chomping/indent variants --
+# `|-`, `|+`, `>-`, `>+`) -- exactly what cmd_trim_note emits for `note:` by
+# design, so `set <file> note <one line>` right after a trim is the ORDINARY
+# path that reproduces it, not an edge case. HANDLED here, not refused: a
+# block scalar's body boundary is well-defined by YAML itself -- its lines
+# are indented, and the first column-0 line ends it -- and this file already
+# relies on exactly that rule to find a block's end in cmd_trim_note above,
+# so reusing it here is not a new heuristic. Refusing would turn the single
+# most reachable `set` call (overwriting `note:` right after a trim) into a
+# hard stop for every caller, forcing a full `write` reassembly for what is
+# otherwise an ordinary one-line update.
 cmd_set() {
   local f="${1:-}" key="${2:-}" val="${3:-}"
   [ -n "$f" ] && [ -n "$key" ] || die "usage: set <file> <key> <value>"
@@ -423,9 +437,26 @@ cmd_set() {
     # never sed replacement text, which expands `&` to the whole match and
     # `\1` to a capture group and (via the old `s|...|...|` delimiter) broke
     # outright on a value containing `|`.
+    #
+    # inblock tracks whether the line under the cursor is part of the OLD
+    # value's block-scalar body: it is set the moment the matched header's
+    # remainder looks like a block indicator, and cleared the moment a
+    # column-0 "key:" line reappears -- the same boundary cmd_trim_note uses
+    # to find a block's end, above. Every line consumed while inblock is
+    # skipped (never printed), so the new header line replaces the ENTIRE
+    # old value, header and stranded body alike, not just its first line.
     KEY="$key" ENC="$enc" awk '
-      BEGIN { k = ENVIRON["KEY"] ":" }
-      index($0, k) == 1 { print ENVIRON["KEY"] ": " ENVIRON["ENC"]; next }
+      BEGIN { k = ENVIRON["KEY"] ":"; inblock = 0 }
+      inblock {
+        if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*:/) { inblock = 0 } else next
+      }
+      !inblock && index($0, k) == 1 {
+        rest = substr($0, length(k) + 1)
+        sub(/^[[:space:]]+/, "", rest)
+        print ENVIRON["KEY"] ": " ENVIRON["ENC"]
+        if (rest ~ /^[|>][-+]?[0-9]*[[:space:]]*$/) inblock = 1
+        next
+      }
       { print }
     ' "$f" > "$tmp"
   else

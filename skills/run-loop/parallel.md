@@ -136,7 +136,13 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
    (shape A) is built for exactly this — one line per lane, marker first, every packet
    id carrying a plain-English title, and the lanes that need a decision visible
    without scrolling. A wave of five verbatim lane check-ins is five times the reading
-   for the same three facts: what landed, what needs them, what is next.
+   for the same three facts: what landed, what needs them, what is next. If any lane
+   integrated this wave (P2 ran), fold in `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`'s
+   `stale-findings:` line using the `STALE_COUNT`/`OVER_THRESHOLD` P2 captured — P2 runs
+   once per green lane, so take the values from the **last** lane it integrated, which is
+   the only pair describing the index after the whole wave's drops. Emit only when
+   `OVER_THRESHOLD=yes`, `<N>` = `STALE_COUNT` (may legitimately be 0); omit it otherwise,
+   same as when no lane integrated this wave and the scan never ran.
 5. **Recompute** the ready-set (step 1) and dispatch the next batch — newly-unblocked
    dependents appear once their deps are `done` (and, at `full-autonomy`, integrated).
 
@@ -177,7 +183,9 @@ fed verbatim to `findings --stale --finished`, unioned with `<task-id>` itself
 (its own commit trailer, just landed, is the second admissible evidence source)
 — never from `<task-id>`'s own say-so alone. §3.4 has the exact commands and
 the reasoning; this is the same sequence run from the main checkout instead of
-inside a lane.
+inside a lane. That same `findings --stale` call reports `STALE_COUNT`/
+`OVER_THRESHOLD` for the whole index as a byproduct — hold onto them, they feed
+the wave report's `stale-findings:` line (P1.4).
 
 After each, `worktree.sh remove <task-id>` (it refuses on unmerged work — a
 safety net). **A merge

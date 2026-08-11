@@ -88,7 +88,7 @@ sequences T11 and T13 already rewrite.
 - [x] **T18** **P0** Add the `findings` detection and read-only `findings-audit` subcommand to `scripts/migrate.sh`, reading finished-ness via the existing `$ADAPTER`, with `test-migrate.sh` cases asserting `apply` deleted nothing and covering an `unknown` verdict
   - deps: T2, T17
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
-- [ ] **T19** [P] **P0** Add the one-entry-at-a-time findings triage with its three outcomes to `skills/migrate/SKILL.md` §5
+- [x] **T19** [P] **P0** Add the one-entry-at-a-time findings triage with its three outcomes to `skills/migrate/SKILL.md` §5
   - deps: T5, T18
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
 - [x] **T20** **P0** Add a `test-runstate.sh` legacy fixture carrying `done:` and packet-less findings, plus a `done:`-free write asserted to parse, asserting a real parse after every mutating subcommand
@@ -97,9 +97,9 @@ sequences T11 and T13 already rewrite.
 - [ ] **T21** **P1** Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
   - deps: T11, T13, T16, T19
   - covers: Neither change bumps the run-state schema, and there is no flag day
-- [ ] **T22** **P0** Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision
+- [x] **T22** **P0** Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision
   - deps: T18, T19
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
-- [ ] **T23** **P1** Give `templates/check-in.md`'s `stale-findings:` field a producer: T10 added the field and T11 added the `findings --stale` scan, but §3.4 emits the check-in *before* that scan runs, so nothing can populate it and no session ever sees the backstop. Order the scan ahead of the check-in emission (or carry the count forward to it) in `skills/run-loop/SKILL.md` and the `parallel.md` scheduler
+- [x] **T23** **P1** Give `templates/check-in.md`'s `stale-findings:` field a producer: T10 added the field and T11 added the `findings --stale` scan, but §3.4 emits the check-in *before* that scan runs, so nothing can populate it and no session ever sees the backstop. Order the scan ahead of the check-in emission (or carry the count forward to it) in `skills/run-loop/SKILL.md` and the `parallel.md` scheduler
   - deps: T10, T11, T13
   - covers: A resolved finding is captured before it is dropped, by the session that resolved it

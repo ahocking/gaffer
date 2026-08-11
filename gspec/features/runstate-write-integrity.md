@@ -91,6 +91,12 @@ the loop either cannot checkpoint or checkpoints unvalidated on Windows. So
   - the overstated claim is corrected everywhere it appears: `CLAUDE.md:485`, and the in-sweep comments repeating it at `scripts/test-runstate.sh:582`, `:771`, `:810` and `scripts/test-migrate.sh:294-295`. The same claim in the **unchecked** criterion at `gspec/features/run-state-cleanup.md:96` needs no edit — it becomes true when this capability lands
   - `test-runstate.sh:267` already invokes python3 unconditionally, so a host with no python3 at all fails the sweep regardless: the conditional buys silence only in the case where it does damage — python3 present, PyYAML absent
 
+- [ ] **P1**: The sweep is deterministic, so a green run means the same thing every time
+  - `scripts/test-runstate.sh`'s case "trim-note handles the multi-line shape" fails intermittently — observed once in a 20-run probe on 2026-08-11 (Darwin 25.5), with a different `trim-note` assertion failing on different runs. `runstate.sh trim-note` is **deterministic in isolation** on that exact fixture (12/12 `TRIMMED=yes`), so the nondeterminism is in the sweep's environment, not the function under test
+  - the cause is identified and fixed, or the case is made deterministic; a case that usually passes is not a regression test, because the run that matters is the one where it lied
+  - this belongs with the two defects above for the same reason capability 5 does: all three are ways the verification reports success without having verified. A vacuous assertion and a flaky one are the same failure wearing different clothes — and a flaky case is worse in one respect, because the standard response is to re-run until green
+  - no case in any sweep is re-run-until-green as a remedy; a retry loop added to hide this would itself be the defect
+
 ## Deferred Decisions
 
 - Whether agent-supplied values composed *into* `write` input (a nested packet

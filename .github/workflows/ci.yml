@@ -10,31 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # TEMPORARY diagnostic — remove once the migrate backlog.done drop is fixed.
-      # test-migrate.sh fails 13 cases on this runner and passes on macOS bash 3.2
-      # and on five Ubuntu configurations (mawk, gawk, gawk+C.UTF-8, root,
-      # non-root). Guessing at the difference has produced two false leads already,
-      # so this prints the environment and runs the failing scenario directly.
-      - name: DIAG — environment and the failing drop, in isolation
-        run: |
-          echo "== versions =="
-          bash --version | head -1
-          echo "awk -> $(readlink -f "$(command -v awk)")"; awk --version 2>&1 | head -1 || true
-          git --version; echo "locale: LANG=${LANG:-unset} LC_ALL=${LC_ALL:-unset}"
-          locale 2>/dev/null | head -3 || true
-          echo "sed: $(sed --version 2>&1 | head -1)"
-          echo "== the drop, run directly on a minimal fixture =="
-          d=$(mktemp -d); mkdir -p "$d/.agents" "$d/gspec/tasks"
-          printf 'schema: 3\nstatus: paused\nbacklog:\n  cursor: alpha-t2\n  done:\n    - alpha-t1\n  pending:\n    - alpha-t2\n' > "$d/.agents/run-state.yaml"
-          printf -- '---\nspec-version: v1\nfeature: alpha\n---\n- [ ] **T2** **P0** t\n' > "$d/gspec/tasks/alpha.md"
-          ( cd "$d" && git init -q . && git config user.email c@t && git config user.name c && git add -A && git commit -qm init )
-          echo "-- detect --";  bash scripts/migrate.sh detect "$d" 2>&1 | grep -i backlog-done || echo "NO backlog-done FINDING"
-          echo "-- apply --";   bash scripts/migrate.sh apply  "$d" 2>&1 | grep -iE 'DROPPED|UNRECOGNIZED' || echo "NO DROPPED LINE"
-          echo "-- run-state after --"; cat "$d/.agents/run-state.yaml"
-          echo "== the scan's own view =="
-          awk 'function lead(l,  t){t=l; sub(/[^ ].*/,"",t); return length(t)}
-               {printf "%2d |%s|\n", lead($0), $0}' "$d/.agents/run-state.yaml"
-
       # The sweeps assert a REAL YAML parse after every mutating runstate.sh
       # subcommand. Until 2026-08-11 those assertions silently returned true when
       # PyYAML was absent, so a host without it reported a fully green sweep while

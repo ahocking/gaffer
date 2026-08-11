@@ -37,10 +37,10 @@ one exception is T8, whose subject is host-independence rather than a behaviour 
 it has nothing to ride on.
 
 **No skill or prompt changes are in this plan, and that is a property being
-bought, not an omission.** The encoding is applied only outside a narrow
-plain-scalar allowlist and stripped symmetrically on read, so today's live callers
-stay byte-identical; if a task finds itself editing `skills/`, the allowlist or
-the decode is wrong.
+bought, not an omission.** Every value is quoted on write and stripped
+symmetrically on read, so callers see byte-identical values; if a task finds
+itself editing `skills/`, the decode is wrong. Note this rests entirely on the
+reader — see the T4/T5 note below.
 
 **T3 is an investigation, not a known fix**, and it is ordered early on purpose:
 until the sweep is deterministic, a green run on any later task means less than it
@@ -50,11 +50,33 @@ cause takes a while to find. One lead is already **ruled out**: SIGPIPE under
 invocation shape, 40 consecutive runs, zero failures (2026-08-11, Darwin 25.5).
 Do not re-derive it.
 
-**T10 is a third defect of the same family, found while planning.** It is about
-the *target's* shape rather than the value, so T6's key-count check cannot catch
-it, and it is ordered after T4/T6 because it shares their function and fixtures.
+**T10 is a third defect of the same family, found while planning**, and it is now
+the only remaining `set` hazard: it is about the *target's* existing shape rather
+than the value, so quoting the value cannot address it. Ordered after T4 because
+it shares its function and fixtures.
 
-T4–T7 and T10 all write `scripts/runstate.sh` and `scripts/test-runstate.sh`, so
+**T6 was dropped on 2026-08-11, not deferred.** It would have made `cmd_set`
+verify its own top-level key count before the rename and refuse a value that
+injected a sibling key. Once T4 quoted every value, that failure mode became
+unreachable by construction — verified by writing a value containing a literal
+newline and `injected: yes`, which collapses and quotes into a single scalar and
+adds no key. Keeping a check whose failure cannot occur is the same construct as
+the allowlist it would have guarded. The residual key-side hazard (`cmd_set`
+guards with a regex and matches with a literal, so they can disagree) is a filed
+finding, unreachable while every key is an internal literal.
+
+**T4 and T5 are NOT separable, and splitting them here was a planning error**
+(corrected 2026-08-11, mid-execution). Once T4 dropped the plain-scalar allowlist
+and began quoting every value, the writer stopped preserving the bare form, so
+the reader's symmetric strip became the only thing preserving compatibility.
+Landing T4 alone leaves `cmd_get` returning `'running'` **with quote characters**,
+which breaks the `case` match at `hooks/session-start.sh:36-51`: a crashed run
+falls through to the `paused|*` arm and the human is told the run "was paused
+cleanly" — the wrong recovery instruction, silently. They are executed as one
+packet. Both files are still `scripts/runstate.sh` + `scripts/test-runstate.sh`,
+so no scope widens; only the packet boundary moved.
+
+T4, T5, T7 and T10 all write `scripts/runstate.sh` and `scripts/test-runstate.sh`, so
 they serialize and none is marked `[P]`. The `CLAUDE.md` correction is isolated
 into one late task rather than letting each earlier task nudge the repo's most
 contended file.
@@ -77,15 +99,12 @@ populated until it is.
 - [ ] **T3** **P1** Identify why `test-runstate.sh`'s case `trim-note handles the multi-line shape` fails roughly 1 run in 20 while `runstate.sh trim-note` is deterministic on that exact fixture in isolation, then either fix the cause or make the case deterministic and record which it was — a retry or re-run-until-green remedy is out of bounds, the SIGPIPE-under-`pipefail` lead is already ruled out (see the preamble), and the remedy is confirmed over the same 40-consecutive-run probe shape that ruled it out — for a 1-in-20 flake, "it passed" is not evidence
   - deps: —
   - covers: The sweep is deterministic, so a green run means the same thing every time
-- [ ] **T4** **P0** Extract `cmd_add_finding`'s single-quoted encoding (newline collapse, `'` doubled, `awk ENVIRON` interpolation) into one shared POSIX-shell helper both it and `cmd_set` call, and rewrite `cmd_set`'s replace and insert branches to interpolate through it instead of `sed` replacement text — retiring the `|` delimiter, `&` and `\1` hazards — quoting unless the value matches a narrow plain-scalar allowlist, with the hostile-value cases (`: `, an embedded `'`, a newline, a leading `-`, `#`, `{`/`[`/`&`/`*`, `|`, a trailing space) each asserting a real parse, a round-trip read-back and an unchanged key count, plus the case pinning that `set` and `add-finding` encode the same hostile value identically
+- [x] **T4** **P0** Extract `cmd_add_finding`'s single-quoted encoding (newline collapse, `'` doubled, `awk ENVIRON` interpolation) into one shared POSIX-shell helper both it and `cmd_set` call, and rewrite `cmd_set`'s replace and insert branches to interpolate through it instead of `sed` replacement text — retiring the `|` delimiter, `&` and `\1` hazards — quoting **every** value with no plain-scalar allowlist (one was built and removed the same day; see the capability for what it cost), with the hostile-value cases (`: `, a trailing `:`, an embedded `'`, a newline, a leading `-`, `#`, `{`/`[`/`&`/`*`, `|`, a backslash, a trailing space) each asserting a real parse and a round-trip read-back through a real YAML load rather than a mirror decoder, plus the case pinning that `set` and `add-finding` encode the same hostile value identically
   - deps: T1
   - covers: `set` cannot corrupt run-state, whatever the value contains · Every hazard has a regression case, asserted rather than grepped
-- [ ] **T5** **P0** Strip the encoding symmetrically in every `runstate.sh` reader that surfaces a value — `cmd_get`, `cmd_cursor`, and `trim-note`'s first-line unwrap, which today strips a leading quote but not a doubled `''` — with a case asserting a bare value such as `status: running` stays byte-identical end to end, so no existing grep, fixture or skill instruction changes
+- [x] **T5** **P0** Strip the encoding symmetrically in every `runstate.sh` reader that surfaces a value — `cmd_get`, `cmd_cursor`, and `trim-note`'s first-line unwrap, which today strips a leading quote but not a doubled `''` — with a case asserting a value such as `running` is returned byte-identical through the reader, so no existing grep, fixture or skill instruction changes. Note the file itself is no longer byte-identical — since T4 dropped the plain-scalar allowlist, `status` is stored as `'running'` and the reader is now the *only* thing preserving compatibility, which raises this task from tidy-up to load-bearing
   - deps: T4
   - covers: `set` cannot corrupt run-state, whatever the value contains
-- [ ] **T6** **P0** Make `cmd_set` verify its own output before the rename — top-level key count unchanged, or +1 when inserting a new key — and refuse rather than commit a value that injects a sibling key, with fixtures carrying keys both before and after the key being written so an injection cannot land harmlessly at the end of the file
-  - deps: T4
-  - covers: `set` cannot corrupt run-state, whatever the value contains · Every hazard has a regression case, asserted rather than grepped
 - [ ] **T7** **P0** Make `cmd_write` refuse empty, whitespace-only, `schema:`-less, and column-0-malformed input with a nonzero exit, the temp file removed, and a message naming the failed check and stating its bound honestly — truncation and gross malformation, not a well-formed-but-wrong document — checking the input and never the target so a first write still creates the file, with cases asserting a target checksum identical to its pre-call value for the 26-byte stub, empty stdin, whitespace-only stdin, a schema-less document, and a `schema:`-carrying document with a malformed column-0 line
   - deps: T1
   - covers: `write` refuses structurally invalid input and leaves the existing file byte-untouched · Every hazard has a regression case, asserted rather than grepped
@@ -93,7 +112,7 @@ populated until it is.
   - deps: T4, T7
   - covers: The integrity checks run on every host `runstate.sh` runs on, in POSIX shell alone
 - [ ] **T10** **P0** Make `cmd_set` safe against a **block-scalar target**: writing a key whose current value is a multi-line block scalar (`|-`, `|`, `>`) today replaces only the column-0 header and strands the indented body, and the file stops parsing. Handle it correctly or refuse it, never silently strand a body, with a case reproducing the live sequence — `trim-note` re-emits `note:` as `|-`, then `set <file> note <one line>` — asserting a real parse afterwards, since the key-count check cannot see this
-  - deps: T4, T6
+  - deps: T4
   - covers: `set` cannot corrupt run-state, whatever the value contains · Every hazard has a regression case, asserted rather than grepped
 - [ ] **T9** **P1** Correct `CLAUDE.md:485`, which states flatly that the sweep asserts a real YAML parse after each mutating subcommand, and record in the same bullet that one shared encoder now serves `set` and `add-finding` and that `write` validates structurally — one deliberate change to the repo's most contended file rather than seven tasks each nudging it. The two records beyond the correction are repo-convention upkeep, not a PRD criterion
   - deps: T1, T2, T4, T7, T10

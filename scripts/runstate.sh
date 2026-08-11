@@ -173,19 +173,33 @@ need_file() { [ -f "$1" ] || die "no run-state file at '$1'"; }
 # whole script BEFORE any `:-default` fallback — the trap that silently killed
 # `summary` on a partial run-state. Fix it once here, not in every caller.
 cmd_get() {
-  local f="${1:-}" key="${2:-}"
+  local f="${1:-}" key="${2:-}" raw
   [ -n "$f" ] && [ -n "$key" ] || die "usage: get <file> <key>"
   need_file "$f"
-  { grep -E "^${key}:" "$f" || true; } | head -1 | sed -E "s/^${key}:[[:space:]]*//"
+  # An ABSENT key must stay ZERO bytes (not even a trailing newline) -- the
+  # historical contract this whole function's opening comment documents.
+  # Checked separately from extraction below because `raw="$(...)"` strips
+  # ALL trailing newlines regardless of whether the key existed, so it alone
+  # cannot tell "absent" from "present with an empty value" apart.
+  grep -qE "^${key}:" "$f" || return 0
+  raw="$({ grep -E "^${key}:" "$f" || true; } | head -1 | sed -E "s/^${key}:[[:space:]]*//")"
+  # _yaml_decode_value (defined below, with cmd_set) is the inverse of the
+  # single-quoted encoding `set` writes -- a no-op on anything it didn't
+  # write, so a bare/legacy value round-trips exactly as before. The trailing
+  # `\n` restores the one-line-of-output shape every caller here (and every
+  # internal cmd_get/cmd_cursor consumer below) already expects.
+  printf '%s\n' "$(_yaml_decode_value "$raw")"
 }
 
 # --- nested backlog.cursor ---------------------------------------------------
 # Same contract as cmd_get: an absent cursor is empty-with-exit-0, not a failure.
 cmd_cursor() {
-  local f="${1:-}"
+  local f="${1:-}" raw
   [ -n "$f" ] || die "usage: cursor <file>"
   need_file "$f"
-  { grep -E '^[[:space:]]+cursor:' "$f" || true; } | head -1 | sed -E 's/.*cursor:[[:space:]]*//'
+  grep -qE '^[[:space:]]+cursor:' "$f" || return 0
+  raw="$({ grep -E '^[[:space:]]+cursor:' "$f" || true; } | head -1 | sed -E 's/.*cursor:[[:space:]]*//')"
+  printf '%s\n' "$(_yaml_decode_value "$raw")"
 }
 
 # --- atomic write of the whole file from stdin -------------------------------
@@ -199,18 +213,124 @@ cmd_write() {
   mv -f "$tmp" "$f"          # rename is atomic on the same filesystem
 }
 
+# --- shared value encoder/decoder (T4/T5; extracted so cmd_set, cmd_add_finding
+# --- and every reader below call ONE implementation rather than several that
+# --- happen to agree today) --------------------------------------------------
+# ADR 0022 hardened cmd_add_finding's summary against `: `-injection with a
+# single-quoted YAML scalar, `'` doubled, interpolated via `awk ENVIRON`. That
+# hardening never reached cmd_set two hundred lines above it in this same file
+# — the class of write, not just the one function, needed it. These helpers
+# are that one implementation, on both the write side and the read side.
+#
+# _yaml_collapse <raw value>
+#   Collapses newlines (and \r) to spaces -- not rejected, since the caller is
+#   an agent mid-loop, and a literal newline in a flat scalar breaks the line
+#   and can inject a sibling key. The ONE place this happens: cmd_set (via
+#   _yaml_encode_value, below) and cmd_add_finding both call it, so a future
+#   hardening (e.g. against \f, \v, a Unicode line separator) reaches both
+#   instead of being applied to one and silently skipping the other -- which
+#   is exactly how the original defect (encoding hardened in add-finding, not
+#   in cmd_set) was created.
+_yaml_collapse() {
+  printf '%s' "$1" | tr '\n\r' '  '
+}
+
+# _yaml_quote <already-collapsed value>
+#   Wraps <value> as a SINGLE-quoted YAML scalar with `'` doubled -- the ONLY
+#   escaping rule a single-quoted scalar needs, since it performs NO other
+#   escape processing (a backslash is already literal; double-quoting would
+#   need `\`/`"` escaped and would then re-interpret `\n`). Prints WITH the
+#   surrounding quotes. Takes an ALREADY-collapsed value (see _yaml_collapse):
+#   cmd_add_finding's collapsed $summary is also reused for the finding body
+#   and the duplicate-id check text, not only for this encoding, so collapsing
+#   lives at the call site rather than inside this function.
+_yaml_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"
+}
+
+# _yaml_encode_value <raw value>
+#   The one entry point cmd_set uses: _yaml_quote(_yaml_collapse(value)),
+#   always. There is NO plain-scalar allowlist here, on purpose, and none
+#   should be reintroduced as a "cosmetic" optimization to keep simple values
+#   bare -- an allowlist was tried and tried twice, and both attempts failed
+#   SILENTLY (rc=0, no error anywhere) rather than loudly:
+#     - a value ending in `:` (e.g. `naive:`) passed a character-class
+#       allowlist restricted to [A-Za-z0-9._:/+-], because every character in
+#       it is individually allowed -- but `key: naive:` is a second, empty
+#       mapping key, and PyYAML refuses to parse it.
+#     - `no`, `on`, `00`, `0755` all passed the same allowlist AND parsed
+#       fine -- but YAML's own implicit typing reads them back as the boolean
+#       `false`, the boolean `true`, the integer `0`, and the integer `493`
+#       (octal) respectively. The file parses; the round-trip is just wrong,
+#       silently, which is worse than a parse failure because nothing signals
+#       it. `hooks/session-start.sh` reading a misread `status` back is the
+#       live version of exactly this failure shape.
+#   Both classes were found by fuzzing a small, careful character-class rule
+#   -- and a rule built the same way could always have a third class waiting.
+#   A single-quoted YAML scalar is correct for EVERY string by construction
+#   (see _yaml_quote): there is nothing left to re-verify, which is what an
+#   allowlist can never offer. The one cost is that every value written by
+#   `set` now round-trips through a quoted encoding rather than staying
+#   bare on disk -- see cmd_get/cmd_cursor/cmd_trim_note below, which strip
+#   it back off symmetrically, so nothing downstream has to know.
+_yaml_encode_value() {
+  _yaml_quote "$(_yaml_collapse "$1")"
+}
+
+# _yaml_decode_value <value already stripped of its "key:" prefix and leading
+#                      whitespace, as cmd_get/cmd_cursor already do>
+#   The exact inverse of _yaml_quote: if <value> is wrapped in a single pair
+#   of matching single quotes, strip them and un-double `''` back to `'`.
+#   A NO-OP on anything else, EXCEPT a legacy value that already happened to
+#   be wrapped in single quotes on its own (never written by this file, but
+#   possible by hand or by an older tool) -- that is decoded exactly as YAML
+#   would read it, same as anything cmd_set now writes. Every other bare/
+#   legacy value -- everything cmd_write ever produces (it validates
+#   structure, not per-value encoding), and every value that happened to
+#   round-trip bare before this task existed -- passes through unchanged.
+#   That direction matters more than the forward one: every consumer repo
+#   already has a run-state on disk, and it must keep reading correctly.
+_yaml_decode_value() {
+  case "$1" in
+    \'*\')
+      local body="$1"
+      body="${body#\'}"; body="${body%\'}"
+      printf '%s' "$body" | sed "s/''/'/g"
+      ;;
+    *)
+      printf '%s' "$1" ;;
+  esac
+}
+
 # --- atomic set/insert of a flat top-level key -------------------------------
+# The only write path that takes an arbitrary agent-supplied VALUE as an
+# argument -- and until this task, the only one that wrote it as an unquoted
+# plain scalar. `: ` in the value opened a sibling mapping key and broke the
+# file; it fired live at a packet close whose note read "... blocked on the
+# commit: the harness denied it" (runstate-write-integrity capability 1).
 cmd_set() {
   local f="${1:-}" key="${2:-}" val="${3:-}"
   [ -n "$f" ] && [ -n "$key" ] || die "usage: set <file> <key> <value>"
   need_file "$f"
-  local dir tmp; dir="$(dirname "$f")"
+  local dir tmp enc; dir="$(dirname "$f")"
   tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
+  enc="$(_yaml_encode_value "$val")"
   if grep -qE "^${key}:" "$f"; then
-    # '|' delimiter: keys/values here (sha, status, ISO date, branch) never contain it.
-    sed -E "s|^${key}:.*|${key}: ${val}|" "$f" > "$tmp"
+    # Literal-prefix match in awk, interpolated through ENVIRON -- never `-v`,
+    # which expands `\n` IN THE VALUE (the exact hazard ADR 0022 names), and
+    # never sed replacement text, which expands `&` to the whole match and
+    # `\1` to a capture group and (via the old `s|...|...|` delimiter) broke
+    # outright on a value containing `|`.
+    KEY="$key" ENC="$enc" awk '
+      BEGIN { k = ENVIRON["KEY"] ":" }
+      index($0, k) == 1 { print ENVIRON["KEY"] ": " ENVIRON["ENC"]; next }
+      { print }
+    ' "$f" > "$tmp"
   else
-    cp "$f" "$tmp"; printf '%s: %s\n' "$key" "$val" >> "$tmp"
+    # printf is safe here without any of the above: $enc is passed as an
+    # ARGUMENT to `%s`, never as (or into) the format string, so printf never
+    # reinterprets its contents.
+    cp "$f" "$tmp"; printf '%s: %s\n' "$key" "$enc" >> "$tmp"
   fi
   mv -f "$tmp" "$f"
 }
@@ -282,11 +402,26 @@ cmd_trim_note() {
     # drop the `note:` key from the first line, drop a `|`/`|-`/`>`/`>-` block header,
     # and unwrap a surrounding quote pair. What is left is verbatim text that cannot
     # carry YAML meaning once it is indented inside the block.
+    #
+    # This is the SAME encoding _yaml_decode_value (above cmd_set) undoes, kept
+    # as its own awk implementation rather than shelling out per-line, since it
+    # runs inline inside this one larger awk pass. It must stay in step by hand:
+    # a double-quoted wrap strips its surrounding quotes (legacy shape, never
+    # written by this file); a SINGLE-quoted wrap -- what cmd_set now always
+    # writes -- must ALSO un-double `''` back to `'`, which the previous version
+    # did not do (it stripped only a leading quote, via a `sub(/^'"'"'$/, "")`
+    # that could only ever match a string consisting of nothing but one quote
+    # character, so a trailing quote and any doubled `''` survived straight
+    # into the trimmed note).
     awk -v s="$start" -v e="$end" -v m="$max" '
       NR<s || NR>e { next }
       NR==s { sub(/^note:[[:space:]]*/, "")
               if ($0 ~ /^[|>][-+]?[0-9]*[[:space:]]*$/) next   # was already a block
-              sub(/^"/, ""); sub(/"$/, ""); sub(/^'"'"'/, ""); sub(/^'"'"'$/, "") }
+              if ($0 ~ /^".*"$/) { sub(/^"/, ""); sub(/"$/, "") }
+              else if ($0 ~ /^'"'"'.*'"'"'$/) {
+                $0 = substr($0, 2, length($0) - 2)
+                gsub(/'"''"'/, "'"'"'")
+              } }
       { line = $0
         sub(/^[[:space:]][[:space:]]/, "", line)               # de-indent old block body
         if (n + length(line) + 1 > m) {                        # cut INSIDE the block
@@ -437,20 +572,26 @@ cmd_add_finding() {
 
   # A newline in the summary would break the single-line YAML scalar and, worse, could
   # inject a sibling key. Collapse rather than reject: the caller is an agent mid-loop.
-  summary="$(printf '%s' "$summary" | tr '\n\r' '  ')"
+  # _yaml_collapse (shared with cmd_set, above) is the ONE place this happens.
+  summary="$(_yaml_collapse "$summary")"
 
-  # SINGLE-QUOTED YAML scalar, with `'` doubled. This is the whole encoding, and the
-  # reason it is single- and not double-quoted: a single-quoted YAML scalar performs NO
-  # escape processing, so `'' -> '` is the ONLY rule and a backslash is already literal.
-  # Double-quoting would need `\` and `"` escaped and would then re-interpret `\n`; plain
-  # (unquoted) was the original shape and could not survive a `: ` in the summary at all,
-  # which is the single most likely character sequence in a finding about code.
+  # SINGLE-QUOTED YAML scalar, with `'` doubled -- via the shared _yaml_quote
+  # helper (defined above cmd_set), which cmd_set now also calls, so a future
+  # hardening of one cannot leave the other behind. $summary is already
+  # collapsed above; _yaml_quote takes an already-collapsed value. The reason
+  # it is single- and not double-quoted: a single-quoted YAML scalar performs
+  # NO escape processing, so `'' -> '` is the ONLY rule and a backslash is
+  # already literal. Double-quoting would need `\` and `"` escaped and would
+  # then re-interpret `\n`; plain (unquoted) was the original shape and could
+  # not survive a `: ` in the summary at all, which is the single most likely
+  # character sequence in a finding about code.
   #
-  # This is also why nothing here needs `jq`. Making the summary safe is one substitution
-  # in any POSIX shell, so `add-finding` keeps working on stock Git Bash, which ships
-  # neither jq nor a real python3 (the same constraint guard.sh is built around).
+  # This is also why nothing here needs `jq`. Making the summary safe is one
+  # substitution in any POSIX shell, so `add-finding` keeps working on stock
+  # Git Bash, which ships neither jq nor a real python3 (the same constraint
+  # guard.sh is built around).
   local q_summary
-  q_summary="$(printf '%s' "$summary" | sed "s/'/''/g")"
+  q_summary="$(_yaml_quote "$summary")"
 
   # Duplicate check, scoped to the findings BLOCK and matched LITERALLY.
   #   - scoped: schema 3 carries `packets:` entries in the same `  - id: <x>` shape, so a
@@ -509,7 +650,7 @@ cmd_add_finding() {
   packets_flow="$(printf '%s' "$packets_csv" | sed 's/,/, /g')"
   entry="$(
     printf '  - id: %s\n' "$id"
-    printf "    summary: '%s'\n" "$q_summary"
+    printf '    summary: %s\n' "$q_summary"   # already quoted by _yaml_quote
     printf '    packets: [%s]\n' "$packets_flow"
     if [ "$want_body" = 1 ]; then printf '    file: %s' "$rel"; fi
     :

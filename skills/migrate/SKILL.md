@@ -64,7 +64,12 @@ layout; it is not a routine edit. Name explicitly:
 - that `status` and `parallel_group` are **dropped on purpose** (completion is
   derived from PRD capability checkboxes, concurrency is computed per run — storing
   either is how they drift),
-- and that nothing is deleted by the script, ever.
+- and the one thing `apply` **does** delete outright: the legacy `backlog.done`
+  block in `.agents/run-state.yaml` — completion is derived from the gspec
+  checkbox now (ADR 0025), so the block is dead state with no reader left, and
+  `apply` reports any id on it whose task is still unchecked before dropping it.
+  **A finding is different** — `apply` never deletes one, because a finding may
+  hold the only copy of something nobody has decided about yet (§5f).
 
 ## 4. Apply the mechanical moves
 
@@ -74,10 +79,24 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh apply <root>
 
 It moves plans with `git mv` (history preserved), stamps `spec-version` + `feature:`
 frontmatter onto plans that lack it, converts the roadmap, and then verifies. Relay
-its `MOVED=` / `STAMPED=` / `CONVERTED=` / `SKIP=` lines.
+its `MOVED=` / `STAMPED=` / `CONVERTED=` / `SKIP=` / `DROPPED=` / `UNCHECKED=` /
+`UNRECOGNIZED_BACKLOG_DONE=` lines — `SKIP=`, `UNCHECKED=` and
+`UNRECOGNIZED_BACKLOG_DONE=` need a decision from the user; `MOVED=`, `STAMPED=`,
+`CONVERTED=` and `DROPPED=` are informational.
 
 A `SKIP=` means a destination already existed — it left both files in place rather
 than overwrite. Those are for the user to reconcile; never resolve one by deleting.
+
+A `DROPPED=` reports the legacy `backlog.done` block being removed — informational,
+nothing to decide.
+
+An `UNCHECKED=` names an id that was recorded done but whose gspec task is still
+unchecked — the work may have been reverted, so reconciling it (check the box by
+hand, or leave it) is the user's call; `apply` will not flip it for you.
+
+An `UNRECOGNIZED_BACKLOG_DONE=` means the `done:` key exists in a shape the script
+does not trust itself to touch, so `apply` left it byte-for-byte. Point the user at
+the line range it names and let them drop it by hand once they have reviewed it.
 
 ## 5. The parts no script can do
 
@@ -127,6 +146,45 @@ work at the chief-engineer or `/gaffer:run-loop`, and testing method at
 **e. `.gitignore`.** Ensure `.agents/pause` and `.agents/pause.*` are ignored
 (ADR 0017), plus `.agents/run-state.yaml` and `.agents/metrics/` if missing.
 
+**f. The finding index — triage, one entry at a time.**
+`${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh findings-audit <root>` is read-only and
+never opens a body; per entry it reports `ENTRY=<id> PACKETS=<yes|no>
+VERDICT=<live|dead|unknown> SUMMARY_BYTES=<n> BODY=<yes|no> BODY_BYTES=<n>`, plus
+index and body totals for the run. `apply` acts on none of this — the index may
+hold the only copy of something nobody has decided about, so the triage is a
+conversation with the user, not a batch prompt: walk the entries **one at a
+time**, reading the summary (and the body, when `BODY=yes` and it looks
+load-bearing), and act per entry:
+
+- **`VERDICT=live`** — it still names a packet that is genuinely pending. No
+  action; move on.
+- **`VERDICT=dead`** — every packet it names has finished. Apply the same
+  capture-then-drop rule the loop applies at packet close: if the finding is
+  really "this should be built/fixed" and nothing has filed it yet, file the
+  backlog task first — that filing *is* the capture; an owner-gate sign-off or a
+  scoping note that only gated a now-finished packet is not durable knowledge and
+  needs no capture. Either way, drop it once decided.
+- **`VERDICT=unknown`** — routes to the user, not to a rule: the entry names no
+  `packets:` at all, or it names a packet that is neither pending nor
+  demonstrably finished. "Demonstrably finished" means the gspec checkbox or an
+  `[orch packet:<id>]` commit trailer — never the `done:` block dropped in step
+  4, above, which carried no fresher a signal than the boxes it mirrored.
+  Present the entry and ask for one of the same three outcomes: drop it (it
+  turned out to be spent), capture then drop it (file the backlog task, then
+  drop), or keep it and repair it — there is no `--packets` command for an
+  existing entry, so add the missing scope by hand to the entry in
+  `.agents/run-state.yaml`, in the **flow** form `add-finding` itself writes:
+  `packets: [<id>, <id>]`. A YAML *block* sequence (`packets:` then indented
+  `- <id>` lines) is valid YAML and parses cleanly, but `runstate.sh` reads this
+  key as an inline value only, so a block-form repair yields an empty scope and
+  the entry reads `unknown` forever — the repair fails silently, which is the one
+  outcome this triage exists to prevent. Re-run `migrate.sh findings-audit`
+  afterwards and confirm the entry's `VERDICT` has moved off `unknown`.
+
+Every drop is `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh drop-finding
+<run-state-file> <id>`, which removes the index entry and its body together —
+there is no path that leaves one orphaned.
+
 ## 6. Verify — and read it honestly
 
 ```bash
@@ -164,10 +222,12 @@ migration is not a run and has nothing to count.
 
 - **✅ What moved, converted, and was stamped.**
 - **⚠️ What is left for the human** — `gspec/roadmap.md` awaiting deletion, prose to
-  fold in, any `SKIP=` collisions, any plan worth regenerating. These are alerts, not
-  chores: an unrecognized capability line means a feature can never read as done, so
-  everything depending on it stays blocked forever and the backlog quietly reports
-  nothing to do.
+  fold in, any `SKIP=` collisions, any plan worth regenerating, any `UNCHECKED=` id
+  to reconcile, any `UNRECOGNIZED_BACKLOG_DONE=` block to drop by hand, and any
+  finding you kept-and-repaired or left for later in the §5f triage. These are
+  alerts, not chores: an unrecognized capability line means a feature can never
+  read as done, so everything depending on it stays blocked forever and the
+  backlog quietly reports nothing to do.
 - **The verification line, quoted** — and the packet count with it. A migration is not
   done when the files have moved; it is done when packets come out the other end, so
   lead with that number rather than the file count.

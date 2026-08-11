@@ -373,12 +373,8 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      above, or this commit's own `[orch packet:<landed>]` trailer, is the
      completion record now. (This is also why `drop-finding` and `add-finding`,
      below, both come *after* the write — they remove/append entries the write
-     would otherwise clobber.) Emit a **status** check-in
-     (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`, `landed: <landed>` @ its
-     SHA) — and if the human is reading you directly (inline mode, or you are
-     the session they are talking to), emit it in the **human check-in shape**
-     instead (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A):
-     a few lines, every id titled, no diff and no file list.
+     would otherwise clobber.) The status check-in is emitted further down,
+     once the stale-findings scan has a number to give it — see that bullet.
 
      Then close the packet out — every time:
 
@@ -428,6 +424,22 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
        way, drop with `runstate.sh drop-finding .agents/run-state.yaml <id>` — it
        removes the index entry and the body together, so neither is left
        orphaned.
+     - **Emit the status check-in.** If the scan above ran, read
+       `STALE_COUNT`/`OVER_THRESHOLD` off that same `findings --stale --finished`
+       call; if it was skipped for empty `IDS` there are no findings at all, so
+       omit the field. Those counts are measured **before** this packet's drops,
+       so they describe the index the packet inherited, not what it left behind —
+       over-reporting is the safe direction for a backstop. Follow
+       `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`'s contract exactly: include
+       `stale-findings: <N>` (`<N>` = `STALE_COUNT`, which may legitimately be 0)
+       only when `OVER_THRESHOLD=yes`; omit the field otherwise — its absence
+       means "index under threshold", never "checked and found zero". Emit the
+       **status** check-in (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`,
+       `landed: <landed>` @ its SHA) — and if the human is reading you directly
+       (inline mode, or you are the session they are talking to), emit it in the
+       **human check-in shape** instead
+       (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A): a few
+       lines, every id titled, no diff and no file list.
      - **Anything worth keeping past this packet is a FINDING, not note content**
        (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"
        --packets <id[,id...]>`. **`--packets` must name the packet(s) the finding

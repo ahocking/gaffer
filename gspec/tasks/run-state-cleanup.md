@@ -37,7 +37,7 @@ sequences T11 and T13 already rewrite.
 - [x] **T1** [P] **P0** Add `gspec-backlog.sh check-task` flipping one task's checkbox and never its text, name that write in ADR 0020's boundary section, and cover it in `test-gspec-backlog.sh`
   - deps: —
   - covers: The gspec task checkbox is the completion record, and the loop maintains it
-- [ ] **T2** **P1** Add a read-only adapter subcommand that, for a given set of packet ids, reports which name a still-unchecked gspec task and emits the finished set for `findings --stale` to consume, with a sweep case
+- [x] **T2** **P1** Add a read-only adapter subcommand that, for a given set of packet ids, reports which name a still-unchecked gspec task and emits the finished set for `findings --stale` to consume, with a sweep case
   - deps: T1
   - covers: A drifted completion record is reported at preflight
 - [x] **T3** [P] **P0** Make `add-finding` refuse without `--packets`, write the ids into the index entry, and name the four non-finding homes in its refusal, with `test-runstate.sh` cases
@@ -82,10 +82,10 @@ sequences T11 and T13 already rewrite.
 - [ ] **T16** [P] **P0** State in `templates/report-conventions.md` and both loop shapes that ✅ counts what this session landed, with the whole-backlog rule restated as forward-only
   - deps: —
   - covers: The tally's ✅ bucket is this session, everywhere
-- [ ] **T17** **P0** Add `backlog-done` detection to `scripts/migrate.sh` reporting unchecked tasks via the existing `$ADAPTER` before `apply` drops the block and `verify` asserts it gone, with `test-migrate.sh` cases
+- [x] **T17** **P0** Add `backlog-done` detection to `scripts/migrate.sh` reporting unchecked tasks via the existing `$ADAPTER` before `apply` drops the block and `verify` asserts it gone, with `test-migrate.sh` cases
   - deps: T2
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
-- [ ] **T18** **P0** Add the `findings` detection and read-only `findings-audit` subcommand to `scripts/migrate.sh`, reading finished-ness via the existing `$ADAPTER`, with `test-migrate.sh` cases asserting `apply` deleted nothing and covering an `unknown` verdict
+- [x] **T18** **P0** Add the `findings` detection and read-only `findings-audit` subcommand to `scripts/migrate.sh`, reading finished-ness via the existing `$ADAPTER`, with `test-migrate.sh` cases asserting `apply` deleted nothing and covering an `unknown` verdict
   - deps: T2, T17
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
 - [ ] **T19** [P] **P0** Add the one-entry-at-a-time findings triage with its three outcomes to `skills/migrate/SKILL.md` §5
@@ -97,3 +97,6 @@ sequences T11 and T13 already rewrite.
 - [ ] **T21** **P1** Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
   - deps: T11, T13, T16, T19
   - covers: Neither change bumps the run-state schema, and there is no flag day
+- [ ] **T22** **P0** Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision
+  - deps: T18, T19
+  - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding

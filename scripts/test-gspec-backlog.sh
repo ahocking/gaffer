@@ -938,6 +938,87 @@ out="$("$ADAPTER" nodes dupunchecked "$R" 2>/dev/null)"
 refute 'once both duplicates are checked the node no longer appears -- it converges' 'dupunchecked-t1' "$out"
 
 # =============================================================================
+printf '\n== task-status: read-only completion status (T2) ==\n'
+R="$TMPROOT/taskstatus"; mkdir -p "$R/gspec/tasks"
+{
+  printf -- '---\nspec-version: v1\nfeature: ts\n---\n\n# Plan: ts\n\n## Plan\n\n'
+  printf -- '- [x] **T1** **P0** already finished\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** still open\n'
+  printf -- '  - deps: T1\n'
+} > "$R/gspec/tasks/ts.md"
+
+out="$("$ADAPTER" task-status 'ts#T1' "$R")"; rc=$?
+check 'a finished task reads state finished'  "$(printf 'ts#T1\tfinished')" "$out"
+check 'the FINISHED= trailer names it'        'FINISHED=ts#T1' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a finished task' || bad 'exit 0 on a finished task' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'ts#T2' "$R")"; rc=$?
+check 'an unchecked task reads state unchecked' "$(printf 'ts#T2\tunchecked')" "$out"
+check 'the FINISHED= trailer is empty'          'FINISHED=' "$out"
+refute 'and does not name the unchecked task'   'FINISHED=ts#T2' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an unchecked task' || bad 'exit 0 on an unchecked task' "rc=$rc"
+
+# both accepted id forms resolve identically (reuses check-task's resolution)
+out="$("$ADAPTER" task-status 'ts-t1' "$R")"; rc=$?
+check 'the packet-id form resolves the same finished task' "$(printf 'ts-t1\tfinished')" "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on the packet-id form' || bad 'exit 0 on the packet-id form' "rc=$rc"
+
+# every "gspec is optional" case -> state unknown, exit 0, and the reason says which
+R2="$TMPROOT/taskstatus-nogspec"; mkdir -p "$R2"
+out="$("$ADAPTER" task-status 'ts#T1' "$R2")"; rc=$?
+check 'no gspec/ directory -> unknown'   "$(printf 'ts#T1\tunknown')" "$out"
+check 'and says gspec is optional'       'gspec is optional' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no gspec/ directory' || bad 'exit 0 with no gspec/ directory' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'fix-login-bug' "$R")"; rc=$?
+check 'an id that does not parse as a gspec task id -> unknown' "$(printf 'fix-login-bug\tunknown')" "$out"
+check 'and says so'                                              'not a gspec task id' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an unparseable task id' || bad 'exit 0 on an unparseable task id' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'other#T1' "$R")"; rc=$?
+check 'no plan file for that feature slug -> unknown' "$(printf 'other#T1\tunknown')" "$out"
+check 'and names the missing plan'                     'no gspec/tasks/other.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'ts#T99' "$R")"; rc=$?
+check 'a task id absent from an EXISTING plan -> unknown' "$(printf 'ts#T99\tunknown')" "$out"
+check 'and names the plan it looked in'                    'ts.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a task id absent from an existing plan (READ-ONLY: never the exit-4 drift signal check-task uses)' \
+  || bad 'exit 0 on drift for task-status' "rc=$rc"
+
+# a mixed set: the exact FINISHED= line, comma-separated, no spaces
+out="$("$ADAPTER" task-status 'ts#T1,ts#T2,fix-login-bug' "$R")"; rc=$?
+check 'finished line'   "$(printf 'ts#T1\tfinished')" "$out"
+check 'unchecked line'  "$(printf 'ts#T2\tunchecked')" "$out"
+check 'unknown line'    "$(printf 'fix-login-bug\tunknown')" "$out"
+check 'the FINISHED= trailer names only the finished id, comma-separated, no spaces' 'FINISHED=ts#T1' "$out"
+refute 'and never includes the unchecked or unknown ids'                             'FINISHED=ts#T1,ts#T2' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a mixed set, including unknown members' || bad 'exit 0 on a mixed set' "rc=$rc"
+
+# task-status is READ-ONLY: never touches gspec/ (check-task stays the one write)
+cp "$R/gspec/tasks/ts.md" "$TMPROOT/ts.before.md"
+"$ADAPTER" task-status 'ts#T2' "$R" >/dev/null
+cmp -s "$TMPROOT/ts.before.md" "$R/gspec/tasks/ts.md" \
+  && ok 'task-status never writes to the plan file' \
+  || bad 'task-status never writes to the plan file' "$(diff "$TMPROOT/ts.before.md" "$R/gspec/tasks/ts.md")"
+
+# usage errors are the only non-zero exits
+out="$("$ADAPTER" task-status '' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'no ids given is a genuine usage error' || bad 'no ids given is a genuine usage error' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'ts#T1' "$TMPROOT/does-not-exist-at-all")"; rc=$?
+[ "$rc" -ne 0 ] && ok 'an unreadable root is a genuine usage error' || bad 'an unreadable root is a genuine usage error' "rc=$rc, out=$out"
+
+# the shared resolution rejects a path-escaping slug exactly like check-task does,
+# even though task-status itself never writes -- a second copy that drifted would
+# be the defect this criterion exists to catch.
+out="$("$ADAPTER" task-status 'a/b#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug containing a path separator is refused, matching check-task' \
+  || bad 'a slug containing a path separator is refused' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

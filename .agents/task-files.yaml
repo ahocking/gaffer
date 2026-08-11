@@ -153,3 +153,7 @@ tasks:
   - task: run-state-cleanup#T21
     files: [CLAUDE.md]
     fingerprint: Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
+
+  - task: run-state-cleanup#T22
+    files: [skills/migrate/SKILL.md]
+    fingerprint: Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision

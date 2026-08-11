@@ -75,6 +75,18 @@
 #                            close. Idempotent (CHECKED=already); every "gspec is
 #                            optional" case exits 0; a task id absent from an
 #                            EXISTING plan is genuine drift and exits 4.
+#   task-status <id[,id...]> [root]   READ-ONLY (run-state-cleanup T2): for each
+#                            packet id, one `<id>\t<state>\t<task-ref-or-reason>`
+#                            line, state one of finished|unchecked|unknown, then
+#                            one trailing `FINISHED=<comma-sep ids>` line fed
+#                            VERBATIM to `runstate.sh findings --stale --finished`.
+#                            Accepts the same two id forms as check-task and
+#                            resolves them via the SAME shared function
+#                            (`_resolve_task_id`) so the two can never drift.
+#                            Every "gspec is optional" case reads `unknown`,
+#                            mirroring check-task's `CHECKED=none`; exit 0 for all
+#                            of them, non-zero only for a genuine usage error (no
+#                            ids, or an unreadable root).
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -600,10 +612,28 @@ cmd_files_status() {
 #   packet-id  <feature>-t<n>     (e.g. run-state-cleanup-t1 -- the node id
 #                                  _nodes_for emits, and what the loop actually
 #                                  holds at packet close)
-cmd_check_task() {
-  local task="${1:-}"; [ -n "$task" ] || die "check-task: need a task id"
-  local root; root="$(_root "${2:-}")"
-
+# _resolve_task_id <task> <root> — the id-resolution check-task and task-status
+# (T2) share: both accept `<feature>#T<n>` and the packet-id form
+# `<feature>-t<n>`, and must resolve them IDENTICALLY. A second copy that
+# drifted from this one is the defect this factoring exists to prevent. Prints
+# exactly one of:
+#   NOGSPEC                    no gspec/ directory at all (ADR 0020 D4)
+#   UNRESOLVED                 the token does not resolve to any real plan file
+#   REFUSED <message>          a canonical-form slug contains a path separator
+#                               or a '..' component (ADR 0025 D1) -- printed,
+#                               never `die`d, here: this runs inside a caller's
+#                               command substitution, where `exit` would only
+#                               kill the subshell capturing it, not the script.
+#                               Every caller must `die` on a REFUSED line itself.
+#   RESOLVED\t<slug>\t<id>      resolved to a real plan file. Whether <id>
+#                               actually EXISTS in that plan -- and its checked
+#                               state -- is NOT determined here: check-task and
+#                               task-status each need a different answer to
+#                               that (flip-or-already-or-notfound vs.
+#                               finished/unchecked/unknown), so it stays out of
+#                               the shared part. See `_task_lookup`.
+_resolve_task_id() {
+  local task="$1" root="$2"
   local slug="" id=""
   case "$task" in
     *'#'*)
@@ -616,7 +646,7 @@ cmd_check_task() {
   esac
 
   if ! _has_gspec "$root"; then
-    printf 'CHECKED=none\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    printf 'NOGSPEC\n'
     return 0
   fi
 
@@ -625,14 +655,17 @@ cmd_check_task() {
     # filename -- unlike the packet-id form below, nothing guarantees it
     # stays inside gspec/tasks/. Reject a path separator or a '..'
     # component before any file test (ADR 0025 D1: the adapter's one write
-    # is confined to gspec/tasks/<slug>.md). This runs after the
-    # gspec-is-optional early return above -- and can safely do so, because
-    # that return only ever tests $root/gspec, never the caller-supplied
-    # slug -- so every gspec-optional case still exits 0 regardless of what
-    # the caller passed as a slug.
+    # is confined to gspec/tasks/<slug>.md; task-status refuses the same
+    # unsafe input even though it never writes, so the two callers cannot
+    # silently diverge on it). This runs after the gspec-is-optional early
+    # return above -- and can safely do so, because that return only ever
+    # tests $root/gspec, never the caller-supplied slug -- so every
+    # gspec-optional case still exits 0 regardless of what the caller passed
+    # as a slug.
     case "$slug" in
       */*|*'..'*)
-        die "check-task: refusing a task id whose feature slug contains a path separator — the adapter's one write is confined to gspec/tasks/<slug>.md (ADR 0025 D1)"
+        printf 'REFUSED refusing a task id whose feature slug contains a path separator or '"'"'..'"'"' component (ADR 0025 D1)\n'
+        return 0
         ;;
     esac
   fi
@@ -676,33 +709,38 @@ cmd_check_task() {
   fi
 
   if [ -z "$slug" ] || [ -z "$id" ]; then
-    printf 'CHECKED=none\nREASON=not a gspec task id — nothing to flip (ADR 0020 D4: gspec is optional)\n'
+    printf 'UNRESOLVED\n'
     return 0
   fi
 
-  local plan relplan
+  printf 'RESOLVED\t%s\t%s\n' "$slug" "$id"
+}
+
+# _resolve_plan_path <slug> <root> — the plan-file location check-task and
+# task-status share: gspec/tasks/<slug>.md, falling back to the legacy
+# gspec/features/<slug>.plan.md. A third plan location must only ever need
+# editing here. Prints "<plan>\t<relplan>" if either exists on disk, or
+# nothing (empty output) if neither does -- callers test for that emptiness.
+_resolve_plan_path() {
+  local slug="$1" root="$2"
   if [ -f "$root/gspec/tasks/$slug.md" ]; then
-    plan="$root/gspec/tasks/$slug.md"; relplan="gspec/tasks/$slug.md"
+    printf '%s\t%s\n' "$root/gspec/tasks/$slug.md" "gspec/tasks/$slug.md"
   elif [ -f "$root/gspec/features/$slug.plan.md" ]; then
-    plan="$root/gspec/features/$slug.plan.md"; relplan="gspec/features/$slug.plan.md"
-  else
-    printf 'CHECKED=none\nREASON=no gspec/tasks/%s.md — nothing to flip\n' "$slug"
-    return 0
+    printf '%s\t%s\n' "$root/gspec/features/$slug.plan.md" "gspec/features/$slug.plan.md"
   fi
+}
 
-  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-
-  # Pass 1: READ-ONLY lookup. Determines whether the target task exists and,
-  # if so, whether it is already checked -- without touching the file. This is
-  # what makes the idempotent and not-found paths provably byte-identical: the
-  # file is never opened for writing unless a real flip is about to happen.
-  # Prefers the FIRST UNCHECKED match over an earlier checked one: a malformed
-  # plan with a duplicate id (`- [x] **T1**` sorted above `- [ ] **T1**`) must
-  # not report "already" while leaving the real, unchecked task live for
-  # `nodes` to keep re-emitting forever. Only when no unchecked match exists
-  # anywhere in the file does an earlier checked match count as "already".
-  local lookup status="notfound" foundid=""
-  lookup="$(awk -v want="$idlc" '
+# _task_lookup <plan> <idlc> — the READ-ONLY duplicate-id lookup check-task and
+# task-status share. Prefers the FIRST UNCHECKED match over an earlier checked
+# one: a malformed plan with a duplicate id (`- [x] **T1**` sorted above
+# `- [ ] **T1**`) must not report "already"/finished while leaving the real,
+# unchecked task live for `nodes` to keep re-emitting forever. Only when no
+# unchecked match exists anywhere in the file does an earlier checked match
+# count as "already". Prints "flip <id>" (an unchecked match exists), "already
+# <id>" (only checked matches exist), or nothing (no match at all).
+_task_lookup() {
+  local plan="$1" want="$2"
+  awk -v want="$want" '
     /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
       desc = $0
       sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*/, "", desc)
@@ -717,7 +755,48 @@ cmd_check_task() {
     END {
       if (!found && checked_id != "") print "already " checked_id
     }
-  ' "$plan")"
+  ' "$plan"
+}
+
+cmd_check_task() {
+  local task="${1:-}"; [ -n "$task" ] || die "check-task: need a task id"
+  local root; root="$(_root "${2:-}")"
+
+  local resolved; resolved="$(_resolve_task_id "$task" "$root")"
+  case "$resolved" in
+    NOGSPEC)
+      printf 'CHECKED=none\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+      return 0
+      ;;
+    UNRESOLVED)
+      printf 'CHECKED=none\nREASON=not a gspec task id — nothing to flip (ADR 0020 D4: gspec is optional)\n'
+      return 0
+      ;;
+    REFUSED\ *)
+      die "check-task: ${resolved#REFUSED }"
+      ;;
+  esac
+  local slug id
+  slug="$(printf '%s' "$resolved" | cut -f2)"
+  id="$(printf '%s' "$resolved" | cut -f3)"
+
+  local plan relplan pp
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'CHECKED=none\nREASON=no gspec/tasks/%s.md — nothing to flip\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+
+  # Pass 1: READ-ONLY lookup. Determines whether the target task exists and,
+  # if so, whether it is already checked -- without touching the file. This is
+  # what makes the idempotent and not-found paths provably byte-identical: the
+  # file is never opened for writing unless a real flip is about to happen.
+  local lookup status="notfound" foundid=""
+  lookup="$(_task_lookup "$plan" "$idlc")"
   if [ -n "$lookup" ]; then
     status="${lookup%% *}"
     foundid="${lookup#* }"
@@ -789,6 +868,62 @@ cmd_check_task() {
   printf 'CHECKED=%s#%s\nFILE=%s\n' "$slug" "$foundid" "$relplan"
 }
 
+# --- task-status: read-only completion status for a drifted-record report ----
+# (run-state-cleanup T2 / ADR 0020-adjacent). Reuses `_resolve_task_id` and
+# `_task_lookup` verbatim -- the same id resolution and duplicate-id handling
+# check-task has, never a second copy that can drift from it. NEVER writes:
+# check-task remains the adapter's one write (ADR 0025 D1).
+cmd_task_status() {
+  local ids_raw="${1:-}"; [ -n "$ids_raw" ] || die "task-status: need at least one packet id"
+  local root; root="$(_root "${2:-}")"
+  [ -d "$root" ] || die "task-status: no such directory: $root"
+
+  local finished_list="" id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    local state="" reason=""
+    local resolved; resolved="$(_resolve_task_id "$id" "$root")"
+    case "$resolved" in
+      NOGSPEC)
+        state="unknown"; reason="no gspec/ directory — gspec is optional (ADR 0020 D4)"
+        ;;
+      UNRESOLVED)
+        state="unknown"; reason="not a gspec task id"
+        ;;
+      REFUSED\ *)
+        die "task-status: ${resolved#REFUSED }"
+        ;;
+      *)
+        local slug tid plan="" relplan="" pp
+        slug="$(printf '%s' "$resolved" | cut -f2)"
+        tid="$(printf '%s' "$resolved" | cut -f3)"
+        pp="$(_resolve_plan_path "$slug" "$root")"
+        if [ -n "$pp" ]; then
+          plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+        fi
+        if [ -z "$plan" ]; then
+          state="unknown"; reason="no gspec/tasks/$slug.md"
+        else
+          local idlc lookup
+          idlc="$(printf '%s' "$tid" | tr '[:upper:]' '[:lower:]')"
+          lookup="$(_task_lookup "$plan" "$idlc")"
+          case "$lookup" in
+            flip\ *)    state="unchecked"; reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+            already\ *) state="finished";  reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+            *)          state="unknown";   reason="no task $tid in $relplan" ;;
+          esac
+        fi
+        ;;
+    esac
+    printf '%s\t%s\t%s\n' "$id" "$state" "$reason"
+    [ "$state" = "finished" ] && finished_list="${finished_list:+${finished_list},}${id}"
+  done <<EOF
+$(printf '%s' "$ids_raw" | tr ',' '\n')
+EOF
+
+  printf 'FINISHED=%s\n' "$finished_list"
+}
+
 cmd_nodes() {
   local slug="${1:-}"; [ -n "$slug" ] || die "nodes: need a feature slug"
   local root; root="$(_root "${2:-}")"
@@ -856,5 +991,6 @@ case "${1:-}" in
   interlock) shift; cmd_interlock "$@" ;;
   files-status) shift; cmd_files_status "$@" ;;
   check-task) shift; cmd_check_task "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status|check-task <task>} [root]" ;;
+  task-status) shift; cmd_task_status "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
 esac

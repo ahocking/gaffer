@@ -408,7 +408,7 @@ cmd_next() {
     printf 'NEXT=none\nREASON=no feature PRDs under gspec/features/\n'; return 0
   fi
   local pick
-  pick="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $4=="0" && $7!="1" {print $1; exit}')"
+  pick="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $4=="0" && $7!="1" && !seen {print $1; seen=1}')"
   if [ -z "$pick" ]; then
     # Three distinct nothing-to-do states, reported distinctly. Collapsing them
     # is how "the loop has stopped picking work up" gets misread as "the backlog
@@ -451,7 +451,7 @@ _nodes_for() {
   [ -f "$plan" ] || return 0
   local fdeps; fdeps="$(_fm_list "$root/gspec/features/$slug.md" 'depends_on')"
   if [ -z "$fdeps" ] && [ -f "$root/.agents/roadmap.yaml" ]; then
-    fdeps="$(_roadmap_rows "$root/.agents/roadmap.yaml" | awk -F'\t' -v s="$slug" '$1==s {print $3; exit}')"
+    fdeps="$(_roadmap_rows "$root/.agents/roadmap.yaml" | awk -F'\t' -v s="$slug" '$1==s && !seen {print $3; seen=1}')"
   fi
 
   local sc; sc="$(mktemp)"

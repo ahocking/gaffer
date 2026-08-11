@@ -323,7 +323,7 @@ _backlog_done_report() {
   [ -n "$ids" ] || return 0
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    state="$("$ADAPTER" task-status "$id" "$root" 2>/dev/null | awk -F'\t' -v i="$id" '$1==i{print $2; exit}')"
+    state="$("$ADAPTER" task-status "$id" "$root" 2>/dev/null | awk -F'\t' -v i="$id" '$1==i && !seen {print $2; seen=1}')"
     if [ "$state" = "unchecked" ]; then
       printf 'UNCHECKED=%s\tgspec task is still unchecked -- the work may have been reverted; reconciling is a human decision, apply will not flip it\n' "$id"
     fi
@@ -407,7 +407,7 @@ _trailer_landed() {
 # finished too, not unknown forever.
 _packet_finished_state() {
   local root="$1" id="$2" state
-  state="$("$ADAPTER" task-status "$id" "$root" 2>/dev/null | awk -F'\t' -v i="$id" '$1==i{print $2; exit}')"
+  state="$("$ADAPTER" task-status "$id" "$root" 2>/dev/null | awk -F'\t' -v i="$id" '$1==i && !seen {print $2; seen=1}')"
   case "$state" in
     finished|unchecked) printf '%s\n' "$state" ;;
     *)

@@ -68,10 +68,10 @@ populated until it is.
 
 ## Plan
 
-- [ ] **T1** **P1** Make `test-runstate.sh`'s `yamlok` record a counted, reported FAIL reading "not asserting vacuously" instead of `return 0` when no YAML parser is present — the shape `test-report-conventions.sh:71-72` already uses — surface the skip in the sweep's summary line, and correct the in-sweep comments at `:582`, `:771` and `:810` that state the parse is unconditional
+- [x] **T1** **P1** Make `test-runstate.sh`'s `yamlok` record a counted, reported FAIL reading "not asserting vacuously" instead of `return 0` when no YAML parser is present — the shape `test-report-conventions.sh:71-72` already uses — surface the skip in the sweep's summary line, and correct the in-sweep comments at `:582`, `:771` and `:810` that state the parse is unconditional
   - deps: —
   - covers: The sweep's parse assertion never silently no-ops
-- [ ] **T2** [P] **P1** Apply that same loud-skip shape to both parser-gated helpers in `test-migrate.sh` — `yamlok` at `:31`, and `yaml_cursor` at `:42` whose `return 0` yields an empty *value* a caller then compares as a pass — and correct the comment at `:294-295`
+- [x] **T2** [P] **P1** Apply that same loud-skip shape to both parser-gated helpers in `test-migrate.sh` — `yamlok` at `:31`, and `yaml_cursor` at `:42` whose `return 0` yields an empty *value* a caller then compares as a pass — and correct the comment at `:294-295`
   - deps: T1
   - covers: The sweep's parse assertion never silently no-ops
 - [ ] **T3** **P1** Identify why `test-runstate.sh`'s case `trim-note handles the multi-line shape` fails roughly 1 run in 20 while `runstate.sh trim-note` is deterministic on that exact fixture in isolation, then either fix the cause or make the case deterministic and record which it was — a retry or re-run-until-green remedy is out of bounds, the SIGPIPE-under-`pipefail` lead is already ruled out (see the preamble), and the remedy is confirmed over the same 40-consecutive-run probe shape that ruled it out — for a 1-in-20 flake, "it passed" is not evidence

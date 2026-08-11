@@ -303,6 +303,40 @@ assert_true "  the target is now the stub (the checks really cannot see this one
 assert_true "  the ORIGINAL good file survives byte-identical as run-state-prev.yaml" \
   "cmp -s '$EEPREV' '$EE_ORIG_SNAPSHOT'"
 
+# --- T8: the integrity checks must run on EVERY host runstate.sh runs on --------
+# `runstate.sh` is POSIX shell with no parser dependency, deliberately: stock Git
+# Bash ships neither `jq` nor a real `python3` (the constraint `hooks/guard.sh` is
+# built around), and a check that quietly disables itself when a tool is missing is
+# the defect T1 fixed one file over. Asserting "no jq/python3 in the source" would
+# be a grep; this EXECUTES the encoder and the write check with both stripped from
+# PATH and demands byte-identical behaviour.
+#
+# The scrub wraps ONLY the runstate.sh invocations. Wrapping the whole block would
+# also blind the sweep's own `have_yaml`, which would trip T1's loud skip and fail
+# the run for the wrong reason — the assertions below would go red while telling us
+# nothing about `runstate.sh`.
+NOTOOLS="$(mktemp -d)"
+for t in jq python3 python yq; do
+  printf '#!/bin/sh\nexit 127\n' > "$NOTOOLS/$t"; chmod +x "$NOTOOLS/$t"
+done
+bare() { PATH="$NOTOOLS:$PATH" "$RUNSTATE" "$@"; }   # runstate.sh only, never the sweep
+T8D="$(mktemp -d)"; T8F="$T8D/run-state.yaml"
+printf 'schema: 3\nstatus: running\n' > "$T8F"
+assert_true "no-tools host: the parser stubs really do shadow the real ones" \
+  "! PATH='$NOTOOLS:\$PATH' jq --version >/dev/null 2>&1 && ! PATH='$NOTOOLS:\$PATH' python3 -c '' >/dev/null 2>&1"
+assert_true "no-tools host: set encodes a hostile value" \
+  "bare set '$T8F' note 'blocked on the commit: it'\"'\"'s stuck'"
+assert_true "no-tools host: the encoding is byte-identical to a full-PATH run" \
+  "[ \"\$(grep '^note:' '$T8F')\" = \"note: 'blocked on the commit: it''s stuck'\" ]"
+assert_true "no-tools host: get decodes it back" \
+  "[ \"\$(bare get '$T8F' note)\" = \"blocked on the commit: it's stuck\" ]"
+assert_true "no-tools host: write still refuses a truncation stub" \
+  "! printf 'garbage with no schema key\n' | bare write '$T8F' 2>/dev/null"
+assert_true "no-tools host: the refused write left the file intact" \
+  "[ \"\$(bare get '$T8F' status)\" = running ]"
+assert_true "no-tools host: a valid write still succeeds" \
+  "printf 'schema: 3\nstatus: paused\n' | bare write '$T8F'"
+
 # The backup must be INVISIBLE to git, and this is load-bearing rather than tidy:
 # an untracked file is swept by the pause path's `git stash --include-untracked`
 # and read by `reconcile` in `git status --porcelain` as scratch sitting on the

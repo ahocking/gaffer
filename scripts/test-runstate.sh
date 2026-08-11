@@ -132,11 +132,27 @@ decision() { "$RUNSTATE" reconcile "$RS" "$REPO" | sed -n 's/^DECISION=//p'; }
 run_hook() { CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_PROJECT_DIR="$REPO" bash "$HOOK" </dev/null; }
 
 echo "== status field: set inserts + flips atomically, no leftover temp =="
-assert_true "set inserts status=running" \
+# REGRESSION CASE for a silent crash-misreport: cmd_set (T4) now ALWAYS quotes
+# its value (`status: 'running'` on disk, no plain-scalar allowlist -- see
+# _yaml_encode_value's comment for why), so this asserts the write/read pair
+# together, through cmd_get (T5), rather than the raw byte on disk. If cmd_get
+# ever stopped stripping the encoding symmetrically, `status` would come back
+# as the literal string `'running'`, `hooks/session-start.sh`'s bare `case
+# "$status" in running) ...` would stop matching, and a crashed run (status
+# left at `running`) would fall through to the "paused cleanly, resume
+# normally" branch -- the wrong recovery instruction, with nothing anywhere
+# signalling the mismatch. See hooks/session-start.sh:36-51.
+assert_true "set inserts status=running (round-trips bare through get)" \
   "\"\$RUNSTATE\" set '$RS' status running && [ \"\$(\"\$RUNSTATE\" get '$RS' status)\" = running ]"
-assert_true "set flips status=paused" \
+assert_true "set flips status=paused (round-trips bare through get)" \
   "\"\$RUNSTATE\" set '$RS' status paused && [ \"\$(\"\$RUNSTATE\" get '$RS' status)\" = paused ]"
 assert_true "no temp file left after set" "no_temp"
+# The bare round-trip above goes through cmd_get's decode -- confirm the RAW
+# byte on disk really is quoted (i.e. this isn't passing because nothing
+# quotes it in the first place). Checked against the value the prior "flips"
+# assertion left in place: status=paused.
+assert_true "status is actually quoted on disk (not bare -- no allowlist)" \
+  "grep -qx \"status: 'paused'\" '$RS'"
 
 echo "== atomic full write (temp + rename) round-trips =="
 assert_true "write persists full file, green intact" \
@@ -463,8 +479,13 @@ assert_true "re-claiming does not duplicate the key" "[ \"\$(grep -c '^driver_he
 mk_drv running "$OLD" "$ME"
 "$RUNSTATE" heartbeat "$DRS" >/dev/null
 assert_true "heartbeat revives a stale claim"   "case \"\$(drv)\" in DRIVER=live*) true;; *) false;; esac"
+# via "$RUNSTATE" get, not the raw-grep rs_get: driver_pid is written through
+# cmd_set (T4/T5), which now always quotes, so the raw byte on disk is
+# `driver_pid: '4242'` -- the decoded round-trip through cmd_get is the
+# correct thing to assert here, not the raw bytes (that's the drift-pin/
+# hostile-value cases below).
 assert_true "explicit pid is recorded when vouched for" \
-  "\"\$RUNSTATE\" claim-driver \"\$DRS\" 4242 >/dev/null && [ \"\$(rs_get \"\$DRS\" driver_pid)\" = 4242 ]"
+  "\"\$RUNSTATE\" claim-driver \"\$DRS\" 4242 >/dev/null && [ \"\$(\"\$RUNSTATE\" get \"\$DRS\" driver_pid)\" = 4242 ]"
 
 echo
 echo "== trim-note: bound the note, archive the overflow (ADR 0019 v3.4) =="
@@ -626,6 +647,101 @@ for case_name in colon hash quote backslash dashlead brace; do
     "[ \"\$(grep -c '^status:' \"$FY/rs-$case_name.yaml\")\" = 1 ]"
 done
 
+# --- `set`'s VALUE is untrusted text too (T4, runstate-write-integrity) -----
+# Every case below produced an unparseable run-state (or a silently injected
+# sibling key) before the shared _yaml_quote/_yaml_encode_value helper. Each
+# asserts a real YAML parse (or loud, counted skip -- see yamlok above), a
+# round-trip read-back, and an unchanged top-level key count, mirroring the
+# three assertions the hostile-summary loop above already makes for
+# add-finding. Fixtures carry a key BEFORE and a key AFTER the one being set,
+# so an injected sibling is detectable rather than landing harmlessly at the
+# end of the file.
+#
+# _yaml_value <file> <key> -- the REAL parsed value for <key>, via
+# python3+PyYAML. Deliberately NOT a mirror of runstate.sh's own encoder: a
+# self-consistent encode/decode pair that agrees with itself but disagrees
+# with YAML (e.g. escaping a backslash inside a single-quoted scalar, which
+# single-quoting must NOT do) would pass a mirror-based check and still be
+# wrong. Only meaningful when have_yaml is true; callers gate on that (same
+# pattern as yamlok) so a parser-less host reports a loud, counted skip
+# rather than a silent pass.
+_yaml_value() {
+  python3 -c "
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+v = d.get(sys.argv[2])
+sys.stdout.write('' if v is None else str(v))
+" "$1" "$2"
+}
+_top_key_count() { grep -cE '^[A-Za-z_][A-Za-z0-9_]*:' "$1"; }
+for case_name in colon quote newline dashlead hash brackets pipe trailspace colonend backslash \
+                 typedno typedon typedzero typedoctal; do
+  case "$case_name" in
+    colon)      s='guard.sh: fails closed on unreadable input' ;;
+    quote)      s="it's got 'single' quotes" ;;
+    newline)    s="$(printf 'line one\nline two')" ;;
+    dashlead)   s='- leading dash reads as a list item' ;;
+    hash)       s='trailing comment # not a comment' ;;
+    brackets)   s='{flow: mapping} and [flow, seq] and & anchor * alias' ;;
+    pipe)       s='a | delimiter breaks the old s|...|...| replace' ;;
+    trailspace) s='trailing space ' ;;
+    # A now-DELETED allowlist once let this through bare: every character in
+    # `naive:` individually passed a [A-Za-z0-9._:/+-] class, but `t: naive:`
+    # is a second, empty mapping key and PyYAML refuses it. Kept as a
+    # regression case even though _yaml_encode_value has no branch left to
+    # regress -- always-quote makes it pass structurally, which is the point.
+    colonend)   s='naive:' ;;
+    # matches add-finding's own backslash case (line ~ colon/quote/backslash
+    # loop above): the case most likely to hide a wrong "escape the
+    # backslash" encoder behind a mirror decoder that makes the same mistake.
+    backslash)  s='windows path C:\nope needs \t no escaping' ;;
+    # The allowlist's SECOND failure class (the one that killed it): these all
+    # passed the character-class check AND parsed, but YAML's own implicit
+    # typing reads them back as something other than a string -- silently,
+    # with the file still valid. Round-trip must equal the literal string.
+    typedno)    s='no' ;;      # -> bool False, unquoted
+    typedon)    s='on' ;;      # -> bool True, unquoted
+    typedzero)  s='00' ;;      # -> int 0, unquoted
+    typedoctal) s='0755' ;;    # -> int 493 (octal), unquoted
+  esac
+  printf 'before: 1\ntarget: original\nafter: 1\n' > "$FY/rs-set-$case_name.yaml"
+  before_count="$(_top_key_count "$FY/rs-set-$case_name.yaml")"
+  expected="$s"
+  case "$case_name" in newline) expected="$(printf '%s' "$s" | tr '\n\r' '  ')" ;; esac
+  assert_true "set hostile value ($case_name) keeps run-state parseable" \
+    "\"\$RUNSTATE\" set \"$FY/rs-set-$case_name.yaml\" target \"\$s\" >/dev/null && yamlok \"$FY/rs-set-$case_name.yaml\""
+  assert_true "set hostile value ($case_name) round-trips through a real YAML parse" \
+    "yamlok \"$FY/rs-set-$case_name.yaml\" && [ \"\$(_yaml_value \"$FY/rs-set-$case_name.yaml\" target)\" = \"\$expected\" ]"
+  assert_true "set hostile value ($case_name) round-trips through cmd_get" \
+    "[ \"\$(\"\$RUNSTATE\" get \"$FY/rs-set-$case_name.yaml\" target)\" = \"\$expected\" ]"
+  assert_true "set hostile value ($case_name) injects no sibling key" \
+    "[ \"\$(_top_key_count \"$FY/rs-set-$case_name.yaml\")\" = \"$before_count\" ]"
+  assert_true "set hostile value ($case_name) is quoted on disk (no allowlist)" \
+    "[ \"\$(rs_get \"$FY/rs-set-$case_name.yaml\" target | cut -c1)\" = \"'\" ]"
+done
+
+# Anti-drift pin: `set` and `add-finding` now call the SAME encoder, so the
+# same hostile value must come out byte-identical from both -- pinned
+# mechanically, not by comment, so a future change that hardens one and not
+# the other fails this immediately. Two values, not one: the first contains a
+# space and a `'` so both paths take the QUOTING branch (pins _yaml_quote);
+# the second is a bare newline so both paths must COLLAPSE it identically
+# first (pins _yaml_collapse -- a single shared-quoting pin cannot see a
+# collapse divergence, since collapsing happens before quoting).
+for drift_case in quoted newline; do
+  case "$drift_case" in
+    quoted)  DRIFT_VAL="guard.sh: fails closed on 'unreadable' input" ;;
+    newline) DRIFT_VAL="$(printf 'first line\nsecond line')" ;;
+  esac
+  printf 'schema: 3\nfindings:\ntarget: original\n' > "$FY/rs-drift-$drift_case.yaml"
+  "$RUNSTATE" set "$FY/rs-drift-$drift_case.yaml" target "$DRIFT_VAL" >/dev/null
+  "$RUNSTATE" add-finding "$FY/rs-drift-$drift_case.yaml" f-drift "$DRIFT_VAL" --packets pkt-1 >/dev/null
+  SET_ENC="$(rs_get "$FY/rs-drift-$drift_case.yaml" target)"
+  FINDING_ENC="$(grep -E '^ *summary:' "$FY/rs-drift-$drift_case.yaml" | head -1 | sed -E 's/^ *summary:[[:space:]]*//')"
+  assert_true "set and add-finding encode the same hostile value identically ($drift_case)" \
+    "[ \"\$SET_ENC\" = \"\$FINDING_ENC\" ]"
+done
+
 # A duplicate check that scans the WHOLE file collides with schema-3 `packets:` ids,
 # which share the `  - id: <x>` shape — and a finding named after the packet it is
 # about is the natural name, so this silently refused real findings.
@@ -771,12 +887,31 @@ big=""; i=0; while [ $i -lt 120 ]; do big="${big}${long}"; i=$((i+1)); done
 { printf 'schema: 3\nnote: |-\n'; i=0
   while [ $i -lt 120 ]; do printf '  %s\n' "$long"; i=$((i+1)); done
   printf 'status: paused\n'; }                                        > "$FT/block.yaml"
-for shape in plain dq block; do
+# `sq`: single-quoted -- the ONLY shape cmd_set ever writes now (T4/T5). Unlike
+# `long` above, this one carries an embedded `'` so a broken un-double is
+# actually visible in the trimmed output, not just a parse failure.
+long_sq="it's a ratio: high and 'quoted' and C:\path "
+big_sq=""; i=0; while [ $i -lt 120 ]; do big_sq="${big_sq}${long_sq}"; i=$((i+1)); done
+enc_sq="$(printf '%s' "$big_sq" | sed "s/'/''/g")"
+printf "schema: 3\nnote: '%s'\nstatus: paused\n" "$enc_sq" > "$FT/sq.yaml"
+for shape in plain dq block sq; do
   assert_true "trim-note keeps YAML valid ($shape note)" \
     "\"\$RUNSTATE\" trim-note \"$FT/$shape.yaml\" 200 >/dev/null && yamlok \"$FT/$shape.yaml\""
   assert_true "trim-note preserves the key after note ($shape)" \
     "grep -q '^status: paused' \"$FT/$shape.yaml\""
 done
+# CONTENT assertions for `sq`, mutation-proven (the two generic assertions
+# above -- "still valid YAML" and "key after note survives" -- both pass
+# against the PRE-fix unwrap, which stripped only a leading quote and left the
+# trailing quote and every doubled `''` in place; neither one looks at the
+# note's content at all). These do: reverting the fix's `case`/`gsub` back to
+# the old `sub(/^"/,"");sub(/"$/,"");sub(/^'"'"'/,"");sub(/^'"'"'$/,"")` line
+# makes BOTH of these fail (verified by hand against that exact reverted
+# line); the fix as shipped makes both pass.
+assert_true "trim-note un-doubles '' back to ' in a single-quoted note (sq)" \
+  "grep -qF \"it's a ratio: high and 'quoted'\" \"$FT/sq.yaml\""
+assert_true "trim-note leaves no doubled '' in a single-quoted note's trimmed block (sq)" \
+  "! grep -q \"''\" \"$FT/sq.yaml\""
 
 # record-outcome writes a JSON line the collector slurps; one malformed line makes jq
 # drop EVERY attestation at once, silently. Reject the input instead.
@@ -859,8 +994,27 @@ assert_true "a done:-free write parses" \
   "yamlok \"$WD/run-state.yaml\""
 assert_true "a done:-free write: cursor round-trips" \
   "[ \"\$(rs_cursor \"$WD/run-state.yaml\")\" = pkt-z ]"
+# Same fixture, but through "$RUNSTATE" cursor (cmd_cursor -> _yaml_decode_value)
+# rather than the test's own raw-grep rs_cursor above: this is a write-produced,
+# never-quoted value, so the decode must be a genuine no-op on it, not merely
+# agree with rs_cursor by coincidence.
+assert_true "cursor decode is a no-op on an unquoted, write-produced value" \
+  "[ \"\$(\"\$RUNSTATE\" cursor \"$WD/run-state.yaml\")\" = pkt-z ]"
 assert_true "a done:-free write carries no done: key" \
   "! grep -qE '^[[:space:]]*done:' \"$WD/run-state.yaml\""
+
+# STRICT no-op, mutation-proven (ADR 0022/gspec-driver preamble: "a check that
+# looks like it is running and is not"). Changing _yaml_decode_value's `case`
+# pattern from `\'*\'` (requires BOTH a leading AND a matching trailing quote)
+# to the over-eager `\'*` (strips a leading quote off ANY value) still passes
+# every case above -- none of them uses a legacy value that starts with a
+# quote but does not end with one. This one does: `'tis nearly done` is a
+# real (if YAML-hostile) legacy byte pattern this file must not corrupt --
+# under the over-eager mutant it becomes `tis nearly done`, silently.
+LQ="$(mktemp -d)/.agents"; mkdir -p "$LQ"
+printf "schema: 3\nnote: 'tis nearly done\nstatus: paused\n" > "$LQ/run-state.yaml"
+assert_true "get is a STRICT no-op: a leading quote with no matching trailing quote survives" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$LQ/run-state.yaml\" note)\" = \"'tis nearly done\" ]"
 
 # The legacy fixture's packet-less findings must NEVER read STALE=yes, no matter
 # how complete the supplied finished set is — only the new-shape entry (which

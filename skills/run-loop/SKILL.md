@@ -67,12 +67,17 @@ Pick, in this order:
 2. **Otherwise count the backlog** — `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
    summary .agents/run-state.yaml` (pending + the cursor), else the node count from
    `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes-all`:
-   - **< 20 packets → INLINE.** Below the measured crossover the relay costs ~29%
-     more tokens and ~40% more wall clock and buys nothing: the context never gets
-     near the window.
-   - **≥ 20 packets → RELAY.** Past the crossover the relay is *both* cheaper
-     (~27% at 33 packets, ~50% at 52) and the only mode that finishes without
-     compaction. Real backlogs reach this often — 33 and 52 packets observed.
+   - **< 40 packets → INLINE. This is the default, and it covers nearly every
+     real backlog.** Measured across 62 packets of production runs, relay costs
+     **1.84x inline per packet** in cache creation, and the coordinator role
+     carries a `cc_shape` max of 142k–240k with 9–55 turns over 50k in *every*
+     relay run — a standing context re-cached on each turn. Inline has no such
+     role.
+   - **≥ 40 packets → RELAY.** Only a backlog long enough to actually threaten
+     the context window justifies paying that. Inline's forced compaction sits
+     around packet **~28**, and the largest run ever observed is **14 packets** —
+     so this branch is deliberately rare, and reaching it is a signal the backlog
+     should probably be split rather than relayed.
 3. **State the mode and the packet count in one line** before you start, so the
    human can override with the flag.
 

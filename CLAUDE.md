@@ -125,12 +125,23 @@ passing sweeps.
   implementation and research, haiku = the summarizer/doc agent (`doc-writer`).
 - **Skills** (`skills/<name>/SKILL.md`): frontmatter with `name`, `description`,
   `argument-hint`. Reference shared files via `${CLAUDE_PLUGIN_ROOT}/...`.
-- **The loop skills choose relay vs inline by backlog size** (`run-loop`, `resume`
-  — ADR 0012): **≥ 20 packets** → dispatch a fresh `chief-engineer` per packet and
-  relay its check-in verbatim (context stays flat; ~27–50% cheaper on the 33- and
-  52-packet backlogs real repos actually carry); **< 20** → run it inline (the
-  relay costs ~29% more there and prevents nothing). `--relay`/`--inline` override.
-  **20 is a measured crossover, not a taste** — if you change the brief or
+- **INLINE IS THE DEFAULT; relay is for backlogs ≥ 40 packets** (`run-loop`,
+  `resume` — ADR 0012, **crossover raised from 20 to 40 on 2026-08-10**).
+  `--relay`/`--inline` override. The original 20 came from a *token extrapolation*
+  (k≈21) with no production comparator. The first real one — 62 packets across two
+  repos, `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent`
+  history — says **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
+  cacheCreation), and names the mechanism: the coordinator role carries a
+  `cc_shape` max of **142k–240k with 9–55 turns over 50k in every relay run**,
+  while no inline run has such a role. **The number is still not clean, and that is
+  why relay was kept rather than deleted:** 65–96% of tool duration in those runs
+  sits in the coordinator's own context, much of it **busy-wait polling** (33
+  `until` loops = 51% of one run's wall clock), so each poll re-caches that
+  standing context and inflates the very figure being compared. Fix the busy-wait,
+  then re-measure as a two-arm A/B — that is `loop-cost-controls` P0, and deleting
+  relay outright is the legitimate outcome if the gap survives. Note the regime the
+  relay was built for has **never been reached**: inline compacts around packet
+  ~28 and the largest run ever observed is **14**. If you change the brief or
   re-measure, update the ADR and both skills together.
 - **Parallel mode is opt-in and worktree-isolated** (`run-loop`/`resume --parallel`
   — ADR 0016, amends ADR 0009). The default loop is single-checkout sequential and

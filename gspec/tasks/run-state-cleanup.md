@@ -64,19 +64,19 @@ sequences T11 and T13 already rewrite.
 - [x] **T10** [P] **P0** Add the one-line stale-findings field to `templates/check-in.md`, emitted only when the index exceeds the threshold, and require packet ids on the `Findings:` line so the scheduler can record a lane's finding under the new `--packets` rule
   - deps: T6
   - covers: A resolved finding is captured before it is dropped, by the session that resolved it
-- [ ] **T11** **P0** Rewrite `run-loop` §3.3 packet close to drop the `done` append, flip the checkbox of a gspec-sourced packet in the packet commit (skipped, not failed, when the backlog is not gspec), then — after the run-state write, for the same reason `add-finding` is — apply the capture-then-drop test to that packet's findings, where filing a backlog task is the capture and a spent sign-off is not, dropping only the spent ones and passing packet ids to the `add-finding` site in that block
+- [x] **T11** **P0** Rewrite `run-loop` §3.3 packet close to drop the `done` append, flip the checkbox of a gspec-sourced packet in the packet commit (skipped, not failed, when the backlog is not gspec), then — after the run-state write, for the same reason `add-finding` is — apply the capture-then-drop test to that packet's findings, where filing a backlog task is the capture and a spent sign-off is not, dropping only the spent ones and passing packet ids to the `add-finding` site in that block
   - deps: T1, T5, T6
   - covers: The gspec task checkbox is the completion record, and the loop maintains it · A resolved finding is captured before it is dropped, by the session that resolved it
-- [ ] **T12** **P1** Make `run-loop` preflight report any `[orch packet:]` trailer naming a still-unchecked task, without flipping and without blocking
+- [x] **T12** **P1** Make `run-loop` preflight report any `[orch packet:]` trailer naming a still-unchecked task, without flipping and without blocking
   - deps: T2, T11
   - covers: A drifted completion record is reported at preflight
-- [ ] **T13** **P0** Make the scheduler flip at green-lane merge and then apply the same capture-then-drop test to that lane's reported findings, updating the `parallel.md` P1.4 `add-finding` site to pass the lane's packet ids
+- [x] **T13** **P0** Make the scheduler flip at green-lane merge and then apply the same capture-then-drop test to that lane's reported findings, updating the `parallel.md` P1.4 `add-finding` site to pass the lane's packet ids
   - deps: T11
   - covers: A finding is dropped at the packet boundary, and both halves go or neither
-- [ ] **T14** [P] **P0** Update the three `backlog.done` sites in `skills/resume/SKILL.md`, with orphan adoption removing from `pending` and flipping the checkbox of a gspec-sourced packet (skipped, not failed, when the backlog is not gspec)
+- [x] **T14** [P] **P0** Update the three `backlog.done` sites in `skills/resume/SKILL.md`, with orphan adoption removing from `pending` and flipping the checkbox of a gspec-sourced packet (skipped, not failed, when the backlog is not gspec)
   - deps: T1
   - covers: `backlog.done` is deleted, with no counter, tail, or replacement
-- [ ] **T15** [P] **P0** Remove the two `backlog.done` sites from `skills/pause/SKILL.md`, including the run-state heredoc
+- [x] **T15** [P] **P0** Remove the two `backlog.done` sites from `skills/pause/SKILL.md`, including the run-state heredoc
   - deps: —
   - covers: `backlog.done` is deleted, with no counter, tail, or replacement
 - [x] **T16** [P] **P0** State in `templates/report-conventions.md` and both loop shapes that ✅ counts what this session landed, with the whole-backlog rule restated as forward-only
@@ -100,3 +100,6 @@ sequences T11 and T13 already rewrite.
 - [ ] **T22** **P0** Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision
   - deps: T18, T19
   - covers: Migration is detection plus interactive triage, and `apply` never deletes a finding
+- [ ] **T23** **P1** Give `templates/check-in.md`'s `stale-findings:` field a producer: T10 added the field and T11 added the `findings --stale` scan, but §3.4 emits the check-in *before* that scan runs, so nothing can populate it and no session ever sees the backstop. Order the scan ahead of the check-in emission (or carry the count forward to it) in `skills/run-loop/SKILL.md` and the `parallel.md` scheduler
+  - deps: T10, T11, T13
+  - covers: A resolved finding is captured before it is dropped, by the session that resolved it

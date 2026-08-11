@@ -49,6 +49,11 @@ features:
     why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"
     depends_on: []
 
+  - slug: runstate-write-integrity
+    order: 19
+    why: "two live-fired corruption paths in the writer of the loop's ONLY durable state, found while running run-state-cleanup: `set` writes an unquoted YAML scalar (a packet-close note containing `: ` broke the parse), and `write` replaces the file with unvalidated stdin (a failed awk left a 26-byte stub). run-state is gitignored, so neither is recoverable by git. Ordered immediately after run-state-cleanup because that feature rewrites the packet-close sequence these paths sit in — fixing the writer first would collide with it, and fixing it later leaves every packet close running through a known corruption path. Also covers a third defect of the same shape: test-runstate.sh's YAML-parse assertions silently no-op on a host without PyYAML"
+    depends_on: [run-state-cleanup]
+
   - slug: metrics-coverage-gaps
     order: 20
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"

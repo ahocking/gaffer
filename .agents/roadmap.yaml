@@ -39,6 +39,11 @@ features:
     why: "three defects its parent's whole-branch review found; ordered first because two of them degrade every run until fixed — the load-timing model is wrong in the two documents every packet reads, and the packet rules shipped today may not reach the scoping agent at all, so later features get scoped under machinery that is still broken"
     depends_on: [self-host-hardening]
 
+  - slug: loop-cost-controls
+    order: 16
+    why: "measured, not speculative: one 6-packet run on 2026-08-10 spent 51% of its wall clock (7,135s) in agent busy-wait loops producing nothing, and the relay coordinator layer took 63% of all cache creation to emit 20k output tokens. Ordered ahead of run-state-cleanup because that feature is 21 packets long and every one of them pays this overhead until it is fixed — but it does NOT block run-state-cleanup, which was already mid-flight when this was written and finished under a hand-applied mitigation. Baseline: docs/metrics/2026-08-10-loop-cost-baseline.json (tracked)"
+    depends_on: []
+
   - slug: run-state-cleanup
     order: 18
     why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"
@@ -78,4 +83,3 @@ features:
     why: "DEFERRED — accepted in ADR 0007 but entirely unbuilt; large, self-contained, and single-harness is not currently costing anything, so it waits until a second harness is actually wanted"
     depends_on: []
     deferred: true
-</content>

@@ -35,6 +35,14 @@ logs/
 .agents/findings/
 .agents/run-state-note-archive.md
 
+# The last-known-good copy `runstate.sh write` takes before replacing run-state.
+# It exists because run-state is gitignored: a botched upstream transform in a pipe
+# destroyed it permanently, with no `git restore` to fall back on. It MUST be
+# ignored for the reason the block above spells out — an untracked file is swept by
+# the pause path's stash and discarded by reconcile as scratch, so an unignored
+# backup would be destroyed by the very recovery path it exists to serve.
+.agents/run-state-prev.yaml
+
 # Orchestration run-metrics — the event spine + assembled per-run metrics packets
 # (plugin ADR 0019 Tier 1). Local run bookkeeping, NOT product history; gitignored
 # for the same ADR 0009 reasons as run-state above. The assembled run-metrics.json

@@ -37,7 +37,12 @@ git -C "$REPO" config user.name  tester
 printf 'hello\n' > "$REPO/README.md"
 # run-state is gitignored local bookkeeping (ADR 0009): git stash -u skips it and
 # status never shows it, so it survives discards and never dirties the tree.
-printf '.agents/run-state.yaml\n' > "$REPO/.gitignore"
+# run-state-prev.yaml (the last-known-good copy `write` takes) MUST be ignored for
+# the same reason and it is not optional: without this line the first `write` leaves
+# `?? .agents/` in `git status --porcelain`, which `reconcile` reads as scratch on
+# the green checkpoint and discards — the backup destroyed by the recovery path it
+# exists to serve. This fixture reproduced exactly that before the line was added.
+printf '.agents/run-state.yaml\n.agents/run-state-prev.yaml\n' > "$REPO/.gitignore"
 git -C "$REPO" add -A
 git -C "$REPO" commit -qm "init"
 MAIN_SHA="$(git -C "$REPO" rev-parse main)"
@@ -158,6 +163,159 @@ echo "== atomic full write (temp + rename) round-trips =="
 assert_true "write persists full file, green intact" \
   "printf 'schema: 2\nstatus: running\nbranch: $BRANCH\nlast_green_commit: $GREEN\nbacklog:\n  cursor: feature-002\n  pending:\n    - feature-002\n' | \"\$RUNSTATE\" write '$RS' && [ \"\$(\"\$RUNSTATE\" get '$RS' last_green_commit)\" = '$GREEN' ]"
 assert_true "no temp file left after write" "no_temp"
+
+echo
+echo "== write refuses structurally invalid input, target left byte-untouched (runstate-write-integrity capability 2, T7) =="
+# Defect 2: `write` used to be `cat > tmp && mv -f`, validating nothing -- a
+# failed transform upstream in the pipe silently truncated run-state to a stub;
+# it fired live when an `awk` aborted on a missing `strftime` and left a
+# 26-byte file over a working run-state. Gitignored, so there was no `git
+# restore`, only manual reconstruction. Every negative case here asserts BOTH a
+# nonzero exit AND that the target's CHECKSUM is unchanged -- checksum, not a
+# YAML parse, so these hold on a parser-less host too (see yamlok() below) --
+# because "the good file still exists afterwards" is the whole point.
+WI="$(mktemp -d)/.agents"; mkdir -p "$WI"
+WRS="$WI/run-state.yaml"
+printf 'schema: 3\nstatus: running\nbranch: orch/keepme\nnote: known-good\n' > "$WRS"
+WSUM_BEFORE="$(cksum "$WRS")"
+wsum_unchanged() { [ "$(cksum "$WRS")" = "$WSUM_BEFORE" ]; }
+no_temp_wi() { ! ls "$WI"/.run-state.* >/dev/null 2>&1; }
+
+# The live incident's exact bytes were never captured (gitignored, recovered
+# by hand) -- this reproduces its CHECKSUM-PRESERVING-REFUSAL shape (a short,
+# whitespace-only fragment an aborted transform left behind), not literal
+# bytes from the incident.
+STUB26="$WI/stub26"
+printf '%26s' '' | tr ' ' '\n' > "$STUB26"
+assert_true "the reproduction stub is really 26 bytes" "[ \"\$(wc -c < '$STUB26')\" -eq 26 ]"
+
+assert_true "write refuses the 26-byte truncation stub (nonzero exit)" \
+  "! \"\$RUNSTATE\" write '$WRS' < '$STUB26' 2>/dev/null"
+assert_true "  target checksum unchanged after the 26-byte stub" "wsum_unchanged"
+
+assert_true "write refuses empty stdin (nonzero exit)" \
+  "! printf '' | \"\$RUNSTATE\" write '$WRS' 2>/dev/null"
+assert_true "  target checksum unchanged after empty stdin" "wsum_unchanged"
+
+assert_true "write refuses whitespace-only stdin (nonzero exit)" \
+  "! printf '   \n\t\n  \n' | \"\$RUNSTATE\" write '$WRS' 2>/dev/null"
+assert_true "  target checksum unchanged after whitespace-only stdin" "wsum_unchanged"
+
+assert_true "write refuses a schema-less document (nonzero exit)" \
+  "! printf 'status: running\nbranch: orch/x\n' | \"\$RUNSTATE\" write '$WRS' 2>/dev/null"
+assert_true "  target checksum unchanged after a schema-less document" "wsum_unchanged"
+
+assert_true "write refuses a schema-carrying doc with a malformed column-0 line (nonzero exit)" \
+  "! printf 'schema: 3\nleftover fragment, no colon here\nstatus: running\n' | \"\$RUNSTATE\" write '$WRS' 2>/dev/null"
+assert_true "  target checksum unchanged after a malformed column-0 line" "wsum_unchanged"
+
+assert_true "no temp file left after any refused write" "no_temp_wi"
+
+EMPTY_REFUSAL="$("$RUNSTATE" write "$WRS" < /dev/null 2>&1 >/dev/null)"
+assert_true "the refusal names the failed check (empty input)" \
+  "printf '%s' \"\$EMPTY_REFUSAL\" | grep -q 'empty input'"
+assert_true "the refusal states the structural-check bound, not a parse claim" \
+  "printf '%s' \"\$EMPTY_REFUSAL\" | grep -qi 'not a well-formed-but-wrong document'"
+COLZERO_REFUSAL="$(printf 'schema: 3\nleftover fragment, no colon here\n' | "$RUNSTATE" write "$WRS" 2>&1 >/dev/null)"
+assert_true "the refusal names the failed check (malformed column-0 line)" \
+  "printf '%s' \"\$COLZERO_REFUSAL\" | grep -q 'malformed line'"
+
+echo "== write still accepts what it should: a valid doc, and a first write to a new path =="
+assert_true "write still accepts a structurally valid document" \
+  "printf 'schema: 3\nstatus: paused\nnote: updated\n' | \"\$RUNSTATE\" write '$WRS' && [ \"\$(\"\$RUNSTATE\" get '$WRS' note)\" = updated ]"
+assert_true "  checksum DID change on an accepted write" "! wsum_unchanged"
+
+FIRST="$(mktemp -d)/.agents/run-state.yaml"
+assert_true "no run-state exists yet at the first-write path" "[ ! -f '$FIRST' ]"
+assert_true "a first write to a non-existent path still creates it (bootstrap)" \
+  "printf 'schema: 3\nstatus: running\n' | \"\$RUNSTATE\" write '$FIRST' && [ -f '$FIRST' ]"
+
+echo
+echo "== write keeps a last-known-good copy on replace (runstate-write-integrity capability 2) =="
+# The structural checks above cannot catch a transform that dies BETWEEN
+# lines: 'schema: 3\nstatus: running\n' is a structurally PERFECT document,
+# and is exactly the 26 bytes the live incident's stub left. That gap cannot
+# be closed by detection without classifying every valid/invalid document
+# forever (a shrinkage guard was designed and rejected for the same reason
+# from the other direction: /gaffer:migrate findings triage legitimately
+# shrinks a real run-state 61%). So recovery, not detection: before REPLACING
+# an existing file, `write` copies the pre-write content to a sibling
+# run-state-prev.yaml. cmp -s (byte-for-byte), not cksum, because these cases
+# compare files at DIFFERENT paths -- cksum's own output embeds the filename,
+# so comparing two `cksum` lines for files with different names can never
+# match even when their content is identical.
+WB="$(mktemp -d)/.agents"; mkdir -p "$WB"
+WBRS="$WB/run-state.yaml"
+WBPREV="$WB/run-state-prev.yaml"
+
+printf 'schema: 3\nstatus: running\nbranch: orch/first\n' > "$WBRS"
+assert_true "no backup exists yet (nothing has replaced this file)" "[ ! -f '$WBPREV' ]"
+
+ORIG_SNAPSHOT="$(mktemp)"; cp "$WBRS" "$ORIG_SNAPSHOT"
+assert_true "replacing an existing file succeeds" \
+  "printf 'schema: 3\nstatus: paused\nbranch: orch/second\n' | \"\$RUNSTATE\" write '$WBRS'"
+assert_true "the backup now exists" "[ -f '$WBPREV' ]"
+assert_true "the backup holds the PRE-write content, byte-identical" \
+  "cmp -s '$WBPREV' '$ORIG_SNAPSHOT'"
+assert_true "the target holds the NEW content, not the backup's" \
+  "[ \"\$(\"\$RUNSTATE\" get '$WBRS' branch)\" = orch/second ]"
+
+FIRSTB="$(mktemp -d)/.agents/run-state.yaml"
+assert_true "no backup path exists before a first write" "[ ! -f \"\$(dirname '$FIRSTB')/run-state-prev.yaml\" ]"
+assert_true "a first write to a non-existent path succeeds" \
+  "printf 'schema: 3\nstatus: running\n' | \"\$RUNSTATE\" write '$FIRSTB'"
+assert_true "no backup is created on a first write (nothing existed to preserve)" \
+  "[ ! -f \"\$(dirname '$FIRSTB')/run-state-prev.yaml\" ]"
+
+TARGET_SUM_BEFORE_REFUSAL="$(cksum "$WBRS")"
+PREV_SUM_BEFORE_REFUSAL="$(cksum "$WBPREV")"
+assert_true "a refused write is still refused (nonzero exit)" \
+  "! printf '' | \"\$RUNSTATE\" write '$WBRS' 2>/dev/null"
+assert_true "  a refused write leaves the TARGET untouched" \
+  "[ \"\$(cksum '$WBRS')\" = \"\$TARGET_SUM_BEFORE_REFUSAL\" ]"
+assert_true "  a refused write leaves the EXISTING BACKUP untouched" \
+  "[ \"\$(cksum '$WBPREV')\" = \"\$PREV_SUM_BEFORE_REFUSAL\" ]"
+
+# THE CASE THAT IS THE WHOLE JUSTIFICATION FOR THIS CAPABILITY: a good
+# run-state, hit by the exact between-lines truncation that the structural
+# checks above cannot see -- accepted (exit 0), the target becomes the stub,
+# and the ORIGINAL good file survives byte-identical as run-state-prev.yaml.
+# Without the backup this IS the live incident, uncaught and unrecovered.
+EE="$(mktemp -d)/.agents"; mkdir -p "$EE"
+EERS="$EE/run-state.yaml"
+EEPREV="$EE/run-state-prev.yaml"
+cat > "$EERS" <<'GOOD'
+schema: 3
+status: running
+branch: orch/feature-042
+last_green_commit: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+backlog:
+  cursor: feature-043
+  pending:
+    - feature-043
+note: paused after feature-042 landed green
+GOOD
+EE_ORIG_SNAPSHOT="$(mktemp)"; cp "$EERS" "$EE_ORIG_SNAPSHOT"
+assert_true "the between-lines truncation stub is accepted (passes every structural check)" \
+  "printf 'schema: 3\nstatus: running\n' | \"\$RUNSTATE\" write '$EERS'"
+assert_true "  the target is now the stub (the checks really cannot see this one)" \
+  "[ \"\$(cat '$EERS')\" = \"\$(printf 'schema: 3\nstatus: running')\" ]"
+assert_true "  the ORIGINAL good file survives byte-identical as run-state-prev.yaml" \
+  "cmp -s '$EEPREV' '$EE_ORIG_SNAPSHOT'"
+
+# The backup must be INVISIBLE to git, and this is load-bearing rather than tidy:
+# an untracked file is swept by the pause path's `git stash --include-untracked`
+# and read by `reconcile` in `git status --porcelain` as scratch sitting on the
+# green checkpoint, which it then discards — so an unignored backup is destroyed by
+# the very recovery path it exists to serve. Caught for real: before the fixture's
+# .gitignore carried the line, the first `write` here left `?? .agents/` and the
+# reconcile decision table below flipped `clean` to `discard`. That surfaced through
+# an unrelated assertion, so this one pins the property directly.
+"$RUNSTATE" write "$RS" < "$RS" >/dev/null 2>&1 || true
+assert_true "the backup does not dirty the tree reconcile inspects" \
+  "[ -z \"\$(git -C '$REPO' status --porcelain)\" ]"
+assert_true "the backup really was created (so the check above is not vacuous)" \
+  "[ -f \"$(dirname "$RS")/run-state-prev.yaml\" ]"
 
 echo "== reconcile decision table (checkout clean at green to start) =="
 assert_true "clean: HEAD==green, tree clean"        "[ \"\$(decision)\" = clean ]"

@@ -83,7 +83,7 @@ session. Fill in truthfully:
   tells the next session you exited *cleanly* rather than crashed (ADR 0005).
 - `branch` — the `orch/<task-id>` branch,
 - `last_green_commit` — the SHA you verified in step 2,
-- `backlog.cursor` / `done` / `pending` — where the loop stopped and what remains,
+- `backlog.cursor` / `pending` — where the loop stopped and what remains,
 - `pending_questions` — every unanswered blocking/high question, with severity.
 
 **A pause is where findings pile up, so route them before you write** (ADR 0022).
@@ -93,7 +93,7 @@ things, and only the last belongs in run-state:
 | What you have | Where it goes |
 |---|---|
 | "this should be built/fixed" | **backlog** — a gspec task/feature, sequenced in `.agents/roadmap.yaml`. Not a finding; a findings file holding future work is a shadow backlog competing with gspec (ADR 0020). |
-| a gotcha, a constraint, a decision **and its rationale**, a resolved question | **a finding** — `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"`, detail into `.agents/findings/<id>.md` |
+| a gotcha, a constraint, a decision **and its rationale**, a resolved question | **a finding** — `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>" --packets <id[,id...]>` (mandatory — ADR 0024, there is no run-wide finding), detail into `.agents/findings/<id>.md` if you also pass `--body` |
 | the single-sentence "where we stopped" | `note:` |
 
 Do **not** write findings into `note:`, and do **not** invent a
@@ -115,12 +115,12 @@ branch: orch/<task-id>
 last_green_commit: <verified-green-sha>
 backlog:
   cursor: <next-packet>
-  done: [ ... ]
   pending: [ ... ]
 pending_questions: [ ... ]
 findings:
   - id: <carry EVERY existing index entry through verbatim>
     summary: <...>
+    packets: [<id[,id...]>]
     file: .agents/findings/<id>.md
 YAML
 ```
@@ -165,7 +165,7 @@ into the check-in below.
 
 A pause is a stop, so the human gets the **stop report** — shape B in
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (the plugin produces reports; the
-frontend delivers them — ADR 0003/0004). Fill it from what you already know; do not
+frontend delivers them — ADR 0004). Fill it from what you already know; do not
 re-open the repo to embellish it:
 
 - the opening sentence — why it stopped ("$ARGUMENTS", if given) and whether

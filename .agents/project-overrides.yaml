@@ -1,0 +1,116 @@
+# Per-project orchestration overrides for gaffer
+# -----------------------------------------------------------------------------
+# gaffer is the plugin, so this file is unusual: the repo tuning the plugin's
+# behaviour IS the plugin. Everything here is optional — delete what you don't
+# override. See templates/spec-driven-base/.agents/project-overrides.yaml for the
+# annotated reference copy this is derived from.
+
+project:
+  name: gaffer
+  # One line; the chief-engineer uses this to frame requests.
+  summary: >-
+    Portable, domain-agnostic Claude Code orchestration plugin — subagent team,
+    skill chains, guided autonomy loop, task-packet template, and a three-tier
+    approval guardrail. No application stack: bash scripts, hook scripts, and
+    agent/skill prompts. Self-hosts its own backlog (see CLAUDE.md).
+
+# Commands the implementer/reviewer run to verify work. There is no compiler
+# here — the regression sweeps ARE the build, and they are the same ten CI runs
+# (.github/workflows/ci.yml). `test` mirrors CI exactly rather than naming a
+# subset: this repo's house rule is that a behaviour worth having is a behaviour
+# worth a case in its sweep, so a partial run is not a verification.
+commands:
+  build: "claude plugin validate ."
+  test: "for s in scripts/test-*.sh; do bash \"$s\" || exit 1; done"
+  lint: ""    # no linter wired up; shellcheck is not in CI and would need a pass first
+
+# Conventional write scopes for scoped task packets. Narrow is better.
+# This is the plugin's own layout, not an application's — see CLAUDE.md's
+# structure rules before widening any of these.
+allowed_paths:
+  plugin:
+    - "agents/**"
+    - "skills/**"
+    - "hooks/**"
+    - "scripts/**"
+    - "templates/**"
+    - ".claude-plugin/**"
+    - ".mcp.json"
+  docs:
+    - "docs/adr/**"
+    - "README.md"
+    - "CLAUDE.md"
+    - "CONTRIBUTING.md"
+  specs:
+    - "gspec/features/**"
+    - "gspec/tasks/**"
+    - ".agents/roadmap.yaml"
+    - ".agents/task-files.yaml"
+
+# No rendered surface of any kind — this repo ships prompts and shell, never UI.
+# Stated explicitly rather than omitted: auto-detection falls back to **web**, and
+# a ux-designer dispatched here would otherwise go looking for a dev server.
+ux:
+  preview_mode: none
+
+# Defaults are correct here. Routing is one decision made once —
+# tier -> agent -> that agent's `model:` frontmatter — so overriding per task is
+# how the two disagree (ADR 0019 v2, the `dispatches_with_model_override` counter).
+model_routing: {}
+
+# On top of the plugin's generic defaults (auth, secrets, DB schema, deps,
+# deploys, git history). This repo's domain risk is REFLEXIVITY: the loop editing
+# the code it is running from. The mechanical half is enforced by
+# `.agents/guard-extra-review`; these are the judgement calls it cannot express.
+escalate_to_human_on:
+  - "any change that weakens hooks/guard.sh — removing or narrowing a pattern, or widening a fast-path"
+  - "changing the ADR 0012 relay crossover, the ADR 0020 gspec pin, or the run-state schema version"
+  - "editing gspec/tasks/run-metrics.md — a retro-spec of shipped work whose tasks are all checked"
+  - "deleting or rewriting an accepted ADR, as opposed to superseding it"
+
+# No ceiling. This repo runs at full-autonomy deliberately (.agents/autonomy) and
+# its central artifact is the guard itself, so a cap here would be self-defeating.
+# autonomy_ceiling:
+
+# ── ASK tier: OFF for this repo (ADR 0015) ───────────────────────────────────
+# Skips every one-click "ask" — routine-but-notable bash AND review-worthy writes.
+#
+# WHY, because this looks like it contradicts self-host-hardening T1 and partly
+# does. `.agents/guard-extra-review` routes this repo's reflexive surface
+# (scripts/, hooks/, agents/, skills/, .claude-plugin/) to ASK. But that surface
+# IS this repo's entire backlog — nearly every packet edits a script or a prompt —
+# so leaving the tier on means a prompt on essentially every packet, which is not
+# review, it is a click-through reflex that teaches you to stop reading.
+#
+# What this does NOT do — the floors are untouched:
+#   - hard-deny still blocks secrets/.env/key material, recursive deletes, and
+#     history rewrite at every autonomy level;
+#   - the git soft gates still block commit/merge/push to main/master;
+#   - `escalate_to_human_on` above still governs the judgement calls;
+#   - the reviewer and the PR gate remain the real review boundary here.
+#
+# The patterns in `.agents/guard-extra-review` are deliberately KEPT rather than
+# deleted. They cost nothing while this is true, they document what the reflexive
+# surface is, and flipping this one line re-arms them — which is the whole point
+# of a one-line switch. `test-guard.sh` still pins their behaviour.
+#
+# Resolved restrictively: in a nested tree EVERY discovered `.agents/` root must
+# set this true, so a foreign `.agents/` can only keep the prompts on.
+bypass-ask-tier: true
+
+# The non-main integration branch (ADR 0009). Packets branch `orch/<task-id>` from
+# here and, at full-autonomy, merge back into it. main is human-gated regardless.
+integration_branch: develop
+
+# Rate-limit auto-pause (ADR 0018) — needs Pro/Max plus a `statusLine` entry in
+# user settings.json, which a plugin cannot write. Turn on with
+# `/gaffer:rate-limit-pause on`; this block is the per-repo gate.
+# rate_limit_pause:
+#   enabled: true
+#   five_hour_threshold_pct: 90
+#   seven_day_threshold_pct: 85
+
+# Parallel lanes (ADR 0016). Left at the default 5, but expect far less
+# concurrency than that here: most packets in this repo touch `scripts/` or a
+# prompt file, and overlapping `allowed_files` serializes them by design.
+# max_parallel_packets: 5

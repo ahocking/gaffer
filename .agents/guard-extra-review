@@ -1,0 +1,77 @@
+# gaffer — REVIEW-tier (ASK) paths for THIS repo only
+# ===========================================================================
+# Loaded at runtime by hooks/guard.sh and appended to REVIEW_PATH_PATTERNS
+# (ADR 0014 tier 2b): a one-click prompt, never a dead end. One ERE per line;
+# `#` comments and blank lines are ignored. Matched against separator-normalized
+# paths, for Edit/Write AND for shell writes (`cat >`, `sed -i`, `tee`, `cp`, …).
+#
+# WHY THIS FILE EXISTS (self-host-hardening T1)
+# --------------------------------------------
+# This repo is the plugin. In a consumer repo the plugin sits OUTSIDE the working
+# tree, so a loop physically cannot edit the guard, the state writer, or the agent
+# prompts it is running from. Here it can, and at `full-autonomy` it would do so
+# silently. The timing differs per surface and each is bad in its own way:
+#
+#   scripts/*.sh   invoked fresh per Bash call -> an edit takes effect MID-RUN, in
+#                  the run that made it. runstate.sh is the loop's own single
+#                  writer of durable state.
+#   hooks/*        a hook body is spawned fresh per matching event -> same as
+#                  scripts/*.sh, an edit takes effect MID-RUN, on the very next
+#                  event, in the run that made it. Only its registration
+#                  (hooks.json, .claude/settings.json) loads at session start.
+#                  guard.sh is the safety floor, and it is the sharpest case: a
+#                  packet weakening it is live on the next matching tool call, in
+#                  the same run, not caught by a loop still running the old guard.
+#   agents/*.md    read at dispatch -> a mid-run edit changes how later packets in
+#   skills/*       the same run behave.
+#
+# ASK, NOT DENY — deliberately. These paths are this repo's actual backlog; a hard
+# floor (`.agents/guard-extra-paths`) would make most of its real work
+# unexecutable. The goal is that self-modification is SEEN, not that it is
+# impossible. The hard-deny floor and the git gates are untouched and still apply.
+#
+# SCOPE: this file is repo-local, discovered from CONFIG_ROOTS. It changes nothing
+# for a consumer repo and adds no pattern to the plugin's shipped defaults —
+# `scripts/test-guard.sh` asserts both directions.
+
+# --- executable / enforcement surface (the PRD's named list) ---------------
+# Deliberately includes test-*.sh: a sweep quietly weakened is exactly as
+# dangerous as the source it guards, and the sweep is what makes self-hosting
+# tolerable at all.
+(^|/)scripts/
+# Also catches the vendored .claude/hooks/ — those are enforcement code too.
+(^|/)hooks/
+(^|/)agents/[^/]*\.md$
+(^|/)skills/
+(^|/)\.claude-plugin/
+
+# --- the guard's own configuration ----------------------------------------
+# Not in the PRD's list by name, but the same class and the sharper version of it:
+# editing these weakens the control itself rather than the code it protects.
+#
+# guard-extra-*: the per-repo pattern files, including THIS one. A rule that can
+# be silently deleted is not a rule.
+(^|/)\.agents/guard-extra-
+# project-overrides.yaml carries `bypass-ask-tier`, which disables this entire
+# tier in one line (ADR 0015). It must never be flipped without a human seeing it.
+(^|/)\.agents/project-overrides\.ya?ml$
+# autonomy: the level itself. /gaffer:set-autonomy is the sanctioned path and will
+# now prompt once — that redundancy is the point, since self-raising autonomy is
+# precisely what must not happen quietly.
+(^|/)\.agents/autonomy$
+# Hook and MCP-server registration: what gets loaded at session start.
+(^|/)\.claude/settings\.json$
+(^|/)\.mcp\.json$
+
+# --- deliberately NOT listed ----------------------------------------------
+# `.agents/` at large — run-state.yaml, findings/ and metrics/ are written
+#   constantly by runstate.sh and metrics.sh. Gating them would prompt on every
+#   state write and deadlock the loop. Note `(^|/)agents/` above does NOT match
+#   `.agents/`: the `(^|/)` anchor requires start-of-string or a slash, and
+#   `.agents/` presents a `.` there. That is load-bearing, and it is asserted.
+# `templates/` — data read by agents, not code that runs and not enforcement.
+#   Gating it would prompt on ordinary work (T3/T4 both edit task-packet.yaml)
+#   for no reflexive risk, and a tier that fires on everything stops being read.
+# `CLAUDE.md` — a real self-modification vector, but out of this packet's scope
+#   and edited legitimately many times per session. Revisit if it turns out to be
+#   a route around the rules above.

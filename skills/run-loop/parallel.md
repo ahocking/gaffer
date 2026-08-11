@@ -79,7 +79,9 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
    (`max_parallel − running`). (Below `full-autonomy`, take only the first wave.)
 2. **Open a lane per ready packet:** `worktree.sh create <task-id>` (cut from the
    integration base — at `full-autonomy` it already carries integrated deps). Record
-   the lane in run-state `lanes` with `status: running` (you are the single writer).
+   the lane in run-state `lanes` with `status: running`, via `runstate.sh write`
+   (a new `lanes[]` entry is nested, same reason as everywhere else in this
+   file — `set` cannot reach it) — you are the single writer.
 3. **Dispatch the lanes CONCURRENTLY** — a **fresh `gaffer:chief-engineer` per
    lane, all in ONE message (multiple `Task` calls) so they run in parallel.** Each
    brief contains ONLY: the repo root, the **lane's worktree path** (its working
@@ -104,23 +106,43 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
    > (never mid-edit) — and return a check-in stating whether you landed green or
    > rolled back, and the resulting SHA.
 4. **Collect check-ins; decide each lane from disk:**
-   - **green** → record its packet `status: done` + `last_green_commit` in run-state,
-     then **integrate** (P2, `full-autonomy` only).
+   - **green** → record its packet `status: done` + `last_green_commit` in
+     run-state **with `runstate.sh write`, carrying the whole `findings:` index
+     through verbatim** — both fields are nested in `packets[]`, so
+     `runstate.sh set` is the wrong tool here: `set` matches the top-level
+     `status:`/`last_green_commit:` keys (anchored at column 0) and would
+     overwrite the *run's own* status/checkpoint instead, not the packet's; and
+     `write` REPLACES the whole file, so a write here that drops an entry
+     silently unlinks whatever an earlier lane's `Findings:` line (below) just
+     recorded, orphaning its body. Then **integrate** (P2, `full-autonomy`
+     only).
    - **blocking question / red / escalate** → surface it (the human's); that lane's
      packet stays unfinished. Keep the other lanes going.
    - **any lane's `Findings:` lines** → you record them, in the main checkout, one
-     `runstate.sh add-finding .agents/run-state.yaml <id> "<line>"` per line, then
-     write the detail into the `.agents/findings/<id>.md` each call creates. Do this
-     as you collect each check-in, while you still hold the lane's context — a finding
-     you postpone to the end of the wave is one you will summarize from memory.
-     Prefix ids with the lane's task-id (`<task-id>-<n>`) so two lanes cannot collide
-     on a name; `add-finding` refuses a duplicate id rather than merging into it.
+     `runstate.sh add-finding .agents/run-state.yaml <id> "<line>" --packets
+     <id[,id...]>` per line. **`--packets` must name the packet(s) the finding
+     actually constrains — never the reporting lane's own `<task-id>`**, for the
+     same reason `SKILL.md` §3.4 gives: that packet just landed, so naming it
+     makes the entry born stale before anything can act on it. `--packets` stays
+     **mandatory** regardless (ADR 0024, there is no run-wide finding). Then
+     write the detail into the `.agents/findings/<id>.md` each call creates if
+     you also pass `--body`. Do this as you collect each check-in, while you
+     still hold the lane's context — a finding you postpone to the end of the
+     wave is one you will summarize from memory. Prefix ids with the lane's
+     task-id (`<task-id>-<n>`) so two lanes cannot collide on a name;
+     `add-finding` refuses a duplicate id rather than merging into it.
    Then **report the wave to the human as ONE check-in**, not N relayed lane reports:
    the human check-in shape in `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`
    (shape A) is built for exactly this — one line per lane, marker first, every packet
    id carrying a plain-English title, and the lanes that need a decision visible
    without scrolling. A wave of five verbatim lane check-ins is five times the reading
-   for the same three facts: what landed, what needs them, what is next.
+   for the same three facts: what landed, what needs them, what is next. If any lane
+   integrated this wave (P2 ran), fold in `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`'s
+   `stale-findings:` line using the `STALE_COUNT`/`OVER_THRESHOLD` P2 captured — P2 runs
+   once per green lane, so take the values from the **last** lane it integrated, which is
+   the only pair describing the index after the whole wave's drops. Emit only when
+   `OVER_THRESHOLD=yes`, `<N>` = `STALE_COUNT` (may legitimately be 0); omit it otherwise,
+   same as when no lane integrated this wave and the scan never ran.
 5. **Recompute** the ready-set (step 1) and dispatch the next batch — newly-unblocked
    dependents appear once their deps are `done` (and, at `full-autonomy`, integrated).
 
@@ -128,8 +150,45 @@ them. Uses `${CLAUDE_PLUGIN_ROOT}/scripts/{packet-graph,worktree,runstate}.sh`.
 Merge green lanes back **one at a time, never concurrently:** in the main checkout,
 `git switch <integration_branch>` then `git merge --no-ff orch/<task-id>`. Concurrent
 lanes are **file-disjoint by construction** (the graph's overlap edges), so these
-merges do not textually conflict. After each, mark the packet `integrated: true` and
-`worktree.sh remove <task-id>` (it refuses on unmerged work — a safety net). **A merge
+merges do not textually conflict.
+
+**Flip the gspec checkbox here, not in the lane** — `gspec/tasks/<slug>.md` sits
+outside every packet's `allowed_files`, so flipping it inside a lane would make
+two lanes sharing one feature's task file contend on the same write; the
+scheduler, as the single writer, is the only safe place to do it. Right after
+the merge, run `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task
+<task-id>` and act on its exit code the same way `SKILL.md` §3.4 does: on
+`CHECKED=<ref>`/`already`, stage and commit the touched task file on
+`<integration_branch>` — **with no `[orch packet:]` trailer on this commit**
+(unlike §3.4's own flip, which is the packet's one and only commit). The lane's
+trailer already reached `<integration_branch>` via the `merge --no-ff` above;
+duplicating it onto this flip commit would give the collector two commits
+carrying the same packet id, and it keeps the **latest** one — which has
+neither `[orch tier:]` nor `[orch impl:]`, so the packet would read
+`unlabelled:no-tier-trailer`/`unlabelled:no-impl-trailer` and its token
+bucketing would shift to this commit instead. Same rule `resume/SKILL.md`
+already follows for its own separate flip commit. Skip cleanly on
+`CHECKED=none`, or note drift and carry on — never halt the merge over it — on
+exit 4.
+
+Then mark the packet `integrated: true` in run-state. That field is nested in
+`packets[]`, and `runstate.sh set` only rewrites a flat top-level `key:` — so
+this needs `runstate.sh write`, carrying the whole `findings:` index through
+verbatim (same reason as §3.4's write: `write` REPLACES the file).
+
+**Only after that write**, apply §3.4's capture-then-drop test to this lane's
+findings, the same way and bounded the same way: entries naming `<task-id>`,
+staleness read from evidence — `gspec-backlog.sh task-status` → its `FINISHED=`
+fed verbatim to `findings --stale --finished`, unioned with `<task-id>` itself
+(its own commit trailer, just landed, is the second admissible evidence source)
+— never from `<task-id>`'s own say-so alone. §3.4 has the exact commands and
+the reasoning; this is the same sequence run from the main checkout instead of
+inside a lane. That same `findings --stale` call reports `STALE_COUNT`/
+`OVER_THRESHOLD` for the whole index as a byproduct — hold onto them, they feed
+the wave report's `stale-findings:` line (P1.4).
+
+After each, `worktree.sh remove <task-id>` (it refuses on unmerged work — a
+safety net). **A merge
 that conflicts means the disjointness analysis missed a shared file: STOP, do not
 auto-resolve** — resolving unreviewed conflicts is a hard gate (and the guard
 hard-denies the `reset --hard`/`--force` escapes anyway). Pause and escalate, naming
@@ -138,14 +197,18 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
 
 ### P3. Terminate / pause
 - **DAG exhausted** (`full-autonomy`): after the last lane integrates, run **one broad
-  whole-DAG review** over the integration branch vs its base (§4's net); file any
-  Critical/Important finding as a new packet; then `status: done`, **snapshot
-  run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — best-effort,
-  ADR 0019; the parallel run is exactly where the packet is most worth having, since it
-  captures every lane's per-agent spend and wave concurrency), and a final **stop
-  report** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B).
-  Below `full-autonomy`: stop at branches-ready, with the same stop report — each
-  branch named by what it *does*, not just by its `orch/<task-id>`.
+  whole-DAG review** over the integration branch vs its base (§4's net); route any
+  Critical/Important finding by scope per §4 (ADR 0026); never edit the completed
+  record. The **scheduler** does this routing — a lane reports the finding in its
+  check-in and never writes to `gspec/` itself — and surfaces an arm-2 proposal (a new
+  feature: slug, scope, parent) in the **stop report's decision block**, not the wire
+  question block, because at P3 nothing downstream parses its output. Then `status:
+  done`, **snapshot run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect ||
+  true` — best-effort, ADR 0019; the parallel run is exactly where the packet is most
+  worth having, since it captures every lane's per-agent spend and wave concurrency),
+  and a final **stop report** (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`,
+  shape B). Below `full-autonomy`: stop at branches-ready, with the same stop report —
+  each branch named by what it *does*, not just by its `orch/<task-id>`.
 - **Any hard gate, merge conflict, blocking question, or a granted pause (ADR 0017)**
   → pause at a safe multi-lane checkpoint. For **every lane that was in flight**,
   record its outcome so the whole run is resumable (you are the single writer):
@@ -153,9 +216,12 @@ the two packets and the file. Below `full-autonomy`, skip P2 and stop at "N gree
      throwaway *scratch* (never a committed green tip). **Leave the lane's worktree in
      place** — a green-but-unintegrated lane is "ahead" of base, so `worktree.sh
      remove` would (correctly) refuse it anyway; resume re-attaches it.
-  2. Write each lane's packet `status` (`done` if it committed green and finished,
-     else `pending`) and its `last_green_commit`, and keep the lane's `lanes[]` entry
-     (branch + worktree path) — this is what `reconcile-parallel` reads on resume.
+  2. With `runstate.sh write` (both fields are nested in `packets[]`, same
+     hazard as P1.2/P1.4/P2 above — `set` would overwrite the run's own
+     top-level `status`/`last_green_commit` instead), set each lane's packet
+     `status` (`done` if it committed green and finished, else `pending`) and
+     its `last_green_commit`, and keep the lane's `lanes[]` entry (branch +
+     worktree path) — this is what `reconcile-parallel` reads on resume.
   3. Persist run-state `status: paused` (or `blocked`), then **clear the sentinel**
      (`runstate.sh clear-pause .agents/pause`) so resume starts clean. **Snapshot
      run-metrics** (`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` —

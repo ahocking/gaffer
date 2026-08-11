@@ -31,6 +31,90 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   relative or absolute machine path.
 - Hook scripts must be executable (`chmod +x`).
 - **No hardcoded secrets** anywhere. Tokens come from env vars (`${VAR}`).
+- **`gspec/` at the root is this repo's OWN backlog, not shipped content.** It is
+  not a template and not part of the plugin — consumers never receive it, and
+  nothing under `templates/` may reference it. This repo self-hosts (see below);
+  `templates/spec-driven-base/` remains the only thing a consumer gets.
+
+## This repo self-hosts its own backlog
+
+`gaffer` drives its own development through its own adapter. The backlog is
+**forward-only, plus one retro-spec** — the 25 shipped ADRs are deliberately not
+retro-specced, because that is archaeology over decisions that already have
+passing sweeps.
+
+- **The one retro-spec is `run-metrics`** (ADR 0019, v1→v3.4), and it exists
+  because that ADR is the clearest case in the repo of a **decision record being
+  used as a status tracker**: 866 lines carrying five stacked `v3.x` revision
+  sections, mirrored again in this file, with **no ADR in the repo having a
+  status field at all**. That absence is what the backlog fixes. All its
+  capabilities and tasks are checked, so it yields **zero** packets and reads as
+  derived-done.
+- **Known gaps of a shipped feature are a SEPARATE feature** (`metrics-coverage-gaps`,
+  not an unchecked capability on `run-metrics`). Completion is derived from
+  capability checkboxes, so folding a gap in would make a shipped collector read
+  as incomplete and — via the dependency rule — block everything downstream of it
+  forever. This is the modelling trap to avoid every time a shipped feature has
+  a known hole.
+- **A specced feature with no `gspec/tasks/<slug>.md` is the intended state for
+  deferred work**, not an omission: the adapter reports `PLAN=none` plus the
+  `/gspec-plan` hint. Decompose when the work comes up, so the decomposition
+  reflects the repo as it is then rather than as it was when the ADR was written.
+  Only `self-host-hardening` has a plan today.
+- **Reflexivity is the risk self-hosting adds, and it has no analogue in a
+  consumer repo** — there the plugin sits outside the working tree. Here the loop
+  edits what it runs from, and the timing differs per surface: `scripts/*.sh` take
+  effect **mid-run, in the run that made the edit** (`runstate.sh` is the loop's
+  own single writer); a **hook body is spawned per event**, so it takes effect the
+  same way — mid-run, on the next tool call, in the run that edited it — and only
+  its registration (`hooks/hooks.json`, `.claude/settings.json`) crosses a session
+  boundary; `agents/*.md` and `skills/*/SKILL.md` are read at dispatch.
+  `hooks/guard.sh` is the sharpest case: it is the plugin's own safety floor, and
+  here it is a first-class edit target at `full-autonomy` — a packet weakening the
+  guard is live on the next matching tool call, in the same run, not caught by a
+  loop still running an old copy. Closing this is
+  `self-host-hardening`, and it is ordered first for that reason. Its T1/T2
+  landed in `348f1cc`: `.agents/guard-extra-review` now routes that whole surface
+  to the ASK tier, with 25 cases in `test-guard.sh`.
+- **The ASK tier is OFF here — `bypass-ask-tier: true` in
+  `.agents/project-overrides.yaml` (`2292c96`) — and that is a decision, not a
+  regression of T1.** The surface `.agents/guard-extra-review` names IS this repo's
+  entire backlog — nearly every packet edits a script or a prompt — so leaving the
+  tier on meant a prompt on essentially every packet, which is not review, it is a
+  click-through reflex that teaches you to stop reading. It was already close to
+  inert: measured 2026-08-10, invoking `guard.sh` directly with this repo's cwd
+  correctly returned `permissionDecision: "ask"` naming the matched rule, yet an
+  `Edit` to `scripts/test-guard.sh` in that same session produced **no prompt** —
+  while the hard-deny tier *did* stop an `rm -f`. Denies are enforced; asks were
+  being auto-resolved. So the flip made explicit what was largely already true,
+  rather than removing protection that was working. **Still enforcing, re-verified
+  in-session:** the hard-deny floor (secrets/key material — an `Edit` to `.env`
+  returned `rc=2`, `secret-path` — recursive deletes, history rewrite; a force-push
+  still returned `risky-bash`), the git soft gates on `main`/`master`,
+  `escalate_to_human_on` in `project-overrides.yaml` for the judgement calls the
+  path patterns cannot express, and the reviewer plus the PR gate as the real
+  review boundary. `.agents/guard-extra-review` is **kept, not deleted**: it costs
+  nothing while the bypass is on, it documents what the reflexive surface is,
+  `test-guard.sh` still pins its behaviour, and one line re-arms it. **What
+  specifically stopped, and it is the sharpest part:** T2 added ask cases for the
+  guard's own *configuration* on the rationale that a rule which can be silently
+  deleted is not a rule. All four of those are now silent-allow here —
+  `.agents/guard-extra-*`, `project-overrides.yaml` (which carries the bypass
+  itself), `.agents/autonomy`, and `.claude/settings.json`. That is the control
+  over the control, so the reviewer and the PR boundary are not a second line of
+  defence for this surface; they are the only one.
+- **Hard-denying `hooks/guard.sh` was proposed and rejected — and the flip above
+  does not touch that.** This repo exists to develop the guard, so a hard floor
+  over it makes the repo's central artifact unmaintainable. Same for
+  `.agents/guard-extra-*` and `project-overrides.yaml`. Do not "harden" these to
+  `.agents/guard-extra-paths` — it has been considered and it is wrong *for this
+  repo*. A consumer repo is a different question and unaffected either way, since
+  these patterns are repo-local. **And mind the load timing:**
+  `project-overrides.yaml` and `.agents/guard-extra-*` are re-read by `guard.sh` on
+  **every tool call**, so a change to them takes effect mid-session with no
+  restart — only hook **registration** (`hooks.json`, `.claude/settings.json`)
+  needs a session boundary. Conflating "changing the guard's config" with
+  "changing what the harness loads" is the easy mistake.
 
 ## Conventions
 
@@ -41,12 +125,23 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   implementation and research, haiku = the summarizer/doc agent (`doc-writer`).
 - **Skills** (`skills/<name>/SKILL.md`): frontmatter with `name`, `description`,
   `argument-hint`. Reference shared files via `${CLAUDE_PLUGIN_ROOT}/...`.
-- **The loop skills choose relay vs inline by backlog size** (`run-loop`, `resume`
-  — ADR 0012): **≥ 20 packets** → dispatch a fresh `chief-engineer` per packet and
-  relay its check-in verbatim (context stays flat; ~27–50% cheaper on the 33- and
-  52-packet backlogs real repos actually carry); **< 20** → run it inline (the
-  relay costs ~29% more there and prevents nothing). `--relay`/`--inline` override.
-  **20 is a measured crossover, not a taste** — if you change the brief or
+- **INLINE IS THE DEFAULT; relay is for backlogs ≥ 40 packets** (`run-loop`,
+  `resume` — ADR 0012, **crossover raised from 20 to 40 on 2026-08-10**).
+  `--relay`/`--inline` override. The original 20 came from a *token extrapolation*
+  (k≈21) with no production comparator. The first real one — 62 packets across two
+  repos, `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent`
+  history — says **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
+  cacheCreation), and names the mechanism: the coordinator role carries a
+  `cc_shape` max of **142k–240k with 9–55 turns over 50k in every relay run**,
+  while no inline run has such a role. **The number is still not clean, and that is
+  why relay was kept rather than deleted:** 65–96% of tool duration in those runs
+  sits in the coordinator's own context, much of it **busy-wait polling** (33
+  `until` loops = 51% of one run's wall clock), so each poll re-caches that
+  standing context and inflates the very figure being compared. Fix the busy-wait,
+  then re-measure as a two-arm A/B — that is `loop-cost-controls` P0, and deleting
+  relay outright is the legitimate outcome if the gap survives. Note the regime the
+  relay was built for has **never been reached**: inline compacts around packet
+  ~28 and the largest run ever observed is **14**. If you change the brief or
   re-measure, update the ADR and both skills together.
 - **Parallel mode is opt-in and worktree-isolated** (`run-loop`/`resume --parallel`
   — ADR 0016, amends ADR 0009). The default loop is single-checkout sequential and
@@ -387,8 +482,46 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   both a legal id char and a metachar, so `f.001` matched `f-001`. Same rule made
   `trim-note` re-emit the note as a **literal block scalar**: the cut is a byte cut, and
   only a block scalar is truncatable at any byte — cutting `note: "…"` severed the
-  closing quote. **`test-runstate.sh` now asserts a real YAML *parse* after each mutating
-  subcommand; grep is what let all of this through.**
+  closing quote. **`test-runstate.sh` asserts a real YAML *parse* after each mutating
+  subcommand; grep is what let all of this through** — and that assertion was itself
+  vacuous until 2026-08-11: the helper fell back to `return 0` when PyYAML was absent,
+  so on a stock host (python3 present, PyYAML is not stdlib) **21 cases passed while
+  checking nothing** and the sweep still reported 213/0 green. It now skips **loudly**,
+  counted and named in the summary line, and CI declares PyYAML rather than hoping the
+  runner ships it.
+- **A probe that does not reproduce the phenomenon cannot eliminate a cause.** The
+  `trim-note` flake (~1 run in 20) was chased for two sessions with SIGPIPE-under-
+  `pipefail` recorded as **ruled out**, on the strength of running the exact piped
+  shape 120 times in isolation with zero failures. But isolation never reproduced the
+  flake *at all* — 0 in 3,000 sequential calls, 0 in 12,000 at concurrency, both
+  separately established. Zero failures there was evidence about the setup, not about
+  the hypothesis, and the false elimination was propagated into two task briefs as "do
+  not re-derive it". **SIGPIPE was the cause**: `grep -q` exits on its first match and
+  closes the pipe, and a producer still mid-write takes rc 141, which `pipefail` then
+  reports instead of grep's success — a correct answer read as a failed assertion. It
+  only surfaces under cumulative subprocess load in a long-lived shell, which is why
+  it needed the *real* sweep preamble to reproduce. Same family as the retracted
+  cost-measurement claim above: state what a negative result actually licenses.
+- **`runstate.sh` quotes EVERY value it writes and strips symmetrically on read**
+  (ADR 0027 / `runstate-write-integrity`). `cmd_set` and `cmd_add_finding` share one
+  encoder, so hardening one cannot leave the other behind — the split that created the
+  original bug. **There is deliberately no plain-scalar allowlist**, and reintroducing
+  one as a cosmetic optimisation is a regression: it was built and deleted the same day
+  after producing two classes of silent wrongness, values ending in `:` writing an
+  unparseable file with `rc=0`, and `no`/`00`/`0755` parsing cleanly but returning
+  `False`/`0`/`493`. Neither was reachable from any caller of the day, and that is the
+  point — an allowlist is a claim about every *future* value, and it was wrong twice in
+  one afternoon. Compatibility now lives in the **reader**, which is why `cmd_get`'s
+  strip is load-bearing rather than tidy-up: without it a crashed run reads as
+  `status: 'running'` and `hooks/session-start.sh`'s `case` falls through to
+  `paused|*`, telling the human it "was paused cleanly". **`cmd_write` validates
+  structurally** (empty, whitespace-only, no `schema:`, malformed column-0 line) and
+  keeps `.agents/run-state-prev.yaml` as the last known good — because the checks
+  cannot see a transform that dies *between* lines, and `schema: 3` + `status: running`
+  is exactly the 26 bytes the live truncation left. A shrinkage guard was designed and
+  rejected: the findings triage legitimately shrinks run-state 61%. The backup **must**
+  stay gitignored in both files — an untracked one is swept by the pause stash and
+  discarded by `reconcile` as scratch, destroyed by the recovery path it serves.
   Bodies are **gitignored** (both `.gitignore`s), with run-state. Not just for symmetry:
   untracked ≠ ignored here — `git stash --include-untracked` (the pause path) sweeps an
   untracked finding and `reconcile` reads it in `git status --porcelain` as scratch on
@@ -401,6 +534,62 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
+  session** (ADR 0024 + ADR 0025). Three rules that land together because they are one
+  correction: run-state was storing what other things already knew.
+  **`backlog.done` is deleted with nothing in its place** — no counter, no bounded tail.
+  It stored exactly what the PRD capability checkboxes derive, and because
+  `runstate.sh write` replaces the whole file, an agent re-emitted the entire list from
+  memory every packet (measured: 95 entries, 16% of a 27,400-byte run-state, no checksum,
+  nothing that would notice a dropped line). `pending` survives and is explicitly NOT the
+  next thing removed by the same reasoning — it carries the *chosen order*, a decision,
+  not derivable state. The checkbox now flips **inside the packet commit** so the work and
+  the record that it happened land atomically; under `--parallel` the *scheduler* flips at
+  green-lane merge, because the task file sits outside every packet's `allowed_files` and
+  two lanes sharing a feature would contend on it. It is `gspec-backlog.sh check-task` —
+  the plugin's ONLY write into `gspec/`, one character on one line — and a caller must
+  distinguish its exit codes: `CHECKED=none` at exit 0 is *skipped, not failed* (gspec is
+  optional), while **exit 4 is genuine drift that must be reported and must NOT halt** the
+  loop.
+  **A finding is scoped to packets and expires**; `--packets` is mandatory with no
+  run-wide escape hatch, because an entry that can never expire is precisely what was
+  being removed. Expiry demands **positive evidence** — the checkbox, or an
+  `[orch packet:<id>]` trailer — and absence from `pending` is *unknown*, never finished,
+  with unknown blocking expiry. **This is the part that was got wrong once and is easy to
+  get wrong again:** the first implementation *asserted* the closing packet was finished
+  instead of *reading* the checkbox the step above had just flipped, which made the flip
+  non-load-bearing (delete it, behaviour identical) and would have expired **zero of
+  fifteen** live entries while appearing to work. Capture precedes drop, always: filing a
+  backlog task IS the capture; a spent sign-off is not.
+  **The tally's ✅ counts what THIS session landed**, from check-ins already rendered,
+  nothing read from disk. The "buckets account for the whole backlog" rule applies to the
+  **forward** buckets only (⚠️/🔀/⬚) — a growing backlog is not a fixed set to partition,
+  and *2 landed, 25 to go* has to read honestly.
+- **A finding discovered after a plan is complete routes by scope in two arms tried in
+  order, and the completed record is never edited** (ADR 0026). **Arm 1** applies when
+  **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**
+  task line, and an **unchecked capability in its PRD covers the finding** — both tests
+  separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
+  task line to `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying
+  truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
+  parent plans) becomes a **new feature**: a PRD via `/gspec-feature`, a `.agents/roadmap.yaml`
+  entry (`depends_on:` the parent, `order` after it), and **no plan file** until the work
+  comes up. Loop contexts lack `Skill`, so arm 2 splits: hand off on the `normal`-severity
+  question block in `templates/check-in.md`, and main-context runs `/gspec-feature`.
+  **The recorded diagnosis was WRONG, and that is the part to keep**: the immutability
+  hook asks only that every checked task's **block** (its line through the next task
+  line) survives byte-identically, so additive appends already pass mechanically;
+  policy forbids it because a derived-done feature must not carry unshipped work
+  (ADR 0020 D2) — the appended task would emit no packet node and never be scheduled.
+  A hook rejection is a **signal** the edit disturbed a checked block or arm 1 was
+  wrong, never a cue to bypass with shell or patch the vendored hook (it is re-stamped
+  at install). `/gspec-plan` regeneration is unreachable from a dispatched context and
+  would require reopening the feature. Arm 1 widens the plugin's write into `gspec/`
+  past ADR 0025's `[ ]` → `[x]` flip, bounded to: append only,
+  never modify existing lines, never touch capability checkboxes, always carry truthful
+  `covers:`. The arm-1 scope test is prompt-enforced — nothing mechanically checks fit; the
+  detector is a task whose `covers:` does not match, and the boundary is the packet's PR
+  review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
 - **There are THREE report files, and the split is by reader and by need** (ADR 0023).
   `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
   Engineer returns it and the scheduler *parses* it, so its keys are stable and it
@@ -645,10 +834,122 @@ scripts: a behavior worth having is a behavior worth a test in its sweep.
 
 ## Ground rules for changes here
 
-- Do not `git commit`/`push` on the user's behalf — they review diffs and commit
-  manually. (The guardrail also blocks this.)
+- **Commit, push, and merge onto `orch/*` and `develop` are ALLOWED** — that is the
+  loop's own checkpoint mechanism at `full-autonomy` (`run-loop` §3.4), and a
+  resume has nothing to adopt without per-packet green commits (ADR 0005). Every
+  packet commit carries its `[orch packet:<id>]` trailer, which is what makes the
+  work recoverable and measurable. **`main`/`master`, releases, PRs and deploys
+  stay the human's hard gate at every autonomy level** — `hooks/guard.sh` enforces
+  that floor and `test-guard.sh` pins it; the earlier claim here that the guardrail
+  blocked *all* commits was simply wrong, since it returns exit 0 for a commit on a
+  non-`main` branch. Note this file is read by the harness's auto-mode classifier,
+  so a prohibition written here is obeyed as a standing instruction — which is why
+  the previous wording blocked the loop's own commits and no permission rule was
+  the cause or the fix.
 - Keep the plugin generic and reusable across any application domain. The
   guardrail's default patterns must stay generic (auth, secrets, migrations,
   deps, deploys, git history) — do NOT add domain-specific patterns (money,
   Plaid, PHI, …) to `hooks/guard.sh`. Those belong in the consumer repo's
   `.agents/guard-extra-bash` / `.agents/guard-extra-paths`.
+
+<!-- gspec:preamble -->
+## gspec — Living Specification Sync
+
+This project uses **gspec** for living product specifications stored in `gspec/`.
+
+These specs define what the product is, how it should look, what technology it uses, and what features it supports. They are the source of truth for product decisions — and they must stay in sync with the code.
+
+### Prefer gspec commands over ad-hoc work
+
+Because `gspec/` exists in this project, **route the user's request through the matching `gspec-*` command** instead of producing the equivalent output ad hoc. This applies even when the user's phrasing is casual (e.g. "just build it", "let's code this", "write a quick spec"). Each command runs the right specialist (architect, product, designer, engineer, QA reviewer) with a built-in **quality-review gate** — a separate checker validates the result before it's done (skip with `--no-qa`) — plus the phased execution, checkpointing, and checkbox updates that freeform responses skip.
+
+The `gspec-*` names below are your harness's slash commands / skills, **not shell programs** — never try to execute `gspec-implement` (or any other `gspec-*` name) in the shell; it does not exist as a binary. The only shell CLI is `gspec` itself (`npx gspec`).
+
+Use this mapping whenever the user's intent matches:
+
+- **Building, implementing, coding, scaffolding, shipping, or "making it real"** — invoke `gspec-implement`. This is the most commonly-missed command. If the user asks you to write code for anything the specs describe (or a new capability that should be specced), route through `gspec-implement` rather than editing files directly. Generic prompts like "build it", "go", "keep going", "continue", or "do the next phase" should also invoke it when recent conversation has been about specs or planning. **Exception:** if `.gspec/build/run.json` exists, an autonomous build run is in progress or paused and owns the flow — those same generic prompts mean *resume it* (`gspec build --resume` in the shell), not `gspec-implement`.
+- **Building an entire product from an idea, end-to-end and mostly unattended** — run `gspec-build` (`gspec build "<idea>"`), which drives profile → stack → practices → style → features → architecture → plan → implementation, gating each spec through QA and pausing once before implementation for a human spec review (skip with `--no-review`). Best for greenfield "build me X" requests; it generates only the specs that are missing.
+- **Defining the product, users, or vision** — invoke `gspec-profile`.
+- **Planning or writing a new feature / PRD** — invoke `gspec-feature`.
+- **Producing an ordered plan from a feature PRD (with explicit dependencies and parallel-execution markers)** — invoke `gspec-plan`. Run before `gspec-implement` for non-trivial features; when a plan file exists, `gspec-implement` skips its own plan-mode step.
+- **Choosing or revising the tech stack** — invoke `gspec-stack`.
+- **Defining visual design, tokens, or theme** — invoke `gspec-style`.
+- **Setting coding standards, testing, or workflow conventions** — invoke `gspec-practices`.
+- **Designing project structure, data model, or API shape** — invoke `gspec-architect`.
+- **Researching competitors or finding feature gaps** — invoke `gspec-research`.
+- **Finding contradictions between specs** — invoke `gspec-analyze`.
+- **Checking specs against the actual codebase (drift audit)** — invoke `gspec-audit`.
+- **Checking a spec's quality against its bar** — invoke `gspec-qa` (one spec, or all of them). Every spec-writing command already runs this as a gate when it produces a spec (skip with `--no-qa`); use `gspec-qa` to re-check on demand.
+- **Upgrading outdated spec files** — invoke `gspec-migrate`.
+
+If the user explicitly asks you to skip the command and just do the work, honor that — but by default, prefer the command.
+
+### Asking the user multiple questions
+
+When a skill needs feedback on more than one question, first preview all of them as a numbered list so the user knows the full scope, then ask them **one at a time** in the conversation. Never present multiple questions as a single numbered list expecting one combined reply — that forces the user to retype each question number alongside their answer. One question per turn keeps replies short and natural.
+
+### When you make code changes, follow these rules:
+
+> **Apply the project's practices and style as you code.** `gspec/practices.md` (engineering standards, testing philosophy, definition of done) and `gspec/style.md` / `gspec/style.html` (design tokens, component styling) are this project's **coding rules** — follow them on *every* code change, in any flow, not only when running `gspec-implement`. `gspec/stack.md`'s "Technology-Specific Practices" section governs framework idioms. These specs define *how* code is written here; treat them as always-on conventions.
+
+1. **Read the specs first** — Before making non-trivial changes, read the relevant gspec documents to understand existing decisions and constraints. At minimum, scan `gspec/profile.md` and any feature PRDs in `gspec/features/` related to your work.
+
+2. **Spec before you build** — If the user asks for a feature or capability that isn't covered by an existing feature PRD in `gspec/features/`, run the `gspec-feature` command to create a new feature PRD before implementing it. Every feature should be specified before it's built — don't skip straight to code.
+
+3. **Update feature checkboxes** — When you implement a capability defined in a feature PRD (`gspec/features/*.md`), change its checkbox from `- [ ]` to `- [x]`. **If a plan file exists** at `gspec/features/<feature>.plan.md`, also flip the checkbox of each completed task in that file. Only flip the PRD capability checkbox once every task whose `covers:` references it is checked.
+
+4. **Update specs that your changes contradict** — If your code change makes a spec statement incorrect (e.g., you changed the data model, switched a dependency, altered a UI pattern, or added a new API endpoint), update the spec to reflect reality. Common candidates:
+   - `gspec/architecture.md` — project structure, data model, API routes, component hierarchy
+   - `gspec/stack.md` — dependencies, frameworks, infrastructure
+   - `gspec/style.md` **or** `gspec/style.html` — design tokens, component styling, visual conventions (the style guide may be in either format; update whichever exists)
+   - `gspec/practices.md` — coding standards, testing conventions, workflows
+   - `gspec/profile.md` — product scope, target users, value proposition (rarely changes)
+
+   **The `gspec/design/` folder is read-only to you** — it contains visual mockups (HTML, SVG, PNG, JPG) from external design tools. Do not edit or generate mockups; treat them as authoritative visual guidance to reason through during implementation. Before building or modifying UI for a screen, check whether a matching mockup exists in `gspec/design/` and honor its layout within the style guide's token constraints.
+
+5. **Be surgical** — Change only what is necessary. Preserve the existing voice, structure, and formatting of each spec document. Do not rewrite sections that are still accurate.
+
+6. **Announce spec updates** — When you update a spec, briefly mention what changed and why in your response. Never silently modify specs.
+
+7. **Preserve version metadata** — Markdown gspec files use YAML frontmatter with a `spec-version` field. `gspec/style.html` uses a first-line HTML comment in the form `<!-- spec-version: v1 -->` before the `<!DOCTYPE html>`. Preserve either format when editing. If a file lacks the version marker, leave it as-is.
+
+8. **Don't create new foundation specs** — Only update existing spec files. If you believe a new spec document is needed, suggest it to the user rather than creating it yourself.
+
+<!-- gspec:preamble -->
+
+## Scope override for the gspec preamble above
+
+The block between the `<!-- gspec:preamble -->` markers is **written by the gspec
+installer, not by this repo**, and it is re-stamped on every `npx gspec@<pin>
+--target claude`. Never edit inside it — corrections go here, outside the markers,
+or they are silently lost on the next install.
+
+It is correct about specs and **wrong about execution in this repo**, because it
+is written for a generic consumer that does not have this plugin. ADR 0020 draws
+the seam: **gspec owns _what to build and in what order_; this plugin owns _how a
+unit of work is safely executed_** — guardrail, autonomy levels, checkpointing,
+worktree isolation, measurement. The preamble's routing advice claims that second
+half for gspec. In this repo:
+
+- **`gspec-implement` and `gspec-build` are NOT the execution path.** Execution is
+  `/gaffer:run-loop` (and `/gaffer:resume`), which runs packets through the guard,
+  the autonomy gates, and run-state checkpointing. `gspec-build` in particular
+  drives profile → … → implementation unattended, which would bypass every one of
+  those. The adapter's `interlock` subcommand exists precisely because two drivers
+  must not run at once.
+- **`gspec-plan` and `gspec-feature` ARE the right tools**, and are how the four
+  deferred features get decomposed when their time comes.
+- **`gspec-plan` must not be run against `gspec/tasks/run-metrics.md`.** It is a
+  retro-spec of shipped work with every task checked; regeneration re-decomposes
+  unchecked work and would destroy the record it exists to hold.
+- **Ignore the preamble's "read the specs first" list where it names files this
+  repo does not have.** `gspec/profile.md`, `stack.md`, `practices.md` and
+  `style.md` are not present — this repo's equivalents are this file, the ADRs,
+  and the regression sweeps. Do not generate them to satisfy the preamble.
+
+The gspec hooks now installed under `.claude/hooks/` (spec-integrity, task-
+immutability, practices-enforce, …) are registered in `.claude/settings.json` and
+compose with — they do not replace — the plugin's own `hooks/guard.sh`. Both fire;
+the guard's hard-deny floor is unaffected. Note that `task-immutability` will
+refuse edits to the checked tasks in `gspec/tasks/run-metrics.md`, which is the
+behaviour we want.

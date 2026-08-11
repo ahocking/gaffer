@@ -57,7 +57,7 @@ layer.
 | `agents/doc-writer.md` | **haiku** documentation/summarization agent; writes README/setup/usage docs and changelog-style summaries from established fact under `allowed_paths.docs`. Never touches code, tests, ADRs, or design decisions. |
 | `skills/new-project/SKILL.md` | Chain: bootstrap a spec-driven repo — generic overlay + **version-pinned** gspec + a seeded `.agents/roadmap.yaml` — stops before the initial commit. |
 | `skills/review-change/SKILL.md` | Chain: review uncommitted changes → ready/issues/risks/next-step. |
-| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 20 packets — ADR 0012). |
+| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 40 packets — ADR 0012). |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
 | `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session; picks relay vs inline from what **remains** (ADR 0012). |
 | `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
@@ -205,8 +205,17 @@ not have to choose, and the mode is announced in one line before the run starts.
 
 | Backlog | Mode | Why |
 | --- | --- | --- |
-| **< 20 packets** | **inline** — the session runs the loop itself | Relaying costs ~29% more tokens and ~40% more wall clock at this size and prevents nothing. |
-| **≥ 20 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Past the measured crossover the relay is *both* cheaper (~27% at 33 packets, ~50% at 52) **and** the only mode that finishes: an inline coordinator grows ~6.7k tokens/packet and hits a forced, lossy compaction near packet ~28. |
+| **< 40 packets** | **inline** — the session runs the loop itself | The default, and the only mode any production run has needed. Relaying costs more here and prevents nothing. |
+| **≥ 40 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Inline's coordinator grows and hits a forced, lossy compaction near packet ~28, so past that a relay is the only mode that finishes a long run. |
+
+> **On the numbers:** the crossover was **raised from 20 to 40 on 2026-08-10**, when the
+> first real production comparison (62 packets across two repos) measured relay at
+> **1.84x inline per packet** — the opposite direction to the token extrapolation that
+> set the original 20. Relay is *retained rather than deleted* because that figure is
+> not clean: 65–96% of tool duration in those runs sits in the coordinator's own
+> context, much of it busy-wait polling, and each poll re-caches the standing context
+> being measured. A clean two-arm A/B is the open question, and **deleting relay is a
+> legitimate outcome of it**. Do not treat relay as the cheaper mode at any size.
 
 Override either way with **`--relay`** or **`--inline`**:
 
@@ -252,7 +261,7 @@ recovered — the SessionStart hook surfaces the in-flight run when you reopen
 Claude, and `runstate.sh reconcile` adopts or discards whatever the crash left
 behind (ADR 0005). Check-ins are **produced** by the plugin and **delivered** by
 the frontend (Claude Desktop / Dispatch) — there is no notification transport
-here (ADR 0003).
+here.
 
 ### Auto-pause before a usage limit (ADR 0018)
 
@@ -348,7 +357,8 @@ them on every push.
 git clone https://github.com/ahocking/gaffer.git
 cd gaffer
 
-# Start Claude Code with this directory loaded as a plugin
+# Start Claude Code with this directory loaded as a plugin.
+# REQUIRED here — see "Which copy of the plugin is running?" below.
 claude --plugin-dir .
 
 # Inside the session, after editing plugin files:
@@ -357,6 +367,62 @@ claude --plugin-dir .
 # Validate the manifest & structure
 claude plugin validate .
 ```
+
+### Which copy of the plugin is running?
+
+Working *on* gaffer is not like consuming it, and getting this wrong is silent.
+
+`gaffer` is normally installed from its marketplace, which copies a **snapshot**
+into `~/.claude/plugins/cache/gaffer-marketplace/gaffer/<version>/` pinned to one
+commit. Every skill and agent reaches `scripts/` and `templates/` through
+`${CLAUDE_PLUGIN_ROOT}`, so in a session using that install, **your working tree
+is not what runs** — the snapshot is. Editing `scripts/` or `skills/` changes
+nothing, and the loop executes whatever the snapshot froze.
+
+Note the marketplace `source` is this very directory, so it *looks* live. It is
+not: install still snapshots to the cache, and the copy only moves when you
+reinstall.
+
+This repo therefore commits `.claude/settings.json` with:
+
+```json
+{ "enabledPlugins": { "gaffer@gaffer-marketplace": false } }
+```
+
+Project scope overrides user scope, so the installed copy is **off here and on
+everywhere else** — other repos keep using their installed version, untouched.
+The live plugin comes from `--plugin-dir .`.
+
+The trade-off is deliberate: forget the flag and this repo has *no* gaffer
+skills, which is loud and obvious. The alternative — silently running a months-old
+snapshot against a current checkout — is the failure that costs you an afternoon.
+
+To confirm which copy is live, run something whose behaviour changed recently. If
+`/gaffer:run-loop`'s kickoff schedules features marked `deferred: true` in
+`.agents/roadmap.yaml`, you are on a snapshot older than that feature.
+
+### This repo self-hosts its own backlog
+
+`gaffer` drives its own development through its own gspec adapter. The backlog
+lives in `gspec/` (feature PRDs + task plans) sequenced by `.agents/roadmap.yaml`.
+Inspect it without a session:
+
+```bash
+scripts/gspec-backlog.sh features
+```
+
+**gspec is pinned to 2.7.0.** gspec does not stamp its own version into a project
+and this repo has no `package.json`, so this line and
+`GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh` are the only durable records
+of which gspec produced these specs. Reinstall exactly that version — never bare
+`npx gspec`, which installs whatever is current and silently defeats the pin:
+
+```bash
+npx --yes gspec@2.7.0 --target claude
+```
+
+Raising the pin is a deliberate, reviewed change: bump it, extend the supported
+`spec-version` set, re-run `scripts/test-gspec-backlog.sh`, and amend ADR 0020.
 
 Try it out inside the session:
 

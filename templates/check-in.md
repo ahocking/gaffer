@@ -1,4 +1,4 @@
-# Check-in shapes — what the guided loop PRODUCES (ADR 0003 / 0004)
+# Check-in shapes — what the guided loop PRODUCES (ADR 0004)
 # -----------------------------------------------------------------------------
 # The plugin produces well-formed check-ins at the right moments; it does NOT
 # deliver them. Delivery is the frontend's job — Claude Desktop on the MacBook
@@ -27,17 +27,27 @@
 - pending: <N packets>, <M blocking question(s)>
 - next:    <one line: "continuing" | "paused — <reason>" | "branch ready for review">
 - Findings:                            # omit the key entirely when there are none
-  - <one line: a gotcha, a constraint, or a decision AND why>
+  - packets: <id[,id...]> — <one line: a gotcha, a constraint, or a decision AND why>
+- stale-findings: <N>                  # omit unless the index exceeds ORCH_FINDINGS_INDEX_MAX_BYTES
 
 # `Findings:` is how a PARALLEL LANE reports something worth keeping past its packet.
 # A lane must not call `runstate.sh add-finding` itself — it has no run-state in its
 # worktree and it is not run-state's writer (ADR 0022 / ADR 0016) — so it states the
-# line here and the scheduler records it on collection. In sequential mode the loop
-# records findings directly and this key is usually unnecessary.
+# line here and the scheduler records it on collection, and each line MUST carry the
+# packet id(s) it scopes to (`add-finding --packets` is now mandatory — ADR 0024 —
+# and there is no run-wide finding, so the scheduler has nothing to pass without it).
+# In sequential mode the loop records findings directly and this key is usually
+# unnecessary.
 #
 # What does NOT go here: "this should be built/fixed". That is backlog — a gspec
 # task/feature ordered via .agents/roadmap.yaml (the ADR 0020 seam). A findings list
 # holding future work is a shadow backlog competing with gspec.
+#
+# `stale-findings:` is a one-line count — a backstop for the days discipline slipped
+# (ADR 0024), not a field the happy path fills in. Emit it when, and only when,
+# `runstate.sh findings --stale` reports `OVER_THRESHOLD=yes`; `<N>` is that run's
+# `STALE_COUNT`, which may legitimately be 0 (a large index of still-live findings).
+# Its absence therefore means "index under threshold", NOT "checked and found zero".
 
 # --- Blocking question (hard gate / ambiguity) -------------------------------
 # Emitted when the loop cannot proceed without a human decision. `severity`:

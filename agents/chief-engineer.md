@@ -86,9 +86,11 @@ own global coherence; you do not do all the work yourself.
    scopes the research, or the research picks the library the design then assumes. A
    fabricated dependency just buys latency; a real one, ignored, buys rework.
 
-3. **Delegate with task packets, not the whole repo.** When you hand work to
-   the `implementer`, give it a bounded packet based on
-   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml`: the goal, the exact
+3. **Delegate with task packets, not the whole repo.** Before you fill one,
+   `Read` `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` — naming a path is
+   not reading it: it carries rules you can't fill from memory (the REQUIRED
+   sweep criterion, `session_boundary`), covered once per context, and this
+   falls on you as the filler. Then give it a bounded packet: the goal, the exact
    `allowed_files`, the acceptance criteria, what is `forbidden`, the
    build/test commands, and what needs approval before it happens. Scoped
    packets reduce cost, keep focus, and make each agent auditable.
@@ -254,7 +256,7 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   **status update** (what landed, the green SHA, the cursor, what's pending); at a
   hard gate or genuine ambiguity emit a **severity-tagged blocking question**
   (`blocking` = the loop cannot continue until answered). Build no notification
-  transport — Claude Desktop / Dispatch or direct interaction carry them (ADR 0003).
+  transport — Claude Desktop / Dispatch or direct interaction carry them.
 - **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
   wire format between agents. What reaches the human goes through
   `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (always) plus
@@ -319,7 +321,7 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
 
 ## Reporting
 
-End every orchestration with a tight summary the human can act on by voice: what was
+End every orchestration with a tight summary the human can act on immediately: what was
 done, what passed/failed, the residual risks, and the single recommended next action.
 Prefer a clear recommendation over an exhaustive menu of options.
 

@@ -1,4 +1,4 @@
-# Report conventions — the layer EVERY human-facing report owes (ADR 0003 / 0012)
+# Report conventions — the layer EVERY human-facing report owes (ADR 0012)
 # -----------------------------------------------------------------------------
 # There are three report layers in this plugin, and they have different readers:
 #
@@ -161,11 +161,19 @@
 # Fixed order, omitting any bucket that is zero:
 #   ✅ N shipped · ⛔ N failed · ⚠️ N blocked · 🔀 N decisions · ⬚ N queued
 #
-# The buckets must account for the whole backlog (decisions overlap and are the one
-# exception) — a tally that does not add up is obvious rather than plausible, which is
-# the point of using counts instead of a progress bar. A bar collapses "waiting on
-# you" and "not started" into one grey tail; those are the two states the human most
-# needs to tell apart.
+# **✅ is THIS SESSION, everywhere it appears (ADR 0025 D3)** — what the rendering
+# agent has already landed or shipped in check-ins it produced itself this run, never
+# a run-cumulative or backlog-wide count, and never read from disk (no `backlog.done`,
+# no trailer scan). It is free: the agent already rendered every check-in this session
+# and only has to count them.
+#
+# The FORWARD buckets — ⚠️ / 🔀 / ⬚ — must account for the whole backlog (decisions
+# overlap and are the one exception) — a tally that does not add up is obvious rather
+# than plausible, which is the point of using counts instead of a progress bar. A bar
+# collapses "waiting on you" and "not started" into one grey tail; those are the two
+# states the human most needs to tell apart. This "accounts for the whole" rule does
+# NOT extend to ✅: a backlog grows as tasks get filed, so it is not a fixed set to
+# partition, and *2 landed, 25 to go* reads honestly rather than as a partial count.
 #
 # Run-state word: ⏸️ **PAUSED** · ✅ **DONE** · ⚠️ **BLOCKED** · ▶ **RUNNING** ·
 # ▶ **STARTING**. Bold it — it is the first thing read and often the only thing.

@@ -67,12 +67,17 @@ Pick, in this order:
 2. **Otherwise count the backlog** — `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
    summary .agents/run-state.yaml` (pending + the cursor), else the node count from
    `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes-all`:
-   - **< 20 packets → INLINE.** Below the measured crossover the relay costs ~29%
-     more tokens and ~40% more wall clock and buys nothing: the context never gets
-     near the window.
-   - **≥ 20 packets → RELAY.** Past the crossover the relay is *both* cheaper
-     (~27% at 33 packets, ~50% at 52) and the only mode that finishes without
-     compaction. Real backlogs reach this often — 33 and 52 packets observed.
+   - **< 40 packets → INLINE. This is the default, and it covers nearly every
+     real backlog.** Measured across 62 packets of production runs, relay costs
+     **1.84x inline per packet** in cache creation, and the coordinator role
+     carries a `cc_shape` max of 142k–240k with 9–55 turns over 50k in *every*
+     relay run — a standing context re-cached on each turn. Inline has no such
+     role.
+   - **≥ 40 packets → RELAY.** Only a backlog long enough to actually threaten
+     the context window justifies paying that. Inline's forced compaction sits
+     around packet **~28**, and the largest run ever observed is **14 packets** —
+     so this branch is deliberately rare, and reaching it is a signal the backlog
+     should probably be split rather than relayed.
 3. **State the mode and the packet count in one line** before you start, so the
    human can override with the flag.
 
@@ -155,6 +160,34 @@ your dispatch strategy.
   `gspec build` is driving this repo right now — **stop**: two drivers fanning
   implementers into one checkout will collide. Both are no-ops when there is no
   gspec project — gspec is optional (ADR 0020 D4).
+- **Drifted completion record (ADR 0025 D1, gspec repos only).** Scan **every
+  ref**, not just the current branch — at preflight the checkout is normally
+  still on the integration branch (step 3.1 is what creates `orch/<task-id>`),
+  so a scan bounded to "the branch I'm on" almost never fires; and the case
+  this exists to catch — a packet that landed, merged, and never got its
+  checkbox flipped — usually lives in already-merged history, not on a live
+  feature branch. This is the runtime form of the migration check (T17), and
+  matches its anchoring, not `reconstruct`'s: `reconstruct`'s extraction is
+  unanchored (safe there only because it is bounded to `base..HEAD`, so prose
+  merely mentioning the trailer format is unlikely ever to land inside that
+  narrow range), and widening to `--all` removes that accidental protection.
+  Anchor the match to the **whole line** — a real trailer, not prose that
+  mentions one — the same fix `migrate.sh`'s `_trailer_landed` already applies
+  for this exact reason:
+  ```bash
+  IDS=$(git log --all --format=%B \
+    | grep -oE '^[[:space:]]*\[orch packet:[a-z0-9][a-z0-9-]*\][[:space:]]*$' \
+    | sed -E 's/^[[:space:]]*\[orch packet:(.*)\][[:space:]]*$/\1/' \
+    | awk '!seen[$0]++' | paste -sd, -)
+  ```
+  Empty `$IDS` → nothing committed yet, skip. Otherwise check every id's gspec
+  task, read-only:
+  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "$IDS"`. Any line
+  reading `unchecked` names a packet that landed but whose task checkbox is not
+  set — a genuine **drift**, possibly because the work was reverted since. **Say
+  so in the kickoff (§2); do not flip the checkbox and do not block the run** —
+  reconciling a drifted record is the human's call, not the loop's to make
+  silently.
 - **Autonomy level.** Resolve it (env `ORCH_AUTONOMY` > `.agents/autonomy` >
   `interactive`, clamped by `autonomy_ceiling`). The loop is meant for
   **`supervised`**, **`autonomous`**, or **`full-autonomy`**. At **`interactive`** it
@@ -232,8 +265,17 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    else `develop`, else `main`/`master`). If `orch/<task-id>` already exists
    (resuming), just `git switch orch/<task-id>`. No worktree, no separate
    directory — all work happens here.
-2. **Scope.** Fill a task packet from
-   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` — narrow `allowed_files`,
+2. **Scope.** `Read`
+   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before you fill anything
+   in — naming a path is not reading it (ADR 0023's report-format precedent):
+   the template carries rules you cannot fill from memory, including which
+   acceptance criterion is REQUIRED when the packet touches enforcement or
+   automation code, and when `session_boundary` must be declared. One read
+   (~2.4k tokens) covers this context — do not re-read it per packet within
+   it. This applies to whoever **fills**
+   a packet (you, here, or a relay-dispatched Chief Engineer / parallel lane)
+   — not to the `implementer`/`reviewer`/`doc-writer`, who are handed an
+   already-filled packet. Then fill it: narrow `allowed_files`,
    acceptance criteria, `forbidden`, build/test commands, and the packet
    `autonomy`. **Set `tier` here** — `mechanical` (fully-specified, one file),
    `integration` (multi-file/wiring, design settled), `design-heavy` (the design
@@ -274,9 +316,31 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    gate.
 4. **Decide (the soft/hard gate split):**
    - **Green and in policy** — build+tests pass, branch is not `main`/`master`,
-     the diff touches **no** hard-gate path: **you commit on the branch.** You are
-     responsible for having verified green build+tests first — the hook cannot.
-     Put the write-ahead trailer `[orch packet:<cursor>]` on its own line in the
+     the diff touches **no** hard-gate path:
+
+     **Flip the gspec checkbox first, so it lands in this same commit** — the
+     work and the record that it happened must land atomically, never in a
+     follow-up commit (ADR 0025 D1). Run
+     `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <cursor>` (it
+     accepts the packet-id form the loop already holds — never do your own id
+     surgery) and act on its exit code before you commit:
+     - **exit 0, `CHECKED=<feature>#T<n>` or `CHECKED=already`** — stage the
+       touched `gspec/tasks/<slug>.md` alongside the packet's own files; it
+       goes into the same commit as the code.
+     - **exit 0, `CHECKED=none`** — the backlog is not gspec-sourced (a
+       run-state or explicit-argument backlog has no checkbox). This is
+       **skipped, not failed** — commit as normal with nothing staged from
+       `gspec/`.
+     - **exit 4** — the plan exists but no longer names this task id: genuine
+       **drift** (e.g. the plan was regenerated since this packet was scoped).
+       Commit as normal, but say so plainly in the check-in — this is a report,
+       never a reason to halt the loop.
+     - **exit 1** — the id is malformed (contains `/` or `..`): a real usage
+       error, not drift. Stop and report; do not commit over it.
+
+     **You commit on the branch.** You are responsible for having verified green
+     build+tests first — the hook cannot. Put the write-ahead trailer
+     `[orch packet:<cursor>]` on its own line in the
      commit message — this is what lets a resume *adopt* the commit if a crash
      lands between it and the run-state write below, instead of escalating (ADR
      0005). **Both routing trailers below are REQUIRED**, on their own lines (ADR
@@ -296,22 +360,25 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      really edited and what was dispatched (`metrics.sh` → `audit.*`), so an
      inaccurate label only makes the audit flag *you*. A `design-heavy`/`inline`
      packet is a legitimate opus edit; a `mechanical`/`inline` one is the leak this
-     measures. Then update run-state **atomically** (`runstate.sh write`): append the
-     packet to `done`, set `last_green_commit` to the new SHA, advance `cursor`,
-     keep `status: running`, and **carry the whole `findings:` index through
-     verbatim** — `write` REPLACES the file, so an entry you omit is not edited out,
-     it is unlinked: the body stays on disk in `.agents/findings/` with nothing
-     pointing at it. (This is also why `add-finding` comes *after* the write, below —
-     it appends, and a write afterwards would erase it.) Emit a **status** check-in
-     (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`) — and if the human is reading
-     you directly (inline mode, or you are the session they are talking to), emit it
-     in the **human check-in shape** instead
-     (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A): a few lines, every
-     id titled, no diff and no file list.
+     measures. Then update run-state **atomically** (`runstate.sh write`): set
+     `last_green_commit` to the new SHA, advance `cursor` to the **next**
+     packet — **from here on, call the packet you just committed `<landed>`**,
+     since this write just moved `cursor` off it onto the next one, and the
+     check-in below and every close-out step after it need the one that just
+     closed, not the one about to start — keep `status: running`, and **carry
+     the whole `findings:` index through verbatim** — `write` REPLACES the
+     file, so an entry you omit is not edited out, it is unlinked: the body
+     stays on disk in `.agents/findings/` with nothing pointing at it. **There
+     is no `done:` field to append to** (ADR 0025) — the gspec checkbox flipped
+     above, or this commit's own `[orch packet:<landed>]` trailer, is the
+     completion record now. (This is also why `drop-finding` and `add-finding`,
+     below, both come *after* the write — they remove/append entries the write
+     would otherwise clobber.) The status check-in is emitted further down,
+     once the stale-findings scan has a number to give it — see that bullet.
 
-     Then close the packet out — both of these, every time:
+     Then close the packet out — every time:
 
-     - **Attest the outcome:** `runstate.sh record-outcome <cursor> green`. Do this
+     - **Attest the outcome:** `runstate.sh record-outcome <landed> green`. Do this
        on **every** boundary, not just green ones — see the failure branches below.
      - **Keep `note:` to the CURRENT packet.** It is one line for the resuming
        session, not a log. Overwrite it; never append to what is there, and never
@@ -321,12 +388,75 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
        87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a relay
        dispatch re-reads all of it to recover two facts ADR 0012 states plainly:
        did it land, what is next.
+     - **Drop stale findings naming `<landed>`, staleness read from evidence, not
+       say-so** (ADR 0024). The checkbox flip above (or this commit's own
+       trailer, for a non-gspec packet) is the first positive evidence `<landed>`
+       finished — but a finding can name *other*, still-open packets too, and
+       their finished-ness has to come from the same evidence the capability
+       admits: the gspec checkbox, or a commit trailer, never a bare assertion
+       that a name is done:
+       ```bash
+       IDS=$(runstate.sh findings .agents/run-state.yaml | cut -f4 | tr ',' '\n' | sort -u | paste -sd, -)
+       # empty IDS -> no findings at all, skip the rest
+       FINISHED=$(gspec-backlog.sh task-status "$IDS" | grep '^FINISHED=' | cut -d= -f2-)
+       FINISHED="${FINISHED:+${FINISHED},}<landed>"
+       runstate.sh findings .agents/run-state.yaml --stale --finished "$FINISHED"
+       ```
+       `task-status`'s `FINISHED=` line is documented to be fed **verbatim** to
+       `--stale --finished` — that pairing is the reason the two subcommands
+       share one id-resolution function; do not hand-roll a substitute for any
+       *other* id. `<landed>` itself is unioned in on top, and that union is not
+       a substitute either — it is the capability's **second** admissible
+       evidence source (a commit trailer, not the gspec checkbox), and we
+       already hold it directly: this commit's own `[orch packet:<landed>]`
+       trailer, written a few steps above. That is what closes the non-gspec
+       case (`CHECKED=none`), where `task-status` reads `<landed>` itself as
+       `unknown` forever since it has no checkbox to check. From the
+       output, act only on `STALE=yes` lines whose `packets=` names `<landed>` —
+       this is still bounded to **this packet's own findings**, never an
+       unattended sweep of the whole index: a `STALE=yes` entry that does not
+       name `<landed>` belongs to whichever packet's close names it instead. For
+       each: **filing a backlog task IS the capture** — if the finding is really
+       "this should be built/fixed" and has not already been filed, file it (the
+       same arm 1/arm 2 routing §4 uses) *before* dropping; **a spent sign-off is
+       NOT** — an owner-gate approval or a scoping note whose only job was to
+       gate a packet that is now done needs no capture, drop it directly. Either
+       way, drop with `runstate.sh drop-finding .agents/run-state.yaml <id>` — it
+       removes the index entry and the body together, so neither is left
+       orphaned.
+     - **Emit the status check-in.** If the scan above ran, read
+       `STALE_COUNT`/`OVER_THRESHOLD` off that same `findings --stale --finished`
+       call; if it was skipped for empty `IDS` there are no findings at all, so
+       omit the field. Those counts are measured **before** this packet's drops,
+       so they describe the index the packet inherited, not what it left behind —
+       over-reporting is the safe direction for a backstop. Follow
+       `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`'s contract exactly: include
+       `stale-findings: <N>` (`<N>` = `STALE_COUNT`, which may legitimately be 0)
+       only when `OVER_THRESHOLD=yes`; omit the field otherwise — its absence
+       means "index under threshold", never "checked and found zero". Emit the
+       **status** check-in (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`,
+       `landed: <landed>` @ its SHA) — and if the human is reading you directly
+       (inline mode, or you are the session they are talking to), emit it in the
+       **human check-in shape** instead
+       (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A): a few
+       lines, every id titled, no diff and no file list.
      - **Anything worth keeping past this packet is a FINDING, not note content**
-       (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"`,
-       then write the detail into the `.agents/findings/<id>.md` it creates.
-       **In a parallel lane, do not run this** — you have no run-state to append to
-       and you are not its writer. Put the line in your check-in under `Findings:`
-       and the scheduler records it (`parallel.md` P1.4). Route it
+       (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"
+       --packets <id[,id...]>`. **`--packets` must name the packet(s) the finding
+       actually constrains — never `<landed>`.** `add-finding`'s own contract is
+       a constraint on a packet that has **not executed yet**; naming the packet
+       you just closed makes the entry born stale (the evidence this close just
+       produced satisfies it immediately) and it can never be dropped for the
+       reason it was filed. Name whichever still-pending packet the finding
+       actually bears on — usually the next one it affects; `--packets` is
+       **mandatory** regardless (ADR 0024, there is no run-wide finding). Then
+       write the detail into the `.agents/findings/<id>.md` it creates when you
+       also pass `--body` (opt-in — most findings are fully carried by their
+       summary). **In a parallel lane, do not run this** — you have no run-state
+       to append to and you are not its writer. Put the line in your check-in
+       under `Findings:` with the packet id(s) it names (never the lane's own
+       id, for the same reason), and the scheduler records it (`parallel.md`
+       P1.4). Route it
        first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
        - **"this should be built/fixed"** → **not a finding.** That is backlog: a
          gspec task/feature, sequenced via `.agents/roadmap.yaml`.
@@ -393,9 +523,37 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   review** (opus) over the *integrated* diff — the whole feature vs its base
   (`git diff <base>...HEAD`, or the integration branch vs its base at
   `full-autonomy`). Per-packet reviews are scoped to one packet each and miss
-  cross-packet integration issues; this final pass is the net for them. File any
-  Critical/Important finding as a new packet (append to the backlog, cursor back)
-  rather than shipping over it. Once the whole-branch review is clean, set
+  cross-packet integration issues; this final pass is the net for them. For any
+  Critical/Important finding (ADR 0026), route by scope in two arms tried in order,
+  never editing the completed record and never bypassing the immutability control with a
+  shell append (`cat >>`, `printf >>`).
+
+  - **Arm 1** applies when **some feature in the backlog** — not necessarily the one this
+    run built — is **incomplete**, has a plan file with at least one **unchecked** task
+    line, and an **unchecked capability in its PRD covers the finding** — both tests must
+    hold separately. Append a new unchecked task line to
+    `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying a
+    truthful `covers:` naming that capability. The immutability hook still runs and still
+    adjudicates: every checked task's **block** (its task line plus its `deps:`/`covers:`
+    follow-on lines, up to the next task line) must survive byte-identically in the
+    resulting file; a rejection is a **signal** that a checked block was disturbed, or
+    that arm 1 was the wrong arm. Write bounds: append only, never modifying an existing
+    line, never touching a PRD capability checkbox. Cursor back to the appended task.
+    Choose the plan by **scope match**, never by proximity, recency, or convenience.
+
+  - **Arm 2** is everything else, including every case where the parent plan is fully
+    checked: the finding becomes a **new feature**. A dispatched context has no `Skill`
+    tool (ADR 0012), so hand off on the `normal`-severity question block in
+    `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`: `gate:` records arm-2, `question:`
+    names the proposed slug, scope, and parent, `state:` stays `continuing on other
+    packets` (meaning the question does not block the run — at §4 the backlog is
+    complete). Main-context session runs `/gspec-feature`, adds a `.agents/roadmap.yaml`
+    entry (`depends_on:` the parent, `order` after it), and writes **no plan file** until
+    the work comes up. Never use the check-in's `Findings:` key — "this should be
+    built/fixed" is backlog (ADR 0022), not a finding. **`-gaps` does not stack** — a
+    second-order gap gets a slug naming its scope.
+
+  Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh set
   .agents/run-state.yaml status done`) so a later session does not try to resume a
   finished run. Then **snapshot run-metrics (best-effort, ADR 0019):**

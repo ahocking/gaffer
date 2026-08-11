@@ -72,6 +72,41 @@ tier_reason: <e.g. schema shape is unresolved until the query paths are written>
 # plugin does not ship a testing method of its own (ADR 0020 D7).
 method: <tdd | direct>
 
+# Some changes cannot be verified in the run that made them, because the harness
+# loaded the thing being changed before the run started. Three load timings exist,
+# and only one of them is a session boundary:
+#   - code invoked fresh each time it runs (e.g. a script called per command, or a
+#     hook body — the harness spawns it per matching event) takes effect MID-RUN,
+#     on the very next invocation, in the run that edited it — verifiable now, in
+#     this session.
+#   - a definition the harness reads when it dispatches a specialist (an agent or
+#     skill definition) takes effect at the NEXT DISPATCH — declare it here ONLY IF
+#     this run does not dispatch through the changed definition again; when it
+#     does, that later dispatch exercises the edit and no session boundary is
+#     crossed.
+#   - anything the harness loads ONCE at SESSION START — `hooks/hooks.json` and the
+#     settings/config file that registers hooks, i.e. which hooks exist and what
+#     they match, NOT a hook's own body — does NOT take effect in this session at
+#     all. A break here is invisible in-session and only surfaces in the next one.
+#     THIS is the session boundary this field exists for. It also covers which
+#     components exist at all, and the frontmatter the harness registers for them
+#     (name, description, tools, model): adding, removing, or changing that crosses
+#     the boundary even though editing a definition's body, above, does not.
+#
+# REQUIRED for a packet whose `allowed_files` touches a surface loaded at session
+# start (as above). Omit otherwise, like `tier_reason`. For a hook, its LOGIC is
+# already exercised in-run because the harness runs it fresh on every matching
+# event (the first bullet's timing) — its regression sweep is the deliberate check
+# of that logic, not the reason it is live. What crosses the boundary is the
+# WIRING: that the harness still loads the hook's registration and still fires it.
+# State what specifically could not be verified in this run and what the next
+# session must check to confirm it — this is a declaration of consequence, not a
+# boolean.
+#
+# A green result on a packet like this means nothing IN THIS RUN contradicted the
+# change — it does NOT mean the change works. Only the next session's check does.
+session_boundary: <e.g. changes a hook's wiring; confirm next session it still fires>
+
 # The ONLY files this task may create or edit. Keep this as narrow as possible.
 # Globs allowed. Anything outside this list requires escalation, not self-widening.
 allowed_files:
@@ -85,11 +120,17 @@ context:
   - <src/api/Transactions/Transaction.cs>
 
 # Concrete, checkable conditions. The reviewer verifies each of these.
+#
+# REQUIRED: if `allowed_files` touches enforcement or automation code — a hook, a
+# guard/policy script, CI logic — the matching regression sweep MUST be listed
+# here as its own acceptance criterion — not implied by "tests pass". A sweep is
+# what makes a change to enforcement code reviewable, so this is not optional.
 acceptance_criteria:
   - <detects monthly recurring transactions>
   - <supports merchant normalization>
   - <includes unit tests>
   - <does not alter auth behavior>
+  - <the regression sweep covering the area you changed passes, with a new case for this change>
 
 # Interface contract with neighboring packets. A fresh implementer sees ONLY this
 # packet, so name the exact signatures it may rely on and must expose — this is how
@@ -112,9 +153,12 @@ forbidden:
   - <touch frontend>            # task-specific extras
 
 # Commands the agent runs to verify its work. Output must be reported verbatim.
+# If a regression sweep is listed above under acceptance_criteria, `test` must
+# also invoke it — an acceptance criterion nobody runs is not a gate. The
+# sweeps exit 0 on pass.
 commands:
   build: <dotnet build>
-  test: <dotnet test>
+  test: <dotnet test && ./scripts/test-<area>.sh>
 
 # Actions that must NOT happen without explicit human approval first.
 approval_required_before:

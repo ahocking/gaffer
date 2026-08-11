@@ -12,8 +12,8 @@
   boundary is deliberately placed on the existing crash boundary, so a fresh
   Chief Engineer per packet is the already-tested resume path rather than a new
   mechanism.
-- Constrained by [ADR 0003](0003-defer-custom-voice-frontend.md): the plugin
-  produces check-ins and builds no notification transport. That rules out the
+- Constrained by the plugin's standing frontend-agnostic rule: it produces
+  check-ins and builds **no notification transport**. That rules out the
   otherwise-obvious progress designs — see Rejected alternatives.
 
 ## Context
@@ -78,6 +78,13 @@ repo currently asserts, and one of them is load-bearing for the brief's shape.
    fiction. Out of scope here; flagged for a cleanup pass.
 
 ## Decision
+
+> **Amended 2026-08-10 — the crossover is now 40, and inline is the default.**
+> The 20 below was a token extrapolation with no production comparator; the first
+> real measurement says relay costs **1.84x** inline per packet. Read the
+> "v2 revision" section at the end of this ADR before relying on anything in this
+> section — the numbers below are retained as the original derivation, not as
+> current guidance.
 
 **The loop picks its execution mode from the backlog size: inline below 20
 packets, relay at 20 or more. The threshold is the measured crossover, not a
@@ -156,7 +163,7 @@ driving the whole backlog is therefore a **black box for the duration of the run
 no check-in reaches the human until the last packet lands. Dispatching per packet
 makes each check-in surface the moment its packet lands, using no transport beyond
 the subagent's own return value — which is the only progress mechanism available
-that does not violate ADR 0003.
+that builds no notification transport.
 
 It is also mechanically cheap to *build*, because `.agents/run-state.yaml` is
 *already* the durable memory designed to survive session death (ADR 0004/0005). A
@@ -328,7 +335,7 @@ Two things the model deliberately does not capture, both favoring the relay:
   premise is semi-attended operation.
 - **Long-running CE + check-ins written to disk, relay tails the file.** Restores
   the progress reporting, but it is a notification transport in everything but
-  name — precisely what ADR 0003 defers. It also adds a second durable state file
+  name — precisely what this plugin does not build. It also adds a second durable state file
   alongside run-state, with its own torn-write story. Per-packet dispatch gets the
   same visibility from a mechanism that already exists.
 - **Rename `Task` → `Agent` in the agent frontmatter.** Proposed on the false
@@ -338,3 +345,60 @@ Two things the model deliberately does not capture, both favoring the relay:
 - **Leave it to the human to type "defer to agents".** The status quo. It works
   and it is invisible; a behavior that only happens when you remember it is not a
   property of the system.
+
+## v2 revision (2026-08-10) — the crossover moves to 40, and inline becomes the default
+
+**What changed:** inline below **40** packets, relay at 40 or more. `--inline` /
+`--relay` still override. Nothing else in this ADR is amended — the dispatch
+boundary, the brief contract, the `Task`-is-the-grant finding, and the check-in
+relay are all unchanged.
+
+**Why the original 20 could not be trusted.** It was never measured against a
+running alternative. The derivation is a *token extrapolation*: an inline marginal
+cost of `4 × 0.10 × ctx_k + 1.25 × 6.7k` against a flat relay cost of ~40.7k, whose
+cumulative lines cross at k≈21. The wall-clock row (200s vs 285s) is reported in
+this ADR but is **not an input** to that crossover. So the number was a model of
+cost, not an observation of it, and it stood for three weeks without one.
+
+**The first production comparison says the opposite.** Across 62 packets in one
+consumer repo, restricted to instrumented runs so the comparison is like-for-like:
+
+| mode | runs | packets | cacheCreation per packet |
+|---|---|---|---|
+| relay | 5 | 42 | 1,332,006 |
+| inline | 4 | 20 | 722,989 |
+
+**Relay costs 1.84x inline per packet.** The mechanism is visible rather than
+inferred: the coordinator role carries a `cc_shape` max of **142k–240k with 9–55
+turns over 50k cacheCreation in every relay run measured**, across two repos and
+three weeks, while no inline run has a role anywhere near it. That is ADR 0019
+v3.4's standing-context signature — a large payload re-cached per turn, which is
+exactly what a fresh-coordinator-per-packet design creates.
+
+**Why relay is kept rather than deleted, and why 40 rather than some other number.**
+The 1.84x is **contaminated and known to be so**. In those same runs 65–96% of all
+tool duration sits inside the coordinator's own context, much of it **busy-wait
+polling** — one run spent 51% of its wall clock in 30 `until` loops. Every poll
+returns into the coordinator's standing context and can re-cache it, inflating the
+very figure being compared. Deleting an execution mode on a number that is about to
+move is the error this revision exists to correct, one level up. So: 40 is a
+deliberately conservative retreat, not a new measurement. It keeps relay reachable
+for a backlog genuinely long enough to threaten the window, while ensuring no
+ordinary run pays for it.
+
+Two facts bound how much relay was ever worth:
+
+- **The regime this ADR was built for has never been reached.** Inline's forced
+  compaction sits near packet ~28; the largest run ever observed is **14 packets**.
+  The failure relay prevents has not occurred in production.
+- **Reaching 40 is itself a signal.** A backlog that long should probably be split
+  into features rather than relayed through one run.
+
+**What settles this.** `loop-cost-controls` P0: fix the busy-wait, then re-measure
+as a **two-arm A/B, inline and relay, over at least 20 packets**. Deleting relay
+outright is a legitimate outcome if the gap survives decontamination; so is
+restoring a lower crossover if it does not. Until that runs, treat 40 as a guard
+rail rather than a finding.
+
+Baseline: `docs/metrics/2026-08-10-loop-cost-baseline.json` (this repo) plus the
+`argent` run history it is compared against.

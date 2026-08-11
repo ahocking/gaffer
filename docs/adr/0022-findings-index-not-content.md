@@ -1,6 +1,10 @@
 # ADR 0022 — Findings live outside run-state; run-state keeps only the index
 
-- Status: Accepted
+- Status: Accepted — retention model amended by
+  [ADR 0024](0024-findings-are-packet-scoped-and-expire.md). The index-hot/body-cold
+  split below stands unchanged; what 0024 supersedes is this ADR's silence on how a
+  finding **ends**, and the "durable and reviewable" consequence. Findings are now
+  packet-scoped and expire.
 - Date: 2026-08-07
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: [ADR 0005](0005-crash-safe-resume.md) (run-state is the durable memory),

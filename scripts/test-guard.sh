@@ -224,6 +224,89 @@ check 2 "extra-bash: make deploy blocked"      "$(with_cwd Bash '{"command":"mak
 check_ask "extra-review: src/billing-ui asks (not deny)" "$(with_cwd Edit '{"file_path":"src/billing-ui/page.tsx"}')"
 check 0 "extra rules do not block benign"       "$(with_cwd Bash '{"command":"make build"}')"
 
+echo "== self-host: THIS repo's reflexive surface asks (self-host-hardening T1/T2) =="
+# This repo IS the plugin, so the loop can edit the guard, the state writer and the
+# agent prompts it is running from — impossible in a consumer repo, where the plugin
+# sits outside the working tree. `.agents/guard-extra-review` routes that surface to
+# the ASK tier. ADR 0014 tier 2b.
+#
+# The cases below load the REAL file rather than a copy. A copy would let the shipped
+# rules and the sweep drift apart silently, which is the one failure mode a test of a
+# config file exists to prevent.
+SH="$(mktemp -d)"; mkdir -p "$SH/.agents"
+cp "${HERE}/../.agents/guard-extra-review" "$SH/.agents/guard-extra-review"
+sh_cwd() { printf '{"cwd":"%s","tool_name":"%s","tool_input":%s}' "$SH" "$1" "$2"; }
+
+check_ask "self-host: scripts/runstate.sh asks (the loop's own state writer)" \
+  "$(sh_cwd Edit '{"file_path":"scripts/runstate.sh"}')"
+check_ask "self-host: a regression SWEEP asks too (a weakened test is the same risk)" \
+  "$(sh_cwd Edit '{"file_path":"scripts/test-guard.sh"}')"
+check_ask "self-host: hooks/guard.sh asks (the safety floor itself)" \
+  "$(sh_cwd Edit '{"file_path":"hooks/guard.sh"}')"
+check_ask "self-host: vendored .claude/hooks/ asks (enforcement code too)" \
+  "$(sh_cwd Edit '{"file_path":".claude/hooks/gspec-spec-integrity.mjs"}')"
+check_ask "self-host: agents/*.md asks (read at dispatch)" \
+  "$(sh_cwd Edit '{"file_path":"agents/implementer.md"}')"
+check_ask "self-host: skills/ asks" \
+  "$(sh_cwd Edit '{"file_path":"skills/run-loop/SKILL.md"}')"
+check_ask "self-host: .claude-plugin/ manifest asks" \
+  "$(sh_cwd Edit '{"file_path":".claude-plugin/plugin.json"}')"
+# The shell path matters as much as Edit/Write: `cat >` and `sed -i` bypass diff
+# review, which is exactly why guard.sh pattern-matches them as a write surface.
+check_ask "self-host: shell write to hooks/ asks" \
+  "$(sh_cwd Bash '{"command":"cat > hooks/guard.sh"}')"
+check_ask "self-host: sed -i on a script asks" \
+  "$(sh_cwd Bash '{"command":"sed -i.bak s/x/y/ scripts/metrics.sh"}')"
+
+# The guard's own configuration — the sharper case, since these weaken the control
+# rather than the code it protects.
+check_ask "self-host: guard-extra-review itself asks (a deletable rule is no rule)" \
+  "$(sh_cwd Edit '{"file_path":".agents/guard-extra-review"}')"
+check_ask "self-host: project-overrides asks (it carries bypass-ask-tier)" \
+  "$(sh_cwd Edit '{"file_path":".agents/project-overrides.yaml"}')"
+check_ask "self-host: .agents/autonomy asks (no silent self-elevation)" \
+  "$(sh_cwd Edit '{"file_path":".agents/autonomy"}')"
+check_ask "self-host: .claude/settings.json asks (hook registration)" \
+  "$(sh_cwd Edit '{"file_path":".claude/settings.json"}')"
+
+# LOAD-BEARING NON-MATCHES. `(^|/)agents/` must NOT match `.agents/`, because the
+# loop writes run-state, findings and metrics constantly through runstate.sh and
+# metrics.sh. Gating those would prompt on every state write and deadlock the run.
+# The `(^|/)` anchor is what separates them, so it gets a test rather than a comment.
+check 0 "self-host: .agents/run-state.yaml does NOT ask (loop would deadlock)" \
+  "$(sh_cwd Edit '{"file_path":".agents/run-state.yaml"}')"
+check 0 "self-host: .agents/findings/ does NOT ask" \
+  "$(sh_cwd Edit '{"file_path":".agents/findings/f-001.md"}')"
+check 0 "self-host: .agents/metrics/ does NOT ask" \
+  "$(sh_cwd Edit '{"file_path":".agents/metrics/events/s.jsonl"}')"
+check 0 "self-host: runstate.sh writing run-state via shell does NOT ask" \
+  "$(sh_cwd Bash '{"command":"cat > .agents/run-state.yaml"}')"
+check 0 "self-host: templates/ does NOT ask (data, not enforcement)" \
+  "$(sh_cwd Edit '{"file_path":"templates/task-packet.yaml"}')"
+check 0 "self-host: ordinary source does NOT ask" \
+  "$(sh_cwd Edit '{"file_path":"src/app/page.tsx"}')"
+
+# The hard floor is unchanged: ASK never softens a DENY.
+check 2 "self-host: the hard-deny floor still outranks the ask tier" \
+  "$(sh_cwd Edit '{"file_path":".env"}')"
+
+# CONSUMER REPOS ARE UNAFFECTED. These patterns live in this repo's `.agents/`,
+# not in guard.sh's shipped defaults — a consumer with no such file must see no
+# change at all. Without this direction the sweep could pass while the plugin had
+# quietly started prompting every user on every `scripts/` edit.
+CN="$(mktemp -d)"; mkdir -p "$CN/.agents"
+cn_cwd() { printf '{"cwd":"%s","tool_name":"%s","tool_input":%s}' "$CN" "$1" "$2"; }
+check 0 "consumer default: scripts/ does not ask" \
+  "$(cn_cwd Edit '{"file_path":"scripts/deploy-helper.sh"}')"
+check 0 "consumer default: hooks/ does not ask" \
+  "$(cn_cwd Edit '{"file_path":"hooks/useAuth.ts"}')"
+check 0 "consumer default: agents/ does not ask" \
+  "$(cn_cwd Edit '{"file_path":"agents/notes.md"}')"
+check 0 "consumer default: skills/ does not ask" \
+  "$(cn_cwd Edit '{"file_path":"skills/index.ts"}')"
+check 0 "consumer default: .agents/autonomy does not ask" \
+  "$(cn_cwd Edit '{"file_path":".agents/autonomy"}')"
+
 echo "== commit soft-gate: autonomy × branch × staged diff (ADR 0004) =="
 # Build a throwaway git repo on a named branch. Optionally stage/track a file so
 # we can exercise the sensitive-staged-path check. Real repos are needed because

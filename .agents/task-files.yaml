@@ -1,0 +1,159 @@
+# gaffer — per-task file scope (plugin ADR 0020 U1-local)
+# ---------------------------------------------------------------------------
+# gspec task lines carry no file scope, so this sidecar is where `allowed_files`
+# comes from. Precedence: a plan-authored `files:` sub-bullet > a fingerprint-
+# matched entry here > empty.
+#
+# THE FINGERPRINT IS REQUIRED, and it is not ceremony. gspec preserves task IDs
+# on regenerate but RE-DECOMPOSES unchecked work, so a `T5` can keep its id while
+# its text becomes different work. An unguarded entry would then hand a stale,
+# NARROW scope to two lanes that actually collide. A missing or mismatched
+# fingerprint drops the entry to empty scope, and packet-graph.sh then serializes
+# the packet: wrong-wide costs parallelism, wrong-narrow costs correctness.
+#
+# The fingerprint is the task's description text. Comparison is normalized for
+# case, markdown emphasis and whitespace, so reformatting a task does not
+# invalidate its entry — but rewording it does, which is the point.
+#
+# Audit these against the live plans with:
+#   scripts/gspec-backlog.sh files-status
+
+schema: 1
+
+tasks:
+  - task: self-host-hardening#T1
+    files: [.agents/guard-extra-review]
+    fingerprint: Add `.agents/guard-extra-review` listing the reflexive surface so self-modification lands in the ASK tier
+
+  - task: self-host-hardening#T2
+    files: [scripts/test-guard.sh]
+    fingerprint: Add allow/deny cases to `scripts/test-guard.sh` proving each reflexive path asks and that consumer-repo defaults are unchanged
+
+  - task: self-host-hardening#T3
+    files: [templates/task-packet.yaml]
+    fingerprint: Make the matching regression sweep a required acceptance criterion in the task-packet template
+
+  - task: self-host-hardening#T4
+    files: [templates/task-packet.yaml]
+    fingerprint: Add a session-boundary declaration to the task-packet template for packets touching hooks or agents
+
+  - task: self-host-hardening#T5
+    files: [.agents/task-files.yaml]
+    fingerprint: Populate `.agents/task-files.yaml` with fingerprinted file scope for this repo's packets
+
+  - task: self-host-hardening#T6
+    files: [scripts/metrics.sh]
+    fingerprint: Mark self-host runs in the collected run packet so dogfooding and consumer runs are not averaged together
+
+  - task: self-host-hardening#T7
+    files: [scripts/test-metrics.sh]
+    fingerprint: Add a `scripts/test-metrics.sh` case asserting the self-host marker is present and does not alter any existing field
+
+  # --- self-host-hardening-gaps --------------------------------------------
+  # T5 is deliberately ABSENT: its file set depends on which mechanism T4
+  # chooses, and a wrong-narrow entry costs correctness while a missing one only
+  # costs parallelism. Add it once T4 lands.
+  - task: self-host-hardening-gaps#T1
+    files: [CLAUDE.md, templates/task-packet.yaml, .agents/guard-extra-review, gspec/features/self-host-hardening.md]
+    fingerprint: Correct the load-timing model in all five places in one change — `CLAUDE.md`, `templates/task-packet.yaml`, `.agents/guard-extra-review`, and in the already-complete `gspec/features/self-host-hardening.md` BOTH its blockquote and the session-boundary acceptance criterion under the checked P1 capability (the bullet's text only — never the checkbox, no checked task, no plan file) — so a hook's body reads as live on the next tool call and only its registration and the settings that load it cross a session boundary, with `scripts/test-guard.sh` passing unchanged since the enforcement-config edit is comment-only and warrants no new case
+
+  - task: self-host-hardening-gaps#T2
+    files: [scripts/metrics.sh, scripts/test-metrics.sh]
+    fingerprint: Make `scripts/metrics.sh` report `self_host=false` when a repository root cannot be resolved on **either** side — never synthesizing one from the script's own location nor from `--main-root` — and add fixtures to `scripts/test-metrics.sh` covering both shapes (a non-git plugin copy, and a non-git `--main-root` sited under a real plugin root), replacing the sweep comment's claim that only the driven side's resolution ever fails here while keeping its two-fixed-working-directories rationale
+
+  - task: self-host-hardening-gaps#T3
+    files: [skills/run-loop/SKILL.md, agents/chief-engineer.md, scripts/test-report-conventions.sh]
+    fingerprint: Deliver the packet contract instead of naming it — make both scoping sites (`skills/run-loop/SKILL.md` §3.2 and `agents/chief-engineer.md` step 3) `Read` `templates/task-packet.yaml` before filling a packet, and assert that delivery plus the presence of both REQUIRED rules in `scripts/test-report-conventions.sh`, extending that sweep's header block with a fifth numbered subject naming contract delivery by `Read` as the thing under test
+
+  - task: self-host-hardening-gaps#T4
+    files: [docs/adr/]
+    fingerprint: Choose and record in a new ADR which mechanism carries a finding discovered after a plan is fully checked into the backlog — regeneration through the supported planning path, a purely-additive-at-EOF allowance, or routing to a new feature — naming why the two rejected candidates are rejected, and noting that the immutability hook is vendored and re-stamped on install so a local patch to it would be silently reverted
+
+  # --- run-state-cleanup ----------------------------------------------------
+  - task: run-state-cleanup#T1
+    files: [scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh, docs/adr/0020-gspec-boundary-and-version-pin.md]
+    fingerprint: Add `gspec-backlog.sh check-task` flipping one task's checkbox and never its text, name that write in ADR 0020's boundary section, and cover it in `test-gspec-backlog.sh`
+
+  - task: run-state-cleanup#T2
+    files: [scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh]
+    fingerprint: Add a read-only adapter subcommand that, for a given set of packet ids, reports which name a still-unchecked gspec task and emits the finished set for `findings --stale` to consume, with a sweep case
+
+  - task: run-state-cleanup#T3
+    files: [scripts/runstate.sh, scripts/test-runstate.sh]
+    fingerprint: Make `add-finding` refuse without `--packets`, write the ids into the index entry, and name the four non-finding homes in its refusal, with `test-runstate.sh` cases
+
+  - task: run-state-cleanup#T4
+    files: [scripts/runstate.sh, scripts/test-runstate.sh]
+    fingerprint: Write a finding body only when `add-finding` is passed `--body`, dropping the three-heading stub default, with a sweep case
+
+  - task: run-state-cleanup#T5
+    files: [scripts/runstate.sh, scripts/test-runstate.sh]
+    fingerprint: Add `runstate.sh drop-finding` removing index entry and body atomically, with sweep cases proving no orphan in either direction
+
+  - task: run-state-cleanup#T6
+    files: [scripts/runstate.sh, scripts/test-runstate.sh]
+    fingerprint: Add `findings --stale` taking the finished set as input rather than reading gspec, applying the finished/pending/unknown rule and the `ORCH_FINDINGS_INDEX_MAX_BYTES` threshold, with a sweep case pinning that an unsupplied set reads as `unknown` throughout and expires nothing
+
+  - task: run-state-cleanup#T7
+    files: [scripts/runstate.sh, scripts/test-runstate.sh]
+    fingerprint: Give `reconstruct`'s `DONE=` note the clause that no run-state field is populated from it, with a `test-runstate.sh` assertion on the new clause
+
+  - task: run-state-cleanup#T8
+    files: [templates/run-state.yaml]
+    fingerprint: Remove `done:` from the `backlog` block in `templates/run-state.yaml`, leaving `cursor` and `pending` only
+
+  - task: run-state-cleanup#T9
+    files: [templates/run-state.yaml]
+    fingerprint: Document in `templates/run-state.yaml` that `packets:` is required on write, bodies are opt-in, and schema stays 3 with a legacy `done:` ignored
+
+  - task: run-state-cleanup#T10
+    files: [templates/check-in.md]
+    fingerprint: Add the one-line stale-findings field to `templates/check-in.md`, emitted only when the index exceeds the threshold, and require packet ids on the `Findings:` line so the scheduler can record a lane's finding under the new `--packets` rule
+
+  - task: run-state-cleanup#T11
+    files: [skills/run-loop/SKILL.md]
+    fingerprint: Rewrite `run-loop` §3.3 packet close to drop the `done` append, flip the checkbox of a gspec-sourced packet in the packet commit (skipped, not failed, when the backlog is not gspec), then — after the run-state write, for the same reason `add-finding` is — apply the capture-then-drop test to that packet's findings, where filing a backlog task is the capture and a spent sign-off is not, dropping only the spent ones and passing packet ids to the `add-finding` site in that block
+
+  - task: run-state-cleanup#T12
+    files: [skills/run-loop/SKILL.md]
+    fingerprint: Make `run-loop` preflight report any `[orch packet:]` trailer naming a still-unchecked task, without flipping and without blocking
+
+  - task: run-state-cleanup#T13
+    files: [skills/run-loop/parallel.md]
+    fingerprint: Make the scheduler flip at green-lane merge and then apply the same capture-then-drop test to that lane's reported findings, updating the `parallel.md` P1.4 `add-finding` site to pass the lane's packet ids
+
+  - task: run-state-cleanup#T14
+    files: [skills/resume/SKILL.md]
+    fingerprint: Update the three `backlog.done` sites in `skills/resume/SKILL.md`, with orphan adoption removing from `pending` and flipping the checkbox of a gspec-sourced packet (skipped, not failed, when the backlog is not gspec)
+
+  - task: run-state-cleanup#T15
+    files: [skills/pause/SKILL.md]
+    fingerprint: Remove the two `backlog.done` sites from `skills/pause/SKILL.md`, including the run-state heredoc
+
+  - task: run-state-cleanup#T16
+    files: [templates/report-conventions.md, templates/report-templates.md]
+    fingerprint: State in `templates/report-conventions.md` and both loop shapes that ✅ counts what this session landed, with the whole-backlog rule restated as forward-only
+
+  - task: run-state-cleanup#T17
+    files: [scripts/migrate.sh, scripts/test-migrate.sh]
+    fingerprint: Add `backlog-done` detection to `scripts/migrate.sh` reporting unchecked tasks via the existing `$ADAPTER` before `apply` drops the block and `verify` asserts it gone, with `test-migrate.sh` cases
+
+  - task: run-state-cleanup#T18
+    files: [scripts/migrate.sh, scripts/test-migrate.sh]
+    fingerprint: Add the `findings` detection and read-only `findings-audit` subcommand to `scripts/migrate.sh`, reading finished-ness via the existing `$ADAPTER`, with `test-migrate.sh` cases asserting `apply` deleted nothing and covering an `unknown` verdict
+
+  - task: run-state-cleanup#T19
+    files: [skills/migrate/SKILL.md]
+    fingerprint: Add the one-entry-at-a-time findings triage with its three outcomes to `skills/migrate/SKILL.md` §5
+
+  - task: run-state-cleanup#T20
+    files: [scripts/test-runstate.sh]
+    fingerprint: Add a `test-runstate.sh` legacy fixture carrying `done:` and packet-less findings, plus a `done:`-free write asserted to parse, asserting a real parse after every mutating subcommand
+
+  - task: run-state-cleanup#T21
+    files: [CLAUDE.md]
+    fingerprint: Add the CLAUDE.md conventions bullets for both ADRs in one deliberate change — the checkbox as completion record, the session-scoped tally, and packet-scoped expiring findings — rather than letting earlier tasks each nudge the repo's most contended file. Repo-convention upkeep, not a PRD criterion
+
+  - task: run-state-cleanup#T22
+    files: [skills/migrate/SKILL.md]
+    fingerprint: Correct `skills/migrate/SKILL.md` where T17/T18 made it untrue: it promises the user that nothing is deleted by the script ever, but `apply` now drops the `backlog.done` block, and its relay list names only `MOVED=`/`STAMPED=`/`CONVERTED=`/`SKIP=`, so `DROPPED=`, `UNCHECKED=` and `UNRECOGNIZED_BACKLOG_DONE=` reach no human — the last two being exactly the ones needing a decision

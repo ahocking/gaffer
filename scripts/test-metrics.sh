@@ -98,6 +98,16 @@ check "token_source"        "transcript"  "$(jq -r '.token_source' "$OUT")"
 check "totals.tool_calls"   "5"           "$(jq -r '.totals.tool_calls' "$OUT")"
 check "totals.packets"      "2"           "$(jq -r '.totals.packets' "$OUT")"
 
+# --- packet-shape: pin $OUT's top-level key set (schema, run_id, mode, totals,
+# packets, ...) so a future additive field is a deliberate one-line edit here, not a
+# silent pass. self_host is excluded because it is ITSELF an additive field (see the
+# self_host section below, which extends this same list rather than duplicating it) —
+# append the new key here, in sorted order, when a legitimate new top-level field is
+# added; do not delete this check just because it has "self_host" nowhere in its name.
+PRE_SELFHOST_KEYS="audit autonomy by_agent_role generated_at mode notes packets run_id schema sessions token_diagnostics token_source totals window"
+check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
+  "$(jq -r 'del(.self_host)|keys|sort|join(" ")' "$OUT")"
+
 # tokens: main(200/100/200/1200) + a1(300/150/100/1000) + a2(40/20/0/600)
 check "tokens.input"          "540"  "$(jq -r '.totals.tokens.input' "$OUT")"
 check "tokens.output"         "270"  "$(jq -r '.totals.tokens.output' "$OUT")"
@@ -1039,6 +1049,162 @@ check "show: contention named"        "1" "$(printf '%s\n' "$XSHOW" | grep -c 's
 # and the hook must stamp a hash for it in the first place
 check "hook: MultiEdit on write surface" "1" \
   "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
+
+echo
+echo "== self_host: marker present only when driving THIS repo, never touches other fields =="
+# self_host is true only when (a) the script's own git root and the DRIVEN repo's git
+# root are the same directory, worktree-normalised, and (b) that directory carries
+# .claude-plugin/plugin.json. $OUT (the S1 scenario at the top of this file) drives a
+# throwaway $REPO with no manifest, so it is the "plain consumer run" case: false.
+check "self_host: false by default (no manifest, different repo)" "false" \
+  "$(jq -r '.self_host' "$OUT")"
+# type, not truthiness: --argjson wires this as a JSON boolean. A regression to --arg
+# would still read "false" under `jq -r` but fail a `type` check.
+check "self_host: is a JSON boolean, not a string" "boolean" \
+  "$(jq -r '.self_host|type' "$OUT")"
+# The emitted note begins "self_host:" (UNDERSCORE) — matching "self-host" (hyphen)
+# is vacuous, since that substring never appears anywhere in the note and this check
+# would pass whether or not the note were present. startswith() matches the string
+# the collector actually emits (see the `self_host: note present when true` case
+# below, which asserts the identical prefix on the positive side).
+check "self_host: no self-host note when false" "0" \
+  "$(jq -r '[.notes[]|select(startswith("self_host:"))]|length' "$OUT")"
+check "self_host: schema unchanged"    "2" "$(jq -r '.schema' "$OUT")"
+
+# --- a real self-driven collector, so a positive out of the DETECTOR is exercised ---
+# Every check above only pins the RENDERER: $OUT is always driven with a real,
+# non-plugin repo, so metrics.sh could hardcode self_host="false", invert its
+# comparison, or check a wrong manifest path and every check above would still pass.
+# Build a SYNTHETIC repo that carries a manifest AND a copy of metrics.sh at the same
+# relative path (scripts/metrics.sh) a real self-host checkout would have, so
+# BASH_SOURCE[0] resolves the self side to that repo when the copy runs. metrics.sh
+# sources nothing else, so the copy is a complete, hermetic collector.
+HSSELFREPO="$ROOT/hs-self-repo"; mkdir -p "$HSSELFREPO/scripts" "$HSSELFREPO/.claude-plugin"
+git -C "$HSSELFREPO" init -q
+echo '{}' > "$HSSELFREPO/.claude-plugin/plugin.json"
+cp "$METRICS" "$HSSELFREPO/scripts/metrics.sh"
+chmod +x "$HSSELFREPO/scripts/metrics.sh"
+HSSELFOUT="$ROOT/hs-self.json"
+"$HSSELFREPO/scripts/metrics.sh" collect --main-root "$HSSELFREPO" --projects-dir "$ROOT/none" --out "$HSSELFOUT" >/dev/null 2>&1
+check "self_host: TRUE from a real self-driven collector" "true" \
+  "$(jq -r '.self_host' "$HSSELFOUT")"
+check "self_host: note present when true" "1" \
+  "$(jq -r '[.notes[]|select(startswith("self_host:"))]|length' "$HSSELFOUT")"
+
+# manifest present but NOT the same repo: the real same-repo discriminator, now that
+# the fixture above exists to build it with. Drives the SAME self-host copy used for
+# the positive case above against a DIFFERENT repo that also carries a manifest — this
+# is what actually isolates the same-repo comparison from mere manifest presence. (The
+# original version of this case drove $METRICS — the real gaffer checkout — against a
+# different manifest repo; that only re-proved the "false by default" case above,
+# since $METRICS's own self-side root already differs from any throwaway repo, and it
+# never exercised the driven repo's manifest at all.)
+HSMREPO="$ROOT/hs-manifest-repo"; mkdir -p "$HSMREPO/.claude-plugin"
+git -C "$HSMREPO" init -q
+echo '{}' > "$HSMREPO/.claude-plugin/plugin.json"
+HSMOUT="$ROOT/hs-manifest.json"
+"$HSSELFREPO/scripts/metrics.sh" collect --main-root "$HSMREPO" --projects-dir "$ROOT/none" --out "$HSMOUT" >/dev/null 2>&1
+check "self_host: same-repo copy driven against a DIFFERENT manifest repo -> false" "false" \
+  "$(jq -r '.self_host' "$HSMOUT")"
+
+# `show` renders three distinct states off three synthetic packets derived from $OUT:
+# true -> "self-host: yes"; the key DELETED (a pre-feature packet) -> "self-host:
+# unknown" (must NOT read as a consumer run); explicit false -> no segment at all.
+HSTRUE="$ROOT/hs-true.json"; jq '.self_host = true' "$OUT" > "$HSTRUE"
+HSNULL="$ROOT/hs-null.json"; jq 'del(.self_host)' "$OUT" > "$HSNULL"
+check "show: self_host=true renders 'self-host: yes'" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$HSTRUE" 2>/dev/null)" | grep -c 'self-host: yes')"
+check "show: self_host key absent renders 'self-host: unknown'" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$HSNULL" 2>/dev/null)" | grep -c 'self-host: unknown')"
+check "show: self_host=false renders no self-host segment" "0" \
+  "$(printf '%s\n' "$("$METRICS" show "$OUT" 2>/dev/null)" | grep -c 'self-host')"
+
+# no-git fallback: with a non-git --main-root, self_host must read false REGARDLESS of
+# the collector's own working directory ("on any doubt, false"). EITHER side's git
+# resolution can fail — the self side (BASH_SOURCE[0] resolves to a non-git script
+# copy) or the driven side (--main-root is not a git repo, or is one git cannot
+# resolve) — and an unresolved side must now yield NO root at all, never a root
+# synthesized from self_script_dir or main_root, so the comparison cannot succeed
+# either way. The two fixtures immediately below cover the reachable space between
+# them: Fixture A fails BOTH sides at once (a non-git plugin copy driven at a
+# non-git root under it), Fixture B fails the driven side ALONE while the self side
+# resolves. Self-alone is not a reachable false positive — a self-side failure means
+# the collector has no ancestor repo, so any driven root that DOES resolve is
+# necessarily a different directory. The case the two HSNOGIT checks just below
+# guard is narrower but still real: the
+# driven-side `|| echo .` substitution, which `cd`d to the COLLECTOR's process cwd
+# instead of failing, and so silently invented a root. That bug was
+# directory-dependent, not a plain failure to resolve — reproduced here: launched
+# from $HERE (this repo's own scripts/ dir) it read self_host=true (the launch
+# directory happened to be a real self-host checkout with a manifest); launched from an
+# unrelated tmp dir it read false. Asserting both from fixed working directories is
+# what turns this from a case the old bug could still pass into a real regression
+# guard. These fixtures (and Fixture A below) assume $ROOT -- mktemp -d, i.e. TMPDIR
+# -- has NO ancestor git repository; sited inside a checkout, the "non-git" roots
+# would resolve after all and test something else. That fails loudly rather than
+# silently (the checks read true and fail), so it is a note, not a guard.
+HSNOGIT="$ROOT/hs-nogit"; mkdir -p "$HSNOGIT"
+HSNOGITOUT_HERE="$ROOT/hs-nogit-here.json"
+( cd "$HERE" && "$METRICS" collect --main-root "$HSNOGIT" --projects-dir "$ROOT/none" --out "$HSNOGITOUT_HERE" >/dev/null 2>&1 )
+check "self_host: --main-root not a git repo -> false, launched from \$HERE" "false" \
+  "$(jq -r '.self_host' "$HSNOGITOUT_HERE" 2>/dev/null)"
+HSCWD="$ROOT/hs-cwd"; mkdir -p "$HSCWD"
+HSNOGITOUT_CWD="$ROOT/hs-nogit-cwd.json"
+( cd "$HSCWD" && "$METRICS" collect --main-root "$HSNOGIT" --projects-dir "$ROOT/none" --out "$HSNOGITOUT_CWD" >/dev/null 2>&1 )
+check "self_host: --main-root not a git repo -> false, launched from an unrelated tmp dir" "false" \
+  "$(jq -r '.self_host' "$HSNOGITOUT_CWD" 2>/dev/null)"
+
+# --- Fixture A: a non-git PLUGIN COPY (the finding's exact case) -------------
+# An archive/tarball install of the plugin — a copy of metrics.sh plus the manifest,
+# but no .git at all — means the SELF side's rev-parse fails. Driven with
+# --main-root pointing at a non-git directory under that same plugin root, the
+# DRIVEN side's rev-parse fails too. Before the fix, both sides fell back to
+# self_script_dir / main_root respectively, which happen to share a parent here, so
+# this read self_host=true PLUS the dogfooding note — a consumer/archive run
+# labelled self-host. Follows the HSSELFREPO construction above (a manifest plus a
+# copy of metrics.sh at scripts/metrics.sh) but omits `git init`. Canonicalized via
+# `pwd -P` up front: self_script_dir is always resolved through `pwd -P`
+# (physical/symlink-free) regardless of invocation path, so on a host where the tmp
+# root sits behind a symlink (e.g. macOS /var -> /private/var) an uncanonicalized
+# fixture root would make the two sides' paths differ by that symlink alone and the
+# check would pass FALSE for the wrong reason, before the fix and after it alike.
+HSNOGITSELF="$ROOT/hs-nogit-self-repo"
+mkdir -p "$HSNOGITSELF/scripts" "$HSNOGITSELF/.claude-plugin" "$HSNOGITSELF/sub"
+HSNOGITSELF="$(cd "$HSNOGITSELF" && pwd -P)"
+echo '{}' > "$HSNOGITSELF/.claude-plugin/plugin.json"
+cp "$METRICS" "$HSNOGITSELF/scripts/metrics.sh"
+chmod +x "$HSNOGITSELF/scripts/metrics.sh"
+HSNOGITSELFOUT="$ROOT/hs-nogit-self.json"
+( cd "$HERE" && "$HSNOGITSELF/scripts/metrics.sh" collect --main-root "$HSNOGITSELF/sub" \
+  --projects-dir "$ROOT/none" --out "$HSNOGITSELFOUT" >/dev/null 2>&1 )
+check "self_host: non-git plugin copy (finding's exact case) -> false" "false" \
+  "$(jq -r '.self_host' "$HSNOGITSELFOUT" 2>/dev/null)"
+check "self_host: non-git plugin copy -> no self_host note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("self_host:"))]|length' "$HSNOGITSELFOUT" 2>/dev/null)"
+
+# --- Fixture B: a non-git --main-root sited UNDER a real plugin root --------
+# Mirror of Fixture A from the other side. The SELF side resolves normally (reuses
+# the real git-initialised HSSELFREPO collector copy built above), but --main-root
+# points at a directory git cannot resolve: a `.git` FILE containing a gitdir
+# pointer to a path that does not exist (the shape left behind by a submodule whose
+# superproject's .git/modules was discarded, or a linked worktree copied away from
+# the main repo it pointed at -- NOT an uninitialised submodule, which has no .git
+# entry at all). `git rev-parse` there exits 128 rather than
+# walking up to a parent .git, so the DRIVEN side fails to resolve while sitting
+# directly under a real plugin root — before the fix this fell back to $main_root
+# itself, which of course carries the manifest, so it also read self_host=true.
+# Canonicalized for the same reason as Fixture A: git's own rev-parse output for the
+# self side is always physical/symlink-free, so the driven side's literal fallback
+# path must be built from an equally canonicalized root or the two would differ by
+# a symlink component alone rather than by the thing under test.
+HSSELFREPO_REAL="$(cd "$HSSELFREPO" && pwd -P)"
+HSBROKENSUB="$HSSELFREPO_REAL/broken-submodule"; mkdir -p "$HSBROKENSUB"
+printf 'gitdir: /nonexistent/nowhere\n' > "$HSBROKENSUB/.git"
+HSBROKENOUT="$ROOT/hs-broken-submodule.json"
+( cd "$HERE" && "$HSSELFREPO/scripts/metrics.sh" collect --main-root "$HSBROKENSUB" \
+  --projects-dir "$ROOT/none" --out "$HSBROKENOUT" >/dev/null 2>&1 )
+check "self_host: non-git --main-root under a real plugin root -> false" "false" \
+  "$(jq -r '.self_host' "$HSBROKENOUT" 2>/dev/null)"
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -1,0 +1,91 @@
+# gaffer — feature sequencing (plugin ADR 0020 D2)
+# ---------------------------------------------------------------------------
+# gspec owns WHAT to build: the PRDs (`gspec/features/<slug>.md`) and the ordered
+# per-feature task plans (`gspec/tasks/<slug>.md`). It has no CROSS-feature
+# ordering, so this file supplies it.
+#
+# It lives here and NOT under `gspec/` on purpose: gspec's spec-integrity floor
+# governs every `.md` under `gspec/` and would flag a file gspec does not own.
+#
+# Read through the adapter, never by hand:
+#   scripts/gspec-backlog.sh next
+#   scripts/gspec-backlog.sh features
+#
+# ADOPTION NOTE. This backlog is FORWARD-ONLY plus one retro-spec. The 25 ADRs of
+# already-shipped work are not retro-specced — that is archaeology over decisions
+# that already have passing sweeps. `run-metrics` is the single exception, because
+# ADR 0019's five stacked `v3.x` revision sections were the clearest case of a
+# decision record being used as a status tracker.
+#
+# DO NOT add `status` or `parallel_group`. Both are DERIVED:
+#   completion  -> every capability checkbox in the PRD is `[x]`
+#   concurrency -> computed per run by scripts/packet-graph.sh
+
+schema: 1
+
+features:
+  - slug: run-metrics
+    order: 0
+    why: "retro-spec of shipped work (ADR 0019 v1-v3.4); ordered first so its derived-done state is what unblocks the three metrics features that depend on it"
+    depends_on: []
+
+  - slug: self-host-hardening
+    order: 10
+    why: "gates running the loop on this repo at all; the reflexive surface (guard, runstate, agent prompts) is editable here in a way it never is in a consumer repo, so this comes before any other self-driven work"
+    depends_on: []
+
+  - slug: self-host-hardening-gaps
+    order: 15
+    why: "three defects its parent's whole-branch review found; ordered first because two of them degrade every run until fixed — the load-timing model is wrong in the two documents every packet reads, and the packet rules shipped today may not reach the scoping agent at all, so later features get scoped under machinery that is still broken"
+    depends_on: [self-host-hardening]
+
+  - slug: loop-cost-controls
+    order: 16
+    why: "DEFERRED 2026-08-11 — both P0s fix RELAY-mode behaviour, and relay has never engaged in production. Measured this session: the busy-wait is 30 `until` calls / 7,134,666ms in the relay baseline against 2 calls / 528ms inline, and the coordinator role carrying 63% of cache creation simply does not exist in an inline run (baseline chief-engineer cc_max 142,170 with 20 turns >50k; inline `main` 5,902 with none). The crossover is 40 packets and the largest real run is 9, so this optimises a mode that does not run. Its second P0 is a measurement campaign whose value is deciding relay's fate, not saving tokens. Reopen when a backlog actually crosses 40, or to settle relay by measurement. Note the inline lever it does NOT address: the implementer hit cc_max 265,478 this session, above the relay coordinator's max — inline relocates the large context rather than removing it, and read-scoping is where that lives. Original rationale and baseline: docs/metrics/2026-08-10-loop-cost-baseline.json (tracked)"
+    depends_on: []
+    deferred: true
+
+  - slug: run-state-cleanup
+    order: 18
+    why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"
+    depends_on: []
+
+  - slug: runstate-write-integrity
+    order: 19
+    why: "two live-fired corruption paths in the writer of the loop's ONLY durable state, found while running run-state-cleanup: `set` writes an unquoted YAML scalar (a packet-close note containing `: ` broke the parse), and `write` replaces the file with unvalidated stdin (a failed awk left a 26-byte stub). run-state is gitignored, so neither is recoverable by git. Ordered immediately after run-state-cleanup because that feature rewrites the packet-close sequence these paths sit in — fixing the writer first would collide with it, and fixing it later leaves every packet close running through a known corruption path. Also covers a third defect of the same shape: test-runstate.sh's YAML-parse assertions silently no-op on a host without PyYAML"
+    depends_on: [run-state-cleanup]
+
+  - slug: metrics-coverage-gaps
+    order: 20
+    why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"
+    depends_on: [run-metrics]
+
+  # --- deferred ------------------------------------------------------------
+  # `next` and `nodes-all` skip these, so the loop will not pick them up. They
+  # still appear in `features`, and they still block anything that depends on
+  # them — deferring is "not now", not "treat as done".
+  # Reversing one is a one-line edit: delete its `deferred: true`.
+
+  - slug: coercive-pause-enforcement
+    order: 30
+    why: "DEFERRED — ADR 0017 gates this on evidence that parallel lanes overshoot poll checkpoints, and that evidence does not exist yet; building it now would be building against a hypothesis"
+    depends_on: []
+    deferred: true
+
+  - slug: metrics-tier2-compression
+    order: 40
+    why: "DEFERRED — ADR 0019 gates Tier 2 on Tier 1 numbers, and those numbers now point away from the originally-assumed lever (command output, ~0.18%) toward read volume; reopen with a written before/after, and 'do not build' is a valid outcome"
+    depends_on: [run-metrics]
+    deferred: true
+
+  - slug: metrics-otel-tier0
+    order: 50
+    why: "DEFERRED — optional in ADR 0019 and it mostly re-sources numbers Tier 1 already reports rather than revealing anything new; reopen only if transcript fragility starts costing real data"
+    depends_on: [run-metrics]
+    deferred: true
+
+  - slug: codex-harness-overlay
+    order: 60
+    why: "DEFERRED — accepted in ADR 0007 but entirely unbuilt; large, self-contained, and single-harness is not currently costing anything, so it waits until a second harness is actually wanted"
+    depends_on: []
+    deferred: true

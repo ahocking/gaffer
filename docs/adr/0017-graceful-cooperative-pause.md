@@ -3,8 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-18
 - Deciders: user (tech lead), orchestration plugin
-- Relates to: [ADR 0003](0003-check-in-protocol.md) (produced check-ins),
-  [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md) (pausable loop),
+- Relates to: [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md) (pausable loop),
   [ADR 0005](0005-crash-safe-resume.md) (crash reconcile / write-ahead trailer),
   [ADR 0009](0009-single-directory-feature-branch-workflow.md) (single checkout),
   [ADR 0012](0012-delegated-loop-driver.md) (relay driver),

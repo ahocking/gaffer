@@ -150,6 +150,24 @@ mutual-exclusion edges from `allowed_files` overlap, and the
 empty-scope-serializes-conservatively default becomes *more* load-bearing, not less,
 because gspec tasks carry no file list for us to inherit.
 
+#### `check-task` — the adapter's one write (ADR 0025 D1)
+
+The adapter is read-only except for one write: `check-task` flips `[ ]` to `[x]`
+on a single `gspec/tasks/<slug>.md` task line, and touches nothing else on that
+line or in the file. It records that a unit of work **executed** — the plugin's
+half of the seam this ADR draws — never what to build or in what order, which
+stays gspec's. Flipping the state of gspec's own tracking primitive is the
+sanctioned mutation of that format, not authoring into it (ADR 0025 D1, where the
+loop's use of this write — atomically, in the packet commit — is decided).
+
+This raises **coupling, not dependence**, and the distinction is why the write
+stays this narrow. A format change on a *read* is a loud parse failure `check`
+already catches; a format change on a *write* can corrupt a file the plugin does
+not own. So the write is confined to one character on one line — never
+re-rendering the line, never touching an already-checked task's text, never
+growing into a general plan editor — which is what keeps that failure mode a
+parse error instead of data loss.
+
 #### `U1-local` — file scope without waiting on upstream
 
 Nothing about `files:` requires gspec to change. `.agents/task-files.yaml` supplies

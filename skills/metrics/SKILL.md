@@ -104,7 +104,9 @@ Look for, and cite the figures behind, at least:
 - **Parallel efficiency** (parallel runs) — packets per wave and their wall-times;
   flag waves that serialized when the graph allowed concurrency.
 - **The relay-vs-inline crossover** — whether this run's shape supports or contradicts
-  the ADR 0012 "20-packet" assumption.
+  ADR 0012's 40-packet crossover (raised from 20 in its v2 revision). A run below the
+  crossover cannot unseat it in either direction; say so rather than reading one arm as
+  a verdict.
 - **Standing-context size, via `by_agent_role.<role>.cc_shape`** — prefer this over
   cacheCreation totals, which are too noisy to steer by (measured: 1.76x spread across
   untouched same-regime runs, 9x overall). `median` is the cost of one more turn;
@@ -122,6 +124,12 @@ Look for, and cite the figures behind, at least:
   so failed and rolled-back work is structurally absent. Where `edits` is present,
   `contended_files` (one file touched by more than one role) is the rework signal —
   it separates correction from division of labour, which per-role edit counts cannot.
+- **`self_host`** — a boolean indicating whether this run measured the plugin's own
+  repository (dogfooding) rather than a consumer application. Self-host and consumer
+  runs must NOT be averaged together, since this repo's loop feeds the measurement
+  corpus that benchmarks the plugin, and the populations are incomparable. Absent
+  `self_host` key means unmeasured; treat unknown distinctly from measured consumer
+  runs.
 
 **Honesty about the token source is mandatory:** if `token_source` is `none` or
 `transcript`, say so and scope the token-based claims accordingly (structural claims —

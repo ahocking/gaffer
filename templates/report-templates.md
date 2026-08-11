@@ -1,8 +1,9 @@
-# Human-facing report SHAPES — what the HUMAN reads (ADR 0003 / 0012)
+# Human-facing report SHAPES — what the HUMAN reads (ADR 0012)
 # -----------------------------------------------------------------------------
 # **Read `report-conventions.md` (this directory) first — this file assumes it.**
 # The glyph vocabulary, the indentation contract, the decision block, the header
-# tally and the four rules live there and are NOT repeated here. They apply to every
+# tally and the four rules live there and are NOT repeated here — except the ✅
+# scope rule, restated at each shape that carries the bucket. They apply to every
 # human-facing report in this plugin; the three shapes below apply only to the loop.
 #
 # `check-in.md` is the AGENT-TO-AGENT wire format. A lane or a dispatched Chief
@@ -25,6 +26,9 @@
 # One line per packet or lane, in the order they landed. Sequential mode is a single
 # line; parallel mode is one per lane. Keep it under roughly eight lines — this is
 # read on a phone, between other things.
+#
+# ✅ N landed is THIS SESSION (report-conventions.md's header-tally rule) — count the
+# check-ins already rendered this run, nothing read from disk.
 
 ▶ **RUNNING** · <what this run is> · ✅ **N landed** · 🔀 **N decisions** · ⬚ **N left**
 
@@ -71,6 +75,9 @@
 # Emitted on backlog complete, on pause, on a hard gate, and on a blocking question.
 # This is the one the human reads carefully, so it earns more room than a check-in —
 # but every section still has to survive a ten-second scan.
+#
+# ✅ N shipped is THIS SESSION, same rule as shape A — the ✅ Shipped enumeration below
+# is exactly that session's list, never a run-cumulative count.
 
 ⏸️ **PAUSED** · <what this run was about> · ✅ **N shipped** · ⚠️ **N blocked** · 🔀 **N decisions** · ⬚ **N queued**
 

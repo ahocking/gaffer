@@ -10,6 +10,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The sweeps assert a REAL YAML parse after every mutating runstate.sh
+      # subcommand. Until 2026-08-11 those assertions silently returned true when
+      # PyYAML was absent, so a host without it reported a fully green sweep while
+      # ~21 cases checked nothing (measured: 213/0 green vs 193/21 once the skip was
+      # made loud). The sweeps now fail loudly instead — which makes PyYAML a
+      # load-bearing CI dependency for the first time, so declare it here rather than
+      # relying on whatever the runner image happens to ship. A verifier that cannot
+      # verify must say so, and that applies to CI as much as to the sweep.
+      - name: Verification prerequisites (PyYAML)
+        run: |
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq python3-yaml
+          fi
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+
       - name: Guardrail regression sweep
         run: bash scripts/test-guard.sh
 

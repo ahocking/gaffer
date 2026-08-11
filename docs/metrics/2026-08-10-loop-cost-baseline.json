@@ -1,0 +1,1004 @@
+{
+  "schema": 2,
+  "run_id": "self-host-hardening-gaps-t5",
+  "generated_at": "2026-08-11T01:04:40Z",
+  "token_source": "transcript",
+  "token_diagnostics": {
+    "transcript_dir": "present",
+    "transcript_files_present": 1912,
+    "transcript_files_matched": 35,
+    "usage_turns": 743,
+    "usage_turns_in_window": 742,
+    "duplicate_turns_dropped": 938
+  },
+  "mode": "sequential",
+  "autonomy": "full-autonomy",
+  "self_host": true,
+  "sessions": [
+    "ed4456de-ef50-49d3-8923-17f3e2b2f23f"
+  ],
+  "window": {
+    "start": "2026-08-10T21:10:13Z",
+    "end": "2026-08-11T01:04:35Z",
+    "wall_seconds": 14062,
+    "active_seconds": 11020,
+    "idle_seconds": 3042
+  },
+  "totals": {
+    "packets": 6,
+    "tool_calls": 818,
+    "unattributed_tool_calls": 38,
+    "unattributed_by_agent": {
+      "gaffer:chief-engineer": 28,
+      "main": 10
+    },
+    "duration_ms": 8180248,
+    "by_role_duration_ms": {
+      "gaffer:architect": 147,
+      "gaffer:chief-engineer": 7819592,
+      "gaffer:doc-writer": 41411,
+      "gaffer:implementer": 168134,
+      "gaffer:reviewer": 107592,
+      "main": 43372
+    },
+    "by_tool": {
+      "Agent": {
+        "calls": 34,
+        "duration_ms": 172
+      },
+      "Bash": {
+        "calls": 467,
+        "duration_ms": 8175182
+      },
+      "Edit": {
+        "calls": 85,
+        "duration_ms": 320
+      },
+      "Read": {
+        "calls": 231,
+        "duration_ms": 4571
+      },
+      "Write": {
+        "calls": 1,
+        "duration_ms": 3
+      }
+    },
+    "by_command_class": {
+      "awk": {
+        "calls": 7,
+        "duration_ms": 373
+      },
+      "bash": {
+        "calls": 28,
+        "duration_ms": 111567
+      },
+      "cat": {
+        "calls": 8,
+        "duration_ms": 457
+      },
+      "claude": {
+        "calls": 11,
+        "duration_ms": 113307
+      },
+      "cp": {
+        "calls": 4,
+        "duration_ms": 10940
+      },
+      "date": {
+        "calls": 1,
+        "duration_ms": 23
+      },
+      "du": {
+        "calls": 1,
+        "duration_ms": 8889
+      },
+      "echo": {
+        "calls": 38,
+        "duration_ms": 58313
+      },
+      "find": {
+        "calls": 1,
+        "duration_ms": 24
+      },
+      "for": {
+        "calls": 8,
+        "duration_ms": 590763
+      },
+      "git --version": {
+        "calls": 1,
+        "duration_ms": 198
+      },
+      "git -C": {
+        "calls": 2,
+        "duration_ms": 1129
+      },
+      "git add": {
+        "calls": 8,
+        "duration_ms": 574
+      },
+      "git branch": {
+        "calls": 6,
+        "duration_ms": 653
+      },
+      "git check-ignore": {
+        "calls": 1,
+        "duration_ms": 69
+      },
+      "git checkout": {
+        "calls": 1,
+        "duration_ms": 24972
+      },
+      "git commit": {
+        "calls": 3,
+        "duration_ms": 198
+      },
+      "git diff": {
+        "calls": 37,
+        "duration_ms": 852
+      },
+      "git log": {
+        "calls": 6,
+        "duration_ms": 171
+      },
+      "git rev-parse": {
+        "calls": 1,
+        "duration_ms": 22
+      },
+      "git show": {
+        "calls": 1,
+        "duration_ms": 44
+      },
+      "git status": {
+        "calls": 25,
+        "duration_ms": 1271
+      },
+      "git switch": {
+        "calls": 7,
+        "duration_ms": 366
+      },
+      "grep": {
+        "calls": 69,
+        "duration_ms": 1021
+      },
+      "gspec-backlog.sh": {
+        "calls": 14,
+        "duration_ms": 1581
+      },
+      "head": {
+        "calls": 1,
+        "duration_ms": 11
+      },
+      "ls": {
+        "calls": 13,
+        "duration_ms": 679
+      },
+      "metrics.sh": {
+        "calls": 1,
+        "duration_ms": 47
+      },
+      "mkdir": {
+        "calls": 13,
+        "duration_ms": 3224
+      },
+      "node": {
+        "calls": 1,
+        "duration_ms": 76
+      },
+      "old-metrics.sh": {
+        "calls": 1,
+        "duration_ms": 663
+      },
+      "printf": {
+        "calls": 2,
+        "duration_ms": 71
+      },
+      "python3 -": {
+        "calls": 8,
+        "duration_ms": 852
+      },
+      "python3 -c": {
+        "calls": 2,
+        "duration_ms": 466
+      },
+      "rev-parse": {
+        "calls": 1,
+        "duration_ms": 110
+      },
+      "runstate.sh": {
+        "calls": 39,
+        "duration_ms": 2624
+      },
+      "sed": {
+        "calls": 24,
+        "duration_ms": 324
+      },
+      "set": {
+        "calls": 15,
+        "duration_ms": 16466
+      },
+      "sleep": {
+        "calls": 2,
+        "duration_ms": 4
+      },
+      "status": {
+        "calls": 1,
+        "duration_ms": 486
+      },
+      "tail": {
+        "calls": 1,
+        "duration_ms": 11
+      },
+      "test-gspec-backlog.sh": {
+        "calls": 8,
+        "duration_ms": 17195
+      },
+      "test-guard.sh": {
+        "calls": 1,
+        "duration_ms": 14834
+      },
+      "test-metrics.sh": {
+        "calls": 5,
+        "duration_ms": 44997
+      },
+      "test-migrate.sh": {
+        "calls": 1,
+        "duration_ms": 3425
+      },
+      "test-packet-graph.sh": {
+        "calls": 2,
+        "duration_ms": 3751
+      },
+      "test-report-conventions.sh": {
+        "calls": 4,
+        "duration_ms": 2349
+      },
+      "until": {
+        "calls": 30,
+        "duration_ms": 7134666
+      },
+      "wc": {
+        "calls": 2,
+        "duration_ms": 74
+      }
+    },
+    "by_skill": {
+      "run-loop": {
+        "tool_calls": 818,
+        "duration_ms": 8180248
+      }
+    },
+    "by_lane": {},
+    "tokens": {
+      "input": 9380,
+      "output": 103804,
+      "cache_read": 56906582,
+      "cache_creation": 5035030
+    },
+    "by_model": {
+      "claude-haiku-4-5-20251001": {
+        "input": 588,
+        "output": 205,
+        "cache_creation": 291124,
+        "cache_read": 3017465
+      },
+      "claude-opus-5": {
+        "input": 8408,
+        "output": 86085,
+        "cache_creation": 4044362,
+        "cache_read": 42077152
+      },
+      "claude-sonnet-5": {
+        "input": 384,
+        "output": 17514,
+        "cache_creation": 699544,
+        "cache_read": 11811965
+      }
+    },
+    "by_effort": {
+      "high": {
+        "input": 8792,
+        "output": 103599,
+        "cache_creation": 4743906,
+        "cache_read": 53889117,
+        "turns": 670
+      }
+    },
+    "context_invalidations": {
+      "count": 0,
+      "cache_creation": 0,
+      "events": []
+    },
+    "cache_hit_ratio": 0.918,
+    "failed_tool_calls": 0,
+    "human_interactions": 0
+  },
+  "by_agent_role": {
+    "gaffer:architect": {
+      "tokens": {
+        "input": 1864,
+        "output": 3336,
+        "cache_creation": 110796,
+        "cache_read": 811285
+      },
+      "models": {
+        "claude-opus-5": {
+          "input": 1864,
+          "output": 3336,
+          "cache_creation": 110796,
+          "cache_read": 811285
+        }
+      },
+      "cc_shape": {
+        "turns": 19,
+        "median": 1009,
+        "p90": 34904,
+        "max": 35631,
+        "turns_over_50k": 0,
+        "cc_over_50k": 0
+      }
+    },
+    "gaffer:chief-engineer": {
+      "tokens": {
+        "input": 4474,
+        "output": 20415,
+        "cache_creation": 3177474,
+        "cache_read": 24078737
+      },
+      "models": {
+        "claude-opus-5": {
+          "input": 4474,
+          "output": 20415,
+          "cache_creation": 3177474,
+          "cache_read": 24078737
+        }
+      },
+      "cc_shape": {
+        "turns": 258,
+        "median": 2032,
+        "p90": 27647,
+        "max": 142170,
+        "turns_over_50k": 20,
+        "cc_over_50k": 2302438
+      }
+    },
+    "gaffer:doc-writer": {
+      "tokens": {
+        "input": 588,
+        "output": 205,
+        "cache_creation": 291124,
+        "cache_read": 3017465
+      },
+      "models": {
+        "claude-haiku-4-5-20251001": {
+          "input": 588,
+          "output": 205,
+          "cache_creation": 291124,
+          "cache_read": 3017465
+        }
+      },
+      "cc_shape": {
+        "turns": 72,
+        "median": 1050,
+        "p90": 17790,
+        "max": 29786,
+        "turns_over_50k": 0,
+        "cc_over_50k": 0
+      }
+    },
+    "gaffer:implementer": {
+      "tokens": {
+        "input": 384,
+        "output": 17514,
+        "cache_creation": 699544,
+        "cache_read": 11811965
+      },
+      "models": {
+        "claude-sonnet-5": {
+          "input": 384,
+          "output": 17514,
+          "cache_creation": 699544,
+          "cache_read": 11811965
+        }
+      },
+      "cc_shape": {
+        "turns": 192,
+        "median": 944,
+        "p90": 7361,
+        "max": 40310,
+        "turns_over_50k": 0,
+        "cc_over_50k": 0
+      }
+    },
+    "gaffer:reviewer": {
+      "tokens": {
+        "input": 1941,
+        "output": 3324,
+        "cache_creation": 642021,
+        "cache_read": 6742527
+      },
+      "models": {
+        "claude-opus-5": {
+          "input": 1941,
+          "output": 3324,
+          "cache_creation": 642021,
+          "cache_read": 6742527
+        }
+      },
+      "cc_shape": {
+        "turns": 132,
+        "median": 2603,
+        "p90": 8451,
+        "max": 33484,
+        "turns_over_50k": 0,
+        "cc_over_50k": 0
+      }
+    },
+    "main": {
+      "tokens": {
+        "input": 129,
+        "output": 59010,
+        "cache_creation": 114071,
+        "cache_read": 10444603
+      },
+      "models": {
+        "claude-opus-5": {
+          "input": 129,
+          "output": 59010,
+          "cache_creation": 114071,
+          "cache_read": 10444603
+        }
+      },
+      "cc_shape": {
+        "turns": 69,
+        "median": 1239,
+        "p90": 3774,
+        "max": 9225,
+        "turns_over_50k": 0,
+        "cc_over_50k": 0
+      }
+    }
+  },
+  "audit": {
+    "labels_present": true,
+    "orchestrator_impl_edits": 3,
+    "implementer_dispatches": 10,
+    "dispatches_total": 34,
+    "dispatches_with_model_override": 0,
+    "by_dispatch_model_override": {},
+    "by_tier": {
+      "design-heavy": 1,
+      "docs": 1,
+      "integration": 4
+    },
+    "packets_total": 6,
+    "packets_missing_tier": 0,
+    "packets_missing_impl": 0,
+    "unlabelled_packet_ids": [],
+    "flagged_packets": [
+      {
+        "id": "self-host-hardening-gaps-t1",
+        "tier": "integration",
+        "impl": "delegated",
+        "flags": [
+          "waste:integration-tier-edited-inline-on-opus"
+        ]
+      },
+      {
+        "id": "self-host-hardening-gaps-t4",
+        "tier": "design-heavy",
+        "impl": "delegated",
+        "flags": [
+          "suspect:design-heavy-label-with-2-review-rounds"
+        ]
+      },
+      {
+        "id": "run-state-cleanup-t1",
+        "tier": "integration",
+        "impl": "delegated",
+        "flags": [
+          "waste:integration-tier-edited-inline-on-opus"
+        ]
+      },
+      {
+        "id": "self-host-hardening-gaps-t5",
+        "tier": "docs",
+        "impl": "delegated",
+        "flags": [
+          "leak:orchestrator-edited-on-opus-without-delegating(1)",
+          "label-contradiction:impl=delegated-but-no-implementer-dispatch",
+          "waste:docs-tier-edited-inline-on-opus-not-doc-writer"
+        ]
+      }
+    ]
+  },
+  "packets": [
+    {
+      "id": "self-host-hardening-gaps-t1",
+      "wave": null,
+      "outcome": "green",
+      "tier": "integration",
+      "impl": "delegated",
+      "start": "2026-08-10T21:10:13Z",
+      "end": "2026-08-10T21:29:39Z",
+      "tool_calls": 120,
+      "active_seconds": 1161,
+      "duration_ms": 166926,
+      "by_agent": {
+        "gaffer:chief-engineer": 32,
+        "gaffer:implementer": 55,
+        "gaffer:reviewer": 16,
+        "main": 17
+      },
+      "by_tool": {
+        "Agent": 5,
+        "Bash": 71,
+        "Edit": 14,
+        "Read": 30
+      },
+      "edits": {
+        "edits": 14,
+        "files_touched": 7,
+        "contended_files": 0,
+        "contended_by": {}
+      },
+      "by_command_class": {
+        "awk": 3,
+        "cat": 1,
+        "claude": 4,
+        "echo": 8,
+        "for": 2,
+        "git add": 1,
+        "git branch": 3,
+        "git commit": 1,
+        "git diff": 10,
+        "git log": 1,
+        "git rev-parse": 1,
+        "git status": 3,
+        "git switch": 1,
+        "grep": 11,
+        "gspec-backlog.sh": 6,
+        "ls": 4,
+        "python3 -": 3,
+        "runstate.sh": 6,
+        "sed": 1,
+        "tail": 1
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:implementer": 13,
+        "main": 1
+      },
+      "dispatched": {
+        "gaffer:chief-engineer": 1,
+        "gaffer:implementer": 3,
+        "gaffer:reviewer": 1
+      },
+      "audit": {
+        "orchestrator_impl_edits": 1,
+        "implementer_dispatched": true,
+        "review_dispatches": 1,
+        "flags": [
+          "waste:integration-tier-edited-inline-on-opus"
+        ]
+      },
+      "tokens": {
+        "input": 2782,
+        "output": 15455,
+        "cache_creation": 456165,
+        "cache_read": 5741956
+      }
+    },
+    {
+      "id": "self-host-hardening-gaps-t2",
+      "wave": null,
+      "outcome": "green",
+      "tier": "integration",
+      "impl": "delegated",
+      "start": "2026-08-10T21:29:39Z",
+      "end": "2026-08-10T21:52:29Z",
+      "tool_calls": 83,
+      "active_seconds": 1319,
+      "duration_ms": 810657,
+      "by_agent": {
+        "gaffer:chief-engineer": 36,
+        "gaffer:doc-writer": 6,
+        "gaffer:implementer": 19,
+        "gaffer:reviewer": 19,
+        "main": 3
+      },
+      "by_tool": {
+        "Agent": 4,
+        "Bash": 50,
+        "Edit": 5,
+        "Read": 24
+      },
+      "edits": {
+        "edits": 5,
+        "files_touched": 3,
+        "contended_files": 0,
+        "contended_by": {}
+      },
+      "by_command_class": {
+        "bash": 1,
+        "cp": 1,
+        "du": 1,
+        "echo": 3,
+        "git --version": 1,
+        "git -C": 2,
+        "git branch": 1,
+        "git diff": 1,
+        "git status": 1,
+        "git switch": 2,
+        "grep": 7,
+        "gspec-backlog.sh": 1,
+        "ls": 1,
+        "mkdir": 4,
+        "old-metrics.sh": 1,
+        "python3 -": 3,
+        "runstate.sh": 5,
+        "sed": 2,
+        "set": 2,
+        "sleep": 2,
+        "test-guard.sh": 1,
+        "test-metrics.sh": 5,
+        "until": 2
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:doc-writer": 1,
+        "gaffer:implementer": 4
+      },
+      "dispatched": {
+        "gaffer:chief-engineer": 1,
+        "gaffer:doc-writer": 1,
+        "gaffer:implementer": 1,
+        "gaffer:reviewer": 1
+      },
+      "audit": {
+        "orchestrator_impl_edits": 0,
+        "implementer_dispatched": true,
+        "review_dispatches": 1,
+        "flags": []
+      },
+      "tokens": {
+        "input": 217,
+        "output": 12153,
+        "cache_creation": 589926,
+        "cache_read": 5802716
+      }
+    },
+    {
+      "id": "self-host-hardening-gaps-t3",
+      "wave": null,
+      "outcome": "green",
+      "tier": "integration",
+      "impl": "delegated",
+      "start": "2026-08-10T21:52:29Z",
+      "end": "2026-08-10T22:20:13Z",
+      "tool_calls": 113,
+      "active_seconds": 1663,
+      "duration_ms": 1200895,
+      "by_agent": {
+        "gaffer:chief-engineer": 36,
+        "gaffer:implementer": 33,
+        "gaffer:reviewer": 43,
+        "main": 1
+      },
+      "by_tool": {
+        "Agent": 5,
+        "Bash": 71,
+        "Edit": 12,
+        "Read": 25
+      },
+      "edits": {
+        "edits": 12,
+        "files_touched": 3,
+        "contended_files": 0,
+        "contended_by": {}
+      },
+      "by_command_class": {
+        "bash": 4,
+        "cp": 3,
+        "echo": 9,
+        "for": 2,
+        "git add": 2,
+        "git diff": 6,
+        "git log": 1,
+        "git show": 1,
+        "git status": 4,
+        "grep": 7,
+        "gspec-backlog.sh": 1,
+        "ls": 2,
+        "mkdir": 4,
+        "printf": 1,
+        "python3 -": 2,
+        "python3 -c": 1,
+        "runstate.sh": 4,
+        "sed": 6,
+        "status": 1,
+        "test-report-conventions.sh": 3,
+        "until": 6,
+        "wc": 1
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:implementer": 12
+      },
+      "dispatched": {
+        "gaffer:chief-engineer": 1,
+        "gaffer:implementer": 2,
+        "gaffer:reviewer": 2
+      },
+      "audit": {
+        "orchestrator_impl_edits": 0,
+        "implementer_dispatched": true,
+        "review_dispatches": 2,
+        "flags": []
+      },
+      "tokens": {
+        "input": 194,
+        "output": 8416,
+        "cache_creation": 362220,
+        "cache_read": 6118520
+      }
+    },
+    {
+      "id": "self-host-hardening-gaps-t4",
+      "wave": null,
+      "outcome": "green",
+      "tier": "design-heavy",
+      "impl": "delegated",
+      "start": "2026-08-10T22:20:13Z",
+      "end": "2026-08-10T22:48:58Z",
+      "tool_calls": 104,
+      "active_seconds": 1288,
+      "duration_ms": 446981,
+      "by_agent": {
+        "gaffer:architect": 26,
+        "gaffer:chief-engineer": 39,
+        "gaffer:implementer": 4,
+        "gaffer:reviewer": 32,
+        "main": 3
+      },
+      "by_tool": {
+        "Agent": 6,
+        "Bash": 41,
+        "Edit": 12,
+        "Read": 44,
+        "Write": 1
+      },
+      "edits": {
+        "edits": 13,
+        "files_touched": 1,
+        "contended_files": 1,
+        "contended_by": {
+          "gaffer:architect+gaffer:implementer": 1
+        }
+      },
+      "by_command_class": {
+        "cat": 1,
+        "echo": 8,
+        "for": 2,
+        "git add": 3,
+        "git branch": 1,
+        "git commit": 1,
+        "git log": 2,
+        "git status": 2,
+        "git switch": 1,
+        "grep": 6,
+        "gspec-backlog.sh": 1,
+        "ls": 4,
+        "node": 1,
+        "rev-parse": 1,
+        "runstate.sh": 4,
+        "sed": 2,
+        "test-gspec-backlog.sh": 1
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:architect": 11,
+        "gaffer:implementer": 2
+      },
+      "dispatched": {
+        "gaffer:architect": 2,
+        "gaffer:chief-engineer": 1,
+        "gaffer:implementer": 1,
+        "gaffer:reviewer": 2
+      },
+      "audit": {
+        "orchestrator_impl_edits": 0,
+        "implementer_dispatched": true,
+        "review_dispatches": 2,
+        "flags": [
+          "suspect:design-heavy-label-with-2-review-rounds"
+        ]
+      },
+      "tokens": {
+        "input": 2963,
+        "output": 9548,
+        "cache_creation": 596259,
+        "cache_read": 5839925
+      }
+    },
+    {
+      "id": "run-state-cleanup-t1",
+      "wave": null,
+      "outcome": "green",
+      "tier": "integration",
+      "impl": "delegated",
+      "start": "2026-08-10T22:48:58Z",
+      "end": "2026-08-11T00:11:39Z",
+      "tool_calls": 186,
+      "active_seconds": 2859,
+      "duration_ms": 3782509,
+      "by_agent": {
+        "gaffer:chief-engineer": 37,
+        "gaffer:implementer": 95,
+        "gaffer:reviewer": 43,
+        "main": 11
+      },
+      "by_tool": {
+        "Agent": 6,
+        "Bash": 115,
+        "Edit": 24,
+        "Read": 41
+      },
+      "edits": {
+        "edits": 24,
+        "files_touched": 4,
+        "contended_files": 0,
+        "contended_by": {}
+      },
+      "by_command_class": {
+        "bash": 11,
+        "cat": 1,
+        "echo": 6,
+        "find": 1,
+        "git add": 1,
+        "git branch": 1,
+        "git checkout": 1,
+        "git commit": 1,
+        "git diff": 9,
+        "git status": 9,
+        "git switch": 1,
+        "grep": 22,
+        "gspec-backlog.sh": 1,
+        "mkdir": 5,
+        "printf": 1,
+        "runstate.sh": 5,
+        "sed": 7,
+        "set": 13,
+        "test-gspec-backlog.sh": 7,
+        "test-migrate.sh": 1,
+        "test-packet-graph.sh": 2,
+        "until": 9
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:implementer": 23,
+        "main": 1
+      },
+      "dispatched": {
+        "gaffer:chief-engineer": 1,
+        "gaffer:implementer": 3,
+        "gaffer:reviewer": 2
+      },
+      "audit": {
+        "orchestrator_impl_edits": 1,
+        "implementer_dispatched": true,
+        "review_dispatches": 2,
+        "flags": [
+          "waste:integration-tier-edited-inline-on-opus"
+        ]
+      },
+      "tokens": {
+        "input": 343,
+        "output": 23826,
+        "cache_creation": 1609441,
+        "cache_read": 14111221
+      }
+    },
+    {
+      "id": "self-host-hardening-gaps-t5",
+      "wave": null,
+      "outcome": "green",
+      "tier": "docs",
+      "impl": "delegated",
+      "start": "2026-08-11T00:11:39Z",
+      "end": "2026-08-11T00:58:49Z",
+      "tool_calls": 174,
+      "active_seconds": 2250,
+      "duration_ms": 1770683,
+      "by_agent": {
+        "gaffer:chief-engineer": 67,
+        "gaffer:doc-writer": 66,
+        "gaffer:reviewer": 30,
+        "main": 11
+      },
+      "by_tool": {
+        "Agent": 7,
+        "Bash": 97,
+        "Edit": 17,
+        "Read": 53
+      },
+      "edits": {
+        "edits": 17,
+        "files_touched": 4,
+        "contended_files": 0,
+        "contended_by": {}
+      },
+      "by_command_class": {
+        "awk": 4,
+        "bash": 12,
+        "cat": 3,
+        "claude": 7,
+        "echo": 4,
+        "for": 2,
+        "git add": 1,
+        "git check-ignore": 1,
+        "git diff": 10,
+        "git log": 1,
+        "git status": 4,
+        "git switch": 1,
+        "grep": 13,
+        "gspec-backlog.sh": 3,
+        "head": 1,
+        "ls": 2,
+        "runstate.sh": 9,
+        "sed": 4,
+        "test-report-conventions.sh": 1,
+        "until": 13,
+        "wc": 1
+      },
+      "failed_tool_calls": 0,
+      "human_interactions": 0,
+      "impl_edits_by_role": {
+        "gaffer:doc-writer": 16,
+        "main": 1
+      },
+      "dispatched": {
+        "gaffer:chief-engineer": 1,
+        "gaffer:doc-writer": 5,
+        "gaffer:reviewer": 1
+      },
+      "audit": {
+        "orchestrator_impl_edits": 1,
+        "implementer_dispatched": false,
+        "review_dispatches": 1,
+        "flags": [
+          "leak:orchestrator-edited-on-opus-without-delegating(1)",
+          "label-contradiction:impl=delegated-but-no-implementer-dispatch",
+          "waste:docs-tier-edited-inline-on-opus-not-doc-writer"
+        ]
+      },
+      "tokens": {
+        "input": 2814,
+        "output": 22183,
+        "cache_creation": 1152808,
+        "cache_read": 14662948
+      }
+    }
+  ],
+  "notes": [
+    "token_source=transcript: version-fragile on-disk parse (ADR 0019 Open Q1).",
+    "Per-packet token split needs per-turn transcript timestamps; packets[].tokens is null when absent.",
+    "Token turns are bounded to the run window (ADR 0019 window-bleed fix); ts==null turns are kept unwindowed.",
+    "Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).",
+    "Packet boundaries derived from [orch packet:<id>] commit trailers; failed/uncommitted packets do not appear.",
+    "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
+    "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
+    "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",
+    "by_skill is STICKY: set by the most recent slash-command/Skill invocation and never cleared, so it is an UPPER BOUND on the spend of that skill, not an exact span.",
+    "totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.",
+    "by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.",
+    "active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.",
+    "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
+    "audit.dispatches_with_model_override counts EXPLICIT `model` args at dispatch (a deliberate deviation). An omitted model is correct — it resolves to the `model:` frontmatter of the target agent; read by_agent_role.<role>.models for what each role actually ran on.",
+    "self_host: this run is the plugin driving its OWN repo (dogfooding), not a consumer app — do not average it with consumer-repo runs."
+  ]
+}

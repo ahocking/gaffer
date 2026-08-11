@@ -496,6 +496,37 @@ passing sweeps.
   check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
   `record-outcome` obeys from the other side — it is lane-callable *because* it writes
   append-only outside run-state.
+- **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
+  session** (ADR 0024 + ADR 0025). Three rules that land together because they are one
+  correction: run-state was storing what other things already knew.
+  **`backlog.done` is deleted with nothing in its place** — no counter, no bounded tail.
+  It stored exactly what the PRD capability checkboxes derive, and because
+  `runstate.sh write` replaces the whole file, an agent re-emitted the entire list from
+  memory every packet (measured: 95 entries, 16% of a 27,400-byte run-state, no checksum,
+  nothing that would notice a dropped line). `pending` survives and is explicitly NOT the
+  next thing removed by the same reasoning — it carries the *chosen order*, a decision,
+  not derivable state. The checkbox now flips **inside the packet commit** so the work and
+  the record that it happened land atomically; under `--parallel` the *scheduler* flips at
+  green-lane merge, because the task file sits outside every packet's `allowed_files` and
+  two lanes sharing a feature would contend on it. It is `gspec-backlog.sh check-task` —
+  the plugin's ONLY write into `gspec/`, one character on one line — and a caller must
+  distinguish its exit codes: `CHECKED=none` at exit 0 is *skipped, not failed* (gspec is
+  optional), while **exit 4 is genuine drift that must be reported and must NOT halt** the
+  loop.
+  **A finding is scoped to packets and expires**; `--packets` is mandatory with no
+  run-wide escape hatch, because an entry that can never expire is precisely what was
+  being removed. Expiry demands **positive evidence** — the checkbox, or an
+  `[orch packet:<id>]` trailer — and absence from `pending` is *unknown*, never finished,
+  with unknown blocking expiry. **This is the part that was got wrong once and is easy to
+  get wrong again:** the first implementation *asserted* the closing packet was finished
+  instead of *reading* the checkbox the step above had just flipped, which made the flip
+  non-load-bearing (delete it, behaviour identical) and would have expired **zero of
+  fifteen** live entries while appearing to work. Capture precedes drop, always: filing a
+  backlog task IS the capture; a spent sign-off is not.
+  **The tally's ✅ counts what THIS session landed**, from check-ins already rendered,
+  nothing read from disk. The "buckets account for the whole backlog" rule applies to the
+  **forward** buckets only (⚠️/🔀/⬚) — a growing backlog is not a fixed set to partition,
+  and *2 landed, 25 to go* has to read honestly.
 - **A finding discovered after a plan is complete routes by scope in two arms tried in
   order, and the completed record is never edited** (ADR 0026). **Arm 1** applies when
   **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**

@@ -87,7 +87,7 @@ resume that starts driving beside it puts two drivers in one checkout. Both are
 no-ops without a gspec project.
 
 Read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status`,
-`branch`, `last_green_commit`, `backlog.cursor`/`done`/`pending`, and
+`branch`, `last_green_commit`, `backlog.cursor`/`pending`, and
 `pending_questions`.
 
 **Then read the finding INDEX — and only the index** (ADR 0022):
@@ -117,9 +117,12 @@ not have it, but the feature branch and its commit trailers usually survive):
 4. Rebuild the backlog **through the adapter** (ADR 0020 D2) — never by parsing
    `gspec/` yourself: `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` for the
    feature, then `… nodes <slug>` for its unchecked tasks (or `$ARGUMENTS`).
-   `backlog.done` = `DONE`; `pending` = backlog minus done, in order; `cursor` =
-   first pending. Note the adapter already omits tasks that are checked off, so a
-   task completed before the crash will not reappear.
+   `pending` = the committed backlog minus `DONE` (from step 2), in order;
+   `cursor` = first pending. There is no `backlog.done` field to populate (ADR
+   0025) — `DONE` here is scratch used only to compute `pending`, same as
+   `reconstruct`'s own note that nothing is written from it automatically. Note
+   the adapter already omits tasks that are checked off, so a task completed
+   before the crash will not reappear.
 5. `pending_questions`: **empty** — flag clearly in your first check-in that any
    outstanding blocking questions could **not** be recovered from git (they lived
    only in the lost file; the human should re-supply them, e.g. from the last
@@ -166,9 +169,16 @@ Act on the `DECISION=` it prints:
   ahead of the recorded green SHA: a **torn write** (the packet committed but the
   crash beat the run-state update). **Re-verify build+tests are green on that
   commit yourself** (the helper cannot run the suite), then adopt it: set
-  `last_green_commit` to that SHA, move the cursor packet from `pending` to `done`,
-  advance `cursor`, and write run-state atomically via `runstate.sh write`. The
-  packet is done — do not redo it.
+  `last_green_commit` to that SHA and **remove the cursor packet from `pending`**
+  — there is no `done` list to move it into (ADR 0025). If the orphan commit does
+  not already carry the gspec checkbox flip (it should — §3.4 lands it in the same
+  commit; `git show --stat <sha> -- gspec/tasks/` tells you), perform it now:
+  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <cursor>`, same exit
+  codes as §3.4 (`CHECKED=none` is skipped, not failed, for a non-gspec backlog;
+  exit 4 is drift — note it, do not halt). Commit that flip as its own small
+  commit if you had to make it — the orphan commit is already recorded, so
+  amending it would rewrite history. Advance `cursor`, and write run-state
+  atomically via `runstate.sh write`. The packet is done — do not redo it.
 - **`escalate`** — diverged history, multiple unexplained commits, or an untagged /
   mismatched orphan. **Stop and ask the human.** Do not discard commits you cannot
   account for.

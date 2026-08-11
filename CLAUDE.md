@@ -489,6 +489,19 @@ passing sweeps.
   checking nothing** and the sweep still reported 213/0 green. It now skips **loudly**,
   counted and named in the summary line, and CI declares PyYAML rather than hoping the
   runner ships it.
+- **A probe that does not reproduce the phenomenon cannot eliminate a cause.** The
+  `trim-note` flake (~1 run in 20) was chased for two sessions with SIGPIPE-under-
+  `pipefail` recorded as **ruled out**, on the strength of running the exact piped
+  shape 120 times in isolation with zero failures. But isolation never reproduced the
+  flake *at all* — 0 in 3,000 sequential calls, 0 in 12,000 at concurrency, both
+  separately established. Zero failures there was evidence about the setup, not about
+  the hypothesis, and the false elimination was propagated into two task briefs as "do
+  not re-derive it". **SIGPIPE was the cause**: `grep -q` exits on its first match and
+  closes the pipe, and a producer still mid-write takes rc 141, which `pipefail` then
+  reports instead of grep's success — a correct answer read as a failed assertion. It
+  only surfaces under cumulative subprocess load in a long-lived shell, which is why
+  it needed the *real* sweep preamble to reproduce. Same family as the retracted
+  cost-measurement claim above: state what a negative result actually licenses.
 - **`runstate.sh` quotes EVERY value it writes and strips symmetrically on read**
   (ADR 0027 / `runstate-write-integrity`). `cmd_set` and `cmd_add_finding` share one
   encoder, so hardening one cannot leave the other behind — the split that created the

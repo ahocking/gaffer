@@ -45,10 +45,17 @@ reader — see the T4/T5 note below.
 **T3 is an investigation, not a known fix**, and it is ordered early on purpose:
 until the sweep is deterministic, a green run on any later task means less than it
 should. It carries **no dependency edge** — it must never block P0 work if the
-cause takes a while to find. One lead is already **ruled out**: SIGPIPE under
-`pipefail` from `grep -q` closing the pipe early was tested at the sweep's exact
-invocation shape, 40 consecutive runs, zero failures (2026-08-11, Darwin 25.5).
-Do not re-derive it.
+cause takes a while to find.
+
+**The "ruled out" note this preamble used to carry was WRONG, and the way it was
+wrong is the lesson.** It recorded SIGPIPE under `pipefail` as eliminated because
+the exact piped shape was run 120 times in **isolation** with zero failures. But
+isolation never reproduces this flake at all — 0 in 3,000 sequential calls and 0
+in 12,000 at concurrency were separately established. A probe run where the
+phenomenon does not occur **cannot eliminate any cause**; absence of the failure
+there is evidence about the setup, not about the hypothesis. That false
+elimination was then propagated into two task briefs as "do not re-derive it",
+which could have blocked the answer. SIGPIPE was the cause.
 
 **T10 is a third defect of the same family, found while planning**, and it is now
 the only remaining `set` hazard: it is about the *target's* existing shape rather
@@ -96,7 +103,7 @@ populated until it is.
 - [x] **T2** [P] **P1** Apply that same loud-skip shape to both parser-gated helpers in `test-migrate.sh` — `yamlok` at `:31`, and `yaml_cursor` at `:42` whose `return 0` yields an empty *value* a caller then compares as a pass — and correct the comment at `:294-295`
   - deps: T1
   - covers: The sweep's parse assertion never silently no-ops
-- [ ] **T3** **P1** Identify why `test-runstate.sh`'s case `trim-note handles the multi-line shape` fails roughly 1 run in 20 while `runstate.sh trim-note` is deterministic on that exact fixture in isolation, then either fix the cause or make the case deterministic and record which it was — a retry or re-run-until-green remedy is out of bounds, the SIGPIPE-under-`pipefail` lead is already ruled out (see the preamble), and the remedy is confirmed over the same 40-consecutive-run probe shape that ruled it out — for a 1-in-20 flake, "it passed" is not evidence
+- [x] **T3** **P1** Identify why `test-runstate.sh`'s case `trim-note handles the multi-line shape` fails roughly 1 run in 20 while `runstate.sh trim-note` is deterministic on that exact fixture in isolation, then either fix the cause or make the case deterministic and record which it was — a retry or re-run-until-green remedy is out of bounds, the SIGPIPE-under-`pipefail` lead is already ruled out (see the preamble), and the remedy is confirmed over the same 40-consecutive-run probe shape that ruled it out — for a 1-in-20 flake, "it passed" is not evidence
   - deps: —
   - covers: The sweep is deterministic, so a green run means the same thing every time
 - [x] **T4** **P0** Extract `cmd_add_finding`'s single-quoted encoding (newline collapse, `'` doubled, `awk ENVIRON` interpolation) into one shared POSIX-shell helper both it and `cmd_set` call, and rewrite `cmd_set`'s replace and insert branches to interpolate through it instead of `sed` replacement text — retiring the `|` delimiter, `&` and `\1` hazards — quoting **every** value with no plain-scalar allowlist (one was built and removed the same day; see the capability for what it cost), with the hostile-value cases (`: `, a trailing `:`, an embedded `'`, a newline, a leading `-`, `#`, `{`/`[`/`&`/`*`, `|`, a backslash, a trailing space) each asserting a real parse and a round-trip read-back through a real YAML load rather than a mirror decoder, plus the case pinning that `set` and `add-finding` encode the same hostile value identically

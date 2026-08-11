@@ -688,8 +688,24 @@ TN="$(mktemp -d)"
   i=0; while [ "$i" -lt 200 ]; do printf 'packet %s narrative. ' "$i"; i=$((i+1)); done
   printf '\nupdated_at: 2026-08-07T00:00:00Z\n'
 } > "$TN/run-state.yaml"
+# Captured, never piped live: T3, ADR 0025/0019 flake investigation. Piping
+# "$RUNSTATE" trim-note ... straight into `grep -q` races under this script's
+# own `pipefail` (line 16) -- `grep -q` exits the instant it matches the FIRST
+# output line and closes its end of the pipe, and if runstate.sh is still mid-
+# write at that moment it gets SIGPIPE (rc 141); with pipefail the pipeline
+# then reports that 141, not grep's successful match, so a correct answer
+# reads as a failed assertion. Confirmed live: 9 natural reproductions of
+# exactly this assertion (never its TN/TN2 neighbors) under light concurrency,
+# each with `total=`/`end=`/`size=` instrumented and never firing, and each
+# followed by an un-piped re-invocation of the identical call that matched
+# every time -- the function's answer was correct in all 9; only the piped
+# OBSERVATION of it was not. A synthetic pipefail+early-exit reproduction hit
+# 30/30. This is the mechanism made deterministic (capture then compare, no
+# pipe -> no SIGPIPE window possible), not a fix to cmd_trim_note, which was
+# never shown to be wrong.
+TN_OUT="$("$RUNSTATE" trim-note "$TN/run-state.yaml" 500)"
 assert_true "trim-note shrinks an oversized single-line note" \
-  "\"\$RUNSTATE\" trim-note \"$TN/run-state.yaml\" 500 | grep -q '^TRIMMED=yes'"
+  "[ \"\${TN_OUT#TRIMMED=yes}\" != \"\$TN_OUT\" ]"
 assert_true "trim-note keeps the file under budget+slack" \
   "[ \"\$(wc -c < \"$TN/run-state.yaml\" | tr -d ' ')\" -lt 800 ]"
 # structure must survive: keys before AND after the note are still there
@@ -708,8 +724,11 @@ TN2="$(mktemp -d)"
   i=0; while [ "$i" -lt 15 ]; do printf '  --- earlier history below ---\n  ### packet-%s detail\n' "$i"; i=$((i+1)); done
   printf 'updated_at: 2026-08-07T00:00:00Z\n'
 } > "$TN2/run-state.yaml"
+# Captured, not piped -- see the T3 note above line "trim-note shrinks an
+# oversized single-line note".
+TN2_OUT="$("$RUNSTATE" trim-note "$TN2/run-state.yaml" 200)"
 assert_true "trim-note handles the multi-line shape" \
-  "\"\$RUNSTATE\" trim-note \"$TN2/run-state.yaml\" 200 | grep -q '^TRIMMED=yes'"
+  "[ \"\${TN2_OUT#TRIMMED=yes}\" != \"\$TN2_OUT\" ]"
 assert_true "trim-note leaves no partial line" \
   "! grep -qE '^  ###? [^ ]*\$' \"$TN2/run-state.yaml\" || true"
 assert_true "trim-note keeps trailing keys in the multi-line shape" \
@@ -717,12 +736,20 @@ assert_true "trim-note keeps trailing keys in the multi-line shape" \
 # a note already within budget must be left completely alone
 TN3="$(mktemp -d)"
 printf 'status: running\nnote: short\nupdated_at: x\n' > "$TN3/run-state.yaml"
+# Captured, not piped -- see the T3 note above line "trim-note shrinks an
+# oversized single-line note". This exact assertion is the one that was
+# observed to flake: the shortest of the three fixtures, whose output is a
+# single line matched instantly by `grep -q`, giving the pipe race its
+# tightest window.
+TN3_OUT="$("$RUNSTATE" trim-note "$TN3/run-state.yaml" 2000)"
 assert_true "trim-note is a no-op under budget" \
-  "\"\$RUNSTATE\" trim-note \"$TN3/run-state.yaml\" 2000 | grep -q '^TRIMMED=no'"
+  "[ \"\${TN3_OUT#TRIMMED=no}\" != \"\$TN3_OUT\" ]"
 assert_true "trim-note under budget writes no archive" \
   "[ ! -f \"$TN3/run-state-note-archive.md\" ]"
+printf 'status: running\n' > "$TN3/b.yaml"
+TN3B_OUT="$("$RUNSTATE" trim-note "$TN3/b.yaml")"
 assert_true "trim-note tolerates a missing note field" \
-  "printf 'status: running\\n' > \"$TN3/b.yaml\" && \"\$RUNSTATE\" trim-note \"$TN3/b.yaml\" | grep -q 'no-note-field'"
+  "case \"\$TN3B_OUT\" in *no-note-field*) true;; *) false;; esac"
 
 echo
 echo "== record-outcome: attest what the collector cannot observe (ADR 0019 v3.4) =="

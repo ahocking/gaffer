@@ -56,9 +56,11 @@ passing sweeps.
   as incomplete and — via the dependency rule — block everything downstream of it
   forever. This is the modelling trap to avoid every time a shipped feature has
   a known hole.
-- **A specced feature with no `gspec/tasks/<slug>.md` is the intended state for
-  deferred work**, not an omission: the adapter reports `PLAN=none` plus the
-  `/gspec-plan` hint. Decompose when the work comes up, so the decomposition
+- **A specced feature with no `gspec/features/<slug>/tasks.md` is the intended
+  state for deferred work**, not an omission: the adapter reports `PLAN=none` plus
+  the `/gspec-plan` hint. Same for a folder with no `arch.md` or `design.html` —
+  `/gspec-architect` writes those, the loop never reads them, and this repo ships
+  no UI so `design.html` is correct to be absent everywhere. Decompose when the work comes up, so the decomposition
   reflects the repo as it is then rather than as it was when the ADR was written.
   Only `self-host-hardening` has a plan today.
 - **Reflexivity is the risk self-hosting adds, and it has no analogue in a
@@ -570,7 +572,7 @@ passing sweeps.
   **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**
   task line, and an **unchecked capability in its PRD covers the finding** — both tests
   separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
-  task line to `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying
+  task line to `gspec/features/<slug>/tasks.md` as an `Edit` anchored on an unchecked line, carrying
   truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
   parent plans) becomes a **new feature**: a PRD via `/gspec-feature`, a `.agents/roadmap.yaml`
   entry (`depends_on:` the parent, `order` after it), and **no plan file** until the work
@@ -748,16 +750,63 @@ passing sweeps.
   Every gspec read goes through `scripts/gspec-backlog.sh`; **never parse `gspec/`
   anywhere else**, or a format change breaks seven files again (it did — gspec 2.x
   moved `features/<slug>.plan.md` to `tasks/<slug>.md` and nothing checked). The
-  consumed contract is exactly: `gspec/tasks/<slug>.md` (task lines + `deps:`),
-  `gspec/features/<slug>.md` (capability checkboxes), `.agents/roadmap.yaml`, and —
-  fail-soft, outside the pinned contract — `.gspec/build/status.json` for the
-  two-drivers interlock. The pin has **two axes** because gspec does not stamp its
-  version into a project: the TOOL pin (`GSPEC_PINNED_VERSION`, currently **2.7.0**)
-  and the ARTIFACT pin (`spec-version`, asserted by `gspec-backlog.sh check`, which
-  fails LOUD). Raising either is deliberate: bump, extend the supported set, re-run
-  the sweeps, amend ADR 0020. **gspec is optional** — four and a half of the five
-  pillars have no spec dependency, so a backlog may equally come from run-state or an
-  explicit argument.
+  consumed contract is exactly: the feature's **plan** (task lines + `deps:`), its
+  **PRD** (capability checkboxes), `.agents/roadmap.yaml`, and — fail-soft, outside
+  the pinned contract — `.gspec/build/status.json` for the two-drivers interlock.
+  **Where those two files LIVE is layout-dependent and resolved in exactly one place
+  each** (`_resolve_plan_path` / `_resolve_prd_path`, enumerated by `_plan_paths` /
+  `_prd_paths`), because gspec has now moved them twice:
+
+  > **3.x** (`spec-version: v2`) — PRD `gspec/features/<slug>/prd.md`,
+  > plan `gspec/features/<slug>/tasks.md`
+  > **2.x** (`v1`) — PRD `gspec/features/<slug>.md`, plan `gspec/tasks/<slug>.md`
+  > **pre-2.0** — PRD `gspec/features/<slug>.md`, plan `gspec/features/<slug>.plan.md`
+
+  All three are READ, and the newer shadows the older for a given slug (a slug in
+  two layouts is a half-finished `/gspec-migrate`, and the destination is the
+  truth). The 3.x folder also holds `arch.md` and `design.html`; **neither is in
+  the consumed contract** — they say what to build, which is gspec's half of the
+  seam, so the loop hands their PATHS to an implementer and this adapter never
+  parses them. The trap the folder layout sets, and the one to check first if
+  anything here breaks: the slug lives in the **directory** name, so `basename
+  <path> .md` — what every call site did before the seam — yields the literal
+  `"prd"`/`"tasks"` for every feature at once, and N features read as one.
+
+  The pin has **two axes** because gspec does not stamp its version into a
+  project: the TOOL pin (`GSPEC_PINNED_VERSION`, currently **3.1.1**) and the
+  ARTIFACT pin (`spec-version`, asserted by `gspec-backlog.sh check`, which fails
+  LOUD). The artifact pin deliberately accepts **`v1 v2`, not `v2` alone** —
+  narrowing it would make `check` return rc=3 and stop the loop on a repo whose
+  backlog the adapter reads perfectly well. **The pin catches a format this code
+  CANNOT parse; it is not a lever for nagging a repo into migrating** — that nudge
+  belongs in `/gaffer:migrate`, which reports the layout and names
+  `/gspec-migrate`. Raising either axis is deliberate: bump, extend the supported
+  set, re-run the sweeps, amend ADR 0020. **gspec is optional** — four and a half
+  of the five pillars have no spec dependency, so a backlog may equally come from
+  run-state or an explicit argument.
+- **The gspec 3.x relocation is `/gspec-migrate`'s move, and `/gaffer:migrate`
+  deliberately does NOT do it** (ADR 0020, decided 2026-08-23). It detects the
+  layout, sequences the upgrade, and verifies packets still come out the other end
+  — the half gspec cannot do — while the move itself stays gspec's for three
+  reasons that are each sufficient: it must repair the relative links the
+  relocation breaks in *both* directions (inbound links from specs that did not
+  move are the ones that get missed), it must reformat each file to the v2 body
+  through gspec's own `spec-migrator`, and it edits files gspec's
+  `task-immutability` floor is watching — a shell `mv` racing that floor loses
+  intermittently. **The ordering is load-bearing**: install gspec 3.1.1 *before*
+  running `/gspec-migrate`, because a repo on old gspec has the OLD
+  `/gspec-migrate` in `.claude/commands/`, which migrates *toward* `gspec/tasks/`
+  — the exact layout you are leaving — and reports success doing it.
+- **A plan whose tasks are all checked yields zero packets, and that is COMPLETE,
+  not broken.** `migrate.sh verify`'s old test was `plans > 0 && packets == 0`,
+  which cannot separate "nothing can parse this" from "everything here is done" —
+  so it raised *"this is the failure the migration exists to catch"* on the repos
+  that had done the most work, and it did exactly that on this one (5 plans, 66
+  checked task lines). The discriminator is how many task lines the adapter can
+  READ (`gspec-backlog.sh plans` columns 4–5), counted with the **same pattern
+  `_nodes_for` uses** — a count from a different pattern would lie about precisely
+  what it is asked to certify. `seen == 0` is the real failure; `seen > 0` with no
+  unchecked work is a finished backlog.
 - **Two things are DERIVED and must never be stored** (ADR 0020 D2). Feature
   completion comes from the PRD's capability checkboxes; concurrency comes from
   `packet-graph.sh`. `.agents/roadmap.yaml` carries planning preference only —
@@ -939,7 +988,7 @@ half for gspec. In this repo:
   must not run at once.
 - **`gspec-plan` and `gspec-feature` ARE the right tools**, and are how the four
   deferred features get decomposed when their time comes.
-- **`gspec-plan` must not be run against `gspec/tasks/run-metrics.md`.** It is a
+- **`gspec-plan` must not be run against `gspec/features/run-metrics/tasks.md`.** It is a
   retro-spec of shipped work with every task checked; regeneration re-decomposes
   unchecked work and would destroy the record it exists to hold.
 - **Ignore the preamble's "read the specs first" list where it names files this
@@ -951,5 +1000,15 @@ The gspec hooks now installed under `.claude/hooks/` (spec-integrity, task-
 immutability, practices-enforce, …) are registered in `.claude/settings.json` and
 compose with — they do not replace — the plugin's own `hooks/guard.sh`. Both fire;
 the guard's hard-deny floor is unaffected. Note that `task-immutability` will
-refuse edits to the checked tasks in `gspec/tasks/run-metrics.md`, which is the
-behaviour we want.
+refuse edits to the checked tasks in `gspec/features/run-metrics/tasks.md`, which
+is the behaviour we want.
+
+One consequence of the 3.x relocation worth knowing before you "tidy" anything:
+**three path references under `gspec/` still name the pre-3.x locations, and they
+are correct as they stand.** Each sits inside a CHECKED block — a checked task
+line in `self-host-hardening-gaps/tasks.md`, and acceptance criteria under checked
+capabilities in `runstate-write-integrity` and `self-host-hardening-gaps`. The
+immutability floor blocks edits there and is right to: those lines are the record
+of what was built, and a path inside one describes where a file *was* when the
+work happened. Only two links were repaired in the move — both in free prose
+outside any task block.

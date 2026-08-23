@@ -63,8 +63,15 @@
 #                            NEXT=none, plus REASON= distinguishing blocked from
 #                            deferred from complete.
 #   plans [root]             TSV, one plan file per line, sorted by slug:
-#                              <slug>\t<relpath>\t<layout>
+#                              <slug>\t<relpath>\t<layout>\t<tasks>\t<unchecked>
 #                            layout is `3.x` | `2.x` | `pre-2.0` (see LAYOUTS).
+#                            <tasks> counts the task lines this adapter actually
+#                            RECOGNIZES (all three shapes), which is the only
+#                            signal that separates a FINISHED plan from an
+#                            UNREADABLE one -- both yield zero packets, and
+#                            conflating them is how a migration reports success
+#                            over a backlog nothing can read. tasks>0 with
+#                            unchecked=0 is complete; tasks=0 is the failure.
 #                            Exists so /gaffer:migrate can report and verify which
 #                            layout a repo is in WITHOUT globbing gspec/ itself —
 #                            migrate.sh's standing rule is that every gspec read
@@ -575,7 +582,7 @@ cmd_next() {
 cmd_plans() {
   local root; root="$(_root "${1:-}")"
   _has_gspec "$root" || return 0
-  local p slug rel layout
+  local p slug rel layout counts
   while IFS=$'\t' read -r p slug; do
     [ -n "$p" ] || continue
     rel="${p#"$root"/}"
@@ -584,7 +591,16 @@ cmd_plans() {
       gspec/tasks/*.md)          layout='2.x' ;;
       *)                         layout='pre-2.0' ;;
     esac
-    printf '%s\t%s\t%s\n' "$slug" "$rel" "$layout"
+    # The SAME task-line pattern `_nodes_for` uses -- canonical plus both legacy
+    # shapes. It has to be the same or the count lies about what the backlog can
+    # read, which is the one thing this column exists to report.
+    counts="$(awk '
+      /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
+        t++
+        if ($0 !~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) u++
+      }
+      END { printf "%d\t%d", t+0, u+0 }' "$p")"
+    printf '%s\t%s\t%s\t%s\n' "$slug" "$rel" "$layout" "$counts"
   done < <(_plan_paths "$root") | sort -t"$(printf '\t')" -k1,1
 }
 

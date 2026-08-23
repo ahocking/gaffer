@@ -961,7 +961,12 @@ cmd_verify() {
     l3="$(printf '%s\n' "$census"   | awk -F'\t' '$3=="3.x"' | grep -c . || true)"; l3="${l3:-0}"
     lold="$(printf '%s\n' "$census" | awk -F'\t' '$3!="" && $3!="3.x"' | grep -c . || true)"; lold="${lold:-0}"
     packets="$("$ADAPTER" nodes-all "$root" 2>/dev/null | grep -c . || true)"; packets="${packets:-0}"
-    printf '  · %s plan file(s) -> %s unchecked packet(s)\n' "$plans" "$packets"
+    # Task lines the adapter RECOGNIZES, across every plan. This is what tells a
+    # FINISHED backlog from an UNREADABLE one -- both produce zero packets, and
+    # the zero-packet alarm below fired on the wrong one until this existed.
+    local seen
+    seen="$(printf '%s\n' "$census" | awk -F'\t' '{s+=$4} END{printf "%d", s+0}')"; seen="${seen:-0}"
+    printf '  · %s plan file(s), %s task line(s) read -> %s unchecked packet(s)\n' "$plans" "$seen" "$packets"
     if [ "$lold" != "0" ]; then
       # Informational, NOT a problem: the adapter reads every layout, so this
       # repo's loop works. Counting it as a failure would make `verify` refuse to
@@ -971,10 +976,20 @@ cmd_verify() {
       printf '  ✓ every plan is in the gspec 3.x feature-folder layout\n'
     fi
     if [ "$plans" != "0" ] && [ "$packets" = "0" ]; then
-      printf '  ✗ plans exist but produce ZERO packets — the backlog would read as "nothing to do".\n'
-      printf '    This is the failure the migration exists to catch. Inspect a plan file: its task\n'
-      printf '    lines are in a shape the adapter cannot read, and it needs /gspec-plan.\n'
-      problems=$((problems+1))
+      if [ "$seen" = "0" ]; then
+        # Nothing parsed at all: the plans moved and became unreadable. THE
+        # failure this whole script exists to catch.
+        printf '  ✗ plans exist but NO task line could be read — the backlog would report "nothing to do".\n'
+        printf '    This is the failure the migration exists to catch. Inspect a plan file: its task\n'
+        printf '    lines are in a shape the adapter cannot read, and it needs /gspec-plan.\n'
+        problems=$((problems+1))
+      else
+        # Every task parsed and every one is checked. That is a FINISHED backlog,
+        # not a broken one, and calling it a problem is a false alarm on exactly
+        # the repos that did the most work. Reported, never counted.
+        printf '  ✓ %s task line(s) read and all of them checked — the planned backlog is complete,\n' "$seen"
+        printf '    which is why it yields no packets. Not a parse failure.\n'
+      fi
     fi
     local nx; nx="$("$ADAPTER" next "$root" 2>/dev/null | sed -n 's/^NEXT=//p')"
     printf '  · next feature: %s\n' "${nx:-none}"

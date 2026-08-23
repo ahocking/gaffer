@@ -1211,6 +1211,28 @@ n="$(printf '%s\n' "$out" | grep -c .)"
 [ "$(printf '%s\n' "$out" | head -1 | cut -f1)" = "ancient" ] \
   && ok 'sorted by slug' || bad 'sorted by slug' "$out"
 
+# The task-line counts are the columns that separate a FINISHED plan from an
+# UNREADABLE one. Both yield zero packets, and conflating them made `verify`
+# report a failed migration over this plugin's OWN fully-checked backlog --
+# 5 relocated plans, 66 task lines, every one checked, called a parse failure.
+check 'recognised + unchecked counts' 'newone	gspec/features/newone/tasks.md	3.x	1	1' "$out"
+
+# A plan whose "tasks" are prose bullets parses to nothing: tasks=0 is the real
+# unreadable signal.
+mkdir -p "$R/gspec/features/prosey"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/prosey/prd.md"
+printf -- '---\nspec-version: v2\nfeature: prosey\n---\n## Plan\n- do a thing\n- do another\n' > "$R/gspec/features/prosey/tasks.md"
+# ...against one where every task IS recognised and every one is checked.
+mkdir -p "$R/gspec/features/donefeat"
+printf -- '---\nspec-version: v2\n---\n- [x] **P0**: x\n' > "$R/gspec/features/donefeat/prd.md"
+printf -- '---\nspec-version: v2\nfeature: donefeat\n---\n## Plan\n- [x] **T1** **P0** a\n- [x] **T2** **P0** b\n' > "$R/gspec/features/donefeat/tasks.md"
+out="$("$ADAPTER" plans "$R")"
+check 'an unreadable plan reads 0 task lines' 'prosey	gspec/features/prosey/tasks.md	3.x	0	0' "$out"
+check 'a finished plan reads them, 0 unchecked' 'donefeat	gspec/features/donefeat/tasks.md	3.x	2	0' "$out"
+# The legacy shapes must be COUNTED, not just resolved -- the count has to use
+# the same pattern `nodes` does or it lies about what the backlog can read.
+check 'a pre-2.0 shape-A plan is counted too' 'ancient	gspec/features/ancient.plan.md	pre-2.0	1	1' "$out"
+
 # gspec is OPTIONAL (D4): no gspec project means no output and a clean exit, not
 # an error -- migrate.sh calls this unconditionally on any repo.
 R="$TMPROOT/census-none"; mkdir -p "$R"

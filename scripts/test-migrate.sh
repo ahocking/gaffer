@@ -204,7 +204,7 @@ out="$("$MIG" plan "$R" 2>&1)"
 has 'plan says there is nothing to do' 'Nothing to do' "$out"
 out="$("$MIG" verify "$R" 2>&1)"
 has 'verify says the layout is current' 'every plan is in the gspec 3.x feature-folder layout' "$out"
-has 'and the backlog still yields a packet' '1 plan file(s) -> 1 unchecked packet(s)' "$out"
+has 'and the backlog still yields a packet' '1 plan file(s), 1 task line(s) read -> 1 unchecked packet(s)' "$out"
 
 # =============================================================================
 printf '\n== detect: the gspec 3.x layout is REPORTED, never applied ==\n'
@@ -340,10 +340,31 @@ printf -- '---\nspec-version: v1\n---\n- [ ] **P0** — open\n' > "$R/gspec/feat
 # A plan whose "tasks" are prose bullets: relocated, unreadable, and NOT done.
 printf -- '---\nspec-version: v1\nfeature: a\n---\n## Plan\n- do a thing\n- do another\n' > "$R/gspec/tasks/a.md"
 out="$("$MIG" verify "$R" 2>&1)"; rc=$?
-has 'zero packets is called out'    'produce ZERO packets' "$out"
+has 'zero packets is called out'    'NO task line could be read' "$out"
 has 'and named as the real failure' 'nothing to do' "$out"
+has 'the task-line count is zero'   '0 task line(s) read' "$out"
 has 'verify reports problems'       'VERIFY=problems' "$out"
 [ "$rc" = 3 ] && ok 'verify exits 3 on a problem' || bad 'verify exit 3' "rc=$rc"
+
+# =============================================================================
+printf '\n== verify: a FINISHED backlog is not an unreadable one ==\n'
+# Both yield zero packets, and the old check could not tell them apart -- so it
+# raised "this is the failure the migration exists to catch" on the repos that
+# had done the MOST work. Caught on this plugin's own migration: 5 relocated
+# plans, 66 task lines, every one checked, reported as a failed migration.
+#
+# The discriminator is how many task lines the adapter could READ. Zero read is
+# the real failure; read-and-all-checked is a complete backlog.
+R="$TMP/finished"; mkdir -p "$R/gspec/features/a"
+printf -- '---\nspec-version: v2\n---\n- [x] **P0**: shipped\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n## Plan\n- [x] **T1** **P0** done\n- [x] **T2** **P0** also done\n' > "$R/gspec/features/a/tasks.md"
+out="$("$MIG" verify "$R" 2>&1)"; rc=$?
+has 'the task lines were read'       '2 task line(s) read' "$out"
+has 'and it is called complete'      'the planned backlog is complete' "$out"
+has 'and explicitly NOT a parse failure' 'Not a parse failure' "$out"
+hasnt 'the failure alarm does not fire' 'NO task line could be read' "$out"
+has 'verify goes green'              'VERIFY=ok' "$out"
+[ "$rc" = 0 ] && ok 'verify exits 0 on a finished backlog' || bad 'verify exit 0' "rc=$rc"
 
 printf '\n== apply: report conventions are stamped into CLAUDE.md ==\n'
 # The consumer-facing half of the report-format fix. A repo whose CLAUDE.md does not

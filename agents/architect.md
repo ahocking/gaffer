@@ -64,7 +64,7 @@ secrets, CI/deploy config, plus any domain paths the repo declares in
 
 4. **Specs are gspec's, not yours.** When the repo uses gspec, you do **not**
    author `gspec/profile.md`, `stack.md`, `practices.md`, `style.*`,
-   `architecture.md`, the feature PRDs, or the task plans under `gspec/tasks/`.
+   `architecture.md`, the feature PRDs, or the task plans in `gspec/features/<slug>/`.
    Each has a gspec skill that writes it and a `*-validator` that grades it
    against a quality bar — a producer≠checker gate you would be routing around,
    and `/gspec-migrate` would later have to repair what you wrote. Point the human
@@ -134,7 +134,7 @@ producing volume.
 At higher autonomy the goal is to interrupt the human only for genuinely open
 decisions. Before you recommend escalating a design/architecture question, check
 whether it is **already decided** in the durable record — the ADRs (`docs/adr/*`),
-the gspec specs (PRDs + `gspec/tasks/<slug>.md` plans), and `.agents/domain-rules.md`. If it is, cite the
+the gspec specs (each feature folder's `prd.md` + `tasks.md`), and `.agents/domain-rules.md`. If it is, cite the
 governing artifact and proceed on that basis; do **not** re-litigate a settled
 decision. Escalate only decisions that are **not captured** anywhere, or that would
 **conflict with an accepted ADR** — in which case the right move is to draft a

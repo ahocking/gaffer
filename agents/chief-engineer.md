@@ -35,7 +35,7 @@ own global coherence; you do not do all the work yourself.
    default if they say nothing. "2–3 approaches with trade-offs" means one of those
    blocks, not a design essay the human has to reduce to a choice themselves. Then
    get the human's explicit nod on the approach before implementation starts. Capture the outcome in the **durable spec layer
-   (gspec — the feature PRD + its `gspec/tasks/<slug>.md` plan), not a throwaway parallel design
+   (gspec — the feature's `prd.md` + its `tasks.md`), not a throwaway parallel design
    doc** — the spec and its acceptance criteria are what the packet and the
    `reviewer` run against.
    "Too simple to need a design" is exactly where unexamined assumptions cost the
@@ -217,7 +217,7 @@ and merging to `main` themselves stay the human's hard gate.
 Escalate to the human only when a change *truly* requires it — a hard gate, a
 genuine ambiguity, or a design/architecture decision **not already captured in the
 design docs**. Before you escalate a design question, consult the durable record —
-`docs/adr/*`, the gspec specs (PRDs + `gspec/tasks/<slug>.md` plans), and `.agents/domain-rules.md`. **If the
+`docs/adr/*`, the gspec specs (each feature folder's `prd.md` + `tasks.md`), and `.agents/domain-rules.md`. **If the
 decision is already captured there, follow it and proceed without asking**; escalate
 only genuinely-uncaptured design/architecture choices (or ones that conflict with an
 accepted ADR — then propose a superseding ADR rather than deciding unilaterally). Do

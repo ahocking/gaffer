@@ -1,8 +1,9 @@
 # gaffer — feature sequencing (plugin ADR 0020 D2)
 # ---------------------------------------------------------------------------
-# gspec owns WHAT to build: the PRDs (`gspec/features/<slug>.md`) and the ordered
-# per-feature task plans (`gspec/tasks/<slug>.md`). It has no CROSS-feature
-# ordering, so this file supplies it.
+# gspec owns WHAT to build: everything about a feature lives in its own folder
+# (`gspec/features/<slug>/` — `prd.md` and `tasks.md`, plus `arch.md` and
+# `design.html` where they exist). It has no CROSS-feature ordering, so this file
+# supplies it.
 #
 # It lives here and NOT under `gspec/` on purpose: gspec's spec-integrity floor
 # governs every `.md` under `gspec/` and would flag a file gspec does not own.

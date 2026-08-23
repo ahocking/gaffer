@@ -54,7 +54,7 @@ tasks:
   # chooses, and a wrong-narrow entry costs correctness while a missing one only
   # costs parallelism. Add it once T4 lands.
   - task: self-host-hardening-gaps#T1
-    files: [CLAUDE.md, templates/task-packet.yaml, .agents/guard-extra-review, gspec/features/self-host-hardening.md]
+    files: [CLAUDE.md, templates/task-packet.yaml, .agents/guard-extra-review, gspec/features/self-host-hardening/prd.md]
     fingerprint: Correct the load-timing model in all five places in one change — `CLAUDE.md`, `templates/task-packet.yaml`, `.agents/guard-extra-review`, and in the already-complete `gspec/features/self-host-hardening.md` BOTH its blockquote and the session-boundary acceptance criterion under the checked P1 capability (the bullet's text only — never the checkbox, no checked task, no plan file) — so a hook's body reads as live on the next tool call and only its registration and the settings that load it cross a session boundary, with `scripts/test-guard.sh` passing unchanged since the enforcement-config edit is comment-only and warrants no new case
 
   - task: self-host-hardening-gaps#T2

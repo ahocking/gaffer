@@ -1,6 +1,6 @@
 ---
 name: migrate
-description: Retrofit a consumer repo from an older orchestration-plugin layout to the current one (v2.0.0) — move gspec plan files to gspec/tasks/, convert gspec/roadmap.md into the plugin-owned .agents/roadmap.yaml, stamp missing spec frontmatter, refresh .agents/project-overrides.yaml and CLAUDE.md, then VERIFY the backlog actually parses. Use when a repo was set up under an earlier version of this plugin, when /gaffer:run-loop reports no backlog, or after upgrading the plugin.
+description: Retrofit a consumer repo from an older orchestration-plugin layout to the current one, and onto pinned gspec 3.1.1 — sequence the gspec upgrade and /gspec-migrate's move into gspec/features/<slug>/, convert gspec/roadmap.md into the plugin-owned .agents/roadmap.yaml, stamp missing spec frontmatter, refresh .agents/project-overrides.yaml and CLAUDE.md, then VERIFY the backlog actually parses. Use when a repo was set up under an earlier version of this plugin or an older gspec, when /gaffer:run-loop reports no backlog, or after upgrading either.
 argument-hint: (optional — a repo path; defaults to the current repo)
 ---
 
@@ -12,13 +12,22 @@ deterministic moves live in `${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh`; **your**
 job is the judgment around them — approval, the prose no converter can translate,
 and reading the verification honestly.
 
-**The failure this exists to prevent.** The headline change renames
-`gspec/features/<slug>.plan.md` to `gspec/tasks/<slug>.md`. Renaming is trivial and
-the result *looks* migrated — but if the moved plans' task lines cannot be parsed,
-the backlog reads as **"nothing to do"** rather than as "unreadable", and the loop
-cheerfully reports a finished project. Measured on two production repos: a pure
-rename yielded **0 packets from 31 plan files**. So a migration is not done when the
-files have moved. It is done when packets come out the other end.
+**The failure this exists to prevent.** Every layout change here is a file move,
+and a file move *looks* migrated the instant it finishes. If the moved plans' task
+lines cannot be parsed, the backlog reads as **"nothing to do"** rather than as
+"unreadable", and the loop cheerfully reports a finished project. Measured on two
+production repos: a pure rename yielded **0 packets from 31 plan files**. So a
+migration is not done when the files have moved. It is done when packets come out
+the other end — which is why every path through this skill ends at `verify`, and
+why the packet count is the number you lead the report with.
+
+**Two migrations may be in play, and they are not the same job.** The plugin's own
+retrofit (`gspec/features/<slug>.plan.md` → `gspec/tasks/<slug>.md`, the roadmap
+conversion, the run-state cleanups) is `migrate.sh`'s. The **gspec** upgrade to the
+pinned **3.1.1** — everything about a feature moving into `gspec/features/<slug>/`
+— is **`/gspec-migrate`'s**, and this skill deliberately does not do it (§2b). Doing
+both in the wrong order is the one way to make this worse rather than better, so
+read §2b before running anything.
 
 **Before the closing summary and approval request, `Read`
 `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
@@ -52,6 +61,112 @@ roadmap left under `gspec/` trips gspec's own spec-integrity floor on every writ
 and hard-blocks every turn on Codex).
 
 `FINDINGS=0` means the repo is already current — say so and stop.
+
+Two of those findings are about **gspec's** layout rather than the plugin's, and
+they route to §2b instead of to `apply`:
+
+- **`FINDING=gspec-v2-layout`** — the repo's features are still flat
+  (`gspec/features/<slug>.md` + `gspec/tasks/<slug>.md`). **This is not breakage,
+  and must not be relayed as breakage.** The adapter reads all three gspec layouts,
+  so the loop works exactly as before. What has changed is that the repo's *gspec
+  commands* have moved on without it: `/gspec-plan` at 3.x **writes** to
+  `gspec/features/<slug>/tasks.md`, so the next replan of any feature quietly
+  strands the old plan beside the new one. That is the reason to migrate — say
+  that, not "your backlog is broken".
+- **`FINDING=half-moved`** — `prd.md` is in the feature folder while its plan is
+  still at the flat `gspec/tasks/<slug>.md`. Unambiguous, because both files exist:
+  one moved and one did not. Nothing breaks today (the adapter reads the plan where
+  it is), but the next `/gspec-plan` writes to the folder and the repo ends up with
+  two plans for one feature.
+- **`FINDING=plan-without-prd`** — a folder with `tasks.md` and no `prd.md`.
+  Report the **fact** and let the user supply the cause: completion is **derived**
+  from the PRD's capability checkboxes, so that feature contributes no packets and
+  can never read as done. **Do not diagnose this one for them.** It is equally an
+  interrupted `/gspec-migrate` *and* a deliberate infra plan that was never a
+  product capability — one real consumer repo documents exactly that in its
+  `.agents/roadmap.yaml`, with every task already checked and nothing depending on
+  it. Ask which it is; if it is deliberate and undocumented, the useful outcome is
+  a line in the roadmap so the next reader does not re-investigate.
+
+## 2b. The gspec upgrade — sequence it, don't improvise it
+
+Skip this section entirely when `detect` reported neither finding above.
+
+`migrate.sh` **will not** move a feature into `gspec/features/<slug>/`, and that is a
+decision rather than a gap ([ADR 0020](../../docs/adr/0020-gspec-boundary-and-version-pin.md):
+gspec owns spec **format and layout**, this plugin owns **execution**). Three things
+make it gspec's move to make. It has to repair the relative links the relocation
+breaks — in *both* directions, including inbound links from specs that did not move,
+which is a judgment no glob makes. It has to reformat each file to the v2 body,
+which gspec does per file through its own `spec-migrator` agent. And it edits the
+files gspec's `task-immutability` floor is watching, so a shell `mv` racing that
+floor is a fight this plugin would lose loudly and intermittently.
+
+**Run these in order. The order is the whole point:**
+
+1. **Upgrade gspec first.**
+
+   ```bash
+   npx --yes gspec@3.1.1 --target claude
+   ```
+
+   **Do not skip this and go straight to `/gspec-migrate`.** A repo on old gspec has
+   the *old* `/gspec-migrate` sitting in `.claude/commands/`, and that version
+   migrates **toward `gspec/tasks/`** — the exact layout you are trying to leave. It
+   will report success. You would then have to migrate twice, the second time over
+   files the first pass had already rewritten. Reinstalling first re-stamps the
+   command, the agents, the skills and the hook floors to 3.1.1 so `/gspec-migrate`
+   means the right thing when you call it.
+
+   Confirm the pin matches before and after:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh pin`.
+
+2. **Commit that on its own.** It is a large, purely-vendored diff (`.claude/**`),
+   and mixing it into the same commit as the spec moves makes both unreviewable.
+
+3. **Run `/gspec-migrate`.** It relocates `features/<slug>.md` → `features/<slug>/prd.md`
+   and `tasks/<slug>.md` → `features/<slug>/tasks.md`, removes an emptied
+   `gspec/tasks/`, stamps `spec-version: v2`, applies the `deployable:` → `module:`
+   rename in `architecture.md` and any `architecture/<name>.md`, and repairs the
+   links the move breaks. It asks before it moves anything.
+
+   You must be in the **main conversation** to invoke it — a dispatched agent has no
+   `Skill` tool, so if you are running inside one, stop and hand this step back with
+   the command to run.
+
+   **Two things it deliberately will not do**, and both belong in your report as
+   ⚠️ items rather than as failures:
+
+   - **It never writes `arch.md` or `design.html`.** A v2 feature folder holds four
+     files and migration relocates only the two that already existed; the other two
+     are a judgment call, not a reformat. Name **`/gspec-architect`** as what writes
+     them, and say plainly that until then each feature folder is simply incomplete
+     — nothing breaks, and the loop does not need them. A feature with no UI
+     correctly gets no `design.html` at all.
+   - **It cannot make plans v2-conformant, and must not try.** The v2 plan bar
+     adds one required field to a task — an `arch:` line naming anchors in the
+     feature's `arch.md`. Migration never writes `arch.md`, so those anchors do
+     not exist yet, and gspec's own `plan-lint` floor rejects an `arch:` whose
+     anchor does not resolve. If the migrator offers to add placeholder `arch:`
+     lines (its brief tells it to add placeholders "where the current format
+     requires them"), decline: it produces files gspec itself then refuses. The
+     order is migrate → `/gspec-architect` → `/gspec-plan`, and only the last
+     step can honestly add `arch:`. Say this plainly in the report, because
+     "migrated" and "v2-conformant" are not the same state and a reader will
+     assume they are.
+   - **It reports architecture altitude and stops there.** If `architecture.md` still
+     carries entity field lists or endpoint signatures, that content now belongs to
+     the feature that introduces it — but splitting it rewrites specs the user has
+     already reviewed, so it is `/gspec-architect`'s job on a later pass. Relay the
+     warning; do not act on it here.
+
+4. **Commit that too**, before returning to §3. `migrate.sh apply` refuses on a dirty
+   tree, and you want the spec relocation readable as its own diff regardless.
+
+Then continue with §3 for the plugin-owned half. By that point `apply` will usually
+find the plan-move step already satisfied — `/gspec-migrate` at 3.1.1 handles a
+pre-2.0 `features/<slug>.plan.md` in one hop, straight to the feature folder, rather
+than via the intermediate `gspec/tasks/` this plugin's own retrofit used.
 
 ## 3. Get approval before touching anything
 
@@ -113,13 +228,23 @@ Also check for entries with no matching PRD: the roadmap may list features that 
 never written. Report them; do not invent PRDs.
 
 **b. `.agents/project-overrides.yaml`.** Update `allowed_paths` so `specs`/`docs`
-cover `gspec/tasks/**` and `.agents/roadmap.yaml`, and drop `gspec/roadmap.md`.
+cover `gspec/features/**` and `.agents/roadmap.yaml`, and drop `gspec/roadmap.md`.
+
+On a repo now at gspec 3.x, `gspec/features/**` already covers a feature's whole
+folder — PRD, plan, `arch.md`, `design.html` — so a separate `gspec/tasks/**` entry
+is vestigial. Keep it only while some feature is still unmigrated, and say which
+when you do; an allow-path for a directory that no longer exists is the kind of
+line nobody removes later because nobody remembers what it was for.
 
 **c. The repo's `CLAUDE.md`.** This one outlives the file move and matters most:
 it is the operating brief every session reads. Replace descriptions of the two-tier
-`roadmap.md` + `.plan.md` backlog with the current model — gspec owns
-`gspec/features/<slug>.md` and `gspec/tasks/<slug>.md`; the plugin owns
-`.agents/roadmap.yaml` (order + why). Use
+`roadmap.md` + `.plan.md` backlog with the current model — gspec owns the feature
+folder `gspec/features/<slug>/` (`prd.md` + `tasks.md`, and `arch.md` /
+`design.html` where they exist); the plugin owns `.agents/roadmap.yaml` (order +
+why). A repo you have **not** taken through §2b keeps the flat
+`gspec/features/<slug>.md` + `gspec/tasks/<slug>.md` — describe whichever layout is
+actually on disk, and never both, since the whole value of this file is that an
+agent can trust it without checking. Use
 `${CLAUDE_PLUGIN_ROOT}/templates/spec-driven-base/CLAUDE.md` as the reference
 wording. Keep everything project-specific.
 
@@ -204,6 +329,18 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh verify <root>
   (`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh features <root>`) rather than
   assuming either way.
 
+`verify` also prints a layout line:
+
+> `· gspec layout: 6 feature(s) on 3.x, 2 still pre-3.x (run /gspec-migrate; the loop reads both)`
+
+That line is **informational and `VERIFY=ok` still goes green through it** — a
+mixed repo is a normal state, not a fault, and making it a failure would mean
+refusing to pass a repo with nothing wrong. It is there so a half-finished
+`/gspec-migrate` is visible rather than silent. The per-feature census is
+`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh plans <root>`, which prints
+`<slug>  <path>  <layout>` and is the fastest way to see *which* features were
+left behind.
+
 **Legacy task shapes.** Pre-2.0 plans were authored by this plugin's architect, not
 by `/gspec-plan`, so their task lines use non-canonical ids and usually carry no
 `deps:`/`covers:`. The adapter **reads them** (that is what makes migration a safe
@@ -223,11 +360,13 @@ migration is not a run and has nothing to count.
 - **✅ What moved, converted, and was stamped.**
 - **⚠️ What is left for the human** — `gspec/roadmap.md` awaiting deletion, prose to
   fold in, any `SKIP=` collisions, any plan worth regenerating, any `UNCHECKED=` id
-  to reconcile, any `UNRECOGNIZED_BACKLOG_DONE=` block to drop by hand, and any
-  finding you kept-and-repaired or left for later in the §5f triage. These are
-  alerts, not chores: an unrecognized capability line means a feature can never
-  read as done, so everything depending on it stays blocked forever and the
-  backlog quietly reports nothing to do.
+  to reconcile, any `UNRECOGNIZED_BACKLOG_DONE=` block to drop by hand, any feature
+  folder still missing its `arch.md` / `design.html` (name `/gspec-architect`), any
+  architecture-altitude warning `/gspec-migrate` raised, and any finding you
+  kept-and-repaired or left for later in the §5f triage. These are alerts, not
+  chores: an unrecognized capability line means a feature can never read as done, so
+  everything depending on it stays blocked forever and the backlog quietly reports
+  nothing to do.
 - **The verification line, quoted** — and the packet count with it. A migration is not
   done when the files have moved; it is done when packets come out the other end, so
   lead with that number rather than the file count.

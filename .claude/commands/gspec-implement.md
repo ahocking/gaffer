@@ -8,13 +8,21 @@ You are the **engineer** (the `gspec-engineer` skill applies). This builds **cod
 
 ## Flow
 
-1. **Discovery.** Read all available gspec docs (`profile`, `features/*.md` + `tasks/*.md`, `stack`, `style`, `gspec/design/**`, `practices`, `architecture` + any `architecture/*.md` sub-files); note any missing (features and `design/` are optional — don't block). Assess status from capability/task checkboxes and present a per-feature summary; if everything is already checked, ask the user what they want to do.
+1. **Discovery.** Read all available gspec docs (`profile`, each `features/<slug>/` folder, `stack`, `style`, `practices`, `architecture` + any `architecture/*.md` sub-files); note any missing (features are optional — don't block). Assess status from capability/task checkboxes and present a per-feature summary; if everything is already checked, ask the user what they want to do.
 2. **Scope.** Determine what to build this run: the user's prompt takes priority; otherwise unchecked P0 → P1 → P2 across features, respecting dependencies. List anything excluded as "Out of Scope for This Run."
 3. **Plan / build order** (apply the `gspec-orchestrator` judgment — right-sized scopes, dependency ordering, fan out only file-disjoint work). If **every** in-scope feature has a plan file, skip plan mode — those plans are the approved build order; verify each unchecked capability has a covering task (flag gaps), group unchecked tasks into phases by `deps:` (`[P]` = parallel-safe within a phase), and show a one-screen summary. If any in-scope feature lacks a plan file, **enter plan mode**, present a phased plan placing every unchecked unit into a phase or an explicit "Proposed to Defer," and wait for approval.
 4. **Git checkpoint.** Before any code: run `git status`; if dirty, `git add -A` and commit `chore: pre-implement checkpoint` and tell the user; if clean, say so; if not a git repo, skip and note it.
 5. **Build phase by phase.** For each phase, delegate to the `implementer` agent with that phase's scope (fan out independent `[P]` tasks across parallel implementer runs where safe). It builds, tests, generates/updates `verify.sh`, and flips checkboxes, returning a summary.
 6. **Gate each phase** (skip if `--no-qa`). After a phase's implementer returns, delegate the `implementation-validator` agent on that phase's scope — it runs `verify.sh` (build+test) and judges the in-scope acceptance criteria + Definition of Done, returning a `VERDICT`. On **FAIL**, re-delegate the `implementer` once with the verdict's concrete findings, then re-validate; if it still fails, present the verdict and let the user decide (fix / waive / stop). **Pause after each gated phase** for the user to confirm before the next.
 7. **Verify & report.** After the last phase, confirm checkbox accuracy and task↔capability consistency across the run, flag any unapproved deferral, and present a final implementation summary (scope built, gate results, any waived findings).
+
+## Change requests — during and after the run
+
+When the user asks for a change or challenges a behavior — at a phase gate, after the final report, or anywhere in between — do not act on your reading of the message alone. **First re-open the governing spec for the code in question**: the feature's `arch.md` (especially its `## Logic` rules) and its `prd.md` acceptance criteria. The Discovery read is stale by that point in the conversation; re-read the file, don't recall it. Then:
+
+- **The spec already decides it** → follow the documented decision and say so, citing the anchor — never re-ask the user a question their spec already answers.
+- **The request conflicts with a documented decision** → surface the conflict and let the user pick; if they change the decision, update the `arch.md` anchor (and any affected acceptance criteria) in the same change, so spec and code move together.
+- **Neither the request nor the specs decide it** → that is a genuine gap; ask.
 
 ## Input
 $ARGUMENTS

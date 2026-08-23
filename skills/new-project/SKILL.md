@@ -85,8 +85,9 @@ into a project (that is upstream proposal `U4`), so this is the only durable loc
 record of which gspec produced the specs.
 
 ## 4. Seed the sequencing overlay
-gspec owns the specs and the per-feature plans (`gspec/features/<slug>.md`,
-`gspec/tasks/<slug>.md`). It has **no cross-feature ordering**, so this plugin
+gspec owns the specs and the per-feature plans — everything about a feature lives
+in `gspec/features/<slug>/` (`prd.md`, `tasks.md`, and `arch.md` / `design.html`
+where they exist). It has **no cross-feature ordering**, so this plugin
 supplies one — as a plugin-owned file, deliberately **outside `gspec/`**
 (ADR 0020 D2: anything under `gspec/` is governed by gspec's `spec-integrity`
 floor, which would flag a file gspec does not own).

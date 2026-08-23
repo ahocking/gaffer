@@ -20,7 +20,49 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
 ok()  { printf 'ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf 'FAIL %s\n' "$1"; if [ -n "${2:-}" ]; then printf '     %s\n' "$2"; fi; fail=$((fail + 1)); }
-assert_true() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+# assert_true evaluates its command with `pipefail` OFF, and that is the whole
+# fix for a flake class this file has now been bitten by twice.
+#
+# 43 assertions here have the shape `<producer> | grep -q PAT`. Under this
+# script's `pipefail` (line 16) that races: `grep -q` exits the instant it
+# matches the FIRST line and closes its read end, so a producer still mid-write
+# takes SIGPIPE (rc 141), and pipefail reports THAT rather than grep's successful
+# match. A correct answer reads as a failed assertion.
+#
+# It is load-dependent -- it needs the cumulative subprocess pressure of a real
+# sweep, which is why it reproduces in CI and in a full ten-sweep run but not in
+# isolated repeats (0 in 3,000 sequential calls, separately established). That is
+# exactly what makes it dangerous: WHICH assertion fires is chance, so fixing the
+# instance that happened to fire leaves every other one loaded. T3 (commit
+# 75bf039) established the cause and converted the four `trim-note` assertions to
+# capture-then-compare; `record-outcome records a NON-green outcome` was simply
+# the next one to draw the short straw.
+#
+# Fixing the remaining 39 the same way would mean 39 quoting transformations in
+# the only test file covering the loop's durable state -- 39 chances to silently
+# weaken an assertion. Disabling pipefail for the evaluation is one line, covers
+# every current and future assertion, and cannot change any of their meanings:
+#
+#   - Every one of them tests "does the output contain PAT". The producer's exit
+#     status was ALREADY invisible to them -- `| grep -q` reports grep's status,
+#     and this script runs `set -uo pipefail` without `set -e`, so a non-zero
+#     producer never failed an assertion anyway.
+#   - SIGPIPE cannot truncate a match into a miss: grep only closes the pipe
+#     early BECAUSE it already matched. With no match it reads to EOF.
+#
+# Options are global in bash (and `local -` needs 4.4, while macOS ships 3.2), so
+# save and restore explicitly rather than relying on function scoping.
+# 75bf039's four conversions stay as they are: still correct, now simply belt and
+# braces.
+# This script sets pipefail unconditionally at the top, so restoring it is
+# unconditional too -- no need to probe for the prior state.
+assert_true() {
+  local _rc
+  set +o pipefail
+  eval "$2" >/dev/null 2>&1; _rc=$?
+  set -o pipefail
+  if [ "$_rc" -eq 0 ]; then ok "$1"; else bad "$1"; fi
+}
 
 # flat top-level value:  rs_get <file> <key>
 rs_get()    { grep -E "^$2:" "$1" | head -1 | sed -E "s/^$2:[[:space:]]*//"; }

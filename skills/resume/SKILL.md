@@ -172,7 +172,7 @@ Act on the `DECISION=` it prints:
   `last_green_commit` to that SHA and **remove the cursor packet from `pending`**
   — there is no `done` list to move it into (ADR 0025). If the orphan commit does
   not already carry the gspec checkbox flip (it should — §3.4 lands it in the same
-  commit; `git show --stat <sha> -- gspec/tasks/` tells you), perform it now:
+  commit; `git show --stat <sha> -- gspec/` tells you), perform it now:
   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <cursor>`, same exit
   codes as §3.4 (`CHECKED=none` is skipped, not failed, for a non-gspec backlog;
   exit 4 is drift — note it, do not halt). Commit that flip as its own small

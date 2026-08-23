@@ -53,11 +53,40 @@ mk_plan() { # mk_plan <root> <slug> <<<body
   } > "$root/gspec/tasks/$slug.md"
 }
 
+# --- the same two, in gspec 3.x's feature-folder layout ----------------------
+# Deliberately SEPARATE builders rather than a flag on the ones above: nearly
+# every case in this file asserts the flat layout, and a shared builder with a
+# mode switch would let a future edit flip all of them at once. Two builders
+# means a case says which layout it is testing by which one it calls.
+
+mk_prd_v2() { # mk_prd_v2 <root> <slug> <checked-count> <unchecked-count> [depends_on]
+  local root="$1" slug="$2" c="$3" u="$4" deps="${5:-}"
+  mkdir -p "$root/gspec/features/$slug"
+  { printf -- '---\nspec-version: v2\n'
+    [ -z "$deps" ] || printf 'depends_on: [%s]\n' "$deps"
+    printf -- '---\n\n# Feature: %s\n\n## Capabilities\n\n' "$slug"
+    local i
+    for ((i=1;i<=c;i++));  do printf -- '- [x] **P0**: done capability %s\n  - criterion\n' "$i"; done
+    for ((i=1;i<=u;i++));  do printf -- '- [ ] **P1**: open capability %s\n  - criterion\n' "$i"; done
+  } > "$root/gspec/features/$slug/prd.md"
+}
+
+mk_plan_v2() { # mk_plan_v2 <root> <slug> <<<body
+  local root="$1" slug="$2"
+  mkdir -p "$root/gspec/features/$slug"
+  { printf -- '---\nspec-version: v2\nfeature: %s\n---\n\n# Plan: %s\n\n## Plan\n\n' "$slug" "$slug"
+    cat
+  } > "$root/gspec/features/$slug/tasks.md"
+}
+
 # =============================================================================
 printf '\n== pin ==\n'
 out="$("$ADAPTER" pin)"
-check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=2.7.0' "$out"
-check 'pin reports the install command'      'npx gspec@2.7.0' "$out"
+check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=3.1.1' "$out"
+check 'pin reports the install command'      'npx gspec@3.1.1' "$out"
+# BOTH artifact versions, deliberately: v2 is what gspec 3.x writes, v1 is what
+# every unmigrated consumer repo still has on disk, and the adapter reads both.
+check 'pin supports both artifact versions'  'GSPEC_SPEC_VERSIONS=v1 v2' "$out"
 
 # =============================================================================
 printf '\n== check: the artifact pin (D3) ==\n'
@@ -75,9 +104,19 @@ out="$("$ADAPTER" check "$R" 2>&1)"; rc=$?
 check 'v1 specs pass the pin' 'CHECK=ok' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 on a clean project' || bad 'exit 0 on a clean project' "rc=$rc"
 
-# A future spec-version must FAIL LOUD, not be silently consumed — this is the
-# whole point of the artifact pin (the 2026-08 breakage was silent).
+# v2 is gspec 3.x's artifact version and must PASS. This case used to assert the
+# opposite -- it stamped v2 precisely because v2 was the unknown future version --
+# so it is the one that proves the 3.1.1 bump actually widened the pin rather than
+# just moving the number in the banner.
 sed -i.bak 's/spec-version: v1/spec-version: v2/' "$R/gspec/tasks/alpha.md" && rm -f "$R/gspec/tasks/alpha.md.bak"
+out="$("$ADAPTER" check "$R" 2>&1)"; rc=$?
+check 'v2 specs pass the pin'  'CHECK=ok' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a v2 project' || bad 'exit 0 on a v2 project' "rc=$rc"
+
+# A spec-version this plugin has never heard of must still FAIL LOUD, not be
+# silently consumed -- that is the whole point of the artifact pin, and widening
+# the supported set must not have turned the check into a rubber stamp.
+sed -i.bak 's/spec-version: v2/spec-version: v9/' "$R/gspec/tasks/alpha.md" && rm -f "$R/gspec/tasks/alpha.md.bak"
 out="$("$ADAPTER" check "$R" 2>&1)"; rc=$?
 check 'unknown spec-version fails'      'CHECK=fail' "$out"
 check 'names the offending file'        'gspec/tasks/alpha.md' "$out"
@@ -97,8 +136,8 @@ check 'absent spec-version fails' 'has no spec-version' "$out"
 mk_plan "$R" alpha <<'EOF'
 - [ ] **T1** **P1** do the thing
 EOF
-sed -i.bak 's/spec-version: v1/spec-version: v2/' "$R/gspec/tasks/alpha.md" && rm -f "$R/gspec/tasks/alpha.md.bak"
-out="$(ORCH_GSPEC_SPEC_VERSIONS='v1 v2' "$ADAPTER" check "$R" 2>&1)"; rc=$?
+sed -i.bak 's/spec-version: v1/spec-version: v9/' "$R/gspec/tasks/alpha.md" && rm -f "$R/gspec/tasks/alpha.md.bak"
+out="$(ORCH_GSPEC_SPEC_VERSIONS='v1 v9' "$ADAPTER" check "$R" 2>&1)"; rc=$?
 check 'env override widens the supported set' 'CHECK=ok' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 under an override' || bad 'exit 0 under an override' "rc=$rc"
 
@@ -343,7 +382,8 @@ feature: old
 EOF
 out="$("$ADAPTER" next "$R")"
 check 'legacy .plan.md is found'      'PLAN=gspec/features/old.plan.md' "$out"
-check 'legacy location warns'         'run /gspec-migrate' "$out"
+check 'legacy location warns'         'pre-3.x plan location' "$out"
+check 'and names the remedy'          '/gspec-migrate' "$out"
 out="$("$ADAPTER" features "$R")"
 refute 'a .plan.md is never a feature' 'old.plan' "$out"
 
@@ -725,7 +765,7 @@ check 'and says so, skipped not failed'                               'not a gsp
 
 out="$("$ADAPTER" check-task 'other#T1' "$R")"; rc=$?
 check 'no plan file for that feature slug => CHECKED=none' 'CHECKED=none' "$out"
-check 'and names the missing plan'                          'no gspec/tasks/other.md' "$out"
+check 'and names the missing plan'                          'no plan file for feature other' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
 
 # --- genuine drift is loud: exit 4 -----------------------------------------------
@@ -978,7 +1018,7 @@ check 'and says so'                                              'not a gspec ta
 
 out="$("$ADAPTER" task-status 'other#T1' "$R")"; rc=$?
 check 'no plan file for that feature slug -> unknown' "$(printf 'other#T1\tunknown')" "$out"
-check 'and names the missing plan'                     'no gspec/tasks/other.md' "$out"
+check 'and names the missing plan'                     'no plan file for feature other' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
 
 out="$("$ADAPTER" task-status 'ts#T99' "$R")"; rc=$?
@@ -1017,6 +1057,180 @@ out="$("$ADAPTER" task-status 'a/b#T1' "$R" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && ok 'a slug containing a path separator is refused, matching check-task' \
   || bad 'a slug containing a path separator is refused' "rc=$rc, out=$out"
 check 'and explains why' 'path separator' "$out"
+
+
+# =============================================================================
+printf '\n== gspec 3.x: the feature-folder layout (ADR 0020 D3) ==\n'
+# gspec 3.0 moved a feature's PRD and plan into gspec/features/<slug>/. The
+# adapter reads it alongside the two older layouts, so this section walks the
+# WHOLE surface -- every subcommand that touches a path -- on a folder-layout
+# project. A subcommand that silently reads nothing is the failure mode ADR 0020
+# exists to prevent, and it looks exactly like an empty backlog.
+R="$TMPROOT/v2layout"; mkdir -p "$R"
+mk_prd_v2 "$R" folded 1 1
+mk_plan_v2 "$R" folded <<'EOF'
+- [ ] **T1** **P1** first folder-layout task
+  - deps: —
+  - covers: "open capability 1"
+- [ ] **T2** **P1** second folder-layout task
+  - deps: T1
+EOF
+
+out="$("$ADAPTER" check "$R" 2>&1)"; rc=$?
+check 'check reads a folder-layout project'   'CHECK=ok' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a folder-layout project' || bad 'exit 0 on a folder-layout project' "rc=$rc"
+
+out="$("$ADAPTER" features "$R")"
+check 'features sees the folded feature'      'folded' "$out"
+# The slug comes from the DIRECTORY name here. `basename <path> .md` -- what
+# every call site did before the layout seam -- yields the literal "prd"/"tasks"
+# for every feature in this layout, which reads as one feature named "tasks"
+# rather than as N features. Assert the real slug, and assert those two never
+# appear as slugs.
+refute 'never reads the basename as the slug (prd)'   'prd	' "$out"
+refute 'never reads the basename as the slug (tasks)' 'tasks	' "$out"
+# One unchecked capability => not done.
+check 'completion still DERIVED from prd.md'  'folded	9999	0' "$out"
+
+out="$("$ADAPTER" next "$R")"
+check 'next picks the folded feature'         'NEXT=folded' "$out"
+check 'and resolves the folder plan'          'PLAN=gspec/features/folded/tasks.md' "$out"
+refute 'no legacy-location warning on 3.x'    'pre-3.x plan location' "$out"
+# arch.md / design.html are gspec's to write and absent is NORMAL -- a feature
+# with no UI never gets a design. Absence must never read as an error.
+refute 'no ARCH line when arch.md is absent'    'ARCH=' "$out"
+refute 'no DESIGN line when design.html absent' 'DESIGN=' "$out"
+
+printf -- '---\nspec-version: v2\n---\n\n## Data\nNot applicable.\n' > "$R/gspec/features/folded/arch.md"
+printf -- '<!-- spec-version: v2 -->\n<html></html>\n' > "$R/gspec/features/folded/design.html"
+out="$("$ADAPTER" next "$R")"
+check 'ARCH is surfaced when present'         'ARCH=gspec/features/folded/arch.md' "$out"
+check 'DESIGN is surfaced when present'       'DESIGN=gspec/features/folded/design.html' "$out"
+# They are surfaced as PATHS and never parsed: they say what to build, which is
+# gspec's half of the seam (ADR 0020). `check` asserts the version pin only over
+# the consumed contract, so a design.html carrying an HTML-comment marker rather
+# than YAML frontmatter must not fail it.
+out="$("$ADAPTER" check "$R" 2>&1)"
+check 'enriched siblings are outside the asserted contract' 'CHECK=ok' "$out"
+
+out="$("$ADAPTER" nodes folded "$R")"
+check 'nodes emits the folder plans tasks'    'folded-t1' "$out"
+check 'and the second one'                    'folded-t2' "$out"
+out="$("$ADAPTER" nodes-all "$R")"
+check 'nodes-all reaches the folder layout'   'folded-t1' "$out"
+
+# check-task: the adapter's one write, in the folder layout, via the packet-id
+# form the loop actually holds at packet close. This is the case the old code
+# could not pass -- it resolved candidate slugs with `basename <plan> .md`, so
+# every folder-layout plan offered the slug "tasks" and `folded-t1` matched
+# nothing.
+out="$("$ADAPTER" check-task folded-t1 "$R" 2>&1)"; rc=$?
+check 'check-task resolves a packet id in the folder layout' 'CHECKED=' "$out"
+check 'and names the folder plan'             'gspec/features/folded/tasks.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a folder-layout flip' || bad 'exit 0 on a folder-layout flip' "rc=$rc"
+grep -q '^- \[x\] \*\*T1\*\*' "$R/gspec/features/folded/tasks.md" \
+  && ok 'the checkbox actually flipped on disk' \
+  || bad 'the checkbox actually flipped on disk' "$(cat "$R/gspec/features/folded/tasks.md")"
+grep -q '^- \[ \] \*\*T2\*\*' "$R/gspec/features/folded/tasks.md" \
+  && ok 'and no other task line was touched' \
+  || bad 'and no other task line was touched' "$(cat "$R/gspec/features/folded/tasks.md")"
+# No scratch left beside the plan (the temp file lands in the feature folder now).
+[ -z "$(ls "$R/gspec/features/folded"/.gspec-check-task.* 2>/dev/null)" ] \
+  && ok 'no temp file stranded in the feature folder' \
+  || bad 'no temp file stranded in the feature folder' "$(ls -a "$R/gspec/features/folded")"
+
+out="$("$ADAPTER" check-task 'folded#T2' "$R" 2>&1)"
+check 'the canonical id form works too'       'gspec/features/folded/tasks.md' "$out"
+
+out="$("$ADAPTER" task-status 'folded-t1,folded-t2' "$R" 2>&1)"
+check 'task-status reads the folder plan'     'folded-t1	finished' "$out"
+check 'and the second, now also flipped'      'folded-t2	finished' "$out"
+
+# The path-escape refusal is LOAD-BEARING in this layout, not belt-and-braces:
+# the slug is interpolated into a DIRECTORY name, so `../../etc` would resolve a
+# plan path outside gspec/ entirely -- and check-task WRITES.
+out="$("$ADAPTER" check-task 'a/b#T1' "$R" 2>&1)"; rc=$?
+check 'a path-separator slug is still refused' 'path separator' "$out"
+# A refusal is a genuine USAGE error, not one of the "gspec is optional" exit-0
+# outcomes: the caller passed something the adapter must never resolve, and both
+# check-task and task-status `die` on it. Silently exiting 0 here would let a
+# loop treat an escaped write as a no-op flip.
+[ "$rc" -ne 0 ] && ok 'and refusing is a non-zero usage error, matching task-status' \
+  || bad 'refusal exit code' "rc=$rc"
+out="$("$ADAPTER" check-task '../../etc#T1' "$R" 2>&1)"
+check 'a .. component is refused too'          "'..'" "$out"
+
+# files-status keys the sidecar by <feature>#<id>. With the slug taken from the
+# basename this produced `tasks#T1` for every feature at once, so a correct
+# sidecar entry read as `orphan` -- silent, and it costs parallelism.
+mkdir -p "$R/.agents"
+cat > "$R/.agents/task-files.yaml" <<'EOF'
+tasks:
+  - task: folded#T3
+    files: [src/a.ts]
+    fingerprint: third folder-layout task
+EOF
+cat >> "$R/gspec/features/folded/tasks.md" <<'EOF'
+- [ ] **T3** **P1** third folder-layout task
+  - deps: —
+EOF
+out="$("$ADAPTER" files-status "$R")"
+check 'files-status matches a folder-layout task' 'ok              folded#T3' "$out"
+refute 'and does not read it as an orphan'        'orphan          folded#T3' "$out"
+
+# =============================================================================
+printf '\n== gspec 3.x: mixed and half-migrated repos ==\n'
+# A consumer repo migrates on ITS schedule, and /gspec-migrate moves feature by
+# feature -- so both layouts coexisting is a normal intermediate state, not a
+# corrupt one.
+R="$TMPROOT/mixed"; mkdir -p "$R"
+mk_prd_v2 "$R" migrated 0 1
+mk_plan_v2 "$R" migrated <<'EOF'
+- [ ] **T1** **P1** task in the new layout
+  - deps: —
+EOF
+mk_prd "$R" untouched 0 1
+mk_plan "$R" untouched <<'EOF'
+- [ ] **T1** **P1** task in the old layout
+  - deps: —
+EOF
+out="$("$ADAPTER" features "$R")"
+check 'the migrated feature is listed'    'migrated' "$out"
+check 'and the unmigrated one too'        'untouched' "$out"
+n="$(printf '%s\n' "$out" | grep -c .)"
+[ "$n" = "2" ] && ok 'exactly two features, one per layout' || bad 'exactly two features' "got $n rows: $out"
+out="$("$ADAPTER" check "$R" 2>&1)"
+check 'a mixed-version repo passes the pin' 'CHECK=ok' "$out"
+out="$("$ADAPTER" nodes-all "$R")"
+check 'nodes-all reaches the new layout'  'migrated-t1' "$out"
+check 'and the old one, in the same run'  'untouched-t1' "$out"
+
+# A slug present in BOTH layouts is a half-finished /gspec-migrate: the mover
+# copies nothing, so the newer path is the destination and must win. Two rows
+# here would be two features disagreeing about how done one feature is.
+R="$TMPROOT/halfmoved"; mkdir -p "$R"
+mk_prd "$R" both 0 1          # flat: one capability OPEN
+mk_plan "$R" both <<'EOF'
+- [ ] **T1** **P1** the stale flat copy
+  - deps: —
+EOF
+mk_prd_v2 "$R" both 1 0       # folder: fully done -- the migrated truth
+mk_plan_v2 "$R" both <<'EOF'
+- [x] **T1** **P1** the migrated copy
+  - deps: —
+EOF
+out="$("$ADAPTER" features "$R")"
+n="$(printf '%s\n' "$out" | grep -c .)"
+[ "$n" = "1" ] && ok 'a slug in both layouts yields ONE feature row' || bad 'one feature row' "got $n rows: $out"
+check 'and the folder PRD is the one read (done=1)' 'both	9999	1' "$out"
+out="$("$ADAPTER" nodes both "$R")"
+[ -z "$out" ] && ok 'the folder plan wins, so its checked task yields no packet' \
+  || bad 'the folder plan wins' "got: $out"
+out="$("$ADAPTER" check-task 'both#T1' "$R" 2>&1)"
+check 'check-task writes to the folder plan, never the stale flat one' 'gspec/features/both/tasks.md' "$out"
+grep -q 'the stale flat copy' "$R/gspec/tasks/both.md" \
+  && ok 'the shadowed flat plan is left byte-untouched' \
+  || bad 'the shadowed flat plan is left untouched' "$(cat "$R/gspec/tasks/both.md")"
 
 # =============================================================================
 printf '\n----------------------------------------\n'

@@ -143,6 +143,17 @@ floor is a fight this plugin would lose loudly and intermittently.
      them, and say plainly that until then each feature folder is simply incomplete
      — nothing breaks, and the loop does not need them. A feature with no UI
      correctly gets no `design.html` at all.
+   - **It cannot make plans v2-conformant, and must not try.** The v2 plan bar
+     adds one required field to a task — an `arch:` line naming anchors in the
+     feature's `arch.md`. Migration never writes `arch.md`, so those anchors do
+     not exist yet, and gspec's own `plan-lint` floor rejects an `arch:` whose
+     anchor does not resolve. If the migrator offers to add placeholder `arch:`
+     lines (its brief tells it to add placeholders "where the current format
+     requires them"), decline: it produces files gspec itself then refuses. The
+     order is migrate → `/gspec-architect` → `/gspec-plan`, and only the last
+     step can honestly add `arch:`. Say this plainly in the report, because
+     "migrated" and "v2-conformant" are not the same state and a reader will
+     assume they are.
    - **It reports architecture altitude and stops there.** If `architecture.md` still
      carries entity field lists or endpoint signatures, that content now belongs to
      the feature that introduces it — but splitting it rewrites specs the user has

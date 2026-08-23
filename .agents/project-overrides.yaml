@@ -42,8 +42,13 @@ allowed_paths:
     - "CLAUDE.md"
     - "CONTRIBUTING.md"
   specs:
+    # gspec 3.x keeps a feature's whole folder under here — prd.md, tasks.md, and
+    # arch.md / design.html where they exist — so this one glob now covers what
+    # `gspec/tasks/**` used to. That entry is gone rather than kept: nothing in
+    # this repo is in the flat layout any more, and an allow-path for a directory
+    # that no longer exists is the kind of line nobody removes later because
+    # nobody remembers what it was for.
     - "gspec/features/**"
-    - "gspec/tasks/**"
     - ".agents/roadmap.yaml"
     - ".agents/task-files.yaml"
 
@@ -65,7 +70,7 @@ model_routing: {}
 escalate_to_human_on:
   - "any change that weakens hooks/guard.sh — removing or narrowing a pattern, or widening a fast-path"
   - "changing the ADR 0012 relay crossover, the ADR 0020 gspec pin, or the run-state schema version"
-  - "editing gspec/tasks/run-metrics.md — a retro-spec of shipped work whose tasks are all checked"
+  - "editing gspec/features/run-metrics/tasks.md — a retro-spec of shipped work whose tasks are all checked"
   - "deleting or rewriting an accepted ADR, as opposed to superseding it"
 
 # No ceiling. This repo runs at full-autonomy deliberately (.agents/autonomy) and

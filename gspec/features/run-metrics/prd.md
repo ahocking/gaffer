@@ -1,5 +1,5 @@
 ---
-spec-version: v1
+spec-version: v2
 ---
 
 # Feature: run-metrics
@@ -9,7 +9,7 @@ at a granularity that supports ranked optimization advice rather than a total.
 
 **Status: shipped (ADR 0019, v1 → v3.4).** This PRD is a RETRO-SPEC — it was
 written after the fact to give the collector a completion record, because the
-implementation history had accumulated in [ADR 0019](../../docs/adr/0019-run-metrics-observability.md)
+implementation history had accumulated in [ADR 0019](../../../docs/adr/0019-run-metrics-observability.md)
 (866 lines) and `CLAUDE.md` as five stacked `v3.x` revision sections with no
 status field anywhere. Every capability below is checked because it is in the
 tree and covered by `scripts/test-metrics.sh`.

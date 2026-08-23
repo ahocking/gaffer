@@ -1,5 +1,5 @@
 ---
-spec-version: v1
+spec-version: v2
 feature: run-metrics
 ---
 
@@ -10,7 +10,7 @@ plan contributes no backlog nodes — it exists as the implementation record tha
 was previously spread across five `v3.x` revision sections with no status field.
 
 Tasks are grouped by the shipped increment that introduced them. `covers:` names
-the capability in `gspec/features/run-metrics.md`; `deps:` records the real build
+the capability in `gspec/features/run-metrics/prd.md`; `deps:` records the real build
 order. Do not regenerate this file with `/gspec-plan` — regeneration re-decomposes
 work, and every task here is checked and immutable.
 

@@ -62,6 +62,15 @@
 #                            unblocked-and-incomplete-and-not-deferred) or
 #                            NEXT=none, plus REASON= distinguishing blocked from
 #                            deferred from complete.
+#   plans [root]             TSV, one plan file per line, sorted by slug:
+#                              <slug>\t<relpath>\t<layout>
+#                            layout is `3.x` | `2.x` | `pre-2.0` (see LAYOUTS).
+#                            Exists so /gaffer:migrate can report and verify which
+#                            layout a repo is in WITHOUT globbing gspec/ itself —
+#                            migrate.sh's standing rule is that every gspec read
+#                            goes through this adapter, and a layout census is a
+#                            gspec read like any other. Prints nothing when there
+#                            is no gspec project (D4).
 #   nodes <slug> [root]      emit packet-graph NODES TSV for one feature's UNCHECKED
 #                            tasks (feed to `packet-graph.sh build`).
 #   nodes-all [root]         the same for every incomplete, unblocked feature.
@@ -557,6 +566,26 @@ cmd_next() {
   fi
   [ -f "$root/.agents/roadmap.yaml" ] || \
     printf 'NOTE=no .agents/roadmap.yaml — ordering fell back to dependency then slug (ADR 0020 D2)\n'
+}
+
+# --- plans: the layout census (/gaffer:migrate reads this) -------------------
+# Reports WHERE each plan is, never moves one. The move is /gspec-migrate's --
+# gspec owns spec format and layout; this plugin owns execution (ADR 0020).
+
+cmd_plans() {
+  local root; root="$(_root "${1:-}")"
+  _has_gspec "$root" || return 0
+  local p slug rel layout
+  while IFS=$'\t' read -r p slug; do
+    [ -n "$p" ] || continue
+    rel="${p#"$root"/}"
+    case "$rel" in
+      gspec/features/*/tasks.md) layout='3.x' ;;
+      gspec/tasks/*.md)          layout='2.x' ;;
+      *)                         layout='pre-2.0' ;;
+    esac
+    printf '%s\t%s\t%s\n' "$slug" "$rel" "$layout"
+  done < <(_plan_paths "$root") | sort -t"$(printf '\t')" -k1,1
 }
 
 # --- nodes: gspec tasks -> packet-graph NODES TSV ----------------------------
@@ -1123,11 +1152,12 @@ case "${1:-}" in
   check)     shift; cmd_check "$@" ;;
   features)  shift; cmd_features "$@" ;;
   next)      shift; cmd_next "$@" ;;
+  plans)     shift; cmd_plans "$@" ;;
   nodes)     shift; cmd_nodes "$@" ;;
   nodes-all) shift; cmd_nodes_all "$@" ;;
   interlock) shift; cmd_interlock "$@" ;;
   files-status) shift; cmd_files_status "$@" ;;
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
 esac

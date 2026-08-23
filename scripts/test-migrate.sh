@@ -187,9 +187,14 @@ has 'finds the write-backup ignore gap' 'FINDING=writebackup-ignore' "$out"
 [ "$rc" = 2 ] && ok 'detect exits 2 when migration is needed' || bad 'detect exit 2' "rc=$rc"
 
 printf '\n== detect: a current repo is left alone ==\n'
-R="$TMP/current"; mkdir -p "$R/gspec/tasks" "$R/gspec/features" "$R/.agents"
-printf -- '---\nspec-version: v1\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a.md"
-printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+# "Current" means the gspec 3.x feature-folder layout at spec-version v2. This
+# fixture was a 2.x repo and had to change with the pin: a repo that would now
+# correctly report the gspec-v2-layout finding is not the right fixture for
+# "nothing to do", and leaving it would have made every future assertion in this
+# section pass against a repo the script has something to say about.
+R="$TMP/current"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
 printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
@@ -197,6 +202,71 @@ has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
 out="$("$MIG" plan "$R" 2>&1)"
 has 'plan says there is nothing to do' 'Nothing to do' "$out"
+out="$("$MIG" verify "$R" 2>&1)"
+has 'verify says the layout is current' 'every plan is in the gspec 3.x feature-folder layout' "$out"
+has 'and the backlog still yields a packet' '1 plan file(s) -> 1 unchecked packet(s)' "$out"
+
+# =============================================================================
+printf '\n== detect: the gspec 3.x layout is REPORTED, never applied ==\n'
+# The decision this pins: /gaffer:migrate detects the pre-3.x layout and names
+# /gspec-migrate; it does not move the files. gspec owns spec format and layout
+# (ADR 0020), and the move needs link repair and per-file reformatting that a
+# shell script cannot do. A future edit that "helpfully" adds the move here
+# should fail this case rather than pass quietly.
+R="$TMP/v2layout"; mkdir -p "$R/gspec/tasks" "$R/gspec/features" "$R/.agents"
+printf -- '---\nspec-version: v1\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a.md"
+printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'the pre-3.x layout is a finding'  'FINDING=gspec-v2-layout' "$out"
+has 'it names the destination layout'  'gspec/features/<slug>/' "$out"
+has 'it names the remedy'              '/gspec-migrate' "$out"
+has 'and says this script will not do it' 'deliberately does not do' "$out"
+# Worded as "your gspec commands moved on", NOT as breakage: the adapter reads
+# every layout, so an unmigrated repo's loop works fine and saying otherwise
+# would be false.
+has 'the reason given is /gspec-plan divergence, not loop breakage' 'WRITES to the new one' "$out"
+
+out="$("$MIG" apply "$R" --force 2>&1)"
+[ -f "$R/gspec/tasks/a.md" ] && ok 'apply leaves the pre-3.x plan exactly where it is' \
+  || bad 'apply must not relocate to the feature folder' "$(find "$R/gspec" -type f)"
+[ ! -e "$R/gspec/features/a/tasks.md" ] && ok 'and creates no feature folder' \
+  || bad 'apply created a feature folder' "$(find "$R/gspec" -type f)"
+[ -f "$R/gspec/features/a.md" ] && ok 'and leaves the flat PRD in place' \
+  || bad 'apply moved the PRD' "$(find "$R/gspec" -type f)"
+out="$("$MIG" verify "$R" 2>&1)"; rc=$?
+has 'verify reports the split layout'  'still pre-3.x' "$out"
+# Informational, not a failure: nothing is wrong with this repo.
+has 'and still goes green'             'VERIFY=ok' "$out"
+[ "$rc" = 0 ] && ok 'verify exits 0 on a readable pre-3.x repo' || bad 'verify exit 0' "rc=$rc"
+
+# =============================================================================
+printf '\n== detect: a HALF-moved feature is its own finding ==\n'
+# The shape /gspec-migrate leaves if it is interrupted. Both directions matter,
+# and the first is the dangerous one: completion is DERIVED from the PRD, so a
+# folder with a plan and no PRD can never read as done, and everything depending
+# on that feature stays blocked forever.
+R="$TMP/halfmoved"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'a plan with no PRD is flagged'    'FINDING=half-moved' "$out"
+has 'and names the file that is missing' 'no prd.md' "$out"
+has 'and says why it is not cosmetic'  'can never read as done' "$out"
+
+# The reverse: PRD moved, plan did not. Harmless today, but the next /gspec-plan
+# writes to the folder and the repo ends up with two plans for one feature.
+R="$TMP/halfmoved2"; mkdir -p "$R/gspec/features/a" "$R/gspec/tasks" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'a stranded plan is flagged'       'FINDING=half-moved' "$out"
+has 'and names both halves'            'gspec/tasks/a.md' "$out"
+has 'and says nothing is broken yet'   'nothing breaks' "$out"
 
 printf '\n== apply refuses to run on a dirty tree ==\n'
 R="$TMP/dirty"; mk_repo "$R" legacy-a
@@ -241,7 +311,12 @@ printf '\n== apply: frontmatter is stamped only where missing ==\n'
 R="$TMP/fm"; mk_repo "$R" legacy-a
 out="$("$MIG" apply "$R" 2>&1)"
 has 'stamping is reported'       'STAMPED=1' "$out"
-has 'spec-version is stamped'    'spec-version: v1' "$(head -3 "$R/gspec/tasks/alpha.md")"
+# The NEWEST supported version, not the first. GSPEC_SPEC_VERSIONS is a READ
+# set ("v1 v2") and taking $1 from it stamped v1 the moment the pin widened --
+# producing a file gspec's own spec-integrity floor (which demands v2)
+# immediately flags. A file with no marker is being written now, so it is
+# written current.
+has 'spec-version is stamped current' 'spec-version: v2' "$(head -3 "$R/gspec/tasks/alpha.md")"
 has 'feature slug is stamped'    'feature: alpha' "$(head -4 "$R/gspec/tasks/alpha.md")"
 has 'the version pin now passes' 'specs pass the gspec version pin' "$out"
 

@@ -15,6 +15,16 @@
 # (0 packets from a pure rename) before the adapter learned their legacy task
 # shapes. So `apply` always ends by counting real packets, and says so.
 #
+# gspec 3.x's move into gspec/features/<slug>/ is the SAME move with the same
+# failure mode one directory deeper, and this script does not perform it -- which
+# makes verifying it MORE important, not less. A migration run by an agent
+# through /gspec-migrate can half-finish: a feature whose PRD moved but whose
+# plan did not, a `git mv` that hit a name collision, a folder created with only
+# an arch.md in it. Every one of those still leaves a repo that looks migrated
+# and reports nothing to do. `verify` therefore reads the layout census from the
+# adapter (`gspec-backlog.sh plans`) rather than globbing gspec/ here -- one
+# place knows where a plan lives, and it is not this file.
+#
 # Subcommands:
 #   detect  [root]   what version/shape is this repo in? Prints FROM=<state> plus
 #                    one FINDING= line per thing that needs doing. Read-only.
@@ -34,6 +44,18 @@
 #                    are order-independent within one pass.
 #
 # WHAT IT WILL NOT DO (the skill's job, with a human):
+#   - relocate a feature into gspec 3.x's gspec/features/<slug>/ folder. That is
+#     /gspec-migrate's move, and delegating it is a decision, not an omission
+#     (ADR 0020: gspec owns spec FORMAT and layout, this plugin owns execution).
+#     Three things make it the wrong move to reimplement here. It must repair the
+#     relative links the relocation breaks -- in BOTH directions, including
+#     inbound links from specs that did not move -- which is a judgment a glob
+#     cannot make. It must reformat each file to the v2 body, which gspec does
+#     per-file through its own spec-migrator agent. And it edits files gspec's
+#     task-immutability floor is watching, so a shell `mv` racing that floor is a
+#     fight this script would lose loudly and intermittently. What this script
+#     owns instead is the half /gspec-migrate cannot do: DETECT the layout, and
+#     VERIFY afterwards that packets still come out (see below).
 #   - convert legacy task lines to canonical form. That edits CHECKED tasks,
 #     which gspec's task-immutability floor blocks and which destroys the record
 #     of what was built. Regeneration via /gspec-plan is the supported path.
@@ -494,7 +516,7 @@ _findings() {
   # 1. Plans still beside the PRD (pre-2.0 / gspec v1 location).
   local plans; plans="$(ls "$root"/gspec/features/*.plan.md 2>/dev/null | wc -l | tr -d ' ')"
   if [ "$plans" != "0" ]; then
-    printf 'FINDING=plans\t%s plan file(s) at gspec/features/*.plan.md\tgspec 2.x writes gspec/tasks/<slug>.md; the loop reads that path\n' "$plans"
+    printf 'FINDING=plans\t%s plan file(s) at gspec/features/*.plan.md\tthe pre-2.0 location; apply moves them to gspec/tasks/<slug>.md, and /gspec-migrate then relocates those into gspec/features/<slug>/tasks.md\n' "$plans"
     n=$((n+1))
   fi
 
@@ -527,6 +549,44 @@ _findings() {
   if [ "$legacy" != "0" ]; then
     printf 'FINDING=legacy-tasks\t%s plan file(s) use a pre-2.0 task-line shape\tthe adapter reads them, but ids/deps/covers are non-canonical; regenerate with /gspec-plan when convenient\n' "$legacy"
     n=$((n+1))
+  fi
+
+  # 5b. The gspec 3.x feature-folder layout (ADR 0020 D3). REPORTED, never
+  #     applied -- see WHAT IT WILL NOT DO above. The adapter reads every layout,
+  #     so this is not breakage and must not be worded as breakage: an unmigrated
+  #     repo runs the loop perfectly well. What it is, is a repo whose gspec
+  #     commands have moved on without it -- /gspec-plan at 3.x writes to the
+  #     folder, so the next replan silently strands the old plan beside the new
+  #     one, and THAT is the reason to migrate rather than any loop failure.
+  #
+  #     The census comes from the adapter, never a glob here (migrate.sh's
+  #     standing rule: every gspec read goes through gspec-backlog.sh).
+  if [ -d "$root/gspec" ]; then
+    local census old3 pinned3
+    census="$("$ADAPTER" plans "$root" 2>/dev/null || true)"
+    old3="$(printf '%s\n' "$census" | awk -F'\t' '$3!="" && $3!="3.x"' | grep -c . || true)"; old3="${old3:-0}"
+    pinned3="$("$ADAPTER" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+    if [ "$old3" != "0" ]; then
+      printf 'FINDING=gspec-v2-layout\t%s feature(s) still in a pre-3.x gspec layout\tgspec %s keeps a feature in gspec/features/<slug>/ (prd.md + tasks.md); the loop reads the old paths fine, but /gspec-plan now WRITES to the new one -- run /gspec-migrate, which this script deliberately does not do for you\n' \
+        "$old3" "${pinned3:-3.x}"
+      n=$((n+1))
+    fi
+    # A feature folder holding a plan but no PRD (or the reverse) is the shape a
+    # half-finished relocation leaves, and it is worth its own line because it
+    # reads as "migrated" to a human skimming the tree.
+    local halfmoved=0 d fslug
+    for d in "$root"/gspec/features/*/; do
+      [ -d "$d" ] || continue
+      fslug="$(basename "$d")"
+      if [ -f "$d/tasks.md" ] && [ ! -f "$d/prd.md" ]; then
+        printf 'FINDING=half-moved\tgspec/features/%s/ has tasks.md but no prd.md\tthe plan relocated and the PRD did not; completion is DERIVED from the PRD, so this feature can never read as done and everything depending on it stays blocked\n' "$fslug"
+        halfmoved=$((halfmoved+1))
+      elif [ -f "$d/prd.md" ] && [ -f "$root/gspec/tasks/$fslug.md" ]; then
+        printf 'FINDING=half-moved\tgspec/features/%s/prd.md moved but its plan is still at gspec/tasks/%s.md\tthe adapter reads the plan where it is, so nothing breaks -- but the next /gspec-plan writes to the folder and you get two plans for one feature\n' "$fslug" "$fslug"
+        halfmoved=$((halfmoved+1))
+      fi
+    done
+    [ "$halfmoved" = "0" ] || n=$((n+halfmoved))
   fi
 
   # 6. Missing pause sentinel ignores (ADR 0017).
@@ -776,15 +836,23 @@ cmd_apply() {
   # 1b. give migrated plans the frontmatter the version pin requires
   if ls "$root"/gspec/tasks/*.md >/dev/null 2>&1; then
     local ver stamped=0 g base slug
-    ver="$("$ADAPTER" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p' | awk '{print $1}')"
+    # The NEWEST supported version, not the first. GSPEC_SPEC_VERSIONS is an
+    # ascending list ("v1 v2") because the adapter READS every version it names --
+    # but a file being stamped here has no marker at all, so it is being written
+    # now and must be written current. Taking $1 stamped v1 the moment the pin
+    # widened, and gspec's own spec-integrity floor demands v2: the migration
+    # would have produced files that gspec immediately flags. Widening a read set
+    # is not the same as changing what to write, and this is the line where the
+    # two get confused.
+    ver="$("$ADAPTER" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p' | awk '{print $NF}')"
     for g in "$root"/gspec/tasks/*.md; do
       base="$(basename "$g")"; slug="${base%.md}"
-      if _ensure_frontmatter "$g" "$slug" "${ver:-v1}"; then
+      if _ensure_frontmatter "$g" "$slug" "${ver:-v2}"; then
         stamped=$((stamped+1))
       fi
     done
     if [ "$stamped" != "0" ]; then
-      printf 'STAMPED=%s plan file(s) given spec-version %s + feature frontmatter\n' "$stamped" "${ver:-v1}"
+      printf 'STAMPED=%s plan file(s) given spec-version %s + feature frontmatter\n' "$stamped" "${ver:-v2}"
       did=1
     fi
   fi
@@ -883,10 +951,25 @@ cmd_verify() {
     fi
 
     # THE check that matters: does the backlog actually parse to packets?
-    local plans packets
-    plans="$(ls "$root"/gspec/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
+    # The plan count comes from the adapter's layout census, so a repo mid-way
+    # through /gspec-migrate is counted correctly instead of reading as zero
+    # plans -- which would make the zero-packet alarm below fire on the wrong
+    # cause, or not fire at all.
+    local census plans packets l3 lold
+    census="$("$ADAPTER" plans "$root" 2>/dev/null || true)"
+    plans="$(printf '%s\n' "$census" | grep -c . || true)"; plans="${plans:-0}"
+    l3="$(printf '%s\n' "$census"   | awk -F'\t' '$3=="3.x"' | grep -c . || true)"; l3="${l3:-0}"
+    lold="$(printf '%s\n' "$census" | awk -F'\t' '$3!="" && $3!="3.x"' | grep -c . || true)"; lold="${lold:-0}"
     packets="$("$ADAPTER" nodes-all "$root" 2>/dev/null | grep -c . || true)"; packets="${packets:-0}"
     printf '  · %s plan file(s) -> %s unchecked packet(s)\n' "$plans" "$packets"
+    if [ "$lold" != "0" ]; then
+      # Informational, NOT a problem: the adapter reads every layout, so this
+      # repo's loop works. Counting it as a failure would make `verify` refuse to
+      # go green on a repo with nothing wrong with it.
+      printf '  · gspec layout: %s feature(s) on 3.x, %s still pre-3.x (run /gspec-migrate; the loop reads both)\n' "$l3" "$lold"
+    elif [ "$plans" != "0" ]; then
+      printf '  ✓ every plan is in the gspec 3.x feature-folder layout\n'
+    fi
     if [ "$plans" != "0" ] && [ "$packets" = "0" ]; then
       printf '  ✗ plans exist but produce ZERO packets — the backlog would read as "nothing to do".\n'
       printf '    This is the failure the migration exists to catch. Inspect a plan file: its task\n'

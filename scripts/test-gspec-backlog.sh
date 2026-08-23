@@ -1179,6 +1179,46 @@ check 'files-status matches a folder-layout task' 'ok              folded#T3' "$
 refute 'and does not read it as an orphan'        'orphan          folded#T3' "$out"
 
 # =============================================================================
+printf '\n== plans: the layout census /gaffer:migrate reads ==\n'
+# migrate.sh must never glob gspec/ itself -- every gspec read goes through this
+# adapter, which is the rule that kept the 3.x layout to one seam instead of a
+# sweep. `plans` is what makes that rule affordable for a layout report.
+R="$TMPROOT/census"; mkdir -p "$R"
+mk_prd_v2 "$R" newone 0 1
+mk_plan_v2 "$R" newone <<'EOF'
+- [ ] **T1** **P1** x
+EOF
+mk_prd "$R" oldone 0 1
+mk_plan "$R" oldone <<'EOF'
+- [ ] **T1** **P1** x
+EOF
+mk_prd "$R" ancient 0 1
+mkdir -p "$R/gspec/features"
+cat > "$R/gspec/features/ancient.plan.md" <<'EOF'
+---
+spec-version: v1
+feature: ancient
+---
+- [ ] **T1** **P1** x
+EOF
+out="$("$ADAPTER" plans "$R")"
+check 'the 3.x layout is labelled'      'newone	gspec/features/newone/tasks.md	3.x' "$out"
+check 'the 2.x layout is labelled'      'oldone	gspec/tasks/oldone.md	2.x' "$out"
+check 'the pre-2.0 layout is labelled'  'ancient	gspec/features/ancient.plan.md	pre-2.0' "$out"
+n="$(printf '%s\n' "$out" | grep -c .)"
+[ "$n" = "3" ] && ok 'one row per plan file' || bad 'one row per plan file' "got $n: $out"
+# Sorted by slug, so a report reads stably run to run rather than in glob order.
+[ "$(printf '%s\n' "$out" | head -1 | cut -f1)" = "ancient" ] \
+  && ok 'sorted by slug' || bad 'sorted by slug' "$out"
+
+# gspec is OPTIONAL (D4): no gspec project means no output and a clean exit, not
+# an error -- migrate.sh calls this unconditionally on any repo.
+R="$TMPROOT/census-none"; mkdir -p "$R"
+out="$("$ADAPTER" plans "$R")"; rc=$?
+[ -z "$out" ] && ok 'no gspec project prints nothing' || bad 'no gspec project prints nothing' "got: $out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 (gspec is optional)' || bad 'plans exit 0 without gspec' "rc=$rc"
+
+# =============================================================================
 printf '\n== gspec 3.x: mixed and half-migrated repos ==\n'
 # A consumer repo migrates on ITS schedule, and /gspec-migrate moves feature by
 # feature -- so both layouts coexisting is a normal intermediate state, not a

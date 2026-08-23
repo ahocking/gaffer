@@ -1,5 +1,132 @@
 # Changelog
 
+## 2.7.0 — 2026-08-23
+
+gspec 3.1.1: the adapter learns gspec's new feature-folder layout, the pin moves
+from 2.7.0, and `/gaffer:migrate` gains the detection and verification for taking
+a consumer repo across. Backward compatible, and — unusually for a layout change
+— **nothing is required of an existing repo** (see Upgrading).
+
+### Upgrading — nothing required, and that is the design
+
+Upgrade gaffer and keep working. The adapter reads **all three** gspec layouts,
+so a repo still on gspec 2.x drives the loop exactly as it did before. There is
+no flag day and no manual step.
+
+Migrating your specs to gspec 3.1.1 is a **separate, optional** decision, and the
+reason to make it is not breakage: `/gspec-plan` at 3.x *writes* to the new
+location, so the next replan of any feature quietly leaves a second plan beside
+the old one. The full sequence, its hazards, and the two checks that tell a
+broken migration from a finished backlog are in
+[docs/gspec-3.1.1-migration.md](docs/gspec-3.1.1-migration.md).
+
+`/gaffer:migrate detect` reports an unmigrated repo as `FINDING=gspec-v2-layout`.
+That is informational. `apply` does **not** relocate anything — the move belongs
+to gspec's own `/gspec-migrate` (see below).
+
+One thing to know before you migrate, because the order is not recoverable for
+free: **install gspec 3.1.1 before running `/gspec-migrate`.** A repo still on the
+old gspec has the *old* `/gspec-migrate` in `.claude/commands/`, and that version
+migrates *toward* `gspec/tasks/` — the layout you are leaving — reporting success
+as it does.
+
+New repos from `/gaffer:new-project` get gspec 3.1.1.
+
+### The adapter reads three layouts, behind one seam (ADR 0020 D3)
+
+gspec 3.0 moved everything about a feature into one folder. The adapter now
+resolves all three shapes it has ever shipped:
+
+| layout | PRD | plan |
+| --- | --- | --- |
+| 3.x (`spec-version: v2`) | `gspec/features/<slug>/prd.md` | `gspec/features/<slug>/tasks.md` |
+| 2.x (`v1`) | `gspec/features/<slug>.md` | `gspec/tasks/<slug>.md` |
+| pre-2.0 | `gspec/features/<slug>.md` | `gspec/features/<slug>.plan.md` |
+
+- Every gspec path is now built in **one of four functions** —
+  `_prd_paths` / `_plan_paths` / `_resolve_prd_path` / `_resolve_plan_path` —
+  rather than in nine inline expressions. A fourth layout is an edit to those.
+- The newer layout **shadows** the older for a given slug: `/gspec-migrate` moves
+  rather than copies, so a slug present in both is a half-finished migration and
+  the destination is the truth.
+- `arch.md` and `design.html` are **outside the consumed contract**. They say what
+  to build, which is gspec's half of the seam, so `next` surfaces their paths
+  (`ARCH=` / `DESIGN=`) for an implementer's brief and the adapter never parses
+  them.
+- New `gspec-backlog.sh plans` prints the layout census —
+  `<slug> <path> <layout> <task-lines-read> <unchecked>`.
+
+**The artifact pin accepts `v1` and `v2`, not `v2` alone.** Narrowing it would make
+`check` return rc=3 — stopping the loop — on a repo whose backlog the adapter
+reads perfectly well. The pin exists to catch a format the code *cannot parse*; it
+is not a lever for nagging a repo into migrating.
+
+### `/gaffer:migrate` detects and sequences the relocation; it does not perform it
+
+The move stays gspec's (ADR 0020: gspec owns spec format and layout, this plugin
+owns execution), for three reasons each sufficient on its own — it must repair the
+relative links the relocation breaks in *both* directions, it must reformat each
+file through gspec's own `spec-migrator`, and it edits files gspec's
+`task-immutability` floor is watching, so a shell `mv` racing that floor loses
+intermittently.
+
+What this plugin owns is the half gspec cannot do:
+
+- **`FINDING=gspec-v2-layout`** — deliberately *not* worded as breakage.
+- **`FINDING=plan-without-prd`** and **`FINDING=half-moved`**, split apart after a
+  false positive on a live repo. A folder with `tasks.md` and no `prd.md` is
+  equally an interrupted migration *and* a deliberate infra plan that was never a
+  product capability; the finding states the observable fact and offers both
+  readings rather than asserting a cause it cannot see.
+- **`verify` reports the layout** and stays green through a mixed repo — a
+  half-migrated repo is a normal intermediate state, not a fault.
+
+### `verify` can tell a finished backlog from an unreadable one
+
+The old check was `plans > 0 && packets == 0`, which cannot separate "nothing can
+parse this" from "everything here is done". Both yield zero packets, so the alarm
+fired hardest on the repos that had done the most work — and it fired on this
+one, over five correctly-relocated plans holding 66 checked task lines.
+
+`verify` now reports **task lines read**, counted with the same pattern the node
+builder uses, and reserves the failure for `read == 0`:
+
+```
+· 24 plan file(s), 514 task line(s) read -> 28 unchecked packet(s)
+```
+
+### Also
+
+- **`migrate.sh apply` stamped the wrong `spec-version`.** It took the *first*
+  entry of the supported set, which became `v1` the moment the pin widened to
+  `v1 v2` — producing files gspec's own `spec-integrity` floor immediately flags.
+  It now takes the newest. Widening a *read* set is not the same as changing what
+  to *write*.
+- **`test-runstate.sh`'s SIGPIPE flake is closed at the class.** Assertions are
+  evaluated with `pipefail` off, so a producer's `rc=141` — taken when `grep -q`
+  exits on first match and closes the pipe — can no longer be reported as the
+  pipeline's status. 43 assertions had that shape; fixing only the one that fired
+  would have left 42 loaded, and CI runs the loaded condition.
+- **The consumer overlay describes the new layout.** `templates/spec-driven-base/`
+  is what `/gaffer:new-project` lays down, and it still named `gspec/tasks/` — a
+  repo bootstrapped on 3.1.1 would have received an operating brief pointing at a
+  directory gspec no longer writes.
+- Loop prompts now take the plan path from the adapter's own `PLAN=` / `FILE=`
+  output instead of hardcoding one. A prompt that hardcodes a path is a ninth call
+  site by another name.
+
+### Verification
+
+Three repos migrated end to end on clones — this plugin's own backlog plus two
+real consumer repos, 43 PRDs and 37 plans. All three produced **byte-identical
+packet nodes and feature tables** before and after, and introduced **zero** broken
+links. Sweeps: `gspec-backlog` 257, `migrate` 246, ten suites green.
+
+Two paths are **not** yet exercised and are recorded as such rather than omitted:
+`/gspec-migrate` itself (all three relocations were scripted, following its
+documented flow) and the `deployable:` → `module:` rename (no repo to hand had a
+Deployables section).
+
 ## 2.6.0 — 2026-08-11
 
 Two features: the run-state cleanup (ADR 0024 + ADR 0025) and the write-path

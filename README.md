@@ -440,6 +440,10 @@ still on the old gspec has the *old* `/gspec-migrate` in `.claude/commands/`, an
 migrates toward the layout you are trying to leave — reporting success as it does.
 `/gaffer:migrate` sequences this for you and verifies packets still come out.
 
+The full sequence, with the hazards and the two checks that tell a broken
+migration from a finished backlog, is
+**[docs/gspec-3.1.1-migration.md](docs/gspec-3.1.1-migration.md)**.
+
 Try it out inside the session:
 
 - Skills are **namespaced by plugin**: `/gaffer:new-project`,

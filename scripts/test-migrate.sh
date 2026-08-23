@@ -1082,6 +1082,47 @@ hasnt 'and never reads dead from prose alone (a substring match would say dead)'
 has   'a packet with a REAL trailer commit still reads dead (the anchor still matches the real thing)' \
   'ENTRY=f-real PACKETS=yes VERDICT=dead' "$out"
 
+# =============================================================================
+printf '\n== the runbook must not drift from the pin ==\n'
+# docs/gspec-<version>-migration.md is the HUMAN sequence; skills/migrate/SKILL.md
+# is what the agent runs. Two documents by design -- different readers, different
+# jobs -- but they share exactly one hard fact, the pinned gspec version, and a
+# runbook naming a stale version is worse than no runbook: it gets followed.
+#
+# This is the only mechanical tie between them, and deliberately so. The rest of
+# the runbook is prose no test can judge; the version is a literal, so a pin bump
+# that forgets this file fails here instead of rotting until someone runs an old
+# `npx gspec@...` from it.
+RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null | head -1)"
+PINNED="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+SPECVERS="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p')"
+if [ -n "$RB" ] && [ -f "$RB" ]; then
+  ok 'the migration runbook exists'
+  RB_TXT="$(cat "$RB")"
+  # Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
+  # on failure, and the got value here is a 200-line document. Three of those in
+  # a CI log buries the one line that says what is wrong.
+  rb_has() { # rb_has <name> <literal>
+    case "$RB_TXT" in *"$2"*) ok "$1" ;;
+      *) bad "$1" "runbook does not contain: $2   ($RB)" ;; esac
+  }
+  rb_has 'it names the pinned gspec version'       "gspec@$PINNED"
+  rb_has 'and quotes that pin in the check output' "GSPEC_PINNED_VERSION=$PINNED"
+  rb_has 'and the supported spec-version set'      "GSPEC_SPEC_VERSIONS=$SPECVERS"
+  # Its filename carries the version, so a bump must rename it -- otherwise a
+  # file called ...-3.1.1-... describes 3.2 and every link to it lies.
+  case "$RB" in *"$PINNED"*) ok 'the runbook filename matches the pin' ;;
+    *) bad 'the runbook filename matches the pin' "no $PINNED in: $RB" ;; esac
+  # The install-before-migrate order is the one instruction whose loss silently
+  # costs a second migration, so pin it by CONTENT, not just by version string.
+  rb_has 'it keeps the install-before-migrate hazard' 'the exact layout you are leaving'
+  # And the check that separates a broken migration from a finished backlog --
+  # the defect this plugin actually shipped once.
+  rb_has 'it tells the reader to read the task-line count' 'task line(s) read'
+else
+  bad 'the migration runbook exists' "no docs/gspec-*-migration.md found"
+fi
+
 printf '\n----------------------------------------\n'
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'migrate: %d passed, %d failed   (no python3+PyYAML on this host — %d parse assertion(s) could not assert; not asserting vacuously)\n' \

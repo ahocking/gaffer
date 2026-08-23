@@ -784,6 +784,15 @@ passing sweeps.
   set, re-run the sweeps, amend ADR 0020. **gspec is optional** — four and a half
   of the five pillars have no spec dependency, so a backlog may equally come from
   run-state or an explicit argument.
+- **The human-facing migration sequence is `docs/gspec-3.1.1-migration.md`**, and
+  it is a SECOND document on purpose: `skills/migrate/SKILL.md` §2b is what an
+  agent runs mid-task, the runbook is what a person follows across sessions and
+  repos. They share exactly one hard fact — the pinned version — and
+  `test-migrate.sh` asserts it in both (including the filename, which carries the
+  version), so a pin bump that forgets the runbook fails the sweep instead of
+  leaving a document that still tells someone to `npx gspec@3.1.1`. Everything
+  else in the runbook is prose no test can judge, which is exactly why the one
+  checkable fact is checked.
 - **The gspec 3.x relocation is `/gspec-migrate`'s move, and `/gaffer:migrate`
   deliberately does NOT do it** (ADR 0020, decided 2026-08-23). It detects the
   layout, sequences the upgrade, and verifies packets still come out the other end

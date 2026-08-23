@@ -571,22 +571,36 @@ _findings() {
         "$old3" "${pinned3:-3.x}"
       n=$((n+1))
     fi
-    # A feature folder holding a plan but no PRD (or the reverse) is the shape a
-    # half-finished relocation leaves, and it is worth its own line because it
-    # reads as "migrated" to a human skimming the tree.
-    local halfmoved=0 d fslug
+    # Two shapes worth naming, and they are NOT the same finding -- conflating
+    # them produced a real false positive, caught on a live consumer repo.
+    #
+    #   plan-without-prd : a folder with tasks.md and no prd.md. The observable
+    #     fact is that the feature contributes no packets and can never read as
+    #     done (completion is DERIVED from the PRD). WHY it is that way is a
+    #     judgement this script cannot make: it is equally an interrupted
+    #     /gspec-migrate and a deliberate infra plan that was never a product
+    #     capability -- one real repo documents exactly that in its roadmap, with
+    #     every task already checked and nothing depending on it. So state the
+    #     fact and both readings. Never assert the PRD "did not relocate", which
+    #     is false whenever the PRD never existed, and never claim dependents are
+    #     blocked without knowing that anything depends on it.
+    #
+    #   half-moved : prd.md is in the folder while its plan is still at the flat
+    #     path. This one IS unambiguous -- both files exist, so one of them moved
+    #     and the other did not.
+    local anomalies=0 d fslug
     for d in "$root"/gspec/features/*/; do
       [ -d "$d" ] || continue
       fslug="$(basename "$d")"
       if [ -f "$d/tasks.md" ] && [ ! -f "$d/prd.md" ]; then
-        printf 'FINDING=half-moved\tgspec/features/%s/ has tasks.md but no prd.md\tthe plan relocated and the PRD did not; completion is DERIVED from the PRD, so this feature can never read as done and everything depending on it stays blocked\n' "$fslug"
-        halfmoved=$((halfmoved+1))
+        printf 'FINDING=plan-without-prd\tgspec/features/%s/ has tasks.md but no prd.md\tcompletion is DERIVED from the PRD, so this feature contributes no packets and can never read as done -- either an interrupted /gspec-migrate (write the PRD, or finish the move) or a deliberate infra plan that is not a product capability (fine as it is; say so in .agents/roadmap.yaml so the next reader does not re-investigate)\n' "$fslug"
+        anomalies=$((anomalies+1))
       elif [ -f "$d/prd.md" ] && [ -f "$root/gspec/tasks/$fslug.md" ]; then
         printf 'FINDING=half-moved\tgspec/features/%s/prd.md moved but its plan is still at gspec/tasks/%s.md\tthe adapter reads the plan where it is, so nothing breaks -- but the next /gspec-plan writes to the folder and you get two plans for one feature\n' "$fslug" "$fslug"
-        halfmoved=$((halfmoved+1))
+        anomalies=$((anomalies+1))
       fi
     done
-    [ "$halfmoved" = "0" ] || n=$((n+halfmoved))
+    [ "$anomalies" = "0" ] || n=$((n+anomalies))
   fi
 
   # 6. Missing pause sentinel ignores (ADR 0017).

@@ -73,11 +73,20 @@ they route to §2b instead of to `apply`:
   `gspec/features/<slug>/tasks.md`, so the next replan of any feature quietly
   strands the old plan beside the new one. That is the reason to migrate — say
   that, not "your backlog is broken".
-- **`FINDING=half-moved`** — a feature relocated only halfway. The direction that
-  matters is a folder with `tasks.md` and no `prd.md`: completion is **derived**
-  from the PRD's capability checkboxes, so that feature can never read as done, and
-  under the dependency rule everything downstream of it stays blocked forever. This
-  one *is* breakage, and it is the shape an interrupted `/gspec-migrate` leaves.
+- **`FINDING=half-moved`** — `prd.md` is in the feature folder while its plan is
+  still at the flat `gspec/tasks/<slug>.md`. Unambiguous, because both files exist:
+  one moved and one did not. Nothing breaks today (the adapter reads the plan where
+  it is), but the next `/gspec-plan` writes to the folder and the repo ends up with
+  two plans for one feature.
+- **`FINDING=plan-without-prd`** — a folder with `tasks.md` and no `prd.md`.
+  Report the **fact** and let the user supply the cause: completion is **derived**
+  from the PRD's capability checkboxes, so that feature contributes no packets and
+  can never read as done. **Do not diagnose this one for them.** It is equally an
+  interrupted `/gspec-migrate` *and* a deliberate infra plan that was never a
+  product capability — one real consumer repo documents exactly that in its
+  `.agents/roadmap.yaml`, with every task already checked and nothing depending on
+  it. Ask which it is; if it is deliberate and undocumented, the useful outcome is
+  a line in the roadmap so the next reader does not re-investigate.
 
 ## 2b. The gspec upgrade — sequence it, don't improvise it
 

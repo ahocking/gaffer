@@ -252,9 +252,20 @@ printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' 
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
 printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"
-has 'a plan with no PRD is flagged'    'FINDING=half-moved' "$out"
+has 'a plan with no PRD is flagged'    'FINDING=plan-without-prd' "$out"
 has 'and names the file that is missing' 'no prd.md' "$out"
 has 'and says why it is not cosmetic'  'can never read as done' "$out"
+# It is a SEPARATE finding from half-moved, and the wording must not assert a
+# cause the script cannot observe. A live consumer repo has a deliberate,
+# roadmap-documented infra plan with no PRD and every task checked; the old
+# wording ("the plan relocated and the PRD did not", "everything depending on it
+# stays blocked") was false on both counts there. State the fact, offer both
+# readings, name neither as the truth.
+hasnt 'it is not reported as half-moved'  'FINDING=half-moved' "$out"
+has 'the interrupted-migration reading'   'interrupted /gspec-migrate' "$out"
+has 'and the deliberate-infra reading'    'deliberate infra plan' "$out"
+hasnt 'it never asserts the PRD moved'    'the plan relocated and the PRD did not' "$out"
+hasnt 'and never claims dependents block' 'everything depending on it' "$out"
 
 # The reverse: PRD moved, plan did not. Harmless today, but the next /gspec-plan
 # writes to the folder and the repo ends up with two plans for one feature.

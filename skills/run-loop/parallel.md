@@ -152,7 +152,7 @@ Merge green lanes back **one at a time, never concurrently:** in the main checko
 lanes are **file-disjoint by construction** (the graph's overlap edges), so these
 merges do not textually conflict.
 
-**Flip the gspec checkbox here, not in the lane** — `gspec/tasks/<slug>.md` sits
+**Flip the gspec checkbox here, not in the lane** — a feature's plan file sits
 outside every packet's `allowed_files`, so flipping it inside a lane would make
 two lanes sharing one feature's task file contend on the same write; the
 scheduler, as the single writer, is the only safe place to do it. Right after

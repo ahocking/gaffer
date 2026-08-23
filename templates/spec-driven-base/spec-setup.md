@@ -32,14 +32,14 @@ Use the following workflow for substantial features:
 ```text
 1. gspec profile/style/stack/practices
 2. gspec research, when market or product discovery is useful
-3. gspec feature PRD              (gspec/features/<slug>.md)
+3. gspec feature PRD              (gspec/features/<slug>/prd.md)
 4. gspec architecture, when technical design is non-trivial
 5. ADRs for durable architectural decisions
 6. gspec analyze to reconcile spec-to-spec conflicts
 7. Author the feature's execution backlog:
-   - gspec plan  ->  gspec/tasks/<slug>.md (ordered, dependency-aware tasks)
+   - gspec plan  ->  gspec/features/<slug>/tasks.md (ordered, dependency-aware)
    - add the feature entry to .agents/roadmap.yaml (order + why)
-8. Implement from the plan (the orchestration loop walks roadmap -> gspec/tasks/)
+8. Implement from the plan (the loop walks roadmap -> the feature folder)
 9. gspec audit to detect drift between specs and code
 ```
 
@@ -86,10 +86,11 @@ gspec owns **what to build and in what order within a feature**. This repo's
 orchestration plugin owns **cross-feature sequencing**, because gspec has no
 feature-level ordering at all.
 
-### 1. `gspec/tasks/<slug>.md` — the per-feature ordered plan
+### 1. `gspec/features/<slug>/tasks.md` — the per-feature ordered plan
 
-Produced by the gspec `plan` skill from the feature PRD. This is what the loop
-executes. Tasks carry stable IDs, explicit dependencies, and parallel markers:
+Produced by the gspec `plan` skill from the feature PRD, in the same folder. This
+is what the loop executes. Tasks carry stable IDs, explicit dependencies, and
+parallel markers:
 
 ```markdown
 ---
@@ -161,12 +162,13 @@ Use this ownership model:
 | Tech stack | gspec | `gspec/stack.md` |
 | Engineering practices | gspec | `gspec/practices.md` |
 | Competitive/product research | gspec | `gspec/research.md` |
-| Feature PRDs | gspec | `gspec/features/<feature>.md` |
+| Feature PRDs | gspec | `gspec/features/<feature>/prd.md` |
 | System architecture overview | gspec | `gspec/architecture.md` |
 | Cross-feature sequencing | orchestration plugin | `.agents/roadmap.yaml` (order + why) |
-| Per-feature task breakdown | gspec | `gspec/tasks/<feature>.md` |
-| Requirement clarification | gspec | in the PRD + `gspec/tasks/<feature>.md`; do not restate product strategy |
-| Execution plan | gspec | `gspec/tasks/<feature>.md` |
+| Per-feature task breakdown | gspec | `gspec/features/<feature>/tasks.md` |
+| Requirement clarification | gspec | in the PRD + `gspec/features/<feature>/tasks.md`; do not restate product strategy |
+| Execution plan | gspec | `gspec/features/<feature>/tasks.md` |
+| Per-feature architecture / design | gspec | `gspec/features/<feature>/arch.md`, `design.html` (written by gspec `architect`, absent until then) |
 | Durable architectural decisions | ADRs | `docs/adr/*.md` |
 | Spec-to-spec reconciliation | gspec | gspec `analyze` |
 | Spec-to-code drift detection | gspec | gspec `audit` |
@@ -220,7 +222,7 @@ Ask only essential clarifying questions. Otherwise, create reasonable starter do
 ### 2. Seed the execution backlog
 
 Create `.agents/roadmap.yaml` with an empty `features: []` list, using the schema
-above. Entries and their `gspec/tasks/<slug>.md` plans are added per feature as work
+above. Entries and their `gspec/features/<slug>/tasks.md` plans are added per feature as work
 is scoped (see the Feature
 Workflow).
 
@@ -356,7 +358,8 @@ Before planning or implementing non-trivial changes, read:
 4. `gspec/practices.md`
 5. `gspec/style.md` or `gspec/style.html`, when UI is involved
 6. `gspec/architecture.md`, when architecture is involved
-7. Relevant `gspec/features/*.md` (and the matching `gspec/tasks/*.md`)
+7. The relevant feature folders, `gspec/features/<slug>/` — `prd.md`, `tasks.md`,
+   and `arch.md` / `design.html` where they exist
 8. `.agents/roadmap.yaml`, when sequencing or picking the next feature
 9. Relevant `docs/adr/*.md`
 10. `.agents/domain-rules.md` — this repo's domain guardrails and risk boundaries
@@ -364,7 +367,7 @@ Before planning or implementing non-trivial changes, read:
 Artifact ownership:
 
 - gspec owns product context, design, stack, practices, architecture overview,
-  research, feature PRDs, the execution backlog (gspec/tasks/<slug>.md),
+  research, feature PRDs, the execution backlog (gspec/features/<slug>/tasks.md),
   analysis, and audit.
 - ADRs own durable architectural decisions.
 
@@ -397,7 +400,7 @@ When gspec `architect` identifies a durable decision, create or propose an ADR.
 
 When gspec `audit` finds drift caused by an intentional architectural change, create or update the relevant ADR before updating high-level architecture docs.
 
-The feature PRD, its `gspec/tasks/<slug>.md` plan, and the `.agents/roadmap.yaml` entry must reference the relevant gspec and ADR sources rather than redefining them. Example:
+The feature PRD, its `gspec/features/<slug>/tasks.md` plan, and the `.agents/roadmap.yaml` entry must reference the relevant gspec and ADR sources rather than redefining them. Example:
 
 ```markdown
 ## Upstream Context
@@ -459,7 +462,7 @@ Use gspec `analyze` to check for contradictions between profile, stack, practice
 
 - Add or update the feature's entry in `.agents/roadmap.yaml` (`order`, `why`, and
   an interim `depends_on`). Never add `status` or `parallel_group` — both are derived.
-- Run the gspec `plan` skill to write `gspec/tasks/<feature-slug>.md`: an ordered task checklist with
+- Run the gspec `plan` skill to write `gspec/features/<feature-slug>/tasks.md`: an ordered task checklist with
   `[GATE:*]`/`[STOP:*]` tags where a task crosses an approval boundary, an
   `## Upstream Context` block, and the test strategy. The plan operationalizes the
   PRD — it does not restate product direction.
@@ -467,7 +470,7 @@ Use gspec `analyze` to check for contradictions between profile, stack, practice
 ### 5. Implement
 
 Implement from the plan. The orchestration loop reads `.agents/roadmap.yaml` to pick
-the next feature, then walks that feature's `gspec/tasks/<slug>.md` tasks, honoring
+the next feature, then walks that feature's `gspec/features/<slug>/tasks.md` tasks, honoring
 the gate tags and the session autonomy level. Implementation must comply with:
 
 - `gspec/stack.md`
@@ -519,7 +522,7 @@ Complete the following:
 - [ ] Create or update root agent instructions (`CLAUDE.md` for Claude Code).
 - [ ] Add rules requiring agents to read gspec and ADRs before planning and implementation.
 - [ ] Add rules preventing duplicate sources of truth (incl. one roadmap, no off-map gspec docs).
-- [ ] Verify that `gspec/tasks/*.md` plans reference upstream gspec and ADR artifacts.
+- [ ] Verify that `gspec/features/*/tasks.md` plans reference upstream gspec and ADR artifacts.
 - [ ] Commit the setup files only when the user explicitly requests it.
 
 ---
@@ -531,7 +534,7 @@ After setup, the repository should support this operating model:
 ```text
 Long-lived knowledge lives in gspec.
 Durable decisions live in ADRs.
-Feature execution happens through gspec feature PRDs + gspec/tasks/<slug>.md, sequenced by .agents/roadmap.yaml.
+Feature execution happens through each feature's folder (gspec/features/<slug>/), sequenced by .agents/roadmap.yaml.
 All AI agents read the same authoritative context before modifying code.
 Specs are periodically audited against the actual codebase.
 ```

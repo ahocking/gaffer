@@ -1,6 +1,6 @@
 ---
 name: run-loop
-description: Drive the guided autonomy loop across a backlog of task packets. For each packet — branch off the integration base in the local checkout, implement → test → review, commit on branch if green, update run-state, emit a check-in — then pull the next. Honors the session autonomy level and the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces check-ins; it integrates onto a non-`main` branch at full-autonomy but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (gspec/tasks/<slug>.md) or a run-state backlog.
+description: Drive the guided autonomy loop across a backlog of task packets. For each packet — branch off the integration base in the local checkout, implement → test → review, commit on branch if green, update run-state, emit a check-in — then pull the next. Honors the session autonomy level and the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces check-ins; it integrates onto a non-`main` branch at full-autonomy but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (a feature's plan under gspec/features/<slug>/) or a run-state backlog.
 argument-hint: (optional — a backlog source or a starting packet; else reads .agents/run-state.yaml, then the gspec backlog)
 ---
 
@@ -114,8 +114,12 @@ Per packet, do exactly this:
    into the brief: run-state and the packet are the context it needs.
 
    **Name the governing documents; do not let it go looking.** Add to the brief the
-   specific ADR ids and the single `gspec/tasks/<slug>.md` this packet is governed by,
-   and say that reading beyond them is out of scope for the packet. Unscoped, a fresh
+   specific ADR ids and the single plan file this packet is governed by — the path
+   the adapter printed as `PLAN=`, never one you assembled yourself, since where a
+   plan lives depends on the repo's gspec layout — and say that reading beyond them
+   is out of scope for the packet. When the adapter also printed `ARCH=`/`DESIGN=`
+   for that feature, name those too: they are written to make an implementer
+   self-sufficient, and they are the cheapest context the packet can have. Unscoped, a fresh
    coordinator sweeps the whole corpus — measured at ~111k tokens (17 ADRs ≈ 48k,
    7 task plans ≈ 30k, gspec core ≈ 22k) for a packet that governs about one of each.
    That payload is not read once: it becomes the standing context re-cached on every
@@ -217,8 +221,8 @@ your dispatch strategy.
     dependency-then-slug order and says so — the roadmap is an override, not a
     prerequisite.
   - `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes <slug>` turns that
-    feature's `gspec/tasks/<slug>.md` into packet nodes (one per **unchecked**
-    task). Each node becomes one packet.
+    feature's plan into packet nodes (one per **unchecked** task), wherever that
+    plan lives. Each node becomes one packet.
   - Or take `$ARGUMENTS` / an existing run-state backlog instead — gspec is one of
     three backlog sources, not a requirement.
 
@@ -325,8 +329,8 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      accepts the packet-id form the loop already holds — never do your own id
      surgery) and act on its exit code before you commit:
      - **exit 0, `CHECKED=<feature>#T<n>` or `CHECKED=already`** — stage the
-       touched `gspec/tasks/<slug>.md` alongside the packet's own files; it
-       goes into the same commit as the code.
+       touched plan file — the adapter reports which as `FILE=` — alongside the
+       packet's own files; it goes into the same commit as the code.
      - **exit 0, `CHECKED=none`** — the backlog is not gspec-sourced (a
        run-state or explicit-argument backlog has no checkbox). This is
        **skipped, not failed** — commit as normal with nothing staged from
@@ -531,8 +535,8 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   - **Arm 1** applies when **some feature in the backlog** — not necessarily the one this
     run built — is **incomplete**, has a plan file with at least one **unchecked** task
     line, and an **unchecked capability in its PRD covers the finding** — both tests must
-    hold separately. Append a new unchecked task line to
-    `gspec/tasks/<slug>.md` as an `Edit` anchored on an unchecked line, carrying a
+    hold separately. Append a new unchecked task line to that feature's plan file
+    (the `PLAN=` path) as an `Edit` anchored on an unchecked line, carrying a
     truthful `covers:` naming that capability. The immutability hook still runs and still
     adjudicates: every checked task's **block** (its task line plus its `deps:`/`covers:`
     follow-on lines, up to the next task line) must survive byte-identically in the

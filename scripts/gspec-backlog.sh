@@ -10,21 +10,25 @@
 # checking, in seven places at once.
 #
 # THE CONSUMED CONTRACT (ADR 0020 D2) — nothing outside this list is read:
-#   gspec/tasks/<slug>.md      the execution backlog. Frontmatter `spec-version`
+#   <plan>                     the execution backlog. Frontmatter `spec-version`
 #                              + `feature`; task lines
 #                              `- [ ] **T<n>** [P] **P<n>** <text>` with indented
-#                              `- deps:` / `- covers:` / `- supersedes:` and an
-#                              OPTIONAL `- files:` (forward-compat with upstream
-#                              proposal U1 — gspec does not emit it today).
+#                              `- deps:` / `- covers:` / `- supersedes:` / `- arch:`
+#                              and an OPTIONAL `- files:` (forward-compat with
+#                              upstream proposal U1 — gspec does not emit it today).
 #                              WRITTEN as well as read (ADR 0025 D1): `check-task`
 #                              flips ONE task line's `[ ]` to `[x]` and nothing
 #                              else — never the text, never any other line. This
 #                              is the adapter's one write; it records that a unit
 #                              of work executed, not what to build (ADR 0020 D2).
-#   gspec/features/<slug>.md   the PRD. Capability lines
+#   <prd>                      the PRD. Capability lines
 #                              `- [ ] **P<n>**: <text>`; completion is DERIVED
 #                              from them (ADR 0020 D2 — never stored). Optional
 #                              frontmatter `depends_on:` (forward-compat with U5).
+#
+# ...where <plan> and <prd> are LAYOUT-DEPENDENT and resolved in exactly one
+# place each — `_resolve_plan_path` / `_resolve_prd_path`, enumerated by
+# `_plan_paths` / `_prd_paths`. See LAYOUTS below.
 #   .agents/roadmap.yaml       PLUGIN-OWNED sequencing (order/why, interim
 #                              depends_on, and `deferred` — a human "not now",
 #                              which is NOT the derived `status` D2 prohibits;
@@ -58,6 +62,22 @@
 #                            unblocked-and-incomplete-and-not-deferred) or
 #                            NEXT=none, plus REASON= distinguishing blocked from
 #                            deferred from complete.
+#   plans [root]             TSV, one plan file per line, sorted by slug:
+#                              <slug>\t<relpath>\t<layout>\t<tasks>\t<unchecked>
+#                            layout is `3.x` | `2.x` | `pre-2.0` (see LAYOUTS).
+#                            <tasks> counts the task lines this adapter actually
+#                            RECOGNIZES (all three shapes), which is the only
+#                            signal that separates a FINISHED plan from an
+#                            UNREADABLE one -- both yield zero packets, and
+#                            conflating them is how a migration reports success
+#                            over a backlog nothing can read. tasks>0 with
+#                            unchecked=0 is complete; tasks=0 is the failure.
+#                            Exists so /gaffer:migrate can report and verify which
+#                            layout a repo is in WITHOUT globbing gspec/ itself —
+#                            migrate.sh's standing rule is that every gspec read
+#                            goes through this adapter, and a layout census is a
+#                            gspec read like any other. Prints nothing when there
+#                            is no gspec project (D4).
 #   nodes <slug> [root]      emit packet-graph NODES TSV for one feature's UNCHECKED
 #                            tasks (feed to `packet-graph.sh build`).
 #   nodes-all [root]         the same for every incomplete, unblocked feature.
@@ -111,6 +131,33 @@
 # CHECKED task simply finds no producer (checked tasks are not nodes) and yields
 # no edge — which is correct: done work must not block anything.
 #
+# LAYOUTS (ADR 0020 D3, gspec 3.x). gspec 3.0 moved everything about a feature
+# into ONE folder, and the adapter reads all three shapes it has ever shipped:
+#
+#   layout        PRD                            plan
+#   ------------  -----------------------------  -----------------------------
+#   3.x (v2)      gspec/features/<slug>/prd.md   gspec/features/<slug>/tasks.md
+#   2.x (v1)      gspec/features/<slug>.md       gspec/tasks/<slug>.md
+#   pre-2.0       gspec/features/<slug>.md       gspec/features/<slug>.plan.md
+#
+# Reading all three is not politeness, it is the same lesson as the task-line
+# shapes below: a consumer repo migrates on ITS schedule, and an adapter that
+# knows only the new path does not report an error on an unmigrated repo — it
+# reports an EMPTY BACKLOG, which reads as "nothing to do". gspec's own floor
+# module (`plugin/hooks/floors/paths.mjs`) accepts both layouts for exactly this
+# reason, and the task-immutability block it feeds fails open, so a matcher that
+# knew only the flat form would stop firing with no error anywhere.
+#
+# The newer layout WINS wherever both exist for one slug: `/gspec-migrate` moves
+# rather than copies, so a slug present in both is a half-finished migration, and
+# resolving to the destination is what makes re-running it idempotent. A shadowed
+# flat file is skipped by the enumerators, never read twice under two names.
+#
+# The 3.x feature folder also holds `arch.md` and `design.html`. Neither is in
+# the consumed contract: they say what to build and how it should look, which is
+# gspec's half of the seam — the loop hands their PATHS to an implementer, and
+# this adapter never parses them.
+#
 # LEGACY TASK-LINE SHAPES (migration compatibility — /gaffer:migrate).
 # gspec's canonical task line is `- [ ] **T<n>** ...`. Real pre-2.0 consumer repos
 # carry plan files this plugin's own architect authored under the ADR 0013
@@ -143,8 +190,15 @@ die() { printf 'gspec-backlog.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
 # Raising these is a deliberate, reviewed change: bump, extend, re-run the
 # sweeps, amend ADR 0020. Env overrides exist for testing and for a consumer repo
 # that has deliberately moved ahead of the plugin.
-GSPEC_PINNED_VERSION="${ORCH_GSPEC_PINNED_VERSION:-2.7.0}"
-GSPEC_SPEC_VERSIONS="${ORCH_GSPEC_SPEC_VERSIONS:-v1}"
+GSPEC_PINNED_VERSION="${ORCH_GSPEC_PINNED_VERSION:-3.1.1}"
+# BOTH artifact versions are supported, and that is the deliberate half of the
+# 3.1.1 bump: v2 is what gspec writes now, v1 is what every unmigrated consumer
+# repo still has on disk. Narrowing this to `v2` would make `check` fail — rc=3,
+# the loop stops — on a repo whose backlog this adapter can read perfectly well.
+# The version pin exists to catch a format this code CANNOT parse; it is not a
+# lever for nagging a repo into migrating. `/gaffer:migrate` reports the layout
+# and names /gspec-migrate; that is where the nudge belongs.
+GSPEC_SPEC_VERSIONS="${ORCH_GSPEC_SPEC_VERSIONS:-v1 v2}"
 
 cmd_pin() {
   printf 'GSPEC_PINNED_VERSION=%s\n' "$GSPEC_PINNED_VERSION"
@@ -202,6 +256,68 @@ _root() { printf '%s' "${1:-.}"; }
 # Is there a gspec project here at all? (D4: gspec is OPTIONAL.)
 _has_gspec() { [ -d "$(_root "$1")/gspec" ]; }
 
+# --- the LAYOUT seam (see LAYOUTS in the header) ------------------------------
+# Four functions, and every gspec path in this file comes out of one of them. A
+# fourth layout must only ever need editing here — which is the same promise
+# `_resolve_plan_path` already made and the reason adding gspec 3.x cost a seam
+# rather than a sweep through nine call sites.
+#
+# The two enumerators SHADOW: a slug whose newer-layout file exists suppresses
+# its older-layout twin, so a half-finished /gspec-migrate yields one row per
+# feature rather than two rows that disagree about how done it is.
+
+# _prd_paths <root> — every feature PRD on disk, one absolute path per line.
+_prd_paths() {
+  local root="$1" p slug
+  for p in "$root"/gspec/features/*/prd.md; do
+    [ -f "$p" ] || continue
+    printf '%s\n' "$p"
+  done
+  for p in "$root"/gspec/features/*.md; do
+    [ -f "$p" ] || continue
+    slug="$(basename "$p" .md)"
+    # A plan file beside the PRD is a plan, not a feature (pre-2.0 layout).
+    case "$slug" in *.plan) continue ;; esac
+    [ -f "$root/gspec/features/$slug/prd.md" ] && continue
+    printf '%s\n' "$p"
+  done
+}
+
+# _plan_paths <root> — every plan file on disk, as "<abs path>\t<slug>".
+# The slug is carried rather than re-derived because the folder layout encodes it
+# in the DIRECTORY (features/<slug>/tasks.md), so `basename .md` — which every
+# caller used to do — yields the literal string "tasks" for all of them.
+_plan_paths() {
+  local root="$1" p b slug
+  for p in "$root"/gspec/features/*/tasks.md; do
+    [ -f "$p" ] || continue
+    printf '%s\t%s\n' "$p" "$(basename "$(dirname "$p")")"
+  done
+  for p in "$root"/gspec/tasks/*.md; do
+    [ -f "$p" ] || continue
+    slug="$(basename "$p" .md)"
+    if [ -f "$root/gspec/features/$slug/tasks.md" ]; then continue; fi
+    printf '%s\t%s\n' "$p" "$slug"
+  done
+  for p in "$root"/gspec/features/*.plan.md; do
+    [ -f "$p" ] || continue
+    b="$(basename "$p")"; slug="${b%.plan.md}"
+    if [ -f "$root/gspec/features/$slug/tasks.md" ] || [ -f "$root/gspec/tasks/$slug.md" ]; then continue; fi
+    printf '%s\t%s\n' "$p" "$slug"
+  done
+}
+
+# _resolve_prd_path <slug> <root> — "<prd>\t<relprd>", or nothing when neither
+# layout has one. Newest layout first (see LAYOUTS).
+_resolve_prd_path() {
+  local slug="$1" root="$2"
+  if [ -f "$root/gspec/features/$slug/prd.md" ]; then
+    printf '%s\t%s\n' "$root/gspec/features/$slug/prd.md" "gspec/features/$slug/prd.md"
+  elif [ -f "$root/gspec/features/$slug.md" ]; then
+    printf '%s\t%s\n' "$root/gspec/features/$slug.md" "gspec/features/$slug.md"
+  fi
+}
+
 # --- check: the ARTIFACT pin (ADR 0020 D3) -----------------------------------
 
 cmd_check() {
@@ -212,9 +328,10 @@ cmd_check() {
   fi
   local bad=0 f ver base
   # Only the artifacts we actually consume are asserted. Asserting gspec's whole
-  # tree would make us fail on specs we never read.
-  for f in "$root"/gspec/tasks/*.md "$root"/gspec/features/*.md; do
-    [ -f "$f" ] || continue
+  # tree would make us fail on specs we never read - `arch.md`, `design.html` and
+  # the foundation specs are gspec's to police, and it has a floor that does.
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
     base="${f#"$root"/}"
     ver="$(_fm_scalar "$f" 'spec-version')"
     if [ -z "$ver" ]; then
@@ -225,7 +342,7 @@ cmd_check() {
       *) printf 'FAIL=%s has spec-version %s; this plugin supports %s (pinned gspec %s)\n' \
            "$base" "$ver" "$GSPEC_SPEC_VERSIONS" "$GSPEC_PINNED_VERSION"; bad=1 ;;
     esac
-  done
+  done < <( { _prd_paths "$root"; _plan_paths "$root" | cut -f1; } )
   if [ "$bad" -ne 0 ]; then
     printf 'CHECK=fail\n'
     printf 'HINT=run /gspec-migrate to bring specs current, or raise the pin in scripts/gspec-backlog.sh (ADR 0020 D3)\n'
@@ -343,12 +460,15 @@ cmd_features() {
 
   local tmp; tmp="$(mktemp)"
   local prd slug order why deps done deferred
-  for prd in "$root"/gspec/features/*.md; do
-    [ -f "$prd" ] || continue
-    slug="$(basename "$prd" .md)"
-    # Legacy gspec v1 kept plan files beside the PRD as <slug>.plan.md; those are
-    # plans, not PRDs, and must never be mistaken for a feature.
-    case "$slug" in *.plan) continue ;; esac
+  while IFS= read -r prd; do
+    [ -n "$prd" ] && [ -f "$prd" ] || continue
+    # The 3.x folder layout carries the slug in the DIRECTORY name; the flat
+    # layouts carry it in the basename. `_prd_paths` has already dropped plan
+    # files and shadowed duplicates, so this is the only distinction left.
+    case "$prd" in
+      */prd.md) slug="$(basename "$(dirname "$prd")")" ;;
+      *)        slug="$(basename "$prd" .md)" ;;
+    esac
 
     done="$(_feature_done "$prd")"
     # depends_on: PRD frontmatter WINS (upstream proposal U5), roadmap is the
@@ -368,7 +488,7 @@ cmd_features() {
     # Unlisted features sort after every explicitly ordered one, then by slug.
     [ -n "$order" ] || order=9999
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$order" "$done" "$deps" "$why" "$deferred" >> "$tmp"
-  done
+  done < <(_prd_paths "$root")
   rm -f "$tmp_rm"
 
   # blocked = any dependency that is not done. Computed after the full set is
@@ -428,12 +548,25 @@ cmd_next() {
     printf 'NEXT=none\nREASON=all features complete\n'; return 0
   fi
   printf 'NEXT=%s\n' "$pick"
-  local plan="$root/gspec/tasks/$pick.md"
-  if [ -f "$plan" ]; then
-    printf 'PLAN=gspec/tasks/%s.md\n' "$pick"
-  elif [ -f "$root/gspec/features/$pick.plan.md" ]; then
-    printf 'PLAN=gspec/features/%s.plan.md\n' "$pick"
-    printf 'WARN=legacy gspec v1 plan location; run /gspec-migrate to move it to gspec/tasks/\n'
+  local pp; pp="$(_resolve_plan_path "$pick" "$root")"
+  if [ -n "$pp" ]; then
+    local relplan; relplan="$(printf '%s' "$pp" | cut -f2)"
+    printf 'PLAN=%s\n' "$relplan"
+    # An older-layout plan is READ, never refused - but say so once, here, where
+    # a human is looking at the next feature anyway. The remedy is gspec's own
+    # migrator; this adapter does not move files.
+    case "$relplan" in
+      gspec/features/*/tasks.md) ;;
+      *) printf 'WARN=%s is a pre-3.x plan location; /gspec-migrate relocates it to gspec/features/%s/tasks.md\n' "$relplan" "$pick" ;;
+    esac
+    # The 3.x feature folder's enriched siblings, when present: the loop hands
+    # these PATHS to an implementer so it needs nothing else. Absent is normal
+    # (a feature with no UI gets no design; an unmigrated repo has neither) and
+    # never an error - /gspec-architect writes them.
+    [ -f "$root/gspec/features/$pick/arch.md" ] \
+      && printf 'ARCH=gspec/features/%s/arch.md\n' "$pick"
+    [ -f "$root/gspec/features/$pick/design.html" ] \
+      && printf 'DESIGN=gspec/features/%s/design.html\n' "$pick"
   else
     printf 'PLAN=none\n'
     printf 'HINT=run /gspec-plan %s to decompose the PRD before the loop can execute it\n' "$pick"
@@ -442,14 +575,44 @@ cmd_next() {
     printf 'NOTE=no .agents/roadmap.yaml — ordering fell back to dependency then slug (ADR 0020 D2)\n'
 }
 
+# --- plans: the layout census (/gaffer:migrate reads this) -------------------
+# Reports WHERE each plan is, never moves one. The move is /gspec-migrate's --
+# gspec owns spec format and layout; this plugin owns execution (ADR 0020).
+
+cmd_plans() {
+  local root; root="$(_root "${1:-}")"
+  _has_gspec "$root" || return 0
+  local p slug rel layout counts
+  while IFS=$'\t' read -r p slug; do
+    [ -n "$p" ] || continue
+    rel="${p#"$root"/}"
+    case "$rel" in
+      gspec/features/*/tasks.md) layout='3.x' ;;
+      gspec/tasks/*.md)          layout='2.x' ;;
+      *)                         layout='pre-2.0' ;;
+    esac
+    # The SAME task-line pattern `_nodes_for` uses -- canonical plus both legacy
+    # shapes. It has to be the same or the count lies about what the backlog can
+    # read, which is the one thing this column exists to report.
+    counts="$(awk '
+      /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
+        t++
+        if ($0 !~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) u++
+      }
+      END { printf "%d\t%d", t+0, u+0 }' "$p")"
+    printf '%s\t%s\t%s\t%s\n' "$slug" "$rel" "$layout" "$counts"
+  done < <(_plan_paths "$root") | sort -t"$(printf '\t')" -k1,1
+}
+
 # --- nodes: gspec tasks -> packet-graph NODES TSV ----------------------------
 
 _nodes_for() {
   local root="$1" slug="$2"
-  local plan="$root/gspec/tasks/$slug.md"
-  [ -f "$plan" ] || plan="$root/gspec/features/$slug.plan.md"
-  [ -f "$plan" ] || return 0
-  local fdeps; fdeps="$(_fm_list "$root/gspec/features/$slug.md" 'depends_on')"
+  local pp; pp="$(_resolve_plan_path "$slug" "$root")"
+  [ -n "$pp" ] || return 0
+  local plan; plan="$(printf '%s' "$pp" | cut -f1)"
+  local prd; prd="$(_resolve_prd_path "$slug" "$root" | cut -f1)"
+  local fdeps; fdeps="$(_fm_list "$prd" 'depends_on')"
   if [ -z "$fdeps" ] && [ -f "$root/.agents/roadmap.yaml" ]; then
     fdeps="$(_roadmap_rows "$root/.agents/roadmap.yaml" | awk -F'\t' -v s="$slug" '$1==s && !seen {print $3; seen=1}')"
   fi
@@ -555,9 +718,8 @@ cmd_files_status() {
   # Build the live task table from every plan: key \t checked \t normalized desc.
   local live; live="$(mktemp)"
   local plan slug
-  for plan in "$root"/gspec/tasks/*.md "$root"/gspec/features/*.plan.md; do
-    [ -f "$plan" ] || continue
-    slug="$(basename "$plan" .md)"; slug="${slug%.plan}"
+  while IFS=$'\t' read -r plan slug; do
+    [ -n "$plan" ] && [ -f "$plan" ] || continue
     awk -v feature="$slug" '
       function norm(s) { s=tolower(s); gsub(/[*_`]/,"",s); gsub(/[[:space:]]+/," ",s); gsub(/^ +| +$/,"",s); return s }
       /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*T[0-9]+\*\*/ {
@@ -569,7 +731,7 @@ cmd_files_status() {
         sub(/^\*\*P[0-9]+\*\*[[:space:]]*/,"",d)
         printf "%s#%s\t%s\t%s\n", feature, id, checked, norm(d)
       }' "$plan" >> "$live"
-  done
+  done < <(_plan_paths "$root")
 
   local ok=0 stale=0 unfp=0 done_=0 orphan=0 key files fp row lchecked ldesc nfp
   while IFS=$'\t' read -r key files fp; do
@@ -600,7 +762,8 @@ cmd_files_status() {
 }
 
 # --- check-task: the adapter's ONE write (ADR 0025 D1 / ADR 0020 D2) ---------
-# Flip exactly one task's checkbox `[ ]` -> `[x]` in gspec/tasks/<slug>.md, and
+# Flip exactly one task's checkbox `[ ]` -> `[x]` in the feature's plan file
+# (whichever layout it is in -- `_resolve_plan_path` decides, never this), and
 # NOTHING else. Every outcome except the last exits 0, because gspec is OPTIONAL
 # (D4) -- a non-gspec backlog has no checkbox to flip, and its absence is not a
 # failure. Only a task id that names an EXISTING plan but no such task is loud
@@ -653,9 +816,12 @@ _resolve_task_id() {
   if [ -n "$slug" ]; then
     # The canonical form's slug is caller-supplied text, not a resolved
     # filename -- unlike the packet-id form below, nothing guarantees it
-    # stays inside gspec/tasks/. Reject a path separator or a '..'
+    # stays inside gspec/. Reject a path separator or a '..'
     # component before any file test (ADR 0025 D1: the adapter's one write
-    # is confined to gspec/tasks/<slug>.md; task-status refuses the same
+    # is confined to the resolved plan path, and gspec 3.x's layout
+    # INTERPOLATES the slug into a DIRECTORY name -- gspec/features/<slug>/
+    # tasks.md -- so this check went from belt-and-braces to load-bearing when
+    # that layout landed; task-status refuses the same
     # unsafe input even though it never writes, so the two callers cannot
     # silently diverge on it). This runs after the gspec-is-optional early
     # return above -- and can safely do so, because that return only ever
@@ -682,9 +848,8 @@ _resolve_task_id() {
     # unlike the canonical form above -- it is structurally incapable of
     # containing a path separator or '..'; no separate check needed here.
     local best="" f cand
-    for f in "$root"/gspec/tasks/*.md "$root"/gspec/features/*.plan.md; do
-      [ -f "$f" ] || continue
-      cand="$(basename "$f" .md)"; cand="${cand%.plan}"
+    while IFS=$'\t' read -r f cand; do
+      [ -n "$cand" ] || continue
       case "$task" in
         "$cand"-*)
           # Prefer the LONGEST matching slug, so a feature whose slug itself
@@ -701,7 +866,7 @@ _resolve_task_id() {
           if [ "${#cand}" -gt "${#best}" ]; then best="$cand"; fi
           ;;
       esac
-    done
+    done < <(_plan_paths "$root")
     if [ -n "$best" ]; then
       slug="$best"
       id="${task#"$best"-}"
@@ -716,14 +881,19 @@ _resolve_task_id() {
   printf 'RESOLVED\t%s\t%s\n' "$slug" "$id"
 }
 
-# _resolve_plan_path <slug> <root> — the plan-file location check-task and
-# task-status share: gspec/tasks/<slug>.md, falling back to the legacy
-# gspec/features/<slug>.plan.md. A third plan location must only ever need
-# editing here. Prints "<plan>\t<relplan>" if either exists on disk, or
-# nothing (empty output) if neither does -- callers test for that emptiness.
+# _resolve_plan_path <slug> <root> — the plan-file location every caller shares,
+# newest layout first: gspec/features/<slug>/tasks.md (3.x), then
+# gspec/tasks/<slug>.md (2.x), then the pre-2.0 gspec/features/<slug>.plan.md.
+# The promise this function made when it had two entries held when it grew to
+# three: adding gspec 3.x's layout meant editing here and in the two enumerators,
+# not in the nine places that used to build these paths inline. Prints
+# "<plan>\t<relplan>" if any exists on disk, or nothing (empty output) if none
+# does -- callers test for that emptiness.
 _resolve_plan_path() {
   local slug="$1" root="$2"
-  if [ -f "$root/gspec/tasks/$slug.md" ]; then
+  if [ -f "$root/gspec/features/$slug/tasks.md" ]; then
+    printf '%s\t%s\n' "$root/gspec/features/$slug/tasks.md" "gspec/features/$slug/tasks.md"
+  elif [ -f "$root/gspec/tasks/$slug.md" ]; then
     printf '%s\t%s\n' "$root/gspec/tasks/$slug.md" "gspec/tasks/$slug.md"
   elif [ -f "$root/gspec/features/$slug.plan.md" ]; then
     printf '%s\t%s\n' "$root/gspec/features/$slug.plan.md" "gspec/features/$slug.plan.md"
@@ -785,7 +955,7 @@ cmd_check_task() {
   if [ -n "$pp" ]; then
     plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
   else
-    printf 'CHECKED=none\nREASON=no gspec/tasks/%s.md — nothing to flip\n' "$slug"
+    printf 'CHECKED=none\nREASON=no plan file for feature %s in any gspec layout — nothing to flip\n' "$slug"
     return 0
   fi
 
@@ -829,7 +999,7 @@ cmd_check_task() {
   # in scope at that point is bash-version-dependent: 3.2 (macOS) still sees it, so
   # `trap 'rm -f "$tmp"' EXIT` cleaned up and the sweep passed; 5.2 (Linux, CI) does
   # not, and under `set -u` the trap died with `tmp: unbound variable` before
-  # reaching the `rm`, stranding the temp file inside gspec/tasks/. Reproduced in
+  # reaching the `rm`, stranding the temp file beside the plan. Reproduced in
   # both versions. The `${x:-}` guards keep the trap safe even if it somehow fires
   # before either assignment.
   _ct_tmp=""; _ct_tmp2=""
@@ -837,7 +1007,7 @@ cmd_check_task() {
   # No process-wide trap: scoped to this write only, set as soon as the temp
   # file exists and disarmed right after the final `mv` succeeds, so a
   # stranded temp file under set -euo pipefail (cp, awk, or mv failing) can't
-  # survive as untracked scratch inside gspec/tasks/.
+  # survive as untracked scratch beside the plan file.
   trap 'for _f in "${_ct_tmp:-}" "${_ct_tmp2:-}"; do [ -n "$_f" ] && rm -f "$_f"; done; :' EXIT
   # Aliases so the body below reads unchanged. `tmp2` is deliberately NOT aliased:
   # it is assigned mid-body, and a local copy would leave the trap holding the
@@ -914,7 +1084,7 @@ cmd_task_status() {
           plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
         fi
         if [ -z "$plan" ]; then
-          state="unknown"; reason="no gspec/tasks/$slug.md"
+          state="unknown"; reason="no plan file for feature $slug in any gspec layout"
         else
           local idlc lookup
           idlc="$(printf '%s' "$tid" | tr '[:upper:]' '[:lower:]')"
@@ -998,11 +1168,12 @@ case "${1:-}" in
   check)     shift; cmd_check "$@" ;;
   features)  shift; cmd_features "$@" ;;
   next)      shift; cmd_next "$@" ;;
+  plans)     shift; cmd_plans "$@" ;;
   nodes)     shift; cmd_nodes "$@" ;;
   nodes-all) shift; cmd_nodes_all "$@" ;;
   interlock) shift; cmd_interlock "$@" ;;
   files-status) shift; cmd_files_status "$@" ;;
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
 esac

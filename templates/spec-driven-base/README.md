@@ -12,7 +12,7 @@ the Claude Code and orchestration specifics.
 
 - **gspec** (`gspec/`, `gspec-*` skills under `.claude/skills/`) — product, stack,
   style, practices, research, architecture, feature PRDs, and the execution backlog
-  (`gspec/tasks/<slug>.md`, one ordered plan per feature).
+  (`gspec/features/<slug>/tasks.md`, one ordered plan per feature).
 - **`.agents/roadmap.yaml`** — cross-feature sequencing (`order` + `why`). gspec has
   no feature-level ordering, so the orchestration plugin supplies one. It is an
   override: with no entries the loop orders by dependency, then slug.
@@ -25,9 +25,9 @@ gspec profile/stack/practices/style   →  foundation specs (once)
 gspec feature                          →  PRD for the capability
 gspec architect + ADRs                 →  design + durable decisions
 gspec analyze                          →  reconcile spec-to-spec conflicts
-gspec plan                             →  gspec/tasks/<slug>.md (ordered tasks)
+gspec plan                             →  gspec/features/<slug>/tasks.md (ordered)
 .agents/roadmap.yaml entry             →  where this feature sits in the order
-implement (orchestration loop)         →  build it (roadmap → gspec/tasks/)
+implement (orchestration loop)         →  build it (roadmap → the feature folder)
 gspec audit                            →  detect spec↔code drift
 ```
 

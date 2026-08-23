@@ -21,10 +21,16 @@ first consumer repo is a .NET / React / Postgres app.
 
 **[gspec](https://github.com/gballer77/gspec)** (MIT, © Baller Software) is the
 spec-driven development tool this plugin targets. `/gaffer:new-project` installs it
-(`npx gspec@2.7.0 --target claude`), `/gaffer:migrate` retrofits older repos onto its
-current layout, and the guided loop's default backlog is the gspec one:
-`gspec/tasks/<slug>.md` task lines (with `deps:`) plus `gspec/features/<slug>.md`
-capability checkboxes.
+(`npx gspec@3.1.1 --target claude`), `/gaffer:migrate` retrofits older repos onto its
+current layout, and the guided loop's default backlog is the gspec one: a feature's
+`tasks.md` task lines (with `deps:`) plus its `prd.md` capability checkboxes.
+
+gspec 3.x keeps everything about a feature in one folder —
+`gspec/features/<slug>/` holding `prd.md`, `tasks.md`, and (written by
+`/gspec-architect`, not by migration) `arch.md` and `design.html`. The adapter also
+reads the two older layouts, because a consumer repo migrates on its own schedule
+and an adapter that knew only the current path would report an **empty backlog**
+rather than an error.
 
 The seam is deliberate ([ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md)):
 **gspec owns *what to build and in what order*; gaffer owns *how a unit of work is
@@ -33,8 +39,12 @@ measurement. Every gspec read goes through the single adapter
 `scripts/gspec-backlog.sh`; nothing else in the plugin parses `gspec/`, so an upstream
 format change lands in one file. Because gspec does not stamp its version into a
 project, the pin has two axes: the **tool** pin (`GSPEC_PINNED_VERSION`, currently
-**2.7.0**) and the **artifact** pin (`spec-version`, asserted by
-`gspec-backlog.sh check`, which fails loudly rather than guessing).
+**3.1.1**) and the **artifact** pin (`spec-version`, asserted by
+`gspec-backlog.sh check`, which fails loudly rather than guessing). The artifact
+pin accepts **`v1` and `v2`** on purpose — narrowing it to the current version
+would stop the loop on a repo whose backlog the adapter reads perfectly well. The
+pin exists to catch a format the code *cannot parse*, not to nag a repo into
+migrating.
 
 **gspec is optional.** Four and a half of the five pillars — the guardrail, the
 autonomy dial, the pause/resume checkpointing, worktree-isolated parallelism, and
@@ -63,7 +73,7 @@ layer.
 | `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
 | `skills/rate-limit-pause/SKILL.md` | Show or set rate-limit auto-pause (ADR 0018): `on` wires the status-line sensor into `settings.json` + enables it here; `off` disables per-repo; `off --teardown` removes the global sensor; `status` reports state. |
 | `skills/build-packet-dependency-tree/SKILL.md` | Build `.agents/packet-graph.yaml` — packet nodes from the gspec backlog, ordering edges from task deps, mutual-exclusion edges from computed `allowed_files` overlap, grouped into waves. Prerequisite for `--parallel` (ADR 0016). |
-| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one: move plans to `gspec/tasks/`, convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, then **verify the backlog actually parses**. |
+| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), then **verify the backlog actually parses**. |
 | `skills/metrics/SKILL.md` | Assemble / show / analyze a run-metrics packet (ADR 0019): where a run's compute went, per packet, agent, model, tool, and skill. |
 | `scripts/migrate.sh` | Deterministic half of `/gaffer:migrate`: detect / plan / apply / verify. Refuses a dirty tree, never deletes, never overwrites, and ends by counting packets. |
 | `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, and the fingerprint-guarded file-scope sidecar. Nothing else may parse `gspec/`. |
@@ -193,7 +203,7 @@ A semi-attended run looks like:
 cd ~/workspace/your-app
 ORCH_AUTONOMY=supervised claude
 #   ...then inside the session:
-#   /gaffer:run-loop        # drive the backlog (gspec/tasks/<slug>.md or run-state)
+#   /gaffer:run-loop        # drive the backlog (gspec features or run-state)
 #   /gaffer:pause           # stop at a safe green checkpoint, any time
 #   /gaffer:resume          # pick the run back up in a later session
 ```
@@ -411,18 +421,28 @@ Inspect it without a session:
 scripts/gspec-backlog.sh features
 ```
 
-**gspec is pinned to 2.7.0.** gspec does not stamp its own version into a project
+**gspec is pinned to 3.1.1.** gspec does not stamp its own version into a project
 and this repo has no `package.json`, so this line and
 `GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh` are the only durable records
 of which gspec produced these specs. Reinstall exactly that version — never bare
 `npx gspec`, which installs whatever is current and silently defeats the pin:
 
 ```bash
-npx --yes gspec@2.7.0 --target claude
+npx --yes gspec@3.1.1 --target claude
 ```
 
 Raising the pin is a deliberate, reviewed change: bump it, extend the supported
 `spec-version` set, re-run `scripts/test-gspec-backlog.sh`, and amend ADR 0020.
+
+**Upgrading gspec in a consumer repo has an order, and getting it wrong costs a
+second migration.** Install the new gspec *first*, then run `/gspec-migrate`: a repo
+still on the old gspec has the *old* `/gspec-migrate` in `.claude/commands/`, and it
+migrates toward the layout you are trying to leave — reporting success as it does.
+`/gaffer:migrate` sequences this for you and verifies packets still come out.
+
+The full sequence, with the hazards and the two checks that tell a broken
+migration from a finished backlog, is
+**[docs/gspec-3.1.1-migration.md](docs/gspec-3.1.1-migration.md)**.
 
 Try it out inside the session:
 

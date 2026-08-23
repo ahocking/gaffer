@@ -7,7 +7,12 @@
   contract), [ADR 0002](0002-spec-driven-bootstrap-via-live-installers.md) (the
   bootstrap half), [ADR 0012](0012-delegated-loop-driver.md) (which deliberately
   left `implement-feature` alone; D7 now retires it)
-- Audited against: **gspec 2.7.0** (npm `latest`, commit `7cb6791`, 2026-07-28)
+- Audited against: **gspec 2.7.0** (npm `latest`, commit `7cb6791`, 2026-07-28);
+  re-audited against **gspec 3.1.1** (npm `latest`, 2026-08-23) — see the D3
+  revision below, which raises the pin and records the layout change
+- Revision (2026-08-23): **pin raised to gspec 3.1.1; the artifact pin widened to
+  `v1 v2`; the adapter now reads three layouts behind one seam; the 3.x relocation
+  is `/gspec-migrate`'s move, not this plugin's.** D3 revision, below.
 - Revision (2026-08-03, at implementation): **`U1` split into `U1-local` (built) and
   `U1-up` (still to send).** Only the `files:` field half was ever something this
   plugin needed, and it needs no gspec change: `.agents/task-files.yaml` supplies
@@ -285,6 +290,85 @@ supported `spec-version` set, re-run the sweeps, and note the delta in this ADR.
 D5 interlock, since `spec-version` governs spec format and says nothing about
 `.gspec/build/status.json`.
 
+
+### D3 revision (2026-08-23) — raised to gspec 3.1.1, and what the layout change taught
+
+**The pin is now `gspec@3.1.1`** (tool axis), with the artifact axis at **`v1 v2`**.
+gspec 3.0 relocated everything about a feature into one folder:
+
+> `gspec/features/<slug>/prd.md` — was `gspec/features/<slug>.md`
+> `gspec/features/<slug>/tasks.md` — was `gspec/tasks/<slug>.md`
+> `gspec/features/<slug>/arch.md` and `design.html` — **new**, written by
+> `/gspec-architect`, and deliberately **outside the consumed contract**: they say
+> what to build, which is gspec's half of the seam. The loop hands an implementer
+> their paths; the adapter never parses them.
+
+Plus `spec-version: v1` → **`v2`**, `deployable:` → `module:` in architecture specs,
+and `gspec/design/` retired as a concept.
+
+**Three things this revision decides, each of which was a live alternative:**
+
+**(a) The artifact pin accepts `v1` AND `v2`, not `v2` alone.** The original D3
+framing — "fails loud on a mismatch" — reads as though newer is the only acceptable
+answer. It is not. An unmigrated consumer repo's backlog is *readable*, so returning
+rc=3 and stopping the loop over it would be the pin working against the thing it
+protects. **The pin catches a format this code cannot parse; it is not a lever for
+nagging a repo into migrating.** That nudge belongs to `/gaffer:migrate`, which
+reports the layout and names `/gspec-migrate`. The still-must-fail-loud half is
+preserved and tested with an unsupported `v9`.
+
+**(b) All three layouts are read, behind one seam.** `_resolve_plan_path` /
+`_resolve_prd_path` (enumerated by `_plan_paths` / `_prd_paths`) are now the only
+places a gspec path is constructed, and the newer layout **shadows** the older for a
+given slug — `/gspec-migrate` moves rather than copies, so a slug in both is a
+half-finished migration and the destination is the truth. This is the same
+conclusion gspec reached independently: its own `plugin/hooks/floors/paths.mjs`
+accepts both forms, because the `task-immutability` block it feeds **fails open**
+and a matcher that knew one layout would stop firing with no error anywhere.
+
+The concrete trap, worth recording because it is invisible in review: every call
+site derived a slug with `basename <path> .md`, which in the folder layout yields
+the literal `"prd"` / `"tasks"` **for every feature at once**. N features read as
+one, every sidecar key and packet id resolves to nothing, and the symptom is an
+empty backlog rather than an error — the exact failure class D2's single-adapter
+rule exists to prevent, reappearing one directory deeper.
+
+**(c) `/gaffer:migrate` detects and sequences the relocation; it does not perform
+it.** This is the seam applied to migration itself: gspec owns spec **format and
+layout**, so the move is `/gspec-migrate`'s. Three independent reasons, any one
+sufficient — it must repair the relative links the move breaks in *both* directions
+(inbound links from specs that did not move are the ones missed), it must reformat
+each file to the v2 body through gspec's own `spec-migrator` agent, and it edits
+files gspec's `task-immutability` floor is watching, so a shell `mv` racing that
+floor loses intermittently. What this plugin owns is the half gspec cannot do:
+detect the layout (`FINDING=gspec-v2-layout`, `FINDING=half-moved`) and **verify
+packets still come out**.
+
+**The ordering is load-bearing and belongs in the record**: install gspec 3.1.1
+*before* running `/gspec-migrate`. A repo still on old gspec has the *old*
+`/gspec-migrate` in `.claude/commands/`, which migrates *toward* `gspec/tasks/` —
+the layout being left — and reports success doing it.
+
+**One defect this bump exposed in the plugin's own verification.** `migrate.sh
+verify` tested `plans > 0 && packets == 0` and called it a failed migration. That
+cannot separate "no task line can be parsed" from "every task is checked": both
+yield zero packets, so the alarm fired hardest on the repos that had done the most
+work — and it fired on this one, over 5 correctly-relocated plans holding 66 checked
+task lines. The discriminator is how many task lines the adapter can **read**, now
+reported by `gspec-backlog.sh plans` and computed with the same pattern `_nodes_for`
+uses. It is the same error as (a) one level down, and the shared lesson is worth
+stating once: **a zero licenses no conclusion until you know which zero it is.**
+
+Migration of this repo's own backlog under this revision: 11 PRDs and 5 plans
+relocated, 66 task lines still parsing afterwards, all 33 `.agents/task-files.yaml`
+entries still resolving (`FILES=ok stale=0 orphan=0`). Three path references inside
+**checked** blocks were deliberately left naming pre-3.x locations — they are the
+historical record of where a file was when the work happened, the immutability floor
+blocks editing them, and it is right to.
+
+Sweeps re-run for this revision: `test-gspec-backlog.sh` (257) and
+`test-migrate.sh` (234), plus the other eight, all green.
+
 ### D4 — gspec is the only supported spec source, but is not required
 
 **One spec source, three backlog sources.** Do not build or accept a second spec
@@ -556,3 +640,8 @@ report about `Promise.all`, not as a feature request) and a suggested order.
   agent has no `Skill` tool, so briefs must carry file paths
 - gspec 2.7.0: `README.md`, `docs/gspec-v2-design.md`, `docs/harness-parity.md`,
   `lib/build.js`, `plugin/hooks/floors/`, `plugin/skills/personas/gspec-engineer.md`
+- gspec 3.1.1 (the D3 revision): `lib/spec-version.js` (`SPEC_VERSION = 'v2'`),
+  `plugin/hooks/floors/paths.mjs` (the layout vocabulary, and its own both-layouts
+  rationale), `dist/claude/commands/gspec-migrate.md` (the relocation it performs),
+  `dist/claude/commands/gspec-plan.md` and `agents/feature-architect.md` (where the
+  new artifacts are written), `templates/preamble.md`

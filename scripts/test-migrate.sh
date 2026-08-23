@@ -187,9 +187,14 @@ has 'finds the write-backup ignore gap' 'FINDING=writebackup-ignore' "$out"
 [ "$rc" = 2 ] && ok 'detect exits 2 when migration is needed' || bad 'detect exit 2' "rc=$rc"
 
 printf '\n== detect: a current repo is left alone ==\n'
-R="$TMP/current"; mkdir -p "$R/gspec/tasks" "$R/gspec/features" "$R/.agents"
-printf -- '---\nspec-version: v1\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a.md"
-printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+# "Current" means the gspec 3.x feature-folder layout at spec-version v2. This
+# fixture was a 2.x repo and had to change with the pin: a repo that would now
+# correctly report the gspec-v2-layout finding is not the right fixture for
+# "nothing to do", and leaving it would have made every future assertion in this
+# section pass against a repo the script has something to say about.
+R="$TMP/current"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
 printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
@@ -197,6 +202,82 @@ has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
 out="$("$MIG" plan "$R" 2>&1)"
 has 'plan says there is nothing to do' 'Nothing to do' "$out"
+out="$("$MIG" verify "$R" 2>&1)"
+has 'verify says the layout is current' 'every plan is in the gspec 3.x feature-folder layout' "$out"
+has 'and the backlog still yields a packet' '1 plan file(s), 1 task line(s) read -> 1 unchecked packet(s)' "$out"
+
+# =============================================================================
+printf '\n== detect: the gspec 3.x layout is REPORTED, never applied ==\n'
+# The decision this pins: /gaffer:migrate detects the pre-3.x layout and names
+# /gspec-migrate; it does not move the files. gspec owns spec format and layout
+# (ADR 0020), and the move needs link repair and per-file reformatting that a
+# shell script cannot do. A future edit that "helpfully" adds the move here
+# should fail this case rather than pass quietly.
+R="$TMP/v2layout"; mkdir -p "$R/gspec/tasks" "$R/gspec/features" "$R/.agents"
+printf -- '---\nspec-version: v1\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a.md"
+printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'the pre-3.x layout is a finding'  'FINDING=gspec-v2-layout' "$out"
+has 'it names the destination layout'  'gspec/features/<slug>/' "$out"
+has 'it names the remedy'              '/gspec-migrate' "$out"
+has 'and says this script will not do it' 'deliberately does not do' "$out"
+# Worded as "your gspec commands moved on", NOT as breakage: the adapter reads
+# every layout, so an unmigrated repo's loop works fine and saying otherwise
+# would be false.
+has 'the reason given is /gspec-plan divergence, not loop breakage' 'WRITES to the new one' "$out"
+
+out="$("$MIG" apply "$R" --force 2>&1)"
+[ -f "$R/gspec/tasks/a.md" ] && ok 'apply leaves the pre-3.x plan exactly where it is' \
+  || bad 'apply must not relocate to the feature folder' "$(find "$R/gspec" -type f)"
+[ ! -e "$R/gspec/features/a/tasks.md" ] && ok 'and creates no feature folder' \
+  || bad 'apply created a feature folder' "$(find "$R/gspec" -type f)"
+[ -f "$R/gspec/features/a.md" ] && ok 'and leaves the flat PRD in place' \
+  || bad 'apply moved the PRD' "$(find "$R/gspec" -type f)"
+out="$("$MIG" verify "$R" 2>&1)"; rc=$?
+has 'verify reports the split layout'  'still pre-3.x' "$out"
+# Informational, not a failure: nothing is wrong with this repo.
+has 'and still goes green'             'VERIFY=ok' "$out"
+[ "$rc" = 0 ] && ok 'verify exits 0 on a readable pre-3.x repo' || bad 'verify exit 0' "rc=$rc"
+
+# =============================================================================
+printf '\n== detect: a HALF-moved feature is its own finding ==\n'
+# The shape /gspec-migrate leaves if it is interrupted. Both directions matter,
+# and the first is the dangerous one: completion is DERIVED from the PRD, so a
+# folder with a plan and no PRD can never read as done, and everything depending
+# on that feature stays blocked forever.
+R="$TMP/halfmoved"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'a plan with no PRD is flagged'    'FINDING=plan-without-prd' "$out"
+has 'and names the file that is missing' 'no prd.md' "$out"
+has 'and says why it is not cosmetic'  'can never read as done' "$out"
+# It is a SEPARATE finding from half-moved, and the wording must not assert a
+# cause the script cannot observe. A live consumer repo has a deliberate,
+# roadmap-documented infra plan with no PRD and every task checked; the old
+# wording ("the plan relocated and the PRD did not", "everything depending on it
+# stays blocked") was false on both counts there. State the fact, offer both
+# readings, name neither as the truth.
+hasnt 'it is not reported as half-moved'  'FINDING=half-moved' "$out"
+has 'the interrupted-migration reading'   'interrupted /gspec-migrate' "$out"
+has 'and the deliberate-infra reading'    'deliberate infra plan' "$out"
+hasnt 'it never asserts the PRD moved'    'the plan relocated and the PRD did not' "$out"
+hasnt 'and never claims dependents block' 'everything depending on it' "$out"
+
+# The reverse: PRD moved, plan did not. Harmless today, but the next /gspec-plan
+# writes to the folder and the repo ends up with two plans for one feature.
+R="$TMP/halfmoved2"; mkdir -p "$R/gspec/features/a" "$R/gspec/tasks" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v1\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/tasks/a.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'a stranded plan is flagged'       'FINDING=half-moved' "$out"
+has 'and names both halves'            'gspec/tasks/a.md' "$out"
+has 'and says nothing is broken yet'   'nothing breaks' "$out"
 
 printf '\n== apply refuses to run on a dirty tree ==\n'
 R="$TMP/dirty"; mk_repo "$R" legacy-a
@@ -241,7 +322,12 @@ printf '\n== apply: frontmatter is stamped only where missing ==\n'
 R="$TMP/fm"; mk_repo "$R" legacy-a
 out="$("$MIG" apply "$R" 2>&1)"
 has 'stamping is reported'       'STAMPED=1' "$out"
-has 'spec-version is stamped'    'spec-version: v1' "$(head -3 "$R/gspec/tasks/alpha.md")"
+# The NEWEST supported version, not the first. GSPEC_SPEC_VERSIONS is a READ
+# set ("v1 v2") and taking $1 from it stamped v1 the moment the pin widened --
+# producing a file gspec's own spec-integrity floor (which demands v2)
+# immediately flags. A file with no marker is being written now, so it is
+# written current.
+has 'spec-version is stamped current' 'spec-version: v2' "$(head -3 "$R/gspec/tasks/alpha.md")"
 has 'feature slug is stamped'    'feature: alpha' "$(head -4 "$R/gspec/tasks/alpha.md")"
 has 'the version pin now passes' 'specs pass the gspec version pin' "$out"
 
@@ -265,10 +351,31 @@ printf -- '---\nspec-version: v1\n---\n- [ ] **P0** — open\n' > "$R/gspec/feat
 # A plan whose "tasks" are prose bullets: relocated, unreadable, and NOT done.
 printf -- '---\nspec-version: v1\nfeature: a\n---\n## Plan\n- do a thing\n- do another\n' > "$R/gspec/tasks/a.md"
 out="$("$MIG" verify "$R" 2>&1)"; rc=$?
-has 'zero packets is called out'    'produce ZERO packets' "$out"
+has 'zero packets is called out'    'NO task line could be read' "$out"
 has 'and named as the real failure' 'nothing to do' "$out"
+has 'the task-line count is zero'   '0 task line(s) read' "$out"
 has 'verify reports problems'       'VERIFY=problems' "$out"
 [ "$rc" = 3 ] && ok 'verify exits 3 on a problem' || bad 'verify exit 3' "rc=$rc"
+
+# =============================================================================
+printf '\n== verify: a FINISHED backlog is not an unreadable one ==\n'
+# Both yield zero packets, and the old check could not tell them apart -- so it
+# raised "this is the failure the migration exists to catch" on the repos that
+# had done the MOST work. Caught on this plugin's own migration: 5 relocated
+# plans, 66 task lines, every one checked, reported as a failed migration.
+#
+# The discriminator is how many task lines the adapter could READ. Zero read is
+# the real failure; read-and-all-checked is a complete backlog.
+R="$TMP/finished"; mkdir -p "$R/gspec/features/a"
+printf -- '---\nspec-version: v2\n---\n- [x] **P0**: shipped\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n## Plan\n- [x] **T1** **P0** done\n- [x] **T2** **P0** also done\n' > "$R/gspec/features/a/tasks.md"
+out="$("$MIG" verify "$R" 2>&1)"; rc=$?
+has 'the task lines were read'       '2 task line(s) read' "$out"
+has 'and it is called complete'      'the planned backlog is complete' "$out"
+has 'and explicitly NOT a parse failure' 'Not a parse failure' "$out"
+hasnt 'the failure alarm does not fire' 'NO task line could be read' "$out"
+has 'verify goes green'              'VERIFY=ok' "$out"
+[ "$rc" = 0 ] && ok 'verify exits 0 on a finished backlog' || bad 'verify exit 0' "rc=$rc"
 
 printf '\n== apply: report conventions are stamped into CLAUDE.md ==\n'
 # The consumer-facing half of the report-format fix. A repo whose CLAUDE.md does not
@@ -974,6 +1081,47 @@ hasnt 'and never reads dead from prose alone (a substring match would say dead)'
   'ENTRY=f-prose PACKETS=yes VERDICT=dead' "$out"
 has   'a packet with a REAL trailer commit still reads dead (the anchor still matches the real thing)' \
   'ENTRY=f-real PACKETS=yes VERDICT=dead' "$out"
+
+# =============================================================================
+printf '\n== the runbook must not drift from the pin ==\n'
+# docs/gspec-<version>-migration.md is the HUMAN sequence; skills/migrate/SKILL.md
+# is what the agent runs. Two documents by design -- different readers, different
+# jobs -- but they share exactly one hard fact, the pinned gspec version, and a
+# runbook naming a stale version is worse than no runbook: it gets followed.
+#
+# This is the only mechanical tie between them, and deliberately so. The rest of
+# the runbook is prose no test can judge; the version is a literal, so a pin bump
+# that forgets this file fails here instead of rotting until someone runs an old
+# `npx gspec@...` from it.
+RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null | head -1)"
+PINNED="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+SPECVERS="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p')"
+if [ -n "$RB" ] && [ -f "$RB" ]; then
+  ok 'the migration runbook exists'
+  RB_TXT="$(cat "$RB")"
+  # Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
+  # on failure, and the got value here is a 200-line document. Three of those in
+  # a CI log buries the one line that says what is wrong.
+  rb_has() { # rb_has <name> <literal>
+    case "$RB_TXT" in *"$2"*) ok "$1" ;;
+      *) bad "$1" "runbook does not contain: $2   ($RB)" ;; esac
+  }
+  rb_has 'it names the pinned gspec version'       "gspec@$PINNED"
+  rb_has 'and quotes that pin in the check output' "GSPEC_PINNED_VERSION=$PINNED"
+  rb_has 'and the supported spec-version set'      "GSPEC_SPEC_VERSIONS=$SPECVERS"
+  # Its filename carries the version, so a bump must rename it -- otherwise a
+  # file called ...-3.1.1-... describes 3.2 and every link to it lies.
+  case "$RB" in *"$PINNED"*) ok 'the runbook filename matches the pin' ;;
+    *) bad 'the runbook filename matches the pin' "no $PINNED in: $RB" ;; esac
+  # The install-before-migrate order is the one instruction whose loss silently
+  # costs a second migration, so pin it by CONTENT, not just by version string.
+  rb_has 'it keeps the install-before-migrate hazard' 'the exact layout you are leaving'
+  # And the check that separates a broken migration from a finished backlog --
+  # the defect this plugin actually shipped once.
+  rb_has 'it tells the reader to read the task-line count' 'task line(s) read'
+else
+  bad 'the migration runbook exists' "no docs/gspec-*-migration.md found"
+fi
 
 printf '\n----------------------------------------\n'
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then

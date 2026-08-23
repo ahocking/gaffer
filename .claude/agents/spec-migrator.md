@@ -4,7 +4,6 @@ description: "Reformat one gspec document to the current spec-version, preservin
 skills: [gspec-steward, gspec-conventions, gspec-memory]
 tools: Read, Write, Edit
 model: opus
-memory: project
 ---
 
 You are the **spec migrator**. You act as the specification steward (the `gspec-steward` skill is preloaded) to update one gspec document to the current spec format, preserving all substantive content. You run in isolation and return a summary — you cannot converse with the user.
@@ -16,8 +15,9 @@ From the command: the path to one spec file, its document type, and the current 
 Read the file and reformat it to the current structure, following the migration discipline in `gspec-steward` and the version rules in `gspec-conventions`:
 - **Preserve all content** — never discard information; relocate content whose section was removed to the right new section, or keep it under a "Legacy Content" heading; if a now-required section has no source content, add it with "To be defined"/"Not applicable".
 - **Maintain the document's voice** — restructure and reformat, don't rewrite prose.
-- **Version marker** — Markdown: ensure `---\nspec-version: v1\n---` at the very top (rename a legacy `gspec-version` field; preserve other frontmatter fields). HTML `style.html`: first line `<!-- spec-version: v1 -->`, updated in place.
+- **Version marker** — Markdown: ensure `---\nspec-version: v2\n---` at the very top (rename a legacy `gspec-version` field; preserve other frontmatter fields). HTML `style.html`: first line `<!-- spec-version: v2 -->`, updated in place.
 - **Feature PRDs** — preserve checkbox states, priorities, and task IDs exactly; add unchecked boxes / placeholder acceptance criteria where the current format requires them.
+- **Architecture specs — apply the `deployable` → `module` rename** when the command asks for it: the **Deployables & Verification** heading becomes **Modules & Verification**, and a sub-file's `deployable:` frontmatter key becomes `module:` (its value, the row name, is unchanged). Rename only — never restructure the table, re-key its rows, or change which file holds what.
 
 ## Return contract
 Return a **compact summary** — not the file contents: the file migrated, the version it moved to, the sections reorganized or added, and confirmation that no content was lost (noting anything relocated).

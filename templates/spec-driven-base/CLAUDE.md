@@ -4,8 +4,8 @@
 
 This repository uses a **gspec-driven development workflow** (gspec + ADRs),
 coordinated from Claude Code by the `gaffer` plugin. Execution runs off
-gspec's per-feature plans (`gspec/tasks/<slug>.md`), sequenced by the plugin-owned
-`.agents/roadmap.yaml`; Spec Kit was removed (ADR 0013).
+gspec's per-feature plans (`gspec/features/<slug>/tasks.md`), sequenced by the
+plugin-owned `.agents/roadmap.yaml`; Spec Kit was removed (ADR 0013).
 
 **`spec-setup.md` at the repo root is the authoritative setup brief.** It defines
 the workflow, artifact ownership, the execution backlog, ADR rules, gspec integration
@@ -25,7 +25,9 @@ Before planning or implementing non-trivial changes, read:
 4. `gspec/practices.md`
 5. `gspec/style.md` or `gspec/style.html`, when UI is involved
 6. `gspec/architecture.md`, when architecture is involved
-7. Relevant `gspec/features/*.md` (and the matching `gspec/tasks/*.md`)
+7. The relevant feature folders, `gspec/features/<slug>/` — `prd.md` (what and
+   why), `tasks.md` (the ordered plan), and `arch.md` / `design.html` where they
+   exist
 8. `.agents/roadmap.yaml`, when sequencing or picking the next feature
 9. Relevant `docs/adr/*.md`
 10. `.agents/domain-rules.md` — this repo's domain guardrails and risk boundaries
@@ -33,7 +35,7 @@ Before planning or implementing non-trivial changes, read:
 Artifact ownership:
 
 - gspec owns product context, design, stack, practices, architecture overview,
-  research, feature PRDs, the execution backlog (`gspec/tasks/<slug>.md`),
+  research, feature PRDs, the execution backlog (`gspec/features/<slug>/tasks.md`),
   analysis, and audit.
 - ADRs own durable architectural decisions.
 
@@ -55,9 +57,10 @@ Both spec frameworks install as **Claude Code Skills** under `.claude/skills/`:
   `gspec/` exists, route requests through the matching gspec skill instead of
   producing the equivalent output ad hoc — even for casual phrasing like "just
   build it". The gspec installer appends its own usage guide to this file below.
-- **Execution backlog** — **gspec-owned**: `gspec/tasks/<slug>.md`, one ordered,
-  dependency-aware task plan per feature (stable `T<n>` ids, `deps:`, `covers:`;
-  a checked task is immutable). Tasks may carry `[GATE:*]`/`[STOP:*]` tags so the
+- **Execution backlog** — **gspec-owned**: `gspec/features/<slug>/tasks.md`, one
+  ordered, dependency-aware task plan per feature (stable `T<n>` ids, `deps:`,
+  `covers:`; a checked task is immutable). Everything about a feature lives in
+  that one folder alongside its `prd.md`. Tasks may carry `[GATE:*]`/`[STOP:*]` tags so the
   loop knows its hard/soft gate split.
 - **Cross-feature sequencing** — **plugin-owned**: `.agents/roadmap.yaml`
   (`order` + `why`). gspec has no feature-level ordering, so the plugin supplies
@@ -172,12 +175,12 @@ explicitly to force that chain. Default routing:
 
 | The request is… | Route to |
 | --- | --- |
-| Add / build / change a feature or behavior | The **chief-engineer**: it scopes a task packet, delegates implement → test → review to the specialist agents, and stops for approval before any commit. For a whole feature already planned in `gspec/tasks/<slug>.md`, use `/gaffer:run-loop`. |
+| Add / build / change a feature or behavior | The **chief-engineer**: it scopes a task packet, delegates implement → test → review to the specialist agents, and stops for approval before any commit. For a whole feature already planned in `gspec/features/<slug>/tasks.md`, use `/gaffer:run-loop`. |
 | Design / lay out / improve a screen or flow — "make this look right", "the UI feels off", "design the X page" | The **ux-designer**: it studies comparable products, iterates against the rendered UI through a preview loop, and logs decisions in `.agents/ux-references.md`. On a **web** surface it boots the app via `.claude/launch.json`; on a **Unity** surface (`ux.preview_mode: unity`) it drives the already-open Unity Editor through the Unity MCP. |
 | "Review what I changed" / check uncommitted work | `/gaffer:review-change`. |
-| Work through the backlog / "do the next tasks" / an unattended stretch | `/gaffer:run-loop` (reads `.agents/run-state.yaml`, else `.agents/roadmap.yaml` → `gspec/tasks/<slug>.md`); `/gaffer:pause` / `/gaffer:resume` at checkpoints. |
+| Work through the backlog / "do the next tasks" / an unattended stretch | `/gaffer:run-loop` (reads `.agents/run-state.yaml`, else `.agents/roadmap.yaml` → `gspec/features/<slug>/tasks.md`); `/gaffer:pause` / `/gaffer:resume` at checkpoints. |
 | Run the backlog **in parallel** / "do as much as possible at once" / a wide independent backlog | `/gaffer:build-packet-dependency-tree` then `/gaffer:run-loop --parallel` — runs the max number of file-disjoint packets concurrently in git worktree lanes, integrating green lanes at `full-autonomy` (ADR 0016). Opt-in; the default loop is sequential. |
-| Author a spec / PRD / design — "spec out X", "should we…", "design the…" | Delegate to the **architect**, which drives the spec tooling for you — the `gspec-*` skills — and writes the PRD, the `gspec/tasks/<slug>.md` plan, the `.agents/roadmap.yaml` entry, and any ADR in place. The human states intent; they do not hand-run the spec commands. |
+| Author a spec / PRD / design — "spec out X", "should we…", "design the…" | Delegate to the **architect**, which drives the spec tooling for you — the `gspec-*` skills — and writes the PRD, the `gspec/features/<slug>/tasks.md` plan, the `.agents/roadmap.yaml` entry, and any ADR in place. The human states intent; they do not hand-run the spec commands. |
 | Ambiguous, multi-step, or cross-cutting | The **chief-engineer**: decompose, decide what needs research / spec / plan / implementation / review, then route. |
 | A quick question, lookup, or explanation | Just answer — no chain needed. |
 

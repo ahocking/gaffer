@@ -6,13 +6,19 @@
 // whether a path is subject to the check and, if so, returns any violation
 // messages. Entry points read the file and signal the violation.
 
-export const SPEC_VERSION = 'v1'; // keep in sync with SPEC_VERSION in scripts/build.js
+// A LITERAL copy of lib/spec-version.js — floors are copied standalone into
+// .claude/hooks/floors/ and have no lib/ to import from. test/spec-version.test.mjs
+// fails if this drifts.
+export const SPEC_VERSION = 'v2';
 
 // Which paths this floor governs. Only docs under gspec/, excluding the
 // read-only design/ mockups and any README.
 export function appliesToSpecIntegrity(rel) {
   const r = String(rel).replace(/\\/g, '/');
   if (!r.startsWith('gspec/')) return false;
+  // gspec/design/ is retired as a gspec concept (a feature's design.html
+  // replaces it), but the exclusion stays: a project that still has mockups
+  // there should not suddenly be nagged for a spec-version they never had.
   if (r.startsWith('gspec/design/')) return false;
   const base = r.split('/').pop();
   if (base.toLowerCase() === 'readme.md') return false;

@@ -30,8 +30,11 @@ allowed_paths:
     - "docs/**"
     - "gspec/**"
   specs:
+    # gspec 3.x keeps a feature's whole folder under here -- prd.md, tasks.md,
+    # and arch.md / design.html where they exist -- so this one glob covers what
+    # a separate `gspec/tasks/**` entry used to. Add that entry back only if this
+    # repo still has features in the pre-3.x flat layout.
     - "gspec/features/**"
-    - "gspec/tasks/**"
     - ".agents/roadmap.yaml"
 
 # ── UX preview loop ──────────────────────────────────────────────────────────

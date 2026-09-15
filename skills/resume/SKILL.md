@@ -144,6 +144,9 @@ backlog), there is genuinely nothing to resume — say so and stop.
   torn-write orphan commit that landed green but was never recorded. **Do not
   trust the tree — reconcile it in step 2 before doing anything else.**
 
+**Keep this reading** — step 4's sweep needs to know whether it read `paused`
+**here**, before step 2 overwrites `status` to `running`.
+
 ## 2. Re-establish the working tree at the green checkpoint
 
 Switch to the packet's feature branch in the local checkout (idempotent —
@@ -164,7 +167,8 @@ Act on the `DECISION=` it prints:
 - **`discard`** — uncommitted scratch sits on top of green. Set it aside
   non-destructively with `git stash --include-untracked` (recoverable — note the
   stash ref), leaving a clean tree at `last_green_commit`, then continue from the
-  cursor.
+  cursor. **Record no outcome here** — nothing finished; whether the cursor's open
+  start reads `interrupted` is step 4's sweep to decide.
 - **`adopt`** — a single clean orphan commit tagged `[orch packet:<cursor>]` is one
   ahead of the recorded green SHA: a **torn write** (the packet committed but the
   crash beat the run-state update). **Re-verify build+tests are green on that
@@ -177,8 +181,10 @@ Act on the `DECISION=` it prints:
   codes as §3.4 (`CHECKED=none` is skipped, not failed, for a non-gspec backlog;
   exit 4 is drift — note it, do not halt). Commit that flip as its own small
   commit if you had to make it — the orphan commit is already recorded, so
-  amending it would rewrite history. Advance `cursor`, and write run-state
-  atomically via `runstate.sh write`. The packet is done — do not redo it.
+  amending it would rewrite history. **Attest the outcome** — it landed, just
+  was not recorded: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh record-outcome
+  <cursor> green`. Advance `cursor`, and write run-state atomically via
+  `runstate.sh write`. The packet is done — do not redo it.
 - **`escalate`** — diverged history, multiple unexplained commits, or an untagged /
   mismatched orphan. **Stop and ask the human.** Do not discard commits you cannot
   account for.
@@ -225,10 +231,38 @@ you just loaded is the only thing that does. Where the tree needed reconciling (
 say so in one line — whether anything was adopted or set aside, and whether the
 resumed state matches where they think they left off.
 
+**Then sweep before recording the cursor packet** (T3, T8) — this is the sequential
+path only (a `--parallel` resume was already redirected above): run
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
+`--paused-cursor <cursor>` **only** if `status` read `paused` in step 1 — the
+cursor packet is the one this session is about to continue, not the one the sweep
+should close. It prints one `OPEN=<id>` line per open packet. If it printed any,
+comma-join the ids (the `paste -sd,` idiom at run-loop/SKILL.md :183–186) into one
+string and resolve them —
+`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
+prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
+`FINISHED=<csv>` line; the `gone` set is the ids whose second column reads `gone`.
+Comma-join THOSE into their own string and pass them to `--gone` (skip both
+`task-status` and `--gone` when `--list` printed nothing: `task-status` refuses an
+empty id list). Then sweep for real, same `--paused-cursor`/`--gone`:
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor <cursor>
+--gone "<id,id,...>"`. Each `SWEPT=<id>` it prints names a packet to report by
+title in the next check-in or stop report (`templates/report-templates.md` shapes
+A/B) — the kickoff above needs nothing, since a sweep always runs after it.
+
+`Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3 for its start and
+outcome steps — the same fresh-start/continuation split and the five exclusive
+triggers govern the cursor packet and every packet after it. Record the cursor
+packet now: `runstate.sh record-start <cursor> --continue` when the same
+paused-on-entry reading holds, else `runstate.sh record-start <cursor>` (a fresh
+start — its prior attempt, if any, already closed with a recorded outcome).
+
 Then pick up the packet at `backlog.cursor` and
 continue the implement → test → review → commit-on-branch loop under the session's
-autonomy level. Honor the same gates as before: the Chief Engineer owns routine
-commits above `interactive` (and merge/rebase/push onto non-`main` branches at
-`full-autonomy`), verifying green build+tests itself; hard gates — `main`, releases,
-migrations, secrets, deploys, the danger floor — still stop for the human. Keep
-`.agents/run-state.yaml` current as packets land, so the next pause is cheap.
+autonomy level, from §3.2 (Scope) on — §3.1's branch/sweep/attest-start step is
+already done above for this packet. Honor the same gates as before: the Chief
+Engineer owns routine commits above `interactive` (and merge/rebase/push onto
+non-`main` branches at `full-autonomy`), verifying green build+tests itself; hard
+gates — `main`, releases, migrations, secrets, deploys, the danger floor — still
+stop for the human. Keep `.agents/run-state.yaml` current as packets land, so the
+next pause is cheap.

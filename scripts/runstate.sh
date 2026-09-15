@@ -1096,6 +1096,28 @@ _rs_check_pkt_id() {
   esac
 }
 
+# --- shared: resolve the MAIN checkout root from any lane worktree -----------
+# --git-common-dir points at the main repo even from a lane worktree, so every
+# lane resolves to the same one log directory. Prints the root and returns 0,
+# or returns 1 with nothing printed (not a git repo at all). Factored out of
+# _rs_append_outcomes_line (loop-measurement T3) so sweep-open can enumerate
+# every session's outcomes log with the exact same resolution its writer uses,
+# rather than re-deriving it and risking the two falling out of step.
+_rs_main_checkout_root() {
+  local gcd rel
+  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -z "$gcd" ]; then
+    # Older git without --path-format=absolute: fall back to the plain (possibly
+    # relative) form and resolve it ourselves. Only `cd` into it when git actually
+    # produced a path — `cd "."` on a FAILED git call would silently resolve to
+    # the current directory and misreport a non-git directory as a valid repo.
+    rel="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    [ -n "$rel" ] && gcd="$(cd "$rel" 2>/dev/null && pwd || true)"
+  fi
+  [ -n "$gcd" ] || return 1
+  printf '%s\n' "$(dirname "$gcd")"
+}
+
 # --- shared: append one line to the ATTESTED-outcomes log --------------------
 # Append-only, one line per packet boundary, to .agents/metrics/outcomes/<session>.jsonl.
 # The collector reconstructs packets from green-commit trailers, so it structurally
@@ -1107,10 +1129,10 @@ _rs_check_pkt_id() {
 # were left on commit trailers instead of migrating run-state's schema (ADR 0019).
 # Append-only + last-wins means a retried packet correctly ends up at its final state.
 #
-# Resolves the MAIN checkout the same way the hooks do: --git-common-dir points at
-# the main repo even from a lane worktree, so every lane records into one log. On any
-# failure (not a git repo, cannot create the dir, cannot append) this prints
-# RECORDED=no + REASON=... and returns 1 — non-fatal by design, callers must not die.
+# Resolves the MAIN checkout the same way the hooks do (_rs_main_checkout_root), so
+# every lane records into one log. On any failure (not a git repo, cannot create the
+# dir, cannot append) this prints RECORDED=no + REASON=... and returns 1 — non-fatal
+# by design, callers must not die.
 #
 # CALLERS MUST INVOKE THIS IN AN `||` OR `if` CONTEXT, NEVER BARE. This file runs
 # under `set -euo pipefail`, which does not apply inside a condition — `foo || bar`
@@ -1120,18 +1142,8 @@ _rs_check_pkt_id() {
 # it that way in any new caller.
 _rs_append_outcomes_line() {
   local sess="$1" line="$2"
-  local gcd main_root dir rel
-  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [ -z "$gcd" ]; then
-    # Older git without --path-format=absolute: fall back to the plain (possibly
-    # relative) form and resolve it ourselves. Only `cd` into it when git actually
-    # produced a path — `cd "."` on a FAILED git call would silently resolve to
-    # the current directory and misreport a non-git directory as a valid repo.
-    rel="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-    [ -n "$rel" ] && gcd="$(cd "$rel" 2>/dev/null && pwd || true)"
-  fi
-  [ -n "$gcd" ] || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 1; }
-  main_root="$(dirname "$gcd")"
+  local main_root dir
+  main_root="$(_rs_main_checkout_root)" || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 1; }
   dir="${main_root}/.agents/metrics/outcomes"
   mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 1; }
   # Same atomicity argument as the metrics hook: a single short line, O_APPEND, well
@@ -1196,11 +1208,11 @@ cmd_record_outcome() {
 # (a) a sub-second stamp and a whole-second stamp landing in the SAME second do
 #     NOT sort correctly as strings — "...:08.311Z" sorts before "...:08Z" because
 #     "." (0x2E) sorts before "Z" (0x5A) — so a reader ordering boundary/terminal
-#     records must compare PARSED times, never raw string comparison. There is
-#     already a live site doing exactly this string comparison:
-#     scripts/metrics.sh:621 filters the outcomes log with `(.ts // "") >= $ws`,
-#     where `$ws` (win_start) is always whole-second — that is a known hazard,
-#     tracked as a finding for a later packet, not fixed here.
+#     records must compare PARSED times, never raw string comparison. FIXED in
+#     scripts/metrics.sh: the outcomes-log join (T4) and the per-packet window
+#     join (I1) both compare via the shared `$JQ_TS_MS`/`ts_ms` fragment now —
+#     do not reintroduce a raw `.ts >=`/`.ts <=`/`.ts >`/`.ts <` comparison
+#     against a value that can be sub-second.
 # (b) neither jq's `fromdateiso8601` nor this file's own sibling `metrics.sh`
 #     `epoch()` helper accepts the fractional form this function writes
 #     (verified: `epoch()` returns 0 on macOS for a "...NNN Z" timestamp, while
@@ -1227,6 +1239,214 @@ cmd_record_start() {
     "$(_rs_now_ts)" "$pkt" "$sess" "$kind")"
   _rs_append_outcomes_line "$sess" "$line" || return 0
   printf 'RECORDED=yes\nPACKET=%s\nKIND=%s\n' "$pkt" "$kind"
+}
+
+# --- shared: portable ISO-8601(Z) [+ optional .fff] -> whole-second epoch ----
+# Strips an optional fractional-seconds component before handing the timestamp
+# to `date`: GNU `date -u -d` would accept the fraction fine, but the BSD/macOS
+# `-j -f "%Y-%m-%dT%H:%M:%SZ"` arm REJECTS it outright (same finding recorded
+# against metrics.sh's own `epoch()`, which returns 0 for this file's own
+# sub-second stamp on macOS) — so both arms are given the identical bare form.
+# A deliberately SEPARATE copy from metrics.sh's `epoch()`, not a shared call:
+# metrics.sh is outside this packet's allowed_files, and its helper is the one
+# already known to mishandle this exact shape. Returns 0 on anything
+# unparseable (same fail-soft contract as that sibling).
+_rs_epoch_secs() {
+  local t="${1:-}" bare
+  [ -n "$t" ] || { echo 0; return; }
+  bare="$(printf '%s' "$t" | sed -E 's/\.[0-9]+Z$/Z/')"
+  date -u -d "$bare" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$bare" +%s 2>/dev/null \
+    || echo 0
+}
+
+# --- shared: the millisecond fraction of a T1-shaped sub-second stamp --------
+# Pure string slicing, no date parsing involved — the fraction is always
+# exactly 3 digits when present (see _rs_now_ts's own comment) and simply
+# absent on a pre-T1 whole-second record, which reads as "000".
+_rs_frac_ms() {
+  local t="${1:-}" frac
+  case "$t" in
+    *.*Z)
+      frac="${t#*.}"; frac="${frac%Z}"
+      frac="${frac}000"
+      printf '%s' "${frac:0:3}"
+      ;;
+    *) printf '000' ;;
+  esac
+}
+
+# --- shared: a COMPARABLE sort key for a T1-shaped timestamp -----------------
+# epoch seconds * 1000 + the millisecond fraction, as a plain integer key.
+# sweep-open compares THIS, never the raw ts string: "...:08.311Z" sorts BELOW
+# "...:08Z" as a string ("." is 0x2E, "Z" is 0x5A), inverting the ordering
+# between a sub-second record and a whole-second one landing in the same
+# second (see the trap documented on cmd_record_start above). `10#` on the
+# fraction guards against octal interpretation of a leading-zero fraction
+# like "007".
+_rs_ts_key() {
+  local secs frac
+  secs="$(_rs_epoch_secs "$1")"
+  frac="$(_rs_frac_ms "$1")"
+  printf '%d' $(( secs * 1000 + 10#$frac ))
+}
+
+# --- shared: is $1 one of the comma-separated ids in $2? ---------------------
+_rs_in_csv() {
+  case ",$2," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# --- internal: every OPEN packet across every outcomes log -------------------
+# "Open" = the packet's LATEST start/continuation (by parsed time, across every
+# session's log — a packet can start in one session and continue in another)
+# has no terminal record at or after it. Prints one TSV row per open packet:
+#   <packet>\t<session of that latest start/continuation>\t<its raw ts>
+# so the caller (cmd_sweep_open) can write a closing record that names them,
+# per the format T3 defines (see cmd_sweep_open below). Two-stage on purpose:
+# an awk pass extracts fields with plain `index`/`substr` (no regex escaping,
+# portable to a POSIX awk — this repo has no gawk-only features anywhere), a
+# bash pass attaches the parsed-time sort key `_rs_ts_key` needs `date` for
+# (which awk cannot do portably), and a final awk pass does the two aggregation
+# passes (max boundary per packet, then "any terminal at/after it?") as plain
+# integer/string ops.
+_rs_open_packets() {
+  local dir="$1"
+  local parsed
+  parsed="$(awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    {
+      ts = field($0, "ts"); pkt = field($0, "packet")
+      if (ts == "" || pkt == "") next
+      kind = field($0, "kind")
+      if (kind != "") { print "B\t" pkt "\t" field($0, "session") "\t" ts; next }
+      outc = field($0, "outcome")
+      # "-" is a PLACEHOLDER, not real data: a terminal record session field is
+      # never read downstream (only a boundary session names the start that a
+      # closing record must carry). But a genuinely EMPTY field here would sit
+      # between two tabs, and bash read collapses a tab-adjacent empty field
+      # even with IFS set to a lone tab -- tab is always "IFS whitespace" for
+      # splitting purposes, regardless of what IFS is set to (a real bash
+      # gotcha, hit and fixed while building this). That silently shifted the
+      # ts value into sess on the next parse stage and read every terminal
+      # record as dated at epoch 0, so an already-closed packet never closed.
+      if (outc != "") { print "T\t" pkt "\t-\t" ts }
+    }
+  ' "$dir"/*.jsonl 2>/dev/null || true)"
+  [ -n "$parsed" ] || return 0
+
+  local keyed_lines=() type pkt sess ts key
+  while IFS="$(printf '\t')" read -r type pkt sess ts; do
+    [ -n "$type" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    keyed_lines+=("$(printf '%s\t%s\t%s\t%s\t%s' "$key" "$type" "$pkt" "$sess" "$ts")")
+  done <<EOF
+$parsed
+EOF
+  [ "${#keyed_lines[@]}" -gt 0 ] || return 0
+
+  printf '%s\n' "${keyed_lines[@]}" | awk -F'\t' '
+    { n++; key[n]=$1+0; type[n]=$2; pkt[n]=$3; sess[n]=$4; ts[n]=$5 }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (type[i] != "B") continue
+        p = pkt[i]
+        if (!(p in bkey) || key[i] > bkey[p]) { bkey[p] = key[i]; bsess[p] = sess[i]; bts[p] = ts[i] }
+      }
+      for (i = 1; i <= n; i++) {
+        if (type[i] != "T") continue
+        p = pkt[i]
+        if ((p in bkey) && key[i] >= bkey[p]) closed[p] = 1
+      }
+      for (i = 1; i <= n; i++) {
+        if (type[i] != "B") continue
+        p = pkt[i]
+        if (p in emitted) continue
+        emitted[p] = 1
+        if (!(p in closed)) print p "\t" bsess[p] "\t" bts[p]
+      }
+    }'
+}
+
+# --- close out packets started but never ended (loop-measurement T3) ---------
+# sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]
+#
+# For each OPEN packet (see _rs_open_packets) except the paused cursor, appends
+# a TERMINAL record — outcome=interrupted, or =abandoned for an id in --gone —
+# using the SAME terminal shape record-outcome writes (T1/T3 fix this format;
+# nothing downstream reshapes it): {"ts":...,"packet":...,"session":...,"outcome":...}.
+#
+# The record is written into the SWEEPING session's own log file (same
+# resolution/session default as every other writer here), but its `ts` and
+# `session` FIELDS are copied verbatim from the start/continuation it closes —
+# that is what "names the session and time of the start it closes" means: a
+# reader (T4) attributes the interruption to the run those fields name, not to
+# the run whose sweep physically wrote it (a later, unrelated session). Copying
+# them verbatim also makes a second sweep-open a true no-op: the closing
+# record's own key exactly equals the boundary's key it closes, so the very
+# next scan reads that packet as already closed.
+#
+# --list prints one OPEN=<id> line per open packet and appends NOTHING, so a
+# caller can resolve --gone (via the gspec adapter) before writing anything.
+cmd_sweep_open() {
+  local do_list=no cursor="" gone_csv=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --list)
+        do_list=yes; shift ;;
+      --paused-cursor)
+        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]"
+        cursor="$2"; shift 2 ;;
+      --gone)
+        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]"
+        gone_csv="$2"; shift 2 ;;
+      *)
+        die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]" ;;
+    esac
+  done
+
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || die "sweep-open: not a git repo"
+  local dir="${main_root}/.agents/metrics/outcomes"
+  [ -d "$dir" ] || return 0
+
+  local open_rows
+  open_rows="$(_rs_open_packets "$dir")"
+  [ -n "$open_rows" ] || return 0
+
+  local write_sess="${CLAUDE_CODE_SESSION_ID:-adhoc}"
+  local pkt sess ts
+  while IFS="$(printf '\t')" read -r pkt sess ts; do
+    [ -n "$pkt" ] || continue
+    [ "$pkt" = "$cursor" ] && continue
+
+    if [ "$do_list" = yes ]; then
+      printf 'OPEN=%s\n' "$pkt"
+      continue
+    fi
+
+    local outcome=interrupted
+    if [ -n "$gone_csv" ] && _rs_in_csv "$pkt" "$gone_csv"; then
+      outcome=abandoned
+    fi
+
+    local line
+    line="$(printf '{"ts":"%s","packet":"%s","session":"%s","outcome":"%s"}' "$ts" "$pkt" "$sess" "$outcome")"
+    _rs_append_outcomes_line "$write_sess" "$line" || true
+    printf 'SWEPT=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+  done <<EOF
+$open_rows
+EOF
 }
 
 # --- stamp updated_at = now (UTC), atomically -------------------------------
@@ -1686,6 +1906,7 @@ case "$cmd" in
   trim-note)     cmd_trim_note     "$@" ;;
   record-outcome) cmd_record_outcome "$@" ;;
   record-start)   cmd_record_start   "$@" ;;
+  sweep-open)     cmd_sweep_open     "$@" ;;
   add-finding)   cmd_add_finding   "$@" ;;
   drop-finding)  cmd_drop_finding  "$@" ;;
   findings)      cmd_findings      "$@" ;;

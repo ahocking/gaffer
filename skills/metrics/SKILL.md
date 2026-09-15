@@ -42,9 +42,13 @@ works from a lane worktree too), joins:
 
 - the **event spine** (`.agents/metrics/events/*.jsonl`, written by the hook) —
   scoped by default to the **newest** session log (the run you just finished),
-- **packet boundaries** derived from the `[orch packet:<id>]` commit trailers,
-  **bounded to that session's run window** so a prior run's committed packets are
-  not folded in (zero-migration; run-state is left untouched — ADR 0019 revision), and
+- **packet boundaries** derived from the `[orch packet:<id>]` commit trailers AND
+  `runstate.sh record-start`/`record-outcome`/`sweep-open` attestations
+  (loop-measurement T4) — a packet the loop started now appears even if it never
+  committed (failed, rolled-back) or was interrupted mid-run, and a pause commit's
+  trailer never implies green — all **bounded to that session's run window** so a
+  prior run's committed packets are not folded in (zero-migration; run-state is left
+  untouched — ADR 0019 revision), and
 - **token/cost** from the Claude Code transcripts (default source; **version-fragile**,
   so it **fails soft** to structural-only and stamps `token_source`),
 
@@ -66,6 +70,19 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh show <path>   # a specific packet
 
 Relay the run/window/tokens/cache-ratio, the per-role token split, and the
 per-packet table to the user.
+
+**Outcome coverage is a label, never a green count** (loop-measurement T6). The
+printed `outcome coverage: …` line reads one of three ways, and none of them may be
+softened to "all green" or hidden: `unmeasured` — this run holds no
+`record-start` boundary at all (a pre-instrumentation run, or one where the loop
+never called it) — say so and do not infer completeness from the packet count;
+`incomplete` — at least one started packet has no terminal outcome yet (an open
+pause, or a crash the next session's sweep has not reconciled) — name the count and
+the packet(s); `complete` — every started packet has a terminal outcome, which is
+**not** the same as "every packet is green" (an `interrupted`/`failed`/`rolled-back`
+outcome is just as complete as `green` — read `totals.outcome_counts` for the real
+split, and relay it, not a pass/fail summary). Relay whichever applies verbatim
+rather than paraphrasing it into "the run succeeded" or "the run is clean".
 
 This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
 the tally means "this is a run and here is its state", and there is nothing to count
@@ -119,11 +136,17 @@ Look for, and cite the figures behind, at least:
   dispatched subagents. If any appear, say so and note that the fix is behavioural:
   change effort/model at a **packet boundary**, where the context is smallest.
 - **`packets[].outcome` and `packets[].edits`** — both are `null` on runs that predate
-  the attestation, and `null` means **unmeasured, not clean**. Never infer a success
-  rate from packet rows alone: a packet exists only because it produced a green commit,
-  so failed and rolled-back work is structurally absent. Where `edits` is present,
-  `contended_files` (one file touched by more than one role) is the rework signal —
-  it separates correction from division of labour, which per-role edit counts cannot.
+  the attestation, and `null` means **unmeasured, not clean**. Before loop-measurement
+  T4 a packet existed here only because it produced a green commit, so failed and
+  rolled-back work was structurally absent — that is **no longer true** once the run
+  carries `record-start`/`record-outcome`/`sweep-open` attestations: read
+  `totals.outcome_coverage` first (`unmeasured` = this run predates the instrumentation,
+  never infer a rate from packet rows; `incomplete` = a started packet is still open,
+  name it; `complete` = every started packet has a terminal outcome, which is **not**
+  "every packet is green" — `totals.outcome_counts` has the real split, `interrupted`
+  included). Where `edits` is present, `contended_files` (one file touched by more than
+  one role) is the rework signal — it separates correction from division of labour,
+  which per-role edit counts cannot.
 - **`self_host`** — a boolean indicating whether this run measured the plugin's own
   repository (dogfooding) rather than a consumer application. Self-host and consumer
   runs must NOT be averaged together, since this repo's loop feeds the measurement

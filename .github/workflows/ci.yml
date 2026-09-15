@@ -56,6 +56,9 @@ jobs:
       - name: Report-conventions delivery sweep (L2/L3)
         run: bash scripts/test-report-conventions.sh
 
+      - name: Machine-wide spend report sweep (loop-measurement T9/T10)
+        run: bash scripts/test-spend.sh
+
       - name: Validate plugin manifest & structure (best-effort)
         run: |
           if command -v claude >/dev/null 2>&1; then

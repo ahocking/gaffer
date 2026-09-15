@@ -1,0 +1,18 @@
+{
+  "table_date": "2026-09-15",
+  "source": "platform.claude.com/docs/en/about-claude/pricing.md — every rate below is a stated table cell on that page, not derived from a multiplier. Verified 2026-09-15.",
+  "note": "API list prices in USD per MILLION tokens, used only to estimate API-equivalent spend for a subscription session. This is NOT a bill and not a claim about what a weekly allowance actually charges. The multipliers the docs also publish are 1.25x input for a 5-minute cache write, 2x input for a 1-hour cache write, and 0.1x input for a cache read -- EXCEPT Claude Fable 5.1 and Claude Mythos 5.1, whose cache reads are 0.025x (2.5%) of input. Do not re-derive cache_read from input: for claude-fable-5-1 the standard rule gives $1.00 and is wrong by 4x. Note also that claude-fable-5 and claude-fable-5-1 share input, output and both write rates and differ ONLY in cache_read, so anything keying on input price alone will misprice one of them. A model id not listed here reports its tokens as unpriced rather than $0 -- see spend.sh totals.unpriced_tokens. The pricing page carries no version stamp, so table_date above is when a human last checked it.",
+  "prices": {
+    "claude-opus-5":              { "input": 5,  "cache_write_5m": 6.25,  "cache_write_1h": 10, "cache_read": 0.50, "output": 25 },
+    "claude-opus-4-8":            { "input": 5,  "cache_write_5m": 6.25,  "cache_write_1h": 10, "cache_read": 0.50, "output": 25 },
+    "claude-opus-4-7":            { "input": 5,  "cache_write_5m": 6.25,  "cache_write_1h": 10, "cache_read": 0.50, "output": 25 },
+    "claude-opus-4-6":            { "input": 5,  "cache_write_5m": 6.25,  "cache_write_1h": 10, "cache_read": 0.50, "output": 25 },
+    "claude-sonnet-5":            { "input": 2,  "cache_write_5m": 2.50,  "cache_write_1h": 4,  "cache_read": 0.20, "output": 10 },
+    "claude-sonnet-4-6":          { "input": 3,  "cache_write_5m": 3.75,  "cache_write_1h": 6,  "cache_read": 0.30, "output": 15 },
+    "claude-haiku-4-5":           { "input": 1,  "cache_write_5m": 1.25,  "cache_write_1h": 2,  "cache_read": 0.10, "output": 5 },
+    "claude-haiku-4-5-20251001":  { "input": 1,  "cache_write_5m": 1.25,  "cache_write_1h": 2,  "cache_read": 0.10, "output": 5 },
+    "claude-fable-5-1":           { "input": 10, "cache_write_5m": 12.50, "cache_write_1h": 20, "cache_read": 0.25, "output": 50 },
+    "claude-fable-5":             { "input": 10, "cache_write_5m": 12.50, "cache_write_1h": 20, "cache_read": 1.00, "output": 50 },
+    "claude-mythos-5-1":          { "input": 10, "cache_write_5m": 12.50, "cache_write_1h": 20, "cache_read": 0.25, "output": 50 }
+  }
+}

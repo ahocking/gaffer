@@ -49,6 +49,11 @@
 # that proved wrong, a dependency discovered — add ONE `⚠️ **Worth knowing** — …`
 # line after the lanes. It is not a place to restate what landed, and it is not the
 # findings index (that lives in run-state and is read on request).
+#
+# A sweep runs before every start/continuation (loop-measurement T8). When it closed
+# any packets, add ONE line naming each by title and id:
+#
+#   > ⚠️ **Picked up from last time** — <Title> (`<id>`) swept as interrupted
 
 # Worked example — parallel wave, one lane asking:
 #
@@ -108,6 +113,11 @@
 # `⬚ Queued` collapses: untouched packets with no blockers are a count and a list of
 # titles on one line, not a section of their own lines. If everything remaining is
 # blocked, omit it entirely.
+#
+# A sweep runs before every start/continuation (loop-measurement T8). When it closed
+# any packets, add ONE line naming each by title and id, after `✅ Shipped`:
+#
+#   > ⚠️ **Picked up from last time** — <Title> (`<id>`) swept as interrupted
 
 # Worked example:
 #

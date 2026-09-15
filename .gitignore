@@ -51,9 +51,21 @@ scratch/
 # ADR 0009 reasons as run-state (the loop's `git add -A` / `git stash -u` must
 # never sweep or commit it, and it must not dirty the tree reconcile inspects).
 # The assembled run-metrics.json is a portable single file — archive a run by
-# copying it out, not by committing this live directory.
+# copying it out, not by committing this live directory. Also covers
+# .agents/metrics/driver-mode/<session>.jsonl (thin-loop-driver T3).
 .agents/metrics/
 .agents/metrics*
+
+# The loop driver's own run directories (thin-loop-driver T3/T7): the
+# session-keyed driver-mode mark (.agents/driver-mode/<session-id>, cleared on
+# its own session's SessionStart startup/resume) and .agents/loop/<run_id>/
+# (handoff files, script-written result files, the routing log — T7/T8/T9).
+# Local run bookkeeping, NOT product history; same ADR 0009 reasons as
+# run-state.yaml above, including that an UNignored entry here would be swept
+# by the pause path's `git stash --include-untracked` and read by `reconcile`
+# in `git status --porcelain` as scratch sitting on the green checkpoint.
+.agents/driver-mode/
+.agents/loop/
 
 # gspec build run-state — transient driver bookkeeping, not product history.
 # The adapter reads `.gspec/build/status.json` for the two-drivers interlock

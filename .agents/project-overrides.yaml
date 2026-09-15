@@ -106,3 +106,8 @@ bypass-ask-tier: true
 # The non-main integration branch (ADR 0009). Packets branch `orch/<task-id>` from
 # here and, at full-autonomy, merge back into it. main is human-gated regardless.
 integration_branch: develop
+
+# How many `fix`/`retry` attempts `runstate.sh route` allows a packet before
+# routing to the escalation decider (thin-loop-driver T9). 1 when missing,
+# invalid, or 0.
+# packet_attempts: 1

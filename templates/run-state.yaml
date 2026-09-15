@@ -42,6 +42,13 @@ status: running
 # ISO-8601 UTC of the last write. Informational — `status` is the crash signal.
 updated_at: <YYYY-MM-DDThh:mm:ssZ>
 
+# The run's own identity (thin-loop-driver T7) — minted ONCE by `runstate.sh
+# begin-run` and kept across a resume or a compaction, since a run spans
+# sessions. It names the run's own directory, .agents/loop/<run_id>/, where
+# handoff files, script-written result files (T8) and the routing log (T9)
+# live. Absent until the first `begin-run` call; never write it by hand.
+run_id: <run-id>
+
 # The feature branch this run lives on, in the single local checkout. Never
 # main/master.
 branch: orch/<task-id>

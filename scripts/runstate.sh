@@ -164,6 +164,67 @@
 #                                    exists, else PAUSE=0. Always exit 0 — it is
 #                                    a query.
 #
+# Loop driver mode (thin-loop-driver T3/T7/T8/T9, ADR 0028). New record formats
+# that must NOT go into the outcomes log above (`_rs_open_packets` reads any
+# record carrying `kind` there as a start):
+#   driver-mode <enter|exit|status> [session-id]
+#                                    session defaults to $CLAUDE_CODE_SESSION_ID.
+#                                    `enter --model <m> --effort <e|unknown>
+#                                    --threshold <n|unknown>` writes the mark
+#                                    .agents/driver-mode/<session> that
+#                                    hooks/guard.sh (T5) refuses a main-thread
+#                                    write against, and appends an enter record
+#                                    to .agents/metrics/driver-mode/<session>.jsonl.
+#                                    `exit` removes the mark (idempotent) and
+#                                    appends an exit record. `status` prints
+#                                    DRIVER_MODE=on|off.
+#   begin-run <run-state>            mints a sortable `run_id` into run-state
+#                                    ONLY when absent (a resume keeps the
+#                                    existing one — a run spans sessions),
+#                                    creates .agents/loop/<run_id>/, and removes
+#                                    every OTHER run directory except the
+#                                    newest previous one. Prints RUN_ID=,
+#                                    RUN_DIR=, and one REMOVED= per directory
+#                                    deleted.
+#   handoff <run-state> <packet-id> --tier <tier> --agent <agent>
+#                                    writes stdin atomically to
+#                                    .agents/loop/<run_id>/<packet-id>/handoff.md,
+#                                    headed by the packet id, a title, the
+#                                    tier and the agent. The title is the
+#                                    piped body's `TEXT=` line when one
+#                                    exists (gspec-backlog.sh handoff's own
+#                                    shape), else its first line that is not
+#                                    a bare `KEY=value` line, else the packet
+#                                    id itself. Refuses (HANDOFF=refused) a
+#                                    packet whose latest routing record in
+#                                    this run's routing.jsonl is
+#                                    `hand-off-feature` (T9).
+#   write-result <run-state> <path> --status "<line>"
+#                                    atomically writes the (newline-collapsed)
+#                                    status line followed by stdin to <path>.
+#                                    Refuses any <path> resolving outside the
+#                                    CURRENT run directory, checked lexically
+#                                    (no filesystem access before the
+#                                    containment decision, so a refused write
+#                                    never touches disk outside the run dir).
+#   route <run-state> <packet-id> <token> [--status "<line>"]
+#                                    appends a routing record to
+#                                    .agents/loop/<run_id>/routing.jsonl (never
+#                                    the outcomes log) and prints one
+#                                    ACTION=land|attempt|decider|discard-advance|stop
+#                                    with ATTEMPTS=/LIMIT=. `fix` and `retry`
+#                                    share ONE attempt pool, counted since the
+#                                    packet's latest kind=start record (a
+#                                    kind=continue record does NOT reset it);
+#                                    the limit is `packet_attempts` in
+#                                    .agents/project-overrides.yaml (1 when
+#                                    missing/invalid/0). A `retry` past the
+#                                    limit refuses as `stop` with a blocking
+#                                    question, rather than dispatching the
+#                                    decider again — `retry` IS the decider's
+#                                    own return value, so looping on it could
+#                                    never terminate.
+#
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
 # =============================================================================
@@ -1094,6 +1155,15 @@ _rs_check_pkt_id() {
   case "$1" in
     *[!a-zA-Z0-9._-]*) die "packet id must be [a-zA-Z0-9._-]" ;;
   esac
+  # `.`/`..`/anything containing `..` are otherwise legal under the charset
+  # above (both `.` and `-` are allowed, for real ids like
+  # "self-host-hardening-gaps") but become a path-traversal segment the
+  # moment a packet id is used to build a directory name -- `handoff … ..`
+  # wrote straight into .agents/loop/<run_id>/handoff.md, one level up from
+  # where it belongs, before this check existed.
+  case "$1" in
+    .|..|*..*) die "packet id must not be '.', '..', or contain '..'" ;;
+  esac
 }
 
 # --- shared: resolve the MAIN checkout root from any lane worktree -----------
@@ -1447,6 +1517,625 @@ cmd_sweep_open() {
   done <<EOF
 $open_rows
 EOF
+}
+
+# =============================================================================
+# Loop driver mode (thin-loop-driver T3/T7/T8/T9, ADR 0028)
+# =============================================================================
+
+# Same filename-safety rule as _rs_check_pkt_id, applied to a session id: it
+# becomes a path segment under .agents/driver-mode/ and .agents/metrics/
+# driver-mode/, so a `/` or a `..` segment must never reach a filesystem call.
+# The charset alone (no `/`) already blocks a traversal via separators; `..`
+# is checked separately because both `.` and `-` are otherwise legal here.
+_rs_check_session_id() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) die "session id must be [A-Za-z0-9._-]" ;;
+  esac
+  case "$1" in
+    *..*) die "session id must not contain '..'" ;;
+  esac
+}
+
+# run_id becomes a path segment under .agents/loop/, so a value READ BACK
+# from run-state (a hand-crafted or corrupted `run_id: ../../../esc`) must be
+# rejected before it reaches any of the four commands that build a path from
+# it -- not only where it is minted. The charset excludes `.` outright, so a
+# `..` segment is already unreachable; nothing further to check.
+_rs_check_run_id() {
+  case "$1" in
+    ''|*[!A-Za-z0-9-]*) die "run_id must be [A-Za-z0-9-]" ;;
+  esac
+}
+
+# Escape a value for embedding as a JSON string (no surrounding quotes). Used
+# for fields this file did not previously write (model/effort/threshold/status)
+# that are NOT charset-restricted the way an id is, so they need real escaping
+# rather than a refusal. Beyond backslash/quote/CR/LF, a tab or any other
+# control byte in --status/model/effort/threshold would otherwise reach
+# routing.jsonl or the driver-mode log unescaped and produce invalid JSON,
+# which makes the collector's `jq -s` drop every record in the file at once.
+_rs_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/ }"
+  s="${s//$'\r'/ }"
+  s="${s//$'\t'/ }"
+  printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+}
+
+# --- append one line to the driver-mode log (mirrors _rs_append_outcomes_line,
+# --- deliberately a SEPARATE file: a new record kind must never reach the
+# --- outcomes log, since _rs_open_packets there treats any record carrying
+# --- `kind` as a packet start) --------------------------------------------
+_rs_append_driver_mode_line() {
+  local sess="$1" line="$2"
+  local main_root dir
+  main_root="$(_rs_main_checkout_root)" || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 1; }
+  dir="${main_root}/.agents/metrics/driver-mode"
+  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 1; }
+  printf '%s\n' "$line" >> "${dir}/${sess}.jsonl" 2>/dev/null \
+    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 1; }
+  return 0
+}
+
+# --- driver-mode: enter/exit/status -----------------------------------------
+cmd_driver_mode() {
+  local sub="${1:-}"
+  [ -n "$sub" ] || die "usage: driver-mode <enter|exit|status> [session-id]"
+  shift
+  case "$sub" in
+    enter)  cmd_driver_mode_enter  "$@" ;;
+    exit)   cmd_driver_mode_exit   "$@" ;;
+    status) cmd_driver_mode_status "$@" ;;
+    *) die "usage: driver-mode <enter|exit|status> [session-id]" ;;
+  esac
+}
+
+cmd_driver_mode_enter() {
+  local model="unknown" effort="unknown" threshold="unknown" args=() sess
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --model)       model="${2:-}"; shift 2 ;;
+      --model=*)     model="${1#--model=}"; shift ;;
+      --effort)      effort="${2:-}"; shift 2 ;;
+      --effort=*)    effort="${1#--effort=}"; shift ;;
+      --threshold)   threshold="${2:-}"; shift 2 ;;
+      --threshold=*) threshold="${1#--threshold=}"; shift ;;
+      --*) die "usage: driver-mode enter --model <m> --effort <e|unknown> --threshold <n|unknown> [session-id] (unknown option: $1)" ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  sess="${args[0]:-${CLAUDE_CODE_SESSION_ID:-}}"
+  # An "adhoc" fallback here would enforce nothing -- every main-thread write
+  # would read as belonging to a session named "adhoc" that nobody actually
+  # entered. exit/status keep the adhoc fallback (a query against a mark that
+  # was never entered is harmless), but entering driver mode requires a real
+  # session id.
+  [ -n "$sess" ] || die "driver-mode enter: no session id given and CLAUDE_CODE_SESSION_ID is unset -- refusing to mark an 'adhoc' session as the driver"
+  _rs_check_session_id "$sess"
+
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || die "driver-mode: not a git repo"
+  local dir="${main_root}/.agents/driver-mode"
+  mkdir -p "$dir" 2>/dev/null || die "cannot create ${dir}"
+  # The mark's own content is informational only — hooks/guard.sh (T5) and
+  # `driver-mode status` below both check EXISTENCE, never content.
+  printf 'entered_at: %s\nmodel: %s\neffort: %s\nthreshold: %s\n' \
+    "$(_rs_now_ts)" "$model" "$effort" "$threshold" > "${dir}/${sess}" 2>/dev/null \
+    || die "cannot write ${dir}/${sess}"
+
+  local line
+  line="$(printf '{"ts":"%s","session":"%s","kind":"enter","model":"%s","effort":"%s","threshold":"%s"}' \
+    "$(_rs_now_ts)" "$sess" "$(_rs_json_escape "$model")" "$(_rs_json_escape "$effort")" "$(_rs_json_escape "$threshold")")"
+  _rs_append_driver_mode_line "$sess" "$line" || true
+  printf 'DRIVER_MODE=on\nSESSION=%s\n' "$sess"
+}
+
+cmd_driver_mode_exit() {
+  local sess="${1:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  _rs_check_session_id "$sess"
+
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || die "driver-mode: not a git repo"
+  # rm -f swallows the no-mark case -- a repeated `exit` is a no-op, not an error.
+  rm -f "${main_root}/.agents/driver-mode/${sess}" 2>/dev/null || true
+
+  local line
+  line="$(printf '{"ts":"%s","session":"%s","kind":"exit"}' "$(_rs_now_ts)" "$sess")"
+  _rs_append_driver_mode_line "$sess" "$line" || true
+  printf 'DRIVER_MODE=off\nSESSION=%s\n' "$sess"
+}
+
+# Always exits 0 -- a query, same contract as pause-status. A session with no
+# mark, or one this cannot resolve to a git repo, both read off.
+cmd_driver_mode_status() {
+  local sess="${1:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  _rs_check_session_id "$sess"
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || { printf 'DRIVER_MODE=off\n'; return 0; }
+  if [ -f "${main_root}/.agents/driver-mode/${sess}" ]; then
+    printf 'DRIVER_MODE=on\n'
+  else
+    printf 'DRIVER_MODE=off\n'
+  fi
+  return 0
+}
+
+# --- mint a sortable run id: UTC timestamp + a short random suffix so two
+# --- begin-run calls in the same second cannot collide. Charset is
+# --- [A-Za-z0-9-] by construction -- safe as a directory name on every
+# --- platform this file already targets, and safe to embed unquoted in JSON.
+_rs_mint_run_id() {
+  local ts rand
+  ts="$(date -u +%Y%m%dT%H%M%S)"
+  rand="$(od -An -N2 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [ -n "$rand" ] || rand="$$"
+  printf '%s-%s' "$ts" "$rand"
+}
+
+# Matches exactly what _rs_mint_run_id produces (YYYYMMDDTHHMMSS-<hex>) --
+# the shape begin-run's pruning below is allowed to delete. A directory whose
+# name does NOT match is left alone unconditionally, since it might be
+# operator scratch this command does not own.
+_rs_is_run_id_shape() {
+  case "$1" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# --- resolve THIS run's directory the SAME way for every command that
+# --- touches it (begin-run/handoff/write-result/route). Previously the first
+# --- three derived it from dirname(run-state) while route derived it from the
+# --- MAIN checkout (_rs_main_checkout_root) -- so a run-state that is not
+# --- exactly at <main-checkout>/.agents/run-state.yaml made handoff's
+# --- hand-off-feature refusal check a DIFFERENT routing.jsonl than route
+# --- itself wrote, silently bypassing the refusal. All four now resolve via
+# --- the main checkout, exactly like .agents/metrics/outcomes/ and
+# --- .agents/driver-mode/ already do. Validates run_id as a side effect, so
+# --- every reader of run_id goes through the same check (see
+# --- _rs_check_run_id above) rather than each caller remembering to call it.
+_rs_run_dir() {
+  local run_id="$1" label="$2" main_root
+  _rs_check_run_id "$run_id"
+  main_root="$(_rs_main_checkout_root)" || die "${label}: not a git repo"
+  printf '%s/.agents/loop/%s' "$main_root" "$run_id"
+}
+
+# --- begin-run: mint run_id once, create + prune .agents/loop/ -------------
+# thin-loop-driver T7. `run_id` is minted into run-state ONLY when absent, so
+# a resume (which reads the same run-state, run_id already set) keeps it — a
+# run spans sessions. Cleanup keeps the CURRENT run's directory plus the
+# single newest OTHER shape-matching one, and removes the rest: a bounded
+# amount of history survives a crash/inspection without accumulating forever.
+cmd_begin_run() {
+  local f="${1:-}"
+  [ -n "$f" ] || die "usage: begin-run <run-state-file>"
+  need_file "$f"
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  if [ -z "$run_id" ]; then
+    run_id="$(_rs_mint_run_id)"
+    cmd_set "$f" run_id "$run_id" >/dev/null
+  fi
+
+  local rundir; rundir="$(_rs_run_dir "$run_id" begin-run)"
+  local loopdir; loopdir="$(dirname "$rundir")"
+  mkdir -p "$rundir" 2>/dev/null || die "cannot create ${rundir}"
+  printf 'RUN_ID=%s\nRUN_DIR=%s\n' "$run_id" "$rundir"
+
+  # Prune: among OTHER directories whose name matches the run_id SHAPE (see
+  # _rs_is_run_id_shape) -- timestamp-prefixed, so LEXICAL order already
+  # equals chronological order and no stat() is needed at all -- keep only the
+  # greatest (the newest previous run) and remove the rest.
+  #
+  # Previously this compared mtimes via `stat -f %m` first, falling back to
+  # `stat -c %Y`. On GNU coreutils, `-f %m` is NOT a time format at all -- it
+  # is the FILE MODE -- so it prints an octal-looking number, exits 0 (not the
+  # failure this code assumed), and the GNU/Linux/Git-Bash fallback branch
+  # never ran. `newest` silently latched onto the wrong directory (mode
+  # strings, not timestamps, compared numerically), and on the very next
+  # begin-run call the ACTUAL newest previous run got deleted instead of kept.
+  # A sortable id needs no stat() at all, which is also why it was minted
+  # sortable in the first place.
+  [ -d "$loopdir" ] || return 0
+  local d base others="" newest=""
+  for d in "$loopdir"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"; base="$(basename "$d")"
+    [ "$base" = "$run_id" ] && continue
+    _rs_is_run_id_shape "$base" || continue
+    others="${others}${base}
+"
+  done
+  [ -n "$others" ] && newest="$(printf '%s' "$others" | sort | tail -1)"
+  for d in "$loopdir"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"; base="$(basename "$d")"
+    [ "$base" = "$run_id" ] && continue
+    _rs_is_run_id_shape "$base" || continue
+    [ "$base" = "$newest" ] && continue
+    rm -rf "$d"
+    printf 'REMOVED=%s\n' "$base"
+  done
+}
+
+# --- resolve a path to an absolute, LEXICALLY normalized form --------------
+# Pure string normalization (`.`/`..` segments collapsed), no filesystem
+# access and no symlink resolution -- this file has no realpath/readlink -f
+# dependency on every platform it targets, and write-result's containment
+# check must be able to REFUSE a path without touching disk first (a refusal
+# must never require write access outside the run directory to even decide).
+# Relative paths resolve against $PWD unless a base is given.
+_rs_lexical_abspath() {
+  local p="$1" base="${2:-$PWD}"
+  case "$p" in
+    /*) ;;
+    *) p="${base%/}/${p}" ;;
+  esac
+  printf '%s' "$p" | awk -F'/' '
+    {
+      n = 0
+      for (i = 1; i <= NF; i++) {
+        part = $i
+        if (part == "" || part == ".") continue
+        if (part == "..") { if (n > 0) n--; continue }
+        stack[n++] = part
+      }
+      out = "/"
+      for (i = 0; i < n; i++) { out = out stack[i]; if (i < n - 1) out = out "/" }
+      print out
+    }'
+}
+
+# --- extract a handoff title from the piped body, in ONE awk pass over the
+# --- WHOLE body -- never `| head -1` on a live pipe, which is the exact
+# --- SIGPIPE shape this repo has been bitten by before under
+# --- `set -euo pipefail` (a still-writing producer gets killed the instant
+# --- `head` finds its first newline and closes the pipe; see CLAUDE.md's
+# --- trim-note flake for the same mechanism in a different function).
+#
+# Precedence: a `TEXT=` line wins outright, prefix stripped -- the real
+# producer, `scripts/gspec-backlog.sh handoff`, always emits one as its FIFTH
+# line (after PACKET=/FEATURE=/ID=/CHECKED=; see that function's own header
+# comment), so blindly taking the first line would take `PACKET=<id>` instead,
+# and for a non-gspec id its very first line is `HANDOFF=unknown`. Otherwise
+# the first non-empty line that does NOT look like a `KEY=value` header line
+# (every other line gspec-backlog.sh's handoff emits matches `^[A-Z_]+=`, so
+# this correctly skips them all and would also skip straight past a
+# `HANDOFF=unknown`/`REASON=...` refusal with nothing usable behind it).
+# Otherwise the packet id itself.
+_rs_handoff_title() {
+  local body="$1" fallback="$2" title
+  title="$(awk '
+    !text_seen && /^TEXT=/ { text = substr($0, 6); text_seen = 1 }
+    first == "" && $0 != "" && $0 !~ /^[A-Z_]+=/ { first = $0 }
+    END {
+      if (text_seen) print text
+      else if (first != "") print first
+      else print ""
+    }
+  ' <<< "$body")"
+  printf '%s' "${title:-$fallback}"
+}
+
+# --- handoff: write the packet's brief into its run directory --------------
+# thin-loop-driver T8. Refuses (rather than dies) a packet whose LATEST
+# routing record (T9) in this run is `hand-off-feature` — the packet has been
+# handed to the main context as a question, and dispatching another agent on
+# it would race that. The refusal reports rather than dying so the caller
+# (the loop) can skip the packet with no record, per the plan.
+_rs_latest_routing_token() {
+  local pkt="$1" routing_file="$2" line
+  [ -f "$routing_file" ] || return 0
+  line="$(grep -F "\"packet\":\"${pkt}\"" "$routing_file" 2>/dev/null | tail -1 || true)"
+  [ -n "$line" ] || return 0
+  printf '%s' "$line" | sed -E 's/.*"token":"([^"]*)".*/\1/'
+}
+
+cmd_handoff() {
+  local f="" pkt="" tier="" agent="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tier)    tier="${2:-}"; shift 2 ;;
+      --tier=*)  tier="${1#--tier=}"; shift ;;
+      --agent)   agent="${2:-}"; shift 2 ;;
+      --agent=*) agent="${1#--agent=}"; shift ;;
+      --*) die "usage: handoff <run-state> <packet-id> --tier <tier> --agent <agent> (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) pkt="$1" ;;
+          *) die "usage: handoff <run-state> <packet-id> --tier <tier> --agent <agent> (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$pkt" ] && [ -n "$tier" ] && [ -n "$agent" ] \
+    || die "usage: handoff <run-state> <packet-id> --tier <tier> --agent <agent>"
+  need_file "$f"
+  _rs_check_pkt_id "$pkt"
+  # Restricted to [a-z-]+ (tighter than a packet id) so neither value can
+  # inject a header line -- both are written raw into handoff.md's own
+  # header, and a newline in either would open a sibling `key: value` line
+  # (or worse, an extra markdown heading) that a careless reader could
+  # mistake for part of the contract.
+  case "$tier" in
+    *[!a-z-]*) die "handoff: --tier must be [a-z-]+" ;;
+  esac
+  case "$agent" in
+    *[!a-z-]*) die "handoff: --agent must be [a-z-]+" ;;
+  esac
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "handoff: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" handoff)"
+
+  local latest_token
+  latest_token="$(_rs_latest_routing_token "$pkt" "${rundir}/routing.jsonl")"
+  if [ "$latest_token" = "hand-off-feature" ]; then
+    printf 'HANDOFF=refused\nREASON=hand-off-feature\nPACKET=%s\n' "$pkt"
+    return 0
+  fi
+
+  local pktdir="${rundir}/${pkt}"
+  mkdir -p "$pktdir" 2>/dev/null || die "cannot create ${pktdir}"
+
+  local body title target
+  body="$(cat)"
+  title="$(_rs_handoff_title "$body" "$pkt")"
+  target="${pktdir}/handoff.md"
+  # GLOBAL, not local -- an EXIT trap referencing a function-LOCAL is
+  # bash-version-dependent while the shell unwinds under `set -e` (see
+  # gspec-backlog.sh's cmd_check_task for the same fix and its measured
+  # macOS-3.2-vs-Linux-5.2 divergence). Scoped to this one write and
+  # disarmed right after the mv succeeds, so a failure building or moving
+  # the temp file (disk full, permissions, an aborted transform) cannot
+  # strand it beside the run directory.
+  _rs_tmp=""
+  trap '[ -n "${_rs_tmp:-}" ] && rm -f "$_rs_tmp"; :' EXIT
+  _rs_tmp="$(mktemp "${pktdir}/.handoff.XXXXXX")" || die "cannot create temp file in ${pktdir}"
+  { printf '# %s: %s\n\n' "$pkt" "$title"
+    printf 'tier: %s\n' "$tier"
+    printf 'agent: %s\n\n' "$agent"
+    printf '%s\n' "$body"
+  } > "$_rs_tmp"
+  mv -f "$_rs_tmp" "$target"
+  trap - EXIT
+  printf 'HANDOFF=%s\n' "$target"
+}
+
+# --- write-result: the ONE write a read-only-tooled agent gets, via a script -
+# thin-loop-driver T8. Refuses any <path> that resolves OUTSIDE the current
+# run directory (lexically, before touching disk — see _rs_lexical_abspath).
+# Writes the status line first (collapsed, same rule as run-state's own
+# freeform text — see _yaml_collapse), then stdin verbatim.
+cmd_write_result() {
+  local f="" path="" status="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)   status="${2:-}"; shift 2 ;;
+      --status=*) status="${1#--status=}"; shift ;;
+      --*) die "usage: write-result <run-state> <path> --status \"<line>\" (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) path="$1" ;;
+          *) die "usage: write-result <run-state> <path> --status \"<line>\" (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$path" ] && [ -n "$status" ] \
+    || die "usage: write-result <run-state> <path> --status \"<line>\""
+  need_file "$f"
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "write-result: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" write-result)"
+
+  local abs_rundir abs_path
+  abs_rundir="$(_rs_lexical_abspath "$rundir")"
+  abs_path="$(_rs_lexical_abspath "$path")"
+  case "$abs_path" in
+    "${abs_rundir}/"*) ;;
+    *) die "write-result: '${path}' resolves outside the current run directory (${abs_rundir})" ;;
+  esac
+
+  local out_dir
+  out_dir="$(dirname "$abs_path")"
+  mkdir -p "$abs_rundir" 2>/dev/null || true   # in case the run dir was removed since begin-run
+  mkdir -p "$out_dir" 2>/dev/null || die "cannot create ${out_dir}"
+
+  # SYMLINK-SAFE containment check. The lexical check above is pure string
+  # normalization (deliberately, so an obviously-outside path can be refused
+  # WITHOUT touching disk at all) and cannot see a symlinked directory
+  # somewhere under the run dir that resolves elsewhere on disk. Now that
+  # both directories exist, re-check with their REAL (symlink-resolved) paths.
+  local real_rundir real_outdir
+  real_rundir="$(cd "$abs_rundir" 2>/dev/null && pwd -P)" || die "write-result: cannot resolve the run directory"
+  real_outdir="$(cd "$out_dir" 2>/dev/null && pwd -P)" || die "write-result: cannot resolve the target directory"
+  case "$real_outdir" in
+    "$real_rundir"|"$real_rundir"/*) ;;
+    *) die "write-result: '${path}' escapes the run directory via a symlink" ;;
+  esac
+
+  # GLOBAL, not local -- see cmd_handoff's identical comment on the same
+  # pattern: an EXIT trap referencing a function-LOCAL is bash-version-
+  # dependent while the shell unwinds under `set -e`.
+  _rs_tmp=""
+  trap '[ -n "${_rs_tmp:-}" ] && rm -f "$_rs_tmp"; :' EXIT
+  _rs_tmp="$(mktemp "${out_dir}/.write-result.XXXXXX")" || die "cannot create temp file in ${out_dir}"
+  { printf '%s\n' "$(_yaml_collapse "$status")"
+    cat
+  } > "$_rs_tmp"
+  mv -f "$_rs_tmp" "$abs_path"
+  trap - EXIT
+  printf 'RESULT=%s\n' "$abs_path"
+}
+
+# --- packet_attempts: the fix/retry limit before routing to the decider ----
+# Token-scans the remainder after `packet_attempts:` (skipping over anything
+# that isn't purely digits, so a trailing comment does not defeat this) and,
+# for EACH token, strips one matching pair of quotes before testing digit-
+# ness -- `packet_attempts: '3'` is legal YAML and must not silently read as
+# missing/invalid just because the raw token is `'3'`, not `3`.
+_rs_packet_attempts_limit() {
+  local main_root="$1" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^packet_attempts:[[:space:]]*/ {
+        line = $0
+        sub(/^packet_attempts:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo 1 ;; *) echo "$v" ;; esac
+}
+
+# --- attempts already spent on $pkt since its latest kind=start record -----
+# A kind=continue record deliberately does NOT move this boundary (the plan's
+# own rule: "a continuation does not reset the count") — only a genuine new
+# `start` does. fix and retry share ONE pool, since the PRD counts attempts
+# from either route.
+_rs_route_attempts() {
+  local pkt="$1" main_root="$2" routing_file="$3"
+  local outcomes_dir="${main_root}/.agents/metrics/outcomes"
+  local extract='
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }'
+
+  local latest_start_ts="" latest_key=0
+  if [ -d "$outcomes_dir" ]; then
+    local ts key best=-1
+    while IFS= read -r ts; do
+      [ -n "$ts" ] || continue
+      key="$(_rs_ts_key "$ts")"
+      if [ "$key" -gt "$best" ]; then best="$key"; latest_start_ts="$ts"; fi
+    done <<EOF
+$(awk -v pkt="$pkt" "$extract"'
+      { p = field($0, "packet"); if (p != pkt) next
+        k = field($0, "kind");   if (k != "start") next
+        ts = field($0, "ts");    if (ts != "") print ts }
+    ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  fi
+  [ -n "$latest_start_ts" ] && latest_key="$(_rs_ts_key "$latest_start_ts")"
+
+  local count=0
+  if [ -f "$routing_file" ]; then
+    local ts key
+    while IFS= read -r ts; do
+      [ -n "$ts" ] || continue
+      key="$(_rs_ts_key "$ts")"
+      [ "$key" -ge "$latest_key" ] && count=$((count + 1))
+    done <<EOF
+$(awk -v pkt="$pkt" "$extract"'
+      { p = field($0, "packet"); if (p != pkt) next
+        t = field($0, "token");  if (t != "fix" && t != "retry") next
+        ts = field($0, "ts");    if (ts != "") print ts }
+    ' "$routing_file" 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$count"
+}
+
+# --- route: the mechanical verdict -> action mapping (thin-loop-driver T9) --
+# Appends a record to THIS RUN's routing.jsonl (never the outcomes log — see
+# the header note) and prints ACTION=/ATTEMPTS=/LIMIT=. The record is written
+# even for a `stop`/`decider` action, so a later run-digest (T11) can see
+# every decision made, and so a repeated `handoff` call for a `hand-off-feature`
+# packet can be refused.
+cmd_route() {
+  local f="" pkt="" token="" status="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)   status="${2:-}"; shift 2 ;;
+      --status=*) status="${1#--status=}"; shift ;;
+      --*) die "usage: route <run-state> <packet-id> <token> [--status \"<line>\"] (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) pkt="$1" ;;
+          2) token="$1" ;;
+          *) die "usage: route <run-state> <packet-id> <token> [--status \"<line>\"] (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$pkt" ] && [ -n "$token" ] \
+    || die "usage: route <run-state> <packet-id> <token> [--status \"<line>\"]"
+  need_file "$f"
+  _rs_check_pkt_id "$pkt"
+  case "$token" in
+    pass|fix|retry|escalate|reorder|append-task|hand-off-feature|ask-operator) ;;
+    *) die "route: token must be one of: pass fix retry escalate reorder append-task hand-off-feature ask-operator" ;;
+  esac
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "route: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" route)"
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || die "route: not a git repo"
+  local routing_file="${rundir}/routing.jsonl"
+
+  local limit; limit="$(_rs_packet_attempts_limit "$main_root")"
+
+  local attempts_before=0
+  case "$token" in
+    fix|retry) attempts_before="$(_rs_route_attempts "$pkt" "$main_root" "$routing_file")" ;;
+  esac
+
+  local action attempts=$attempts_before
+  case "$token" in
+    pass) action=land ;;
+    fix)
+      attempts=$((attempts_before + 1))
+      if [ "$attempts" -le "$limit" ]; then action=attempt; else action=decider; fi
+      ;;
+    retry)
+      attempts=$((attempts_before + 1))
+      if [ "$attempts" -le "$limit" ]; then action=attempt; else action=stop; fi
+      ;;
+    escalate) action=decider ;;
+    reorder|append-task|hand-off-feature) action=discard-advance ;;
+    ask-operator) action=stop ;;
+  esac
+
+  mkdir -p "$(dirname "$routing_file")" 2>/dev/null || true
+  local line
+  line="$(printf '{"ts":"%s","packet":"%s","token":"%s","action":"%s","status":"%s"}' \
+    "$(_rs_now_ts)" "$pkt" "$token" "$action" "$(_rs_json_escape "$status")")"
+  printf '%s\n' "$line" >> "$routing_file" 2>/dev/null || true
+
+  if [ "$token" = retry ] && [ "$action" = stop ]; then
+    printf 'ACTION=stop\nATTEMPTS=%s\nLIMIT=%s\nquestion: retry was returned for packet %s past its attempt limit (%s) -- refusing to loop; a human must decide how to proceed\n' \
+      "$attempts" "$limit" "$pkt" "$limit"
+    return 0
+  fi
+  printf 'ACTION=%s\nATTEMPTS=%s\nLIMIT=%s\n' "$action" "$attempts" "$limit"
 }
 
 # --- stamp updated_at = now (UTC), atomically -------------------------------
@@ -1868,6 +2557,11 @@ case "$cmd" in
   request-pause)      cmd_request_pause     "$@" ;;
   clear-pause)        cmd_clear_pause       "$@" ;;
   pause-status)       cmd_pause_status      "$@" ;;
-  -h|--help|help|"") sed -n '2,169p' "$0" | sed 's/^# \{0,1\}//' ;;
+  driver-mode)   cmd_driver_mode   "$@" ;;
+  begin-run)     cmd_begin_run     "$@" ;;
+  handoff)       cmd_handoff       "$@" ;;
+  write-result)  cmd_write_result  "$@" ;;
+  route)         cmd_route         "$@" ;;
+  -h|--help|help|"") sed -n '2,226p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

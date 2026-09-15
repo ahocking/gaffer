@@ -61,7 +61,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh, docs/adr/0020-gspec-boundary-and-version-pin.md
-- [ ] **T3** [P] **P0** Add `runstate.sh driver-mode <enter|exit|status> [session-id]`, with the session defaulting to `CLAUDE_CODE_SESSION_ID`:
+- [x] **T3** [P] **P0** Add `runstate.sh driver-mode <enter|exit|status> [session-id]`, with the session defaulting to `CLAUDE_CODE_SESSION_ID`:
   - `enter --model <m> --effort <e|unknown> --threshold <n|unknown>` writes the mark `.agents/driver-mode/<session>` and appends an enter record to `.agents/metrics/driver-mode/<session>.jsonl`;
   - `exit` removes the mark and appends an exit record;
   - `status` prints `DRIVER_MODE=on|off`.
@@ -87,12 +87,12 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: hooks/guard.sh, scripts/test-guard.sh
-- [ ] **T6** **P0** Make `hooks/session-start.sh` clear its own session's driver-mode mark on `startup` and `resume`. Add `hooks/driver-mode-compact.sh`, registered in `hooks/hooks.json` on SessionStart `compact`. When its session has a mark, it prints a context-only note to `Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` and continue as the driver; otherwise it prints nothing. It handles `clear` as T1 found: when `/clear` keeps the session id, the compact hook's matcher is `compact|clear`. `test-runstate.sh` cases cover a reopened session's mark cleared, a compacted session's mark kept, the `clear` behaviour T1 recorded, another session's mark untouched, valid JSON envelopes, and failing open with no session id.
+- [x] **T6** **P0** Make `hooks/session-start.sh` clear its own session's driver-mode mark on `startup` and `resume`. Add `hooks/driver-mode-compact.sh`, registered in `hooks/hooks.json` on SessionStart `compact`. When its session has a mark, it prints a context-only note to `Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` and continue as the driver; otherwise it prints nothing. It handles `clear` as T1 found: when `/clear` keeps the session id, the compact hook's matcher is `compact|clear`. `test-runstate.sh` cases cover a reopened session's mark cleared, a compacted session's mark kept, the `clear` behaviour T1 recorded, another session's mark untouched, valid JSON envelopes, and failing open with no session id.
   - deps: T1, T3
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: hooks/session-start.sh, hooks/driver-mode-compact.sh, hooks/hooks.json, scripts/test-runstate.sh
-- [ ] **T7** **P0** Add `runstate.sh begin-run <run-state>`, which:
+- [x] **T7** **P0** Add `runstate.sh begin-run <run-state>`, which:
   - mints a sortable `run_id` into run-state only when it is absent;
   - creates `.agents/loop/<run_id>/`;
   - removes every other run directory except the newest previous one;
@@ -103,7 +103,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, templates/run-state.yaml, .gitignore, templates/spec-driven-base/.gitignore
-- [ ] **T8** **P0** Add two writers to `runstate.sh`:
+- [x] **T8** **P0** Add two writers to `runstate.sh`:
   - `handoff <run-state> <packet-id> --tier <tier> --agent <agent>` writes stdin atomically to `.agents/loop/<run_id>/<packet-id>/handoff.md`, headed by the packet id, title, tier and agent, and prints `HANDOFF=<path>`;
   - `write-result <run-state> <path> --status "<line>"` refuses any path outside the current run directory, collapses newlines in the status to spaces, and atomically writes the status line followed by stdin.
 
@@ -112,7 +112,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T9** **P0** Add `runstate.sh route <run-state> <packet-id> <token> [--status "<line>"]`, which appends a routing record to `.agents/loop/<run_id>/routing.jsonl` and prints one action with `ATTEMPTS=` and `LIMIT=`:
+- [x] **T9** **P0** Add `runstate.sh route <run-state> <packet-id> <token> [--status "<line>"]`, which appends a routing record to `.agents/loop/<run_id>/routing.jsonl` and prints one action with `ATTEMPTS=` and `LIMIT=`:
   - `pass` → `land`;
   - `fix` → `attempt` while attempts remain, else `decider`; `retry` → `attempt` while attempts remain, since the PRD counts attempts from either route and `escalation-decider` returns `retry` only when one is left, and a `retry` past the limit is refused as `stop`, carrying a blocking question that names the over-limit `retry`, rather than looped;
   - `escalate` → `decider`; `reorder`, `append-task` and `hand-off-feature` → `discard-advance`; `ask-operator` → `stop`;

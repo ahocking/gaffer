@@ -34,33 +34,33 @@ This feature **supersedes `loop-cost-controls`**, whose PRD folder and roadmap e
 
 ## Capabilities
 
-- [ ] **P0**: Relay mode is removed
+- [x] **P0**: Relay mode is removed
   - the loop has exactly one sequential mode, backlog size never switches it to another, and ADR 0012 is marked superseded
   - when `run-loop` or `resume` is given `--relay` or `--inline`, it starts normally, runs the single mode, and says in the kickoff report that the flag no longer exists. It never fails to start and never ignores the flag silently
   - the loop instructions no longer carry the relay contract, and no run dispatches a per-packet coordinator subagent. The `chief-engineer` agent definition stays, because other commands and agents use it
 
-- [ ] **P0**: Parallel mode is removed
+- [x] **P0**: Parallel mode is removed
   - the shipped plugin has no worktree lanes, lane scheduling, packet dependency graph or `/gaffer:build-packet-dependency-tree` command. `--parallel` is accepted, gets the same kickoff notice as the relay flags, and runs sequentially, and ADR 0016 is marked superseded
   - on a run-state recorded as `mode: parallel`, `resume` stops before running any packet; names each lane branch and worktree recorded in run-state and whether run-state records it as merged; states that resume merged none of them; names what the operator must clear before the loop can run again; and leaves run-state and every branch untouched
   - the run-state format does not change: no schema bump and no migration. Lane fields are simply no longer written
   - `gspec-backlog.sh nodes` and per-task file scopes from `.agents/task-files.yaml` keep working, because the sequential loop still uses them
 
-- [ ] **P0**: Rate-limit auto-pause is removed
+- [x] **P0**: Rate-limit auto-pause is removed
   - the status-line sensor, the `/gaffer:rate-limit-pause` toggle command and the `rate_limit_pause:` overrides block are gone from the shipped plugin, and ADR 0018 is marked superseded
   - the cooperative whole-run pause (`/gaffer:pause`, ADR 0017) is unchanged: a pause request still stops a running loop at a safe boundary, and `resume` continues from there
   - the pause regression sweep keeps every whole-run pause case and has no rate-limit sensor or per-lane pause cases left, and the parallel-pause end-to-end sweep is removed
 
-- [ ] **P1**: Concurrent file editing is governed by guidance
+- [x] **P1**: Concurrent file editing is governed by guidance
   - the `run-loop` and `resume` loop instructions and the `chief-engineer` agent say that agents which edit files run one at a time unless their declared file scopes are disjoint, and that read-only agents may fan out freely
   - they recommend worktree isolation only for self-contained work that should start from the repository's default branch, such as spikes, experiments and deliberate refactors. They never recommend it for loop implementers working on the loop's branch
   - the reason is stated next to the rule: an isolated worktree starts from the default branch, so it lacks the commits of earlier packets, and it is never merged back automatically
 
-- [ ] **P1**: Same-file concurrent edits are observable
+- [x] **P1**: Same-file concurrent edits are observable
   - run metrics count, per run, the overlapping pairs of file-editing agents, where the main session counts as an agent. Two subagents overlap when their active spans, from first to last recorded event in the run, overlap; the main session overlaps a subagent only through its own edits recorded inside that subagent's active span. A pair still requires at least one file edited by both, and for a main-session pair, one the main session edited inside that span; it counts once however many files it shares
   - the count comes only from the event records the metrics hook already writes (time and agent on every event, a file hash on edits). There is no new instrumentation, and no file path is logged
   - the metrics summary shows the count. A run whose edit events all carry a file hash and that has no overlapping pair reports 0, and a run with no event records, or with any edit event lacking a file hash, reports the count as unmeasured, never as 0
 
-- [ ] **P1**: Migration cleans up safely
+- [x] **P1**: Migration cleans up safely
   - `/gaffer:migrate` removes the `rate_limit_pause:` block and the `max_parallel_packets` key from the repo's overrides file, along with the commented-out `rate_limit_pause:` example and the comment lines introducing that key and that block, and leaves the rest of that file as it was. It reports, never edits, each line in the repo's own `CLAUDE.md` that routes to a removed mode or command, because that file belongs to the human
   - it removes a user-level `statusLine` entry only when that entry points at the plugin's sensor, and only after the operator confirms. If the operator declines, the entry stays and the report says it may still arm pauses until removed. It never touches any other `statusLine`
   - it deletes the gitignored per-lane pause files if they exist. It removes the tracked packet graph file and reports that removal as a change for the operator to commit. It lists extra git worktrees but never deletes them, since they may hold unmerged work

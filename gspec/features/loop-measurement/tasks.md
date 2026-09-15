@@ -122,7 +122,7 @@ that it blocks nothing.
   - covers: `/gaffer:metrics spend` reports API-equivalent spend over a time window
   - arch: —
   - files: scripts/spend.sh, scripts/spend-prices.json, scripts/test-spend.sh
-- [ ] **T11** **P0** Add the `spend` verb to `skills/metrics/SKILL.md` (description, argument-hint, intent resolution, window argument), rendered under the report conventions with the price-table date and API-equivalent label shown, unmeasured fields named in words, and unpriced tokens never summed as dollars
+- [x] **T11** **P0** Add the `spend` verb to `skills/metrics/SKILL.md` (description, argument-hint, intent resolution, window argument), rendered under the report conventions with the price-table date and API-equivalent label shown, unmeasured fields named in words, and unpriced tokens never summed as dollars
   - deps: T6, T10
   - covers: `/gaffer:metrics spend` reports API-equivalent spend over a time window
   - arch: —
@@ -160,7 +160,7 @@ that it blocks nothing.
   - covers: Saved spend totals combine across machines
   - arch: —
   - files: docs/metrics/
-- [ ] **T17** **P1** Record in `CLAUDE.md` and an ADR 0019 v3.5 section, as one deliberate change to the repo's most contended file:
+- [x] **T17** **P1** Record in `CLAUDE.md` and an ADR 0019 v3.5 section, as one deliberate change to the repo's most contended file:
   - packet rows now come from start records as well as trailers;
   - `interrupted` has one writer;
   - spend is machine-wide in its own script;

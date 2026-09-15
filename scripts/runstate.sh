@@ -116,18 +116,16 @@
 #                                                         mixed) -> stop, ask.
 #                                    A `reason:` line explains on stdout too. It
 #                                    NEVER mutates anything — the caller acts.
-#   packets-by-status <file> <status>   (parallel mode, schema 3) print the ids of
-#                                    packets in packets[] whose status == <status>,
-#                                    one per line — feed done/running to
-#                                    packet-graph.sh ready.
-#   lanes    <file>                  (parallel mode) print one TSV row per lane:
-#                                    id, branch, worktree, packet, last_green_commit,
-#                                    status.
-#   reconcile-parallel <file> <main-checkout>   READ-ONLY. Apply the reconcile
-#                                    decision table to EACH lane (its worktree if
-#                                    still live, else its branch in the main
-#                                    checkout) and print `LANE=<id> DECISION=...`
-#                                    per lane plus a final `AGGREGATE=`.
+#   lanes    <file>                  READ-ONLY projection kept after parallel
+#                                    mode's retirement (retire-unused-loop-modes
+#                                    T1): print one TSV row per lane still
+#                                    recorded in a legacy `lanes:` block — id,
+#                                    branch, worktree, packet, last_green_commit,
+#                                    status. Nothing writes new lane rows any
+#                                    more; `resume`'s stop path on a legacy
+#                                    `mode: parallel` run-state reads this only
+#                                    to name lane branches/worktrees for the
+#                                    operator.
 #
 # CONTROL STATE vs TERMINAL STATE (ADR 0020 D5). `status:` is the CONTROL state a
 # resuming session steers by; `outcome` is the ANSWER to "how did this run end?".
@@ -150,19 +148,21 @@
 #
 # Pause signal (ADR 0017). A cooperative pause REQUEST is a write-once SENTINEL
 # file — kept SEPARATE from run-state so a human/frontend setting it never contends
-# with the driver's single-writer run-state (ADR 0016 #6). run-state records the
-# OUTCOME (status: paused); the sentinel records the REQUEST. It lives in the MAIN
-# checkout's `.agents/` and is resolvable from any lane worktree via
-# `git rev-parse --git-common-dir` (see hooks/pause-check.sh). The busy loop and
-# lanes POLL it at safe checkpoints and wrap up to a green commit — never mid-edit.
+# with the driver's single-writer run-state. run-state records the OUTCOME
+# (status: paused); the sentinel records the REQUEST. It lives in the MAIN
+# checkout's `.agents/` and is resolvable from the working tree via
+# `git rev-parse --git-common-dir` (see hooks/pause-check.sh). The busy loop
+# POLLS it at safe checkpoints and wraps up to a green commit — never mid-edit.
+# Whole-run only (retire-unused-loop-modes T1 removed the per-lane sentinel that
+# parallel mode used): there is exactly one sentinel path, no per-task variant.
 #   request-pause <pause-file> [reason]   touch the sentinel (atomic) with a
 #                                    reason + UTC timestamp. Human/frontend/driver.
-#   clear-pause   <pause-file>       remove the sentinel + its per-lane variants,
-#                                    at run start and on resume, so a stale request
-#                                    cannot re-halt a fresh run.
-#   pause-status  <pause-file> [id]  print PAUSE=1 (+ scope=all|lane:<id>, reason)
-#                                    when <pause-file> (or <pause-file>.<id>) exists,
-#                                    else PAUSE=0. Always exit 0 — it is a query.
+#   clear-pause   <pause-file>       remove the sentinel, at run start and on
+#                                    resume, so a stale request cannot re-halt a
+#                                    fresh run.
+#   pause-status  <pause-file>       print PAUSE=1 (+ reason) when <pause-file>
+#                                    exists, else PAUSE=0. Always exit 0 — it is
+#                                    a query.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -1056,8 +1056,8 @@ OVER_THRESHOLD=${over}"
 # milliseconds itself with a plain bash substring instead of relying on that
 # GNU-only syntax. A date with no %N support at all (old BSD) emits the
 # literal string "%N", non-digits, which the probe below catches. Probed by
-# EXECUTION, not `command -v` (this repo's standing rule elsewhere in
-# guard.sh/statusline-pause-sensor.sh — a `date` binary existing says nothing
+# EXECUTION, not `command -v` (this repo's standing rule, see guard.sh — a
+# `date` binary existing says nothing
 # about which variant it is). Cached per-process (`_RS_HAS_NANO`) so the probe
 # only runs once no matter how many records a single invocation writes.
 # Falls back to a literal ".000" suffix on a platform that cannot produce
@@ -1474,8 +1474,7 @@ cmd_touch() {
 
 DRIVER_STALE_SECS="${ORCH_DRIVER_STALE_SECS:-900}"   # 15 min
 
-# ISO-8601 UTC -> epoch seconds, on both BSD and GNU date (same dual-dialect
-# problem statusline-pause-sensor.sh solves, ADR 0018). Empty on failure.
+# ISO-8601 UTC -> epoch seconds, on both BSD and GNU date. Empty on failure.
 _iso_epoch() {
   [ -n "${1:-}" ] || return 0
   date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \
@@ -1592,27 +1591,25 @@ cmd_request_pause() {
   printf 'pause requested: %s\n' "$f"
 }
 
-# --- clear-pause: remove the sentinel + any per-lane `<pause-file>.<id>` --------
-# rm -f swallows the no-match case, so an unglobbed `<pause-file>.*` is harmless.
+# --- clear-pause: remove the whole-run sentinel ------------------------------
+# rm -f swallows the no-match case. retire-unused-loop-modes T1 removed the
+# per-lane `<pause-file>.<id>` variant this used to also sweep — there is now
+# exactly one sentinel path.
 cmd_clear_pause() {
   local f="${1:-}"; [ -n "$f" ] || die "usage: clear-pause <pause-file>"
-  rm -f "$f" "$f".* 2>/dev/null || true
-  printf 'pause cleared: %s (+ per-lane sentinels)\n' "$f"
+  rm -f "$f" 2>/dev/null || true
+  printf 'pause cleared: %s\n' "$f"
 }
 
-# --- pause-status: is a pause requested for the whole run or this lane? --------
+# --- pause-status: is a pause requested for the whole run? -------------------
 # Prints PAUSE=1/0 on stdout; ALWAYS exits 0 (a query never fails the caller).
-# All-scope (<pause-file>) wins over lane-scope (<pause-file>.<id>) when both exist.
+# Whole-run only — retire-unused-loop-modes T1 removed the lane-scoped variant.
 cmd_pause_status() {
-  local f="${1:-}" id="${2:-}" r
-  [ -n "$f" ] || die "usage: pause-status <pause-file> [task-id]"
+  local f="${1:-}" r
+  [ -n "$f" ] || die "usage: pause-status <pause-file>"
   if [ -f "$f" ]; then
     r="$(grep -E '^reason:' "$f" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
-    printf 'PAUSE=1 scope=all reason=%s\n' "${r:-<none>}"; return 0
-  fi
-  if [ -n "$id" ] && [ -f "${f}.${id}" ]; then
-    r="$(grep -E '^reason:' "${f}.${id}" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
-    printf 'PAUSE=1 scope=lane:%s reason=%s\n' "$id" "${r:-<none>}"; return 0
+    printf 'PAUSE=1 reason=%s\n' "${r:-<none>}"; return 0
   fi
   printf 'PAUSE=0\n'
 }
@@ -1665,18 +1662,20 @@ cmd_reconcile() {
   printf 'DECISION=%s\nreason: %s\n' "$RC_DECISION" "$RC_REASON"
 }
 
-# The crash-recovery decision table for ONE tree/branch, factored out so the
-# sequential loop (cmd_reconcile) and the parallel loop (cmd_reconcile_parallel,
-# once per lane) share EXACTLY one implementation (ADR 0005/0016). Sets globals
-# RC_DECISION / RC_REASON; never prints, never exits. Args:
-#   $1 inspect-tree   git work-tree to read state from (the live checkout, or a
-#                     lane's worktree, or the main checkout when a lane's worktree
-#                     is already gone but its branch still lives in the shared .git)
-#   $2 head-ref       what to treat as HEAD (`HEAD`, or a lane branch `orch/<id>`)
+# The crash-recovery decision table for ONE tree/branch, factored out from
+# cmd_reconcile (ADR 0005) as its own function. It formerly also served
+# cmd_reconcile_parallel, once per lane (ADR 0016); that caller was removed by
+# retire-unused-loop-modes T1 along with parallel mode itself, leaving
+# cmd_reconcile as the one caller — the per-lane parameter shape below is kept
+# as-is rather than narrowed, since narrowing it now would just be churn for no
+# behavior change. Sets globals RC_DECISION / RC_REASON; never prints, never
+# exits. Args:
+#   $1 inspect-tree   git work-tree to read state from (the live checkout)
+#   $2 head-ref       what to treat as HEAD (`HEAD`)
 #   $3 check-dirty    1 = a dirty tree means scratch (discard); 0 = ignore dirt
 #                     (no live worktree, e.g. inspecting a branch by ref)
 #   $4 green          recorded last_green_commit (may be short; may be empty)
-#   $5 cursor         the packet id the tree/lane is expected to be on
+#   $5 cursor         the packet id the tree is expected to be on
 RC_DECISION=""; RC_REASON=""
 _rc() { RC_DECISION="$1"; RC_REASON="$2"; }
 _reconcile_tree() {
@@ -1799,9 +1798,13 @@ cmd_reconstruct() {
 }
 
 # =============================================================================
-# Parallel mode (schema 3, ADR 0016). The driver is the SINGLE writer of the
-# multi-lane run-state; the helpers below are read-only projections over its
-# packets[] / lanes[] lists plus the per-lane crash reconcile.
+# Lane listing (schema 3). Parallel mode itself (ADR 0016) was retired by
+# retire-unused-loop-modes T1 — this file no longer writes packets[]/lanes[] and
+# no longer has an id/status-based packet query or a per-lane reconcile. `lanes`
+# survives as a READ-ONLY projection: a run-state written before the retirement
+# can still carry a `lanes:` block, and `resume`'s stop path on such a run-state
+# reads it to name lane branches/worktrees for the operator (it merges none of
+# them and leaves every branch untouched). Nothing here writes a new lane row.
 # =============================================================================
 
 # --- parse a YAML list-of-maps section into TSV records ----------------------
@@ -1831,61 +1834,10 @@ _list_records() {
   ' "$f"
 }
 
-cmd_packets_by_status() {
-  local f="${1:-}" st="${2:-}"
-  [ -n "$f" ] && [ -n "$st" ] || die "usage: packets-by-status <file> <status>"
-  need_file "$f"
-  _list_records "$f" packets id status | awk -F'\t' -v s="$st" '$2==s && $1!=""{print $1}'
-}
-
 cmd_lanes() {
   local f="${1:-}"; [ -n "$f" ] || die "usage: lanes <file>"
   need_file "$f"
   _list_records "$f" lanes id branch worktree packet last_green_commit status
-}
-
-# reconcile-parallel: run the reconcile decision table once per lane. Read-only.
-cmd_reconcile_parallel() {
-  local f="${1:-}" main="${2:-}"
-  [ -n "$f" ] && [ -n "$main" ] || die "usage: reconcile-parallel <file> <main-checkout>"
-  need_file "$f"
-  git -C "$main" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || die "'$main' is not a git working tree"
-  local id branch worktree packet green status inspect headref checkdirty
-  local any_escalate=0 any_action=0 nlanes=0
-  # Heredoc (NOT a pipe) so the while loop runs in THIS shell: _reconcile_tree's
-  # RC_* globals and the aggregate counters must survive each iteration.
-  # Read on '|' (a NON-whitespace IFS), not tab: whitespace-IFS collapses the
-  # empty `green` field of an un-checkpointed lane and shifts every later column.
-  # Lane worktree paths / branches / shas never contain '|'.
-  while IFS='|' read -r id branch worktree packet green status; do
-    [ -n "$id" ] || continue
-    nlanes=$((nlanes + 1))
-    if [ -z "$green" ]; then
-      printf 'LANE=%s DECISION=restart reason: no last_green_commit — re-dispatch the packet fresh\n' "$id"
-      any_action=1; continue
-    fi
-    if [ -n "$worktree" ] && git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      inspect="$worktree"; headref="HEAD"; checkdirty=1     # live lane worktree: can see scratch
-    else
-      inspect="$main"; headref="${branch:-orch/$id}"; checkdirty=0   # worktree gone: inspect the branch
-    fi
-    _reconcile_tree "$inspect" "$headref" "$checkdirty" "$green" "${packet:-$id}"
-    printf 'LANE=%s DECISION=%s reason: %s\n' "$id" "$RC_DECISION" "$RC_REASON"
-    case "$RC_DECISION" in
-      escalate)       any_escalate=1 ;;
-      adopt|discard)  any_action=1 ;;
-    esac
-  done <<EOF
-$(cmd_lanes "$f" | tr '\t' '|')
-EOF
-  if [ "$any_escalate" = 1 ]; then
-    printf 'AGGREGATE=escalate  (%d lane(s); resolve the escalated lane(s) before continuing)\n' "$nlanes"
-  elif [ "$any_action" = 1 ]; then
-    printf 'AGGREGATE=action  (%d lane(s) need adopt/discard/restart; apply per lane, then continue)\n' "$nlanes"
-  else
-    printf 'AGGREGATE=clean  (%d lane(s) all at their green checkpoint)\n' "$nlanes"
-  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1912,12 +1864,10 @@ case "$cmd" in
   findings)      cmd_findings      "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;
-  packets-by-status)  cmd_packets_by_status "$@" ;;
   lanes)              cmd_lanes             "$@" ;;
-  reconcile-parallel) cmd_reconcile_parallel "$@" ;;
   request-pause)      cmd_request_pause     "$@" ;;
   clear-pause)        cmd_clear_pause       "$@" ;;
   pause-status)       cmd_pause_status      "$@" ;;
-  -h|--help|help|"") sed -n '2,157p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '2,169p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

@@ -1,6 +1,6 @@
 # ADR 0016 — Opt-in parallel packet execution via worktree lanes
 
-- Status: Accepted
+- Status: Accepted — **superseded by the `retire-unused-loop-modes` feature**
 - Date: 2026-07-18
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md) (autonomy /
@@ -13,6 +13,21 @@
   an isolation mechanism for that case"). This is that case. The single-checkout
   sequential loop remains the **default and unchanged**; worktrees return **only**
   under an opt-in `--parallel` mode.
+
+> **Superseded (2026-09-15, `retire-unused-loop-modes` T2):** `--parallel` ran in
+> one repository for about two weeks and was tried twice in another, and none of
+> 151 recorded metric runs contains a lane — it spends the same tokens sooner,
+> but the operator is limited by a weekly token allowance, not wall clock. It is
+> removed along with its machinery: `scripts/packet-graph.sh`,
+> `scripts/worktree.sh`, `skills/build-packet-dependency-tree/`,
+> `skills/run-loop/parallel.md`, and their sweeps. `--parallel` is still accepted
+> on the command line — it gets the same kickoff notice as the retired relay
+> flags and the loop runs its one sequential mode. File-disjoint concurrent
+> editing is not replaced by a scheduler; it becomes loop-driver guidance (see
+> `retire-unused-loop-modes` T4) plus the same-file-overlap observability this
+> feature's companion, `loop-measurement`, adds to `scripts/metrics.sh`. Read the
+> rest of this ADR as the historical record of a decision that did not earn its
+> keep in practice.
 
 ## Context
 

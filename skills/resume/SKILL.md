@@ -8,10 +8,9 @@ argument-hint: (optional — a specific run-state path if not .agents/run-state.
 
 Pick a paused run back up from disk. Because the previous session is gone, the
 **only** trustworthy memory is `.agents/run-state.yaml` — read it first and let it
-drive. The **Chief Engineer** executes this — either here, or one packet at a time
-in a dispatched subagent, **decided by the remaining backlog in §0**. See
-[ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md) and
-[ADR 0012](../../docs/adr/0012-delegated-loop-driver.md).
+drive. The **Chief Engineer** — this session — runs the whole resume itself. There
+is one sequential mode; the remaining backlog size never switches it. See
+[ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md).
 
 ## The report contract — `Read` it before you emit anything
 
@@ -21,59 +20,60 @@ indentation contract, the header tally, the decision block) and
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shape **C** for the resuming
 kickoff, **A** per landing, **B** when it stops again). **Naming a path is not reading
 it** — unread, you will render from memory and produce free prose. One read covers the
-whole run; do not re-read per packet. A **dispatched** Chief Engineer or lane returns
-the wire format (`templates/check-in.md`) and must not read either file.
+whole run; do not re-read per packet.
 
-## Parallel runs — the `--parallel` flag
+## Flags this run no longer has
 
-**If the run-state is `mode: parallel` (or `$ARGUMENTS` contains `--parallel`),
-resume the parallel driver instead of §0–§4:** read run-state v3, run
-`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh reconcile-parallel .agents/run-state.yaml .`
-and act on each lane's decision (`clean`/`adopt`/`discard`/`restart`/`escalate` — an
-`escalate` lane is the human's), resurface any blocking questions, **clear the pause
-sentinel** (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause .agents/pause` —
-the request that paused the run is now consumed, ADR 0017), then re-enter the parallel
-driver — `Read ${CLAUDE_PLUGIN_ROOT}/skills/run-loop/parallel.md` and enter its §P1
-scheduler — from the surviving packet/lane state (ADR 0016). Everything below is the
-sequential resume.
+`--relay` and `--inline` are still accepted in `$ARGUMENTS` and must **not** error —
+relay dispatch was retired
+([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded). If either is
+present, resume normally and note it in the kickoff (§4) the same way
+`/gaffer:run-loop` does: one `⚠️ **--<flag>** no longer does anything — this loop
+runs one sequential mode.` line per flag, using the existing ⚠️ glyph. `--parallel`
+is handled separately, immediately below — it does not resurrect the retired
+parallel driver; only a run-state that actually records `mode: parallel` does.
 
-## 0. Relay or inline — decided by remaining backlog (ADR 0012)
+## A `mode: parallel` run-state stops here — no auto-migration
 
-**Decide this first.** A resume flows straight into the loop, so it inherits
-`/gaffer:run-loop` §0's rule — read it there; the summary is:
+**Check this before anything else, read-only.** If `.agents/run-state.yaml` records
+`mode: parallel` (parallel mode was retired —
+[ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md), superseded), do **not**
+run any packet and do **not** write anything — not to run-state, not to any branch.
+Read the surviving read-only projection:
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh lanes .agents/run-state.yaml` — one line
+per lane: id, branch, worktree, packet, last green commit, status. Then stop and
+report (shape B):
 
-1. **Read the checkpoint's shape from disk:**
-   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh summary .agents/run-state.yaml`.
-   If there is no run-state, say so and stop — reconstruction (§1) is the executing
-   Chief Engineer's job, not the relay's.
-2. **Count what REMAINS, not what the run started with** — `pending` + the cursor.
-   A run that began at 60 packets and has 4 left is a *small* backlog now, and the
-   relay would cost 1.84x per packet to finish it.
-   - **`--inline` / `--relay` in `$ARGUMENTS` wins**, else: **< 40 remaining →
-     inline** (run §1–§4 yourself, the default); **≥ 40 remaining → relay** (below).
-   - Say which you chose and the remaining count in one line.
-3. **Relay mode — dispatch a fresh `gaffer:chief-engineer`** with a brief
-   containing **only**: the repo root, the resolved autonomy level, the run-state
-   path, and —
-   > Read `${CLAUDE_PLUGIN_ROOT}/skills/resume/SKILL.md` and follow §1–§4: load the
-   > checkpoint, reconcile the working tree, surface any blocking questions, then
-   > continue **exactly one packet** from the cursor and stop. Return **only** the
-   > check-in from `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`.
+- **Every lane, by branch and worktree** — straight off the `lanes` output, one line
+  each.
+- **Whether run-state records each as merged.** `status: done` is the only value
+  this schema ever recorded for "merged, worktree removed" — say that plainly per
+  lane; `running`/`green`/`integrating`, or no status at all, is **not** recorded as
+  merged.
+- **State plainly that this session merged none of them.** It stopped before
+  touching any lane.
+- **Name what the operator must clear before the loop can run again** — each
+  unmerged lane's branch and worktree (review and land or discard by hand), and
+  `.agents/run-state.yaml` itself, which still reads `mode: parallel` — nothing here
+  rewrites or migrates it.
 
-   **Give it the file path — it has no `Skill` tool** (ADR 0012, finding 4).
-   The reconcile in §2 is deliberately inside the dispatch: it is git-state work,
-   and its output belongs in the subagent's context, not yours.
-4. **Render the returned check-in into the human check-in shape**
-   (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A — from the returned
-   text alone, never by re-reading the repo), then hand off to
-   `/gaffer:run-loop` §0 — the same contract drives every packet after this
-   one. If the check-in reports `escalate`, a red tip, or a blocking question,
-   **stop and surface it** as a stop report (shape B) with the question written as an
-   answerable decision; those are the human's, not yours to resolve.
+`$ARGUMENTS` containing `--parallel` does **not** trigger this on its own — there is
+no parallel driver left to resume into. Only the run-state's own recorded `mode:`
+does. Everything below is the sequential resume, for a run-state that does not
+record `mode: parallel`.
 
-Everything below §0 is written for **whoever executes the resume** — you, at
-`--inline`/a small remaining backlog, or the dispatched Chief Engineer under the
-relay.
+## Concurrency
+
+**File-editing agents run one at a time, unless their declared file scopes are
+disjoint** — a resumed run dispatches a single `implementer` per packet, same as a
+fresh one. **Read-only agents** (a `researcher`, a `reviewer`, an `Explore`-style
+search) may fan out freely; nothing they do needs serializing. **Worktree isolation
+is not part of this resume.** Reach for it only on self-contained work starting
+fresh off the default branch — a spike, an experiment, a deliberate refactor —
+**never** for an implementer continuing a packet on this run's own `orch/<task-id>`
+branch: a worktree branched mid-run lacks the earlier packets' commits and is never
+merged back automatically, so it silently drops the packet from the branch the run
+is building.
 
 ## 1. Load the checkpoint
 
@@ -229,15 +229,15 @@ words, what is expected to need a decision, and where this session will stop. Th
 human may be days removed from the run and remembers none of the ids; the checkpoint
 you just loaded is the only thing that does. Where the tree needed reconciling (§2),
 say so in one line — whether anything was adopted or set aside, and whether the
-resumed state matches where they think they left off.
+resumed state matches where they think they left off. If `$ARGUMENTS` carried
+`--relay`/`--inline`, add the one `⚠️` line per flag described above.
 
-**Then sweep before recording the cursor packet** (T3, T8) — this is the sequential
-path only (a `--parallel` resume was already redirected above): run
+**Then sweep before recording the cursor packet** (T3, T8): run
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
 `--paused-cursor <cursor>` **only** if `status` read `paused` in step 1 — the
 cursor packet is the one this session is about to continue, not the one the sweep
 should close. It prints one `OPEN=<id>` line per open packet. If it printed any,
-comma-join the ids (the `paste -sd,` idiom at run-loop/SKILL.md :183–186) into one
+comma-join the ids (the `paste -sd,` idiom at run-loop/SKILL.md :84–87) into one
 string and resolve them —
 `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
 prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing

@@ -1083,6 +1083,156 @@ has   'a packet with a REAL trailer commit still reads dead (the anchor still ma
   'ENTRY=f-real PACKETS=yes VERDICT=dead' "$out"
 
 # =============================================================================
+printf '\n== apply: retire-unused-loop-modes T5 -- clean up a consumer repo ==\n'
+# Parallel mode (ADR 0016) and rate-limit auto-pause (ADR 0018) are retired from
+# the shipped plugin; a repo that had adopted either still carries the artifacts.
+# `apply` cleans up what is mechanically safe and only ever REPORTS the rest.
+R="$TMP/retire-cleanup"; mk_repo "$R" canonical
+mkdir -p "$R/.agents"
+cat > "$R/.agents/project-overrides.yaml" <<'EOF'
+# Per-project orchestration overrides for demo-app
+project:
+  name: demo-app
+
+bypass-ask-tier: true
+
+integration_branch: develop
+
+# Rate-limit auto-pause (ADR 0018) — needs Pro/Max plus a `statusLine` entry in
+# user settings.json, which a plugin cannot write. Turn on with
+# `/gaffer:rate-limit-pause on`; this block is the per-repo gate.
+# rate_limit_pause:
+#   enabled: true
+#   five_hour_threshold_pct: 90
+#   seven_day_threshold_pct: 85
+
+# Parallel lanes (ADR 0016). Left at the default 5, but expect far less
+# concurrency than that here.
+# max_parallel_packets: 5
+EOF
+# a leftover per-lane pause file (ADR 0017's retired per-lane variant) plus the
+# whole-run sentinel, which must survive untouched.
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause"
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-a"
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-b"
+# a TRACKED packet-graph.yaml (ADR 0016)
+printf 'waves:\n  - wave: 1\n    packets:\n      - id: x\n' > "$R/.agents/packet-graph.yaml"
+# stale CLAUDE.md routing lines
+cat >> "$R/CLAUDE.md" <<'EOF'
+
+Run the backlog in parallel with `/gaffer:run-loop --parallel` after
+`/gaffer:build-packet-dependency-tree`. Auto-pause with `/gaffer:rate-limit-pause on`.
+EOF
+git -C "$R" add -A >/dev/null 2>&1
+git -C "$R" -c user.email=t@e -c user.name=t commit -qm "retire-cleanup fixtures" >/dev/null 2>&1
+
+printf '\n-- overrides file: rate_limit_pause + max_parallel_packets removed, rest untouched --\n'
+out="$("$MIG" apply "$R" 2>&1)"
+has 'apply reports the overrides cleanup' 'CLEANED=rate_limit_pause' "$out"
+ov="$(cat "$R/.agents/project-overrides.yaml")"
+hasnt 'the rate_limit_pause example is gone'  'rate_limit_pause:'    "$ov"
+hasnt 'the max_parallel_packets key is gone'  'max_parallel_packets' "$ov"
+has   'bypass-ask-tier survives untouched'    'bypass-ask-tier: true'    "$ov"
+has   'integration_branch survives untouched' 'integration_branch: develop' "$ov"
+has   'the project: block survives untouched' 'name: demo-app' "$ov"
+
+printf '\n-- per-lane pause files removed; the whole-run sentinel survives --\n'
+has 'apply reports the per-lane pause cleanup' 'leftover per-lane pause file' "$out"
+[ ! -e "$R/.agents/pause.lane-a" ] && [ ! -e "$R/.agents/pause.lane-b" ] \
+  && ok 'both per-lane pause files are gone' \
+  || bad 'per-lane pause files still present' "$(ls "$R/.agents" 2>&1)"
+[ -f "$R/.agents/pause" ] && ok 'the whole-run pause sentinel survives untouched' \
+  || bad 'the whole-run pause sentinel was deleted'
+
+printf '\n-- .agents/packet-graph.yaml: tracked, so removed AND flagged for the operator to commit --\n'
+has 'apply reports the packet-graph.yaml removal' 'REMOVED=.agents/packet-graph.yaml deleted' "$out"
+has 'and says the operator must commit it'        'need to commit' "$out"
+[ ! -e "$R/.agents/packet-graph.yaml" ] && ok 'packet-graph.yaml is gone from the working tree' \
+  || bad 'packet-graph.yaml still on disk'
+git -C "$R" status --porcelain -- .agents/packet-graph.yaml | grep -q '^D ' \
+  && ok 'the deletion is staged (it was tracked)' \
+  || bad 'packet-graph.yaml deletion was not staged' "$(git -C "$R" status --porcelain -- .agents/packet-graph.yaml)"
+
+printf '\n-- extra git worktrees: LISTED, never deleted --\n'
+WT="$TMP/retire-cleanup-wt"
+git -C "$R" worktree add -q -b orch/spike "$WT" >/dev/null 2>&1
+out2="$("$MIG" apply "$R" --force 2>&1)"
+has 'apply lists the extra worktree' 'WORKTREES=' "$out2"
+has 'and names its branch'          'orch/spike'  "$out2"
+[ -d "$WT" ] && ok 'the worktree itself is untouched' || bad 'apply deleted a worktree'
+
+printf '\n-- CLAUDE.md: stale routing lines are REPORTED, never edited --\n'
+before_claude="$(cat "$R/CLAUDE.md")"
+has 'apply reports the stale CLAUDE.md routing lines' 'CLAUDEMD_ROUTES=' "$out2"
+has 'and quotes the --parallel line' '--parallel' "$out2"
+after_claude="$(cat "$R/CLAUDE.md")"
+[ "$before_claude" = "$after_claude" ] && ok 'CLAUDE.md itself is byte-unchanged' \
+  || bad 'CLAUDE.md was edited' "apply must never rewrite a consumer's CLAUDE.md"
+
+printf '\n-- idempotence: a second apply finds nothing new to clean up --\n'
+out3="$("$MIG" apply "$R" --force 2>&1)"
+hasnt 'no further CLEANED= on a second run'                'CLEANED='                        "$out3"
+hasnt 'no further per-lane pause cleanup on a second run'  'leftover per-lane pause file'     "$out3"
+hasnt 'no further packet-graph.yaml removal on a second run' 'packet-graph.yaml deleted'      "$out3"
+has 'WORKTREES= is still (accurately) reported -- it is a read-only listing' 'WORKTREES=' "$out3"
+has 'CLAUDEMD_ROUTES= is still (accurately) reported -- read-only' 'CLAUDEMD_ROUTES=' "$out3"
+
+printf '\n-- statusLine: FOUND (decline path) -- reported, never touched, reload caveat stated --\n'
+R2="$TMP/statusline-decline"; mk_repo "$R2" canonical
+HOME2="$TMP/home-decline"; mkdir -p "$HOME2/.claude"
+cat > "$HOME2/.claude/settings.json" <<'EOF'
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/Users/x/.claude/plugins/cache/gaffer_abc123/scripts/statusline-pause-sensor.sh"
+  }
+}
+EOF
+out="$(CLAUDE_CONFIG_DIR="$HOME2/.claude" "$MIG" apply "$R2" 2>&1)"
+has 'apply finds the stale statusLine'            'FOUND=statusLine' "$out"
+has 'and names --remove-statusline as the way to remove it' '--remove-statusline' "$out"
+has 'and states the session-reload caveat'        'session start' "$out"
+hasnt 'it does NOT claim the removal already took effect' 'REMOVED=statusLine' "$out"
+settings_after="$(cat "$HOME2/.claude/settings.json")"
+has 'the statusLine entry survives a decline' 'statusline-pause-sensor.sh' "$settings_after"
+# a second (declined) run reports the same finding -- it is not a one-shot alert
+out_decline2="$(CLAUDE_CONFIG_DIR="$HOME2/.claude" "$MIG" apply "$R2" --force 2>&1)"
+has 'a second decline still reports FOUND=' 'FOUND=statusLine' "$out_decline2"
+
+if command -v jq >/dev/null 2>&1; then
+  printf '\n-- statusLine: --remove-statusline removes ours, with jq available --\n'
+  R3="$TMP/statusline-remove"; mk_repo "$R3" canonical
+  HOME3="$TMP/home-remove"; mkdir -p "$HOME3/.claude"
+  cp "$HOME2/.claude/settings.json" "$HOME3/.claude/settings.json"
+  out="$(CLAUDE_CONFIG_DIR="$HOME3/.claude" "$MIG" apply "$R3" --remove-statusline 2>&1)"
+  has 'apply reports the statusLine removal'  'REMOVED=statusLine removed' "$out"
+  has 'and still states the session-reload caveat -- never "now safe"' 'session start' "$out"
+  hasnt 'the sensor path is gone from settings.json' 'statusline-pause-sensor.sh' "$(cat "$HOME3/.claude/settings.json")"
+  # idempotent: nothing left to remove on a second run
+  out_rm2="$(CLAUDE_CONFIG_DIR="$HOME3/.claude" "$MIG" apply "$R3" --remove-statusline --force 2>&1)"
+  hasnt 'a second --remove-statusline run finds nothing left' 'FOUND=statusLine' "$out_rm2"
+  hasnt 'and reports no further removal' 'REMOVED=statusLine' "$out_rm2"
+else
+  printf '  SKIP: jq not installed on this host -- the statusLine removal path is not exercised (apply refuses to hand-edit JSON without a real parser)\n'
+fi
+
+printf '\n-- statusLine: a FOREIGN entry is never even named, let alone touched --\n'
+R4="$TMP/statusline-foreign"; mk_repo "$R4" canonical
+HOME4="$TMP/home-foreign"; mkdir -p "$HOME4/.claude"
+cat > "$HOME4/.claude/settings.json" <<'EOF'
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/opt/homebrew/bin/some-other-tool --flag"
+  }
+}
+EOF
+out="$(CLAUDE_CONFIG_DIR="$HOME4/.claude" "$MIG" apply "$R4" --remove-statusline 2>&1)"
+hasnt 'a foreign statusLine is never named as FOUND'   'FOUND=statusLine'   "$out"
+hasnt 'and never removed either, even with the flag'   'REMOVED=statusLine' "$out"
+has 'the foreign entry survives byte-for-byte' 'some-other-tool --flag' "$(cat "$HOME4/.claude/settings.json")"
+
+# =============================================================================
 printf '\n== the runbook must not drift from the pin ==\n'
 # docs/gspec-<version>-migration.md is the HUMAN sequence; skills/migrate/SKILL.md
 # is what the agent runs. Two documents by design -- different readers, different

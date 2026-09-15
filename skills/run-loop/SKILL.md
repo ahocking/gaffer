@@ -7,26 +7,38 @@ argument-hint: (optional — a backlog source or a starting packet; else reads .
 # Run the guided loop $ARGUMENTS
 
 Drive the implement → test → review → commit-on-branch loop across a backlog,
-one **commit-sized, resumable** packet at a time. The **Chief Engineer** executes
-this loop — either here in this session, or one packet at a time in a dispatched
-subagent, **decided by backlog size in §0**. Its safety rests on the layers below
-it, whichever mode runs — the autonomy-aware
-commit gate in `hooks/guard.sh`, per-packet `orch/<task-id>` feature branches in
-the single local checkout, and the durable checkpoint in
-`.agents/run-state.yaml` — so honor them, do not route around them. See
-[ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md),
-[ADR 0009](../../docs/adr/0009-single-directory-feature-branch-workflow.md), and
-[ADR 0012](../../docs/adr/0012-delegated-loop-driver.md).
+one **commit-sized, resumable** packet at a time. The **Chief Engineer** — this
+session — runs the whole loop itself. There is **one sequential mode**; backlog
+size never switches it, and no run dispatches a per-packet coordinator. Its safety
+rests on the layers below it — the autonomy-aware commit gate in `hooks/guard.sh`,
+per-packet `orch/<task-id>` feature branches in the single local checkout, and the
+durable checkpoint in `.agents/run-state.yaml` — so honor them, do not route around
+them. See [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md)
+and [ADR 0009](../../docs/adr/0009-single-directory-feature-branch-workflow.md).
 
-## Parallel or sequential — the `--parallel` flag
+## Flags this loop no longer has
 
-**If `$ARGUMENTS` contains `--parallel`, `Read`
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/parallel.md` and follow it instead — ignore
-§0–§4 here.** (Parallel mode is split into its own file so this common sequential path
-never loads it.) Parallel mode runs the maximum number of dependency-independent
-packets at once, each isolated in its own git worktree lane; it requires a packet
-dependency graph and reintroduces worktrees for isolation — **opt-in and never the
-default**. Otherwise run the sequential loop below (§0 decides relay vs inline).
+`--relay`, `--inline`, and `--parallel` are still accepted in `$ARGUMENTS` and must
+**not** error — something invoking this skill may still pass one from habit. None of
+them change anything any more: relay dispatch was retired
+([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded) and worktree
+parallel mode was retired ([ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md),
+superseded). If `$ARGUMENTS` contains any of them, run the single sequential mode
+below and say so in the kickoff (§2) with one `⚠️ **--<flag>** no longer does
+anything — this loop runs one sequential mode.` line per flag present, using the
+existing ⚠️ glyph — no new report shape.
+
+## Concurrency
+
+**File-editing agents run one at a time, unless their declared file scopes are
+disjoint** — this loop dispatches a single `implementer` per packet for exactly that
+reason. **Read-only agents** (a `researcher`, a `reviewer`, an `Explore`-style search)
+may fan out freely; nothing they do needs serializing. **Worktree isolation is not
+part of this loop.** Reach for it only on self-contained work starting fresh off the
+default branch — a spike, an experiment, a deliberate refactor — **never** for an
+implementer working a packet on this loop's own `orch/<task-id>` branch: a worktree
+branched mid-run lacks the earlier packets' commits and is never merged back
+automatically, so it silently drops the packet from the branch the loop is building.
 
 ## The report contract — `Read` it before you emit anything
 
@@ -43,116 +55,6 @@ each emission point; unless you have actually loaded them you will render from m
 and produce free prose, which is the exact failure they exist to prevent. **One read
 covers the whole run** — your context persists across packets, so do not re-read them
 per packet.
-
-**This applies to whoever is writing to the HUMAN — and only them.** A dispatched
-Chief Engineer (relay mode) or worktree lane (`--parallel`) returns the machine-shaped
-wire format (`templates/check-in.md`) to the scheduler, which renders it; those agents
-must **not** read either file, or every packet pays ~5k tokens for a shape it never
-emits.
-
-## 0. Relay or inline — decided by backlog size (ADR 0012)
-
-**Decide this first, before touching the repo, and say which you chose.** The loop
-runs two ways and the choice is measured, not stylistic:
-
-- **Inline** — you run §1–§4 yourself. Cheaper per packet, but your context grows
-  ~6.7k/packet and hits a forced, lossy compaction around packet **~28**.
-- **Relay** — you dispatch a fresh Chief Engineer per packet and relay its
-  check-in. Your context stays ~6 lines/packet forever, at a flat ~40.7k/packet.
-
-Pick, in this order:
-
-1. **`--inline` or `--relay` in `$ARGUMENTS` wins.** (`--inline` also covers
-   debugging the loop itself, or a harness without subagent nesting.)
-2. **Otherwise count the backlog** — `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
-   summary .agents/run-state.yaml` (pending + the cursor), else the node count from
-   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes-all`:
-   - **< 40 packets → INLINE. This is the default, and it covers nearly every
-     real backlog.** Measured across 62 packets of production runs, relay costs
-     **1.84x inline per packet** in cache creation, and the coordinator role
-     carries a `cc_shape` max of 142k–240k with 9–55 turns over 50k in *every*
-     relay run — a standing context re-cached on each turn. Inline has no such
-     role.
-   - **≥ 40 packets → RELAY.** Only a backlog long enough to actually threaten
-     the context window justifies paying that. Inline's forced compaction sits
-     around packet **~28**, and the largest run ever observed is **14 packets** —
-     so this branch is deliberately rare, and reaching it is a signal the backlog
-     should probably be split rather than relayed.
-3. **State the mode and the packet count in one line** before you start, so the
-   human can override with the flag.
-
-**If inline: stop reading §0 and run §1–§4 yourself.** The rest of §0 is the relay
-contract.
-
-### The relay contract
-
-Per packet, do exactly this:
-
-1. **Read the run's shape from disk, not from the repo:**
-   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh summary .agents/run-state.yaml`
-   (skip if there is no run-state yet — the first dispatch establishes it per §2).
-
-   **Findings are an index, and the index is the only part that is free** (ADR 0022).
-   `runstate.sh findings .agents/run-state.yaml` prints one line per finding. Put
-   **only the lines relevant to this packet** in the brief, and pass the `file:` path
-   so the coordinator can open the body **if it decides it needs it**. Do not paste
-   finding bodies into the brief, and do not tell it to read them all — that
-   reconstructs the 41k-token run-state this design removed, in a different file.
-   Conversely, never drop the index: a finding nobody sees causes the rework it
-   existed to prevent, which costs more than reading it would have.
-2. **Dispatch a fresh `gaffer:chief-engineer`** with a brief containing
-   **only**: the repo root, the resolved autonomy level, the run-state path, the
-   cursor packet id, and this instruction —
-   > Read `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` and follow §1–§3 for
-   > **exactly one packet** (the one at `backlog.cursor`), then stop. Return
-   > **only** the check-in from `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md` —
-   > no transcript, no diff, no commentary.
-
-   **Give it the skill's file path, as above — it has no `Skill` tool** and cannot
-   invoke `/gaffer:run-loop`; without the path it will improvise the loop
-   from memory (ADR 0012, finding 4). Do **not** pour this session's conversation
-   into the brief: run-state and the packet are the context it needs.
-
-   **Name the governing documents; do not let it go looking.** Add to the brief the
-   specific ADR ids and the single plan file this packet is governed by — the path
-   the adapter printed as `PLAN=`, never one you assembled yourself, since where a
-   plan lives depends on the repo's gspec layout — and say that reading beyond them
-   is out of scope for the packet. When the adapter also printed `ARCH=`/`DESIGN=`
-   for that feature, name those too: they are written to make an implementer
-   self-sufficient, and they are the cheapest context the packet can have. Unscoped, a fresh
-   coordinator sweeps the whole corpus — measured at ~111k tokens (17 ADRs ≈ 48k,
-   7 task plans ≈ 30k, gspec core ≈ 22k) for a packet that governs about one of each.
-   That payload is not read once: it becomes the standing context re-cached on every
-   large turn, which is why coordinator `cc_shape.max` reads 148k–240k on runs that
-   skip this and 24k on one that did not.
-
-   Where a document is genuinely large and only one section applies, say so — a
-   bounded `Read` (`offset`/`limit`) is the intended tool. Across 30 sessions the top
-   **10%** of `Read` calls carried **50%** of all read volume, and `Read` totalled
-   **7.6x** every shell search combined; whole-file reads of long ADRs are that tail.
-3. **Render the returned check-in into the human check-in shape** in
-   `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shape A) — a few lines, every
-   id given a plain-English title, no machinery. **Render from the returned text and
-   nothing else:** do not re-derive it, comment on it, or verify it by reading the
-   repo, the diff, or the test output yourself — *that* is how this context refills,
-   and it is the thing ADR 0012's relay contract forbids. The transform is free; the
-   trip back to disk is not.
-4. **Decide from disk, not from the transcript:** re-read `status` and
-   `backlog.cursor` (`runstate.sh get`). Then:
-   - `status: running` and **cursor advanced** → dispatch the next packet (§0, relay contract step 2).
-   - `status: paused` / `blocked` / `done` → emit the **stop report** (shape B) and **stop**.
-   - **cursor unchanged** → the packet did not land. **Stop and report** — never
-     re-dispatch the same cursor. A dispatch loop that never advances burns tokens
-     and looks like progress.
-5. **A blocking question is the human's.** Surface it and wait. Do not answer it
-   on their behalf; carry their answer into the next brief.
-
-Everything below §0 is written for **whoever executes the loop** — you, at
-`--inline`/small backlogs, or the dispatched Chief Engineer under the relay.
-
-**Relay or inline is an internal cost decision — say it in a clause, not a
-paragraph.** What the human needs before the first packet is the kickoff (§2), not
-your dispatch strategy.
 
 ## 1. Preflight (stop here if unmet)
 
@@ -238,7 +140,7 @@ running`) as soon as you begin driving, then
 `status: running` is the crash signal; the **driver claim** is what tells a crashed
 run apart from *another session driving right now* (ADR 0020 D5) — without it a
 second session reads `running` as a crash and starts driving too, breaking the
-single-writer invariant parallel mode rests on. Keep the status truthful — only
+single-writer invariant this file depends on. Keep the status truthful — only
 `/gaffer:pause` (→ `paused`/`blocked`) and completion (→ `done`) clear it.
 **Clear any stale pause sentinel** left by a prior run so it cannot immediately
 re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
@@ -270,20 +172,10 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    (resuming), just `git switch orch/<task-id>`. No worktree, no separate
    directory — all work happens here.
 
-   **Sweep for packets left open, immediately before recording this one** (T3) —
-   **sequential mode only. Under `--parallel` a lane must NEVER call this**
-   (loop-measurement I3): `sweep-open` is global over the shared outcomes log
-   (`_rs_main_checkout_root` — one directory for every lane), not scoped to a
-   single packet the way `record-start`/`record-outcome` are, so a lane running
-   it can close a SIBLING lane's still-live packet as interrupted the moment
-   that sibling's start record is the oldest open one. `parallel.md` does not
-   currently call `sweep-open` anywhere, so under `--parallel` a packet left
-   open by a crashed lane or session goes un-swept until a sequential run
-   closes it — a known coverage gap, not a silent one, and safer than the
-   alternative it replaces:
+   **Sweep for packets left open, immediately before recording this one** (T3):
    `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`; it prints one
    `OPEN=<id>` line per open packet. If it printed any, comma-join the ids (the
-   `paste -sd,` idiom at :183–186) into one string and resolve them —
+   `paste -sd,` idiom at :84–87) into one string and resolve them —
    `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` —
    which prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
    `FINISHED=<csv>` line; the `gone` set is the ids whose second column reads
@@ -308,10 +200,9 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    acceptance criterion is REQUIRED when the packet touches enforcement or
    automation code, and when `session_boundary` must be declared. One read
    (~2.4k tokens) covers this context — do not re-read it per packet within
-   it. This applies to whoever **fills**
-   a packet (you, here, or a relay-dispatched Chief Engineer / parallel lane)
-   — not to the `implementer`/`reviewer`/`doc-writer`, who are handed an
-   already-filled packet. Then fill it: narrow `allowed_files`,
+   it. This applies to you, filling the packet here — not to the
+   `implementer`/`reviewer`/`doc-writer`, who are handed an already-filled packet.
+   Then fill it: narrow `allowed_files`,
    acceptance criteria, `forbidden`, build/test commands, and the packet
    `autonomy`. **Set `tier` here** — `mechanical` (fully-specified, one file),
    `integration` (multi-file/wiring, design settled), `design-heavy` (the design
@@ -422,9 +313,9 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
        add an "earlier history" section — the archive is
        `runstate.sh trim-note .agents/run-state.yaml`, which moves the overflow to
        `run-state-note-archive.md`. Left to accumulate it reached **164,678 chars —
-       87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a relay
-       dispatch re-reads all of it to recover two facts ADR 0012 states plainly:
-       did it land, what is next.
+       87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a
+       resuming session re-reads all of it to recover just two facts: did it land,
+       what is next.
      - **Drop stale findings naming `<landed>`, staleness read from evidence, not
        say-so** (ADR 0024). The checkbox flip above (or this commit's own
        trailer, for a non-gspec packet) is the first positive evidence `<landed>`
@@ -489,11 +380,7 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
        **mandatory** regardless (ADR 0024, there is no run-wide finding). Then
        write the detail into the `.agents/findings/<id>.md` it creates when you
        also pass `--body` (opt-in — most findings are fully carried by their
-       summary). **In a parallel lane, do not run this** — you have no run-state
-       to append to and you are not its writer. Put the line in your check-in
-       under `Findings:` with the packet id(s) it names (never the lane's own
-       id, for the same reason), and the scheduler records it (`parallel.md`
-       P1.4). Route it
+       summary). Route it
        first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
        - **"this should be built/fixed"** → **not a finding.** That is backlog: a
          gspec task/feature, sequenced via `.agents/roadmap.yaml`.

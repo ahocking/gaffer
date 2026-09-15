@@ -8,8 +8,9 @@
 # on regenerate but RE-DECOMPOSES unchecked work, so a `T5` can keep its id while
 # its text becomes different work. An unguarded entry would then hand a stale,
 # NARROW scope to two lanes that actually collide. A missing or mismatched
-# fingerprint drops the entry to empty scope, and packet-graph.sh then serializes
-# the packet: wrong-wide costs parallelism, wrong-narrow costs correctness.
+# fingerprint drops the entry to empty scope. Scope is now advisory rather than
+# a scheduling input (parallel mode is retired), but it still tells an
+# implementer what it may touch, so a stale NARROW scope is the costly direction.
 #
 # The fingerprint is the task's description text. Comparison is normalized for
 # case, markdown emphasis and whitespace, so reformatting a task does not
@@ -117,10 +118,6 @@ tasks:
   - task: run-state-cleanup#T12
     files: [skills/run-loop/SKILL.md]
     fingerprint: Make `run-loop` preflight report any `[orch packet:]` trailer naming a still-unchecked task, without flipping and without blocking
-
-  - task: run-state-cleanup#T13
-    files: [skills/run-loop/parallel.md]
-    fingerprint: Make the scheduler flip at green-lane merge and then apply the same capture-then-drop test to that lane's reported findings, updating the `parallel.md` P1.4 `add-finding` site to pass the lane's packet ids
 
   - task: run-state-cleanup#T14
     files: [skills/resume/SKILL.md]

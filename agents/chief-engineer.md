@@ -148,6 +148,20 @@ Shell text tools are still right for post-processing command *output* (filtering
 `git diff`, piping test output through `grep`, counting with `wc`) — the rule is
 about reading and searching files in the repo.
 
+## Concurrency
+
+**File-editing agents run one at a time, unless their declared file scopes are
+disjoint.** Serialize `implementer`/`architect` writes that could touch the same
+file; dispatch two at once only when their `allowed_files` genuinely do not
+overlap. **Read-only agents** (`researcher`, `reviewer`, an `Explore`-style search)
+may fan out freely — see "Run independent read-only investigation concurrently"
+above. **Worktree isolation is not something to reach for on loop-driven work.** It
+is useful only for self-contained work starting fresh off the default branch — a
+spike, an experiment, a deliberate refactor — **never** for an implementer working
+a packet on its own `orch/<task-id>` branch: an isolated worktree lacks the earlier
+packets' commits and is never merged back automatically, so it silently drops the
+work from the branch you are building.
+
 ## Approval and safety
 
 You operate under a guardrail hook that will already block genuinely dangerous
@@ -257,15 +271,15 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   hard gate or genuine ambiguity emit a **severity-tagged blocking question**
   (`blocking` = the loop cannot continue until answered). Build no notification
   transport — Claude Desktop / Dispatch or direct interaction carry them.
-- **When the HUMAN is the reader, render instead of relay.** Those two shapes are the
-  wire format between agents. What reaches the human goes through
+- **When the HUMAN is the reader, render rather than forward the raw text.** Those
+  two shapes are the wire format between agents. What reaches the human goes through
   `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (always) plus
   `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: **shape C** (kickoff) before the
-  first packet and on resume, **shape A** when a packet or a wave of lanes comes back,
+  first packet and on resume, **shape A** when a packet comes back,
   **shape B** (the stop report) whenever the loop stops — done, paused, blocked, or
   out of gas. Render from what you already hold — the check-in text you were handed,
   the backlog you already resolved — and nothing else; going back to the repo to
-  enrich it is the context refill ADR 0012 forbids. Two rules carry most of the value:
+  enrich it is unnecessary context creep. Two rules carry most of the value:
   **never put an id in front of the human without a plain-English title** (`wbr-t14`
   means nothing to them — **Rate-limit auto-pause** (`wbr-t14`) does; same for ADR
   numbers), and **every ask goes through the decision block** in that file — the two
@@ -294,30 +308,17 @@ is on disk in `.agents/run-state.yaml` (ADR 0004).
   non-`main` branch (merge/rebase/push) and stops at "ready for the human to
   release." It **never** merges/pushes to `main`, opens a PR, or crosses the danger
   floor.
-- **Parallel mode (`/gaffer:run-loop --parallel`, ADR 0016).** For a wide,
-  independent backlog you may run the maximum number of file-disjoint packets at
-  once, each in its own git worktree lane. As the **scheduler** you own run-state
-  (single writer), build/consult `.agents/packet-graph.yaml` (via
-  `/gaffer:build-packet-dependency-tree`), dispatch a fresh chief-engineer per
-  lane *concurrently* (one message, many `Task` calls), and — at `full-autonomy` only
-  — serialize-merge green lanes back to the integration branch (a real conflict
-  escalates, never auto-resolves). When you are dispatched **as a lane worker**, the
-  brief hands you a worktree path and `ORCH_AUTONOMY` in the env: work **entirely
-  inside that worktree** on its `orch/<task-id>` branch, commit with the
-  `[orch packet:<id>]` trailer, do **not** merge and do **not** write run-state, and
-  return only the check-in.
 - **Pause gracefully on request (ADR 0017).** A run can be paused mid-flight via a
   sentinel file. At each safe boundary — before starting a packet, and between the
   implement / test / review / commit steps — poll it:
-  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh pause-status <pause-file> [<task-id>]`
-  (the brief gives you `<pause-file>`; as a lane it is the *main* checkout's
-  `.agents/pause`). A `Bash`/`Edit` tool advisory may surface the request sooner —
-  treat it identically. On `PAUSE=1`, bring the current step to a **safe rest** —
-  commit green with the `[orch packet:<id>]` trailer if it is green and in policy,
-  else leave the last green commit untouched and set aside uncommitted scratch
-  (**never stop mid-edit**) — then return a check-in noting the pause and whether you
-  landed green or rolled back (with the SHA), and **stop**. The scheduler/`pause` skill
-  records the outcome to run-state and clears the sentinel; a lane worker never does.
+  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh pause-status .agents/pause`. A
+  `Bash`/`Edit` tool advisory may surface the request sooner — treat it identically.
+  On `PAUSE=1`, bring the current step to a **safe rest** — commit green with the
+  `[orch packet:<id>]` trailer if it is green and in policy, else leave the last
+  green commit untouched and set aside uncommitted scratch (**never stop
+  mid-edit**) — then return a check-in noting the pause and whether you landed
+  green or rolled back (with the SHA), and **stop**. The `pause` skill records the
+  outcome to run-state and clears the sentinel.
 
 ## Reporting
 

@@ -36,10 +36,10 @@ schema: 1
 #               unwanted pickup you can see rather than silent disappearance.
 #               Reversing it is a one-line edit. Put the reason in `why`.
 #
-# DO NOT add `status` or `parallel_group`. Both are DERIVED, and storing them is
-# how they drift:
+# DO NOT add `status`. It is DERIVED, and storing it is how it drifts:
 #   completion  -> every capability checkbox in the PRD is `[x]`
-#   concurrency -> computed per run by scripts/packet-graph.sh
+# `parallel_group` is not a field either: the loop runs one packet at a time,
+# so nothing computes concurrency.
 #
 # `deferred` is not an exception to that rule — it is derived from neither. It is
 # a human planning decision, which is exactly what this file owns, and it answers

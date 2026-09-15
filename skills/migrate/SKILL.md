@@ -185,6 +185,13 @@ layout; it is not a routine edit. Name explicitly:
   `apply` reports any id on it whose task is still unchecked before dropping it.
   **A finding is different** — `apply` never deletes one, because a finding may
   hold the only copy of something nobody has decided about yet (§5f).
+- **and it cleans up parallel-mode / rate-limit-pause leftovers** (both are
+  retired — `retire-unused-loop-modes`): the `rate_limit_pause:` block and
+  `max_parallel_packets:` key in `.agents/project-overrides.yaml`, leftover
+  per-lane `.agents/pause.<task-id>` files, and the **tracked**
+  `.agents/packet-graph.yaml`. It only ever **lists** extra git worktrees (never
+  deletes — one may hold unmerged work) and only ever **reports** a stale
+  `statusLine`/lines in the repo's own `CLAUDE.md` — see §4 and §5c.
 
 ## 4. Apply the mechanical moves
 
@@ -193,11 +200,14 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh apply <root>
 ```
 
 It moves plans with `git mv` (history preserved), stamps `spec-version` + `feature:`
-frontmatter onto plans that lack it, converts the roadmap, and then verifies. Relay
-its `MOVED=` / `STAMPED=` / `CONVERTED=` / `SKIP=` / `DROPPED=` / `UNCHECKED=` /
-`UNRECOGNIZED_BACKLOG_DONE=` lines — `SKIP=`, `UNCHECKED=` and
-`UNRECOGNIZED_BACKLOG_DONE=` need a decision from the user; `MOVED=`, `STAMPED=`,
-`CONVERTED=` and `DROPPED=` are informational.
+frontmatter onto plans that lack it, converts the roadmap, cleans up the retired
+parallel-mode/rate-limit-pause footprint, and then verifies. Relay its `MOVED=` /
+`STAMPED=` / `CONVERTED=` / `SKIP=` / `DROPPED=` / `UNCHECKED=` /
+`UNRECOGNIZED_BACKLOG_DONE=` / `CLEANED=` / `FOUND=` / `REMOVED=` / `NOTE=` /
+`WORKTREES=` / `CLAUDEMD_ROUTES=` lines — `SKIP=`, `UNCHECKED=`,
+`UNRECOGNIZED_BACKLOG_DONE=`, `FOUND=` and `CLAUDEMD_ROUTES=` need a decision or
+follow-up from the user; `MOVED=`, `STAMPED=`, `CONVERTED=`, `DROPPED=`, `CLEANED=`,
+`REMOVED=` and `WORKTREES=` are informational.
 
 A `SKIP=` means a destination already existed — it left both files in place rather
 than overwrite. Those are for the user to reconcile; never resolve one by deleting.
@@ -212,6 +222,36 @@ hand, or leave it) is the user's call; `apply` will not flip it for you.
 An `UNRECOGNIZED_BACKLOG_DONE=` means the `done:` key exists in a shape the script
 does not trust itself to touch, so `apply` left it byte-for-byte. Point the user at
 the line range it names and let them drop it by hand once they have reviewed it.
+
+A `CLEANED=` means `.agents/project-overrides.yaml`'s `rate_limit_pause:` block
+and/or `max_parallel_packets:` key were removed — informational; every other line
+of that file (in particular `bypass-ask-tier`, `integration_branch`,
+`autonomy_ceiling`, `escalate_to_human_on`) is untouched.
+
+A `REMOVED=` covers three different things, all informational, all already done:
+a leftover per-lane pause file, or the **tracked** `.agents/packet-graph.yaml`
+(name it as a change the user must `git add`/commit — `apply` never commits), or
+a statusLine actually removed from `settings.json` (see the `FOUND=`/`NOTE=`
+pair below — a `REMOVED=` here still carries a `NOTE=` and is still not a
+promise the sensor is inert *this* session).
+
+A `FOUND=` means a user-level `statusLine` still points at the retired
+`scripts/statusline-pause-sensor.sh`. `apply` **never removes it without your
+explicit say-so** — this is global config, outside the repo, and could in
+principle be something else's. **Ask the user before re-running with
+`--remove-statusline`.** Whatever they decide, relay the `NOTE=` that always
+follows: the status line is only re-read at session **start**, so neither a
+declined removal nor one just made this run is a promise the sensor is inert —
+it may still arm a pause until the next session. Never phrase a same-run
+removal as "now safe."
+
+A `WORKTREES=` lists extra git worktrees found — informational, and `apply`
+deletes **none** of them (one may hold unmerged work). If the user wants them
+gone, that is their call to make by hand.
+
+A `CLAUDEMD_ROUTES=` names line(s) in the repo's own `CLAUDE.md` that route to
+a retired mode or command. `apply` only ever reports these — see §5c for
+rewriting them.
 
 ## 5. The parts no script can do
 
@@ -247,6 +287,14 @@ actually on disk, and never both, since the whole value of this file is that an
 agent can trust it without checking. Use
 `${CLAUDE_PLUGIN_ROOT}/templates/spec-driven-base/CLAUDE.md` as the reference
 wording. Keep everything project-specific.
+
+If `apply` printed `CLAUDEMD_ROUTES=`, it found line(s) in this same file routing
+to a mode or command that is retired: `--parallel`, `/gaffer:build-packet-dependency-tree`,
+`/gaffer:rate-limit-pause`, relay mode, or worktree lanes. It only ever **reports**
+these — `CLAUDE.md` is the human's standing instruction, never rewritten for
+them. Show the lines and rewrite them yourself, in the same pass as the rest of
+this section: the loop now runs one sequential mode regardless of backlog size,
+and there is no separate parallel/relay path to route toward.
 
 **The report conventions are stamped in for you.** `migrate.sh apply` copies
 `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions-card.md` into `CLAUDE.md`

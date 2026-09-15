@@ -54,7 +54,7 @@ when deciding whether something is a vulnerability.
   config root must only ever *tighten*).
 - Any committed **secret, token, or credential**, or a path that leaks one.
 - Path-traversal or injection in the deterministic cores (`guard.sh`,
-  `runstate.sh`, `packet-graph.sh`, `worktree.sh`).
+  `runstate.sh`, `gspec-backlog.sh`, `metrics.sh`).
 
 **Out of scope** (by design, not a bug):
 

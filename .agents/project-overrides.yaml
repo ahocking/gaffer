@@ -106,16 +106,3 @@ bypass-ask-tier: true
 # The non-main integration branch (ADR 0009). Packets branch `orch/<task-id>` from
 # here and, at full-autonomy, merge back into it. main is human-gated regardless.
 integration_branch: develop
-
-# Rate-limit auto-pause (ADR 0018) — needs Pro/Max plus a `statusLine` entry in
-# user settings.json, which a plugin cannot write. Turn on with
-# `/gaffer:rate-limit-pause on`; this block is the per-repo gate.
-# rate_limit_pause:
-#   enabled: true
-#   five_hour_threshold_pct: 90
-#   seven_day_threshold_pct: 85
-
-# Parallel lanes (ADR 0016). Left at the default 5, but expect far less
-# concurrency than that here: most packets in this repo touch `scripts/` or a
-# prompt file, and overlapping `allowed_files` serializes them by design.
-# max_parallel_packets: 5

@@ -1,6 +1,6 @@
 ---
 spec-version: v2
-depends_on: [loop-measurement, retire-unused-loop-modes, retire-autonomy-levels]
+depends_on: [retire-unused-loop-modes]
 ---
 
 # Feature: thin-loop-driver
@@ -70,9 +70,9 @@ This feature keeps the main loop session's context small over 10–20 hour runs 
 
 ## Dependencies
 
-- `loop-measurement`: the packet start and outcome definitions this feature records against, and the spend report its success metrics use.
-- `retire-unused-loop-modes`: a single sequential mode with no relay contract.
-- `retire-autonomy-levels`: no autonomy-level branching for the driver to carry.
+- `retire-unused-loop-modes`: a single sequential mode with no relay contract. This is the only blocking dependency.
+- `loop-measurement` — **not blocking, deliberately.** This feature needs its OUTCOMES half (T1–T8: `record-start`, `sweep-open`, the honest terminal states), which has shipped. Its P1 spend tail (T12–T16) is deferred by operator decision, and completion is derived from capability checkboxes (ADR 0020 D2), so keeping it in `depends_on` would block this feature forever over work nobody intends to do. The spend half shares no files with this feature.
+- `retire-autonomy-levels` — **not blocking.** Deleting the levels first is a convenience, not a dependency; the driver simply carries whatever branching exists when it is built.
 - `escalation-decider`: depends on this feature; it receives `escalate` routing and reads result files.
 
 ## Assumptions & Risks

@@ -2,14 +2,22 @@
 # =============================================================================
 # test-pause.sh — cooperative-pause signal sweep (ADR 0017)
 # =============================================================================
-# Proves, WITHOUT a live agent, that the pause signal works uniformly across the
-# main checkout and parallel lane worktrees:
-#   - runstate.sh request-pause / clear-pause / pause-status (all + lane scope);
-#   - hooks/pause-check.sh resolves the MAIN checkout's sentinel FROM A WORKTREE
-#     via git-common-dir with NO env (the parallel-mode requirement);
+# Proves, WITHOUT a live agent, that the whole-run pause signal works:
+#   - runstate.sh request-pause / clear-pause / pause-status (whole-run only —
+#     retire-unused-loop-modes T1 removed the per-lane sentinel parallel mode
+#     used; there is exactly one sentinel path now);
+#   - hooks/pause-check.sh resolves the MAIN checkout's sentinel FROM A LINKED
+#     WORKTREE via git-common-dir with NO env (a worktree can still exist for
+#     self-contained work such as a spike, per the loop's worktree guidance —
+#     this is not parallel-mode-specific);
 #   - the $ORCH_PAUSE_FILE env fast-path;
 #   - the hook is context-ONLY — it never emits a permissionDecision, so it can
 #     never weaken guard.sh or a soft gate.
+#
+# The rate-limit status-line sensor (ADR 0018) that used to arm this same
+# sentinel is retired along with parallel mode (retire-unused-loop-modes T2);
+# see docs/adr/0018-rate-limit-aware-cooperative-pause.md for the superseding
+# note. Its cases are removed from this file.
 #
 # Run:  scripts/test-pause.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -33,7 +41,7 @@ assert_eq()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2' want '$
 ENVELOPE='{"tool_name":"Bash","tool_input":{"command":"ls"}}'
 run_hook() { ( cd "$1" && shift && env "$@" bash "$HOOK" <<<"$ENVELOPE" ); }
 
-# --- throwaway main checkout + a linked worktree lane ------------------------
+# --- throwaway main checkout + a linked worktree -----------------------------
 MAIN="$(cd "$(mktemp -d)" && pwd -P)"
 cleanup() { git -C "$MAIN" worktree prune 2>/dev/null || true; chmod -R u+w "$MAIN" "$WT" 2>/dev/null || true; rm -rf "$MAIN" "$WT" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -46,26 +54,21 @@ printf '.agents/pause*\n.agents/run-state.yaml\n' > "$MAIN/.gitignore"
 git -C "$MAIN" add -A
 git -C "$MAIN" commit -qm "init"
 
-# a parallel lane: worktree on orch/feat-1, a SIBLING dir of the main checkout.
+# a linked worktree (not a parallel lane -- that mode is retired; this proves
+# the hook's git-common-dir resolution works from ANY worktree, not just the
+# main checkout), a SIBLING dir of the main checkout.
 WT="${MAIN}-wt-feat-1"
 git -C "$MAIN" worktree add -q -b orch/feat-1 "$WT" main
 
 PF="${MAIN}/.agents/pause"
 
-echo "== runstate verbs: all-scope =="
+echo "== runstate verbs: whole-run pause =="
 assert_eq "absent -> PAUSE=0" "$("$RUNSTATE" pause-status "$PF")" "PAUSE=0"
 "$RUNSTATE" request-pause "$PF" "night" >/dev/null
-assert_has "requested -> PAUSE=1 all" "$("$RUNSTATE" pause-status "$PF")" "PAUSE=1 scope=all"
+assert_has "requested -> PAUSE=1" "$("$RUNSTATE" pause-status "$PF")" "PAUSE=1"
 assert_has "reason recorded" "$("$RUNSTATE" pause-status "$PF")" "reason=night"
 "$RUNSTATE" clear-pause "$PF" >/dev/null
 assert_eq "cleared -> PAUSE=0" "$("$RUNSTATE" pause-status "$PF")" "PAUSE=0"
-
-echo "== runstate verbs: lane-scope =="
-"$RUNSTATE" request-pause "${PF}.feat-1" "one lane" >/dev/null
-assert_has "lane match" "$("$RUNSTATE" pause-status "$PF" feat-1)" "PAUSE=1 scope=lane:feat-1"
-assert_eq  "other lane unaffected" "$("$RUNSTATE" pause-status "$PF" feat-2)" "PAUSE=0"
-"$RUNSTATE" clear-pause "$PF" >/dev/null
-assert_eq  "clear sweeps per-lane too" "$("$RUNSTATE" pause-status "$PF" feat-1)" "PAUSE=0"
 
 echo "== hook from the MAIN checkout (no env) =="
 assert_eq  "no sentinel -> silent" "$(run_hook "$MAIN")" ""
@@ -76,100 +79,17 @@ assert_has "advisory names the pause"      "$out" "PAUSE REQUESTED"
 assert_has "advisory carries the reason"   "$out" "wrap up"
 assert_not "advisory is context-ONLY (no permissionDecision)" "$out" "permissionDecision"
 
-echo "== hook from the LANE WORKTREE resolves the MAIN sentinel via git-common-dir (no env) =="
-# The all-scope sentinel set above lives in MAIN/.agents; the worktree must find it.
-assert_has "worktree sees all-scope sentinel" "$(run_hook "$WT")" "additionalContext"
+echo "== hook from the LINKED WORKTREE resolves the MAIN sentinel via git-common-dir (no env) =="
+# The whole-run sentinel set above lives in MAIN/.agents; the worktree must find it.
+assert_has "worktree sees the whole-run sentinel" "$(run_hook "$WT")" "additionalContext"
 "$RUNSTATE" clear-pause "$PF" >/dev/null
 assert_eq  "worktree: cleared -> silent" "$(run_hook "$WT")" ""
-
-echo "== hook lane-scope: only the matching lane's worktree reacts =="
-"$RUNSTATE" request-pause "${PF}.feat-1" "just feat-1" >/dev/null
-out="$(run_hook "$WT")"                       # worktree is on orch/feat-1
-assert_has "matching lane worktree reacts" "$out" "this lane (feat-1)"
-# the MAIN checkout is not on orch/feat-1, so a lane-scoped request must NOT fire there.
-assert_eq  "main checkout ignores a lane-scoped request" "$(run_hook "$MAIN")" ""
-"$RUNSTATE" clear-pause "$PF" >/dev/null
 
 echo "== hook \$ORCH_PAUSE_FILE env fast-path (no git resolution) =="
 ALT="${MAIN}/.agents/altpause"
 "$RUNSTATE" request-pause "$ALT" "via env" >/dev/null
 assert_has "env fast-path honored" "$(run_hook "$MAIN" ORCH_PAUSE_FILE="$ALT")" "via env"
 assert_eq  "default path silent while only env sentinel set" "$(run_hook "$MAIN")" ""
-
-# =============================================================================
-# ADR 0018 — the status-line sensor arms the SAME sentinel when a rolling usage
-# window crosses its threshold. It reads session JSON on stdin, prints a one-line
-# status, and (side effect) writes the sentinel. We feed crafted JSON blobs and
-# assert the sentinel appears / does not and carries the expected window's reason.
-# =============================================================================
-SENSOR="${HERE}/statusline-pause-sensor.sh"
-SPF="${MAIN}/.agents/sensorpause"          # isolated from the ADR 0017 cases above
-SJSON=''                                    # the session JSON each case feeds on stdin
-run_sensor() { ( cd "$1" && shift && env "$@" bash "$SENSOR" <<<"$SJSON" ); }
-"$RUNSTATE" clear-pause "$PF" >/dev/null    # ensure the git-resolved sentinel starts clear
-
-echo "== sensor: no rate_limits block -> bare label, nothing armed (API-key / pre-first-response) =="
-SJSON='{"session_id":"x"}'
-assert_eq  "no rate_limits -> 'orch'"        "$(run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF")" "orch"
-assert_eq  "no rate_limits -> no sentinel"   "$("$RUNSTATE" pause-status "$SPF")" "PAUSE=0"
-
-echo "== sensor: the 5-hour window crosses its default threshold (90) =="
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":95,"resets_at":1721480000},"seven_day":{"used_percentage":40,"resets_at":1721880000}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" >/dev/null
-assert_has "5h over -> sentinel armed"       "$("$RUNSTATE" pause-status "$SPF")" "PAUSE=1 scope=all"
-assert_has "reason names the 5h window"      "$("$RUNSTATE" pause-status "$SPF")" "5h-limit at 95%"
-assert_not "reason omits the untripped weekly window" "$("$RUNSTATE" pause-status "$SPF")" "weekly-limit"
-# a later response must NOT rewrite the reason/timestamp (idempotent, ! -f guard)
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" >/dev/null
-assert_has "idempotent -> original reason preserved" "$("$RUNSTATE" pause-status "$SPF")" "5h-limit at 95%"
-"$RUNSTATE" clear-pause "$SPF" >/dev/null
-
-echo "== sensor: only the weekly window crosses (its default 85 sits below the 5h 90) =="
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":1721480000},"seven_day":{"used_percentage":90,"resets_at":1721880000}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" >/dev/null
-assert_has "7d over -> sentinel armed"       "$("$RUNSTATE" pause-status "$SPF")" "PAUSE=1"
-assert_has "reason names the weekly window"  "$("$RUNSTATE" pause-status "$SPF")" "weekly-limit at 90%"
-assert_not "reason omits the untripped 5h window" "$("$RUNSTATE" pause-status "$SPF")" "5h-limit"
-"$RUNSTATE" clear-pause "$SPF" >/dev/null
-
-echo "== sensor: BOTH windows cross -> one sentinel names both =="
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":96,"resets_at":1721480000},"seven_day":{"used_percentage":88,"resets_at":1721880000}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" >/dev/null
-out="$("$RUNSTATE" pause-status "$SPF")"
-assert_has "both -> 5h in reason"            "$out" "5h-limit at 96%"
-assert_has "both -> weekly in reason"        "$out" "weekly-limit at 88%"
-"$RUNSTATE" clear-pause "$SPF" >/dev/null
-
-echo "== sensor: under BOTH thresholds -> nothing armed =="
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":50},"seven_day":{"used_percentage":50}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" >/dev/null
-assert_eq  "under both -> no sentinel"       "$("$RUNSTATE" pause-status "$SPF")" "PAUSE=0"
-
-echo "== sensor: ORCH_RATE_PAUSE=off disables both checks; ORCH_RATE_PAUSE_PCT lowers the 5h bar =="
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1721480000}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" ORCH_RATE_PAUSE=off >/dev/null
-assert_eq  "disabled -> no sentinel"         "$("$RUNSTATE" pause-status "$SPF")" "PAUSE=0"
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":60,"resets_at":1721480000}}}'
-run_sensor "$MAIN" ORCH_PAUSE_FILE="$SPF" ORCH_RATE_PAUSE_PCT=50 >/dev/null
-assert_has "env threshold override honored"  "$("$RUNSTATE" pause-status "$SPF")" "5h-limit at 60%"
-"$RUNSTATE" clear-pause "$SPF" >/dev/null
-
-echo "== sensor: reads .agents/project-overrides.yaml AND resolves the sentinel via git-common-dir (no env) =="
-# The status line is harness-invoked — nothing exports ORCH_RATE_PAUSE* into it —
-# so the YAML layer is the PRIMARY config surface (ADR 0018 open question #1). Here
-# we set NO env at all: the threshold comes from YAML and the sentinel is the
-# git-resolved MAIN-checkout one (the parallel-lane requirement, inherited from 0017).
-OVR="${MAIN}/.agents/project-overrides.yaml"
-printf 'project:\n  name: demo\nrate_limit_pause:\n  enabled: true\n  five_hour_threshold_pct: 50\nintegration_branch: develop\n' > "$OVR"
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":60,"resets_at":1721480000}}}'
-run_sensor "$MAIN" >/dev/null
-assert_has "YAML threshold honored via git-resolved sentinel" "$("$RUNSTATE" pause-status "$PF")" "5h-limit at 60%"
-"$RUNSTATE" clear-pause "$PF" >/dev/null
-printf 'rate_limit_pause:\n  enabled: false\n  five_hour_threshold_pct: 50\n' > "$OVR"
-SJSON='{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":1721480000}}}'
-run_sensor "$MAIN" >/dev/null
-assert_eq  "YAML enabled:false disables the sensor" "$("$RUNSTATE" pause-status "$PF")" "PAUSE=0"
 
 echo
 printf 'pause sweep: %d passed, %d failed\n' "$pass" "$fail"

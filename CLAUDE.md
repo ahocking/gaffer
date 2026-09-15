@@ -127,49 +127,65 @@ passing sweeps.
   implementation and research, haiku = the summarizer/doc agent (`doc-writer`).
 - **Skills** (`skills/<name>/SKILL.md`): frontmatter with `name`, `description`,
   `argument-hint`. Reference shared files via `${CLAUDE_PLUGIN_ROOT}/...`.
-- **INLINE IS THE DEFAULT; relay is for backlogs ≥ 40 packets** (`run-loop`,
-  `resume` — ADR 0012, **crossover raised from 20 to 40 on 2026-08-10**).
-  `--relay`/`--inline` override. The original 20 came from a *token extrapolation*
-  (k≈21) with no production comparator. The first real one — 62 packets across two
-  repos, `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent`
-  history — says **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
-  cacheCreation), and names the mechanism: the coordinator role carries a
-  `cc_shape` max of **142k–240k with 9–55 turns over 50k in every relay run**,
-  while no inline run has such a role. **The number is still not clean, and that is
-  why relay was kept rather than deleted:** 65–96% of tool duration in those runs
-  sits in the coordinator's own context, much of it **busy-wait polling** (33
-  `until` loops = 51% of one run's wall clock), so each poll re-caches that
-  standing context and inflates the very figure being compared. Fix the busy-wait,
-  then re-measure as a two-arm A/B — that is `loop-cost-controls` P0, and deleting
-  relay outright is the legitimate outcome if the gap survives. Note the regime the
-  relay was built for has **never been reached**: inline compacts around packet
-  ~28 and the largest run ever observed is **14**. If you change the brief or
-  re-measure, update the ADR and both skills together.
-- **Parallel mode is opt-in and worktree-isolated** (`run-loop`/`resume --parallel`
-  — ADR 0016, amends ADR 0009). The default loop is single-checkout sequential and
-  unchanged. `--parallel` runs the max number of **file-disjoint** packets at once,
-  each in a `../<repo>-worktrees/<task-id>` lane, then serialize-merges green lanes
-  back at `full-autonomy`. The safety rests on a **scheduling invariant**: concurrent
-  lanes never share `allowed_files`, computed by `scripts/packet-graph.sh` (overlap ⇒
-  mutual-exclusion edge) and materialized by `/gaffer:build-packet-dependency-tree`
-  into `.agents/packet-graph.yaml`; a real merge conflict escalates, never
-  auto-resolves. Deterministic cores live in scripts (`packet-graph.sh`,
-  `worktree.sh`, `runstate.sh reconcile-parallel`) with matching test sweeps —
-  judgment lives in the skill/agent prompts. run-state advances to **schema 3**
-  (multi-lane) as a superset of the sequential schema; the driver is its single writer.
-  The parallel-mode instructions (former `run-loop` §P) live in
-  **`skills/run-loop/parallel.md`**, split out so the common sequential path does not
-  load ~1.9k tokens it never runs (ADR 0019 v2 lever): `run-loop/SKILL.md`'s top section
-  `Read`s it only when `$ARGUMENTS` contains `--parallel`; each dispatched lane still
-  reads `SKILL.md` for §3. Keep §-references in `parallel.md` pointing at `SKILL.md`.
+- **The loop has ONE sequential mode; relay is retired** (`run-loop`/`resume` —
+  ADR 0012, superseded by `retire-unused-loop-modes` T4, 2026-09-15). Backlog
+  size no longer switches modes, and no run dispatches a per-packet coordinator
+  subagent. `--relay`/`--inline` are still accepted on the command line — they
+  get the same kickoff notice as the retired `--parallel` flag (next bullet)
+  and the loop runs its one mode regardless. This is a **scope decision, not a
+  retraction of the measurement that motivated it**: the one real production
+  comparison (62 packets across two repos,
+  `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent` history)
+  found **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
+  cacheCreation) — the opposite direction from the *token extrapolation*
+  (k≈21, no production comparator) that originally set the crossover at 20
+  packets (later raised to 40 on 2026-08-10). The regime relay was built for
+  was **never reached**: inline compacts around packet ~28, and the largest
+  real run observed across this repo's own history is **9–14 packets**, well
+  under even the original threshold. The one property relay's per-packet
+  dispatch boundary incidentally bought — a fresh, isolated context per unit of
+  work — is not replaced by anything; file-disjoint concurrent editing becomes
+  loop-driver **guidance** instead (see the `agents/chief-engineer.md`
+  Concurrency section). Read ADR 0012, including its v2 measurement revision,
+  as the historical record of a decision retired deliberately rather than
+  measured out further.
+- **Parallel mode is retired; the default loop is single-checkout sequential**
+  (`run-loop`/`resume` — ADR 0016, amends ADR 0009, superseded by
+  `retire-unused-loop-modes` T2, 2026-09-15). `--parallel` ran in one
+  repository for about two weeks (2026-07-19 to 2026-08-04) and was tried
+  twice in another, and **none of 151 recorded metric runs contains a lane** —
+  it spent the same tokens sooner, but the operator is limited by a weekly
+  token allowance, not wall clock. Its machinery is deleted:
+  `scripts/packet-graph.sh`, `scripts/worktree.sh`,
+  `skills/build-packet-dependency-tree/`, `skills/run-loop/parallel.md`, and
+  their test sweeps. `--parallel` is still accepted on the command line — same
+  retired-flag kickoff notice as `--relay`/`--inline`, then the loop runs its
+  one sequential mode regardless. The safety property it provided — concurrent
+  work never sharing `allowed_files` — is not replaced by a scheduler; it
+  becomes loop-driver **guidance** (file-editing agents run one at a time
+  unless their declared scopes are disjoint; read-only agents fan out freely;
+  worktree isolation is for self-contained work off the default branch, never
+  for a loop packet) plus the same-file-overlap **observability**
+  `scripts/metrics.sh` now reports (`totals.same_file_overlaps`,
+  `loop-measurement`). run-state's schema-3 `lanes:`/`mode: parallel` fields
+  are **read-only compatibility** now: a legacy parallel run-state still
+  parses and `runstate.sh lanes` still projects it (so `resume` can name a
+  branch/worktree left behind), but nothing writes those fields again — no
+  `reconcile-parallel`, no lane-writing paths. Read the rest of ADR 0016 as
+  the historical record of a decision that did not earn its keep in practice.
 - **Graceful pause is a cooperative sentinel, not preemption** (`run-loop`/`resume`/
-  `pause`, ADR 0017). A pause REQUEST is a write-once file — `.agents/pause` (whole
-  run) or `.agents/pause.<task-id>` (one lane) — kept **separate from run-state** so
-  a human/frontend setting it never contends with the driver's single-writer
-  run-state; run-state records only the OUTCOME (`status: paused`). The sentinel is
-  canonical in the **main checkout** and resolvable from any lane worktree via
-  `git rev-parse --git-common-dir` (zero env dependency — the parallel requirement).
-  The **guaranteed** stop is the prompt-poll (`runstate.sh pause-status`) that the
+  `pause`, ADR 0017). A pause REQUEST is a write-once file — `.agents/pause` —
+  kept **separate from run-state** so a human/frontend setting it never contends
+  with the driver's single-writer run-state; run-state records only the OUTCOME
+  (`status: paused`). The sentinel is canonical in the **main checkout** and
+  resolvable from any worktree via `git rev-parse --git-common-dir` (zero env
+  dependency — this originally covered parallel lanes and still covers a
+  self-contained work worktree, e.g. a spike, off the default branch). Parallel
+  mode's per-lane sentinel variant (`.agents/pause.<task-id>`) is retired along
+  with it (`retire-unused-loop-modes` T1) — `request-pause`/`clear-pause`/
+  `pause-status` handle the whole-run sentinel only now; a legacy per-lane file
+  left behind by an old run is inert, and `/gaffer:migrate` cleans it up. The
+  **guaranteed** stop is the prompt-poll (`runstate.sh pause-status`) that the
   loop/chief-engineer/implementer run at safe boundaries — landing on a green commit
   or rolling back, **never mid-edit**; `hooks/pause-check.sh` is **best-effort**
   reinforcement that injects a **context-only** advisory (no `permissionDecision`, so
@@ -187,39 +203,28 @@ passing sweeps.
   agent itself requested); correctness must never depend on the hook. Never describe
   pause as "automatic via the hook." Hard, agent-choice-proof enforcement would need a
   *coercive* PreToolUse `deny` gated on `agent_id` (subagent-only, sparing the
-  orchestrator) — deferred until parallel runs show lanes overshooting poll checkpoints.
-  On a parallel pause every lane's status is written back
-  so all lanes stay resumable via the existing `reconcile-parallel`. There is no
+  orchestrator) — this stays deferred, and parallel mode's retirement removes
+  the original trigger condition (lanes overshooting poll checkpoints) rather
+  than satisfying it. There is no
   grace/kill timer — under synchronous dispatch there is nothing to time out; true
   mid-command preemption would need background-task dispatch, rejected in ADR 0017.
   Deterministic core in `runstate.sh` (`request-pause`/`clear-pause`/`pause-status`)
   with a matching `scripts/test-pause.sh`; judgment in the skill/agent prompts.
-- **Rate-limit auto-pause is one more sentinel writer, not a new pause path** (ADR
-  0018, amends 0017). Claude Code's rolling usage percentages (the **5-hour** AND
-  **7-day** windows) are delivered to **exactly one place** — the `statusLine`
-  command's stdin JSON (`rate_limits.five_hour`/`.seven_day`), only after the first
-  API response, only on **Pro/Max**, refreshed once per API response, each field
-  independently absent. No hook payload carries them and nothing persists them to
-  disk, so the **status line is the sole sensor**. `scripts/statusline-pause-sensor.sh`
-  reads both windows and, when *either* crosses its own threshold (defaults **90 /
-  85** — weekly lower on purpose: exhausting it strands the account for *days*),
-  writes the *existing* `.agents/pause` sentinel via `runstate.sh request-pause` —
-  the same write, same format, same idempotent `! -f` guard. **Everything after the
-  write is ADR 0017, byte-for-byte; the prompt-poll stays authoritative.** The sensor
-  is **best-effort early-warning, never a hard stop** (both cutoffs are server-side —
-  never describe it as guaranteeing a pause); if it's disabled/API-key/outrun, crash-
-  reconcile `restart` is the floor. Three non-obvious constraints the sensor bakes in:
-  it resolves `runstate.sh` and the main-checkout sentinel/config from its **own
-  path + `git-common-dir`**, NOT `${CLAUDE_PLUGIN_ROOT}` (which does **not** expand
-  in the `statusLine` context — the same reason `settings.json` needs a resolved
-  absolute path a plugin can't write, so `/gaffer:rate-limit-pause on` writes
-  it); it **parses `.agents/project-overrides.yaml` itself** (`rate_limit_pause:`
-  block — env → YAML → default) because nothing exports `ORCH_RATE_PAUSE*` into a
-  harness-invoked callback; and its `date` helper handles **both** BSD (`-r`) and GNU
-  (`-d @`) epochs. The `rate-limit-pause` toggle skill mutates user config *outside*
-  the plugin tree in both directions — never clobber a foreign `statusLine`, and
-  `off --teardown` (global scope) is explicit and warned, distinct from plain `off`
-  (per-repo). Regression cases live in `scripts/test-pause.sh` alongside the 0017 set.
+- **Rate-limit auto-pause is retired** (ADR 0018, amended ADR 0017, superseded
+  by `retire-unused-loop-modes` T2, 2026-09-15). It watched Claude Code's
+  rolling usage percentages (the 5-hour and 7-day windows, delivered only via
+  the `statusLine` command's stdin JSON) and wrote the same ADR 0017
+  `.agents/pause` sentinel a human would when either crossed a threshold — but
+  it never worked reliably in the operator's own testing, so it is removed:
+  `scripts/statusline-pause-sensor.sh`, the `/gaffer:rate-limit-pause` toggle
+  skill, the `rate_limit_pause:` overrides block, and the sensor cases in
+  `scripts/test-pause.sh` are all deleted. The cooperative whole-run pause it
+  amended (previous bullet) is unaffected and remains the only pause path.
+  `/gaffer:migrate` cleans up a leftover `rate_limit_pause:` block or a stale
+  `statusLine` entry in a consumer repo that had adopted it, ONLY with the
+  operator's explicit confirmation and never touching a foreign `statusLine`.
+  Read the rest of ADR 0018 as the historical record of a decision that did
+  not hold up in practice.
 - **Run-metrics is hook-collect + script-assemble + skill-analyze** (ADR 0019, Tier 1).
   Collection is a `PostToolUse` hook (`hooks/metrics-log.sh`, matcher **`.*` — ALL tools**,
   so `Task` dispatches and `Read`/`Grep` context-loading are counted, not just mutations) —
@@ -238,10 +243,13 @@ passing sweeps.
   collect`, which joins the event spine ⟕ **packet boundaries derived from the `[orch
   packet:<id>]` commit trailers** (a deliberate ADR-0019 refinement: run-state's nested
   `packets[]` is **left untouched** — no schema migration, no single-writer contention;
-  the trailer already ties every green commit to its packet) ⟕ the `packet-graph.yaml`
-  wave map ⟕ **best-effort transcript tokens** (the default source; **version-fragile**, so
+  the trailer already ties every green commit to its packet) ⟕ **best-effort
+  transcript tokens** (the default source; **version-fragile**, so
   it **fails soft** to structural-only and STAMPS `token_source` — never let an analysis
-  read a partial run as complete) into one portable `.agents/metrics/<run-id>/run-metrics.json`.
+  read a partial run as complete) into one portable `.agents/metrics/<run-id>/run-metrics.json`
+  (the `packet-graph.yaml` wave-map join and the per-lane aggregates are gone
+  now that parallel mode is retired — `retire-unused-loop-modes` T3 replaced
+  them with `totals.same_file_overlaps`, a same-file concurrent-edit count).
   The trailer scan matches **only a trailer on its own line** (prose that merely mentions
   the format does not count) **and is bounded to the run window, not `git log --all`**
   (scoping revision 2026-07-21): the window is the **selected session's** span (default the
@@ -557,11 +565,14 @@ passing sweeps.
   output. Cost: same-machine, like run-state. And because `runstate.sh write` **replaces**
   while `add-finding` **appends**, every whole-file write must carry `findings:` through
   and findings are recorded **after** it — a dropped index line does not delete a finding,
-  it unlinks a body still on disk. **A parallel lane never calls `add-finding`** (no
-  run-state in its worktree; it is not the writer): it returns `Findings:` lines in its
-  check-in and the scheduler records them, lane-task-id-prefixed. That is the same rule
-  `record-outcome` obeys from the other side — it is lane-callable *because* it writes
-  append-only outside run-state.
+  it unlinks a body still on disk. **A dispatched Chief Engineer with no run-state
+  of its own never calls `add-finding`** (self-contained worktree work, not a loop
+  packet — this described a parallel lane specifically before that mode was
+  retired, ADR 0016, but the rule is general: no run-state in its worktree means
+  it is not the writer): it returns `Findings:` lines in its check-in and
+  whoever dispatched it records them. That is the same rule `record-outcome`
+  obeys from the other side — it is callable from such a context *because* it
+  writes append-only outside run-state.
 - **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
   session** (ADR 0024 + ADR 0025). Three rules that land together because they are one
   correction: run-state was storing what other things already knew.
@@ -572,9 +583,10 @@ passing sweeps.
   nothing that would notice a dropped line). `pending` survives and is explicitly NOT the
   next thing removed by the same reasoning — it carries the *chosen order*, a decision,
   not derivable state. The checkbox now flips **inside the packet commit** so the work and
-  the record that it happened land atomically; under `--parallel` the *scheduler* flips at
-  green-lane merge, because the task file sits outside every packet's `allowed_files` and
-  two lanes sharing a feature would contend on it. It is `gspec-backlog.sh check-task` —
+  the record that it happened land atomically. (Parallel mode had a second variant —
+  the scheduler flipped it at green-lane merge instead, because the task file sits
+  outside every packet's `allowed_files` and two lanes sharing a feature would
+  contend on it — retired along with `--parallel`.) It is `gspec-backlog.sh check-task` —
   the plugin's ONLY write into `gspec/`, one character on one line — and a caller must
   distinguish its exit codes: `CHECKED=none` at exit 0 is *skipped, not failed* (gspec is
   optional), while **exit 4 is genuine drift that must be reported and must NOT halt** the
@@ -619,8 +631,8 @@ passing sweeps.
   detector is a task whose `covers:` does not match, and the boundary is the packet's PR
   review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
 - **There are THREE report files, and the split is by reader and by need** (ADR 0023).
-  `templates/check-in.md` is the **wire** format — a lane or a dispatched Chief
-  Engineer returns it and the scheduler *parses* it, so its keys are stable and it
+  `templates/check-in.md` is the **wire** format — a dispatched Chief Engineer
+  returns it and whoever dispatched it *parses* it, so its keys are stable and it
   stays machine-shaped. `templates/report-conventions.md` holds the **conventions**
   every human-facing report owes (glyph vocabulary, indentation contract, decision
   block, header tally, the four rules). `templates/report-templates.md` holds only the
@@ -636,8 +648,8 @@ passing sweeps.
   rendered from the one-line paraphrase in the SKILL.md and had never seen the
   contract; free prose in consumer repos was the rules never arriving, not an agent
   ignoring them. Naming a path is not delivering a file. Scope the `Read` two ways or
-  it gets expensive: **by role** (only whoever writes to the *human* — a relay-
-  dispatched Chief Engineer or a lane returns the wire format, and reading the shapes
+  it gets expensive: **by role** (only whoever writes to the *human* — a
+  dispatched Chief Engineer returns the wire format, and reading the shapes
   would cost ~5k/packet for something it never emits) and **by need** (conventions vs
   shapes). The three delivery layers are deliberately redundant and **L2 suppresses
   L3** via the `gaffer:report-conventions` marker, so a session never pays twice:
@@ -662,13 +674,14 @@ passing sweeps.
   decoration, and decoration is what teaches a reader to stop trusting the glyphs.
   What the human reads:
   one shared **decision block** plus three shapes — **C** kickoff (before the first
-  packet, and on resume), **A** check-in (a packet or wave came back), **B** stop
+  packet, and on resume), **A** check-in (a packet landed), **B** stop
   report (the loop stopped, for any reason). The main-context agent renders them from
   the wire text and the already-resolved backlog, **and nothing else** — ADR 0012 step
-  3 was amended from "relay verbatim" to "render" for exactly this, because the rule
-  it was protecting is *don't go back to disk*, not *don't reword*. A bounded text
-  transform costs a few hundred tokens once per packet and does not grow with the
-  backlog; re-opening the repo to enrich a check-in is what refills a relay's context.
+  3 (now historical; ADR 0012 is superseded) was amended from "relay verbatim" to
+  "render" for exactly this, because the rule it was protecting is *don't go back
+  to disk*, not *don't reword*. A bounded text transform costs a few hundred tokens
+  once per packet and does not grow with the backlog; re-opening the repo to
+  enrich a check-in is what refills a dispatched agent's context.
   Two conventions are the whole point and the first thing to drift: **no bare ids**
   (`wbr-t14` and "ADR 0017" mean nothing to a reader who is not holding the numbering
   — every id gets a plain-English title on first appearance), and **every ask goes
@@ -694,14 +707,14 @@ passing sweeps.
   human needs to tell apart. Tables are banned outright — they read worst on a phone,
   which is where these land.
   **Conventions are not the same as shapes, and reports without a shape still owe
-  them**: `review-change`'s verdict, `build-packet-dependency-tree`'s plan (which *is*
-  a kickoff — use shape C), `metrics show`/`analyze`, `new-project`, and `migrate` all
-  carry the vocabulary, the indentation, and the decision block. But do **not** bolt a
+  them**: `review-change`'s verdict, `metrics show`/`analyze`, `new-project`, and
+  `migrate` all carry the vocabulary, the indentation, and the decision block. But
+  do **not** bolt a
   header tally onto a report with nothing to count — on a metrics summary it is
   decoration, and decoration is what teaches a reader to stop trusting the glyphs.
   **The decision block is a shared primitive, not stop-report furniture** — it is
   also the Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s
-  Risks section, and an inline ask under a blocked lane in a check-in whose run is
+  Risks section, and an inline ask under a blocked packet in a check-in whose run is
   still going. That is why it is factored out: four near-identical shapes would drift
   apart, and the un-actionable form ("things a human should weigh") is exactly what
   they drift *into*. **The kickoff is the cheapest correction point in a run** — a
@@ -842,23 +855,29 @@ passing sweeps.
   `_nodes_for` uses** — a count from a different pattern would lie about precisely
   what it is asked to certify. `seen == 0` is the real failure; `seen > 0` with no
   unchecked work is a finished backlog.
-- **Two things are DERIVED and must never be stored** (ADR 0020 D2). Feature
-  completion comes from the PRD's capability checkboxes; concurrency comes from
-  `packet-graph.sh`. `.agents/roadmap.yaml` carries planning preference only —
+- **Feature completion is DERIVED and must never be stored** (ADR 0020 D2). It
+  comes from the PRD's capability checkboxes, never a stored flag.
+  `.agents/roadmap.yaml` carries planning preference only —
   `slug`/`order`/`why` (+ an interim `depends_on` until upstream `U5` lands). It
   lives in `.agents/`, **not** `gspec/`, because gspec's `spec-integrity` floor
   governs every `.md` under `gspec/` and would flag a file gspec does not own.
-  gspec's `[P]` marker is **advisory**: it is a model's guess with no isolation
-  behind it, so the graph computes file-disjointness itself.
+  gspec's `[P]` marker is **advisory** and always was — a model's guess with no
+  isolation behind it. D2 originally paired this with a second derived
+  quantity, concurrency, computed by `scripts/packet-graph.sh` from that
+  marker; that script and the parallel-mode scheduler it served are retired
+  (`retire-unused-loop-modes` T2), so concurrency is no longer computed at
+  all — file-disjoint editing is loop-driver guidance now (see the parallel
+  mode bullet above).
 - **File scope comes from `.agents/task-files.yaml`, and every entry is
   fingerprint-guarded** (ADR 0020 `U1-local`). gspec task lines carry no file scope,
   so this sidecar is where `allowed_files` comes from; precedence is plan-authored
   `files:` > fingerprint-matched sidecar > empty. The guard is not ceremony: gspec
   preserves task IDs on regenerate but **re-decomposes unchecked work**, so `T5` can
   keep its id while its text becomes different work — and a stale entry would hand
-  two genuinely colliding lanes a *narrow* scope. Mismatched or unfingerprinted
-  entries are IGNORED (packet serializes) and reported by `gspec-backlog.sh
-  files-status`. Wrong-wide costs parallelism; wrong-narrow costs correctness.
+  a packet a scope for work that no longer matches its own task text. Mismatched or
+  unfingerprinted entries are IGNORED (empty scope — no sidecar-derived narrowing)
+  and reported by `gspec-backlog.sh files-status`. Wrong-wide loses the point of
+  scoping the packet narrowly; wrong-narrow costs correctness.
 - **The driver claim is a HEARTBEAT, not a pid** (ADR 0020 D5). `status: running`
   alone cannot tell a crashed session from a second session driving right now.
   gspec's pid check does not transfer — its driver is one long-lived node process;
@@ -901,20 +920,21 @@ claude --plugin-dir .
 
 # 3. Run the script regression sweeps (exit 0 = all passed; CI runs them on push).
 scripts/test-guard.sh          # guardrail allow/deny, closed bypasses, guard-extra
-scripts/test-runstate.sh       # pause/resume + crash reconcile (seq + parallel lanes)
-scripts/test-packet-graph.sh   # ADR 0016 dependency-graph math (edges, waves, ready)
-scripts/test-worktree.sh       # ADR 0016 worktree lane lifecycle + safety gates
-scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a lane worktree) + ADR 0018 rate-limit sensor
-scripts/test-parallel-pause-e2e.sh  # ADR 0017 parallel-pause choreography (real worktree.sh + runstate.sh)
-scripts/test-metrics.sh        # ADR 0019 run-metrics: event log -> trailer/wave/token join -> packet, fail-soft
+scripts/test-runstate.sh       # pause/resume + crash reconcile (sequential; a legacy
+                                # mode: parallel run-state still parses read-only)
+scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a generic worktree,
+                                # not a parallel lane -- that mode is retired)
+scripts/test-metrics.sh        # ADR 0019 run-metrics: event log -> trailer/token join -> packet, fail-soft
 scripts/test-spend.sh          # ADR 0019 v3.5 spend: machine-wide transcript dedup, pricing, timestamp handling
 scripts/test-gspec-backlog.sh  # ADR 0020 gspec adapter: version pin, derived completion, nodes, interlock
-scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, the packet-count check, and the CLAUDE.md conventions stamp
+scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, the retired-mode
+                                # cleanup (retire-unused-loop-modes T5), the packet-count check, and
+                                # the CLAUDE.md conventions stamp
 scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies
 ```
 
 When adding a new risky pattern to `guard.sh`, add a matching allow/deny pair to
-`scripts/test-guard.sh` so regressions are caught. Same rule for the other eight
+`scripts/test-guard.sh` so regressions are caught. Same rule for the other seven
 scripts: a behavior worth having is a behavior worth a test in its sweep.
 
 ## Ground rules for changes here

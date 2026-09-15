@@ -1,6 +1,6 @@
 # ADR 0012 — Delegated loop driver: the session that runs the loop is a relay, not the driver
 
-- Status: Accepted
+- Status: Accepted — **superseded by the `retire-unused-loop-modes` feature**
 - Date: 2026-07-16
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md). The autonomy
@@ -15,6 +15,25 @@
 - Constrained by the plugin's standing frontend-agnostic rule: it produces
   check-ins and builds **no notification transport**. That rules out the
   otherwise-obvious progress designs — see Rejected alternatives.
+
+> **Superseded (2026-09-15, `retire-unused-loop-modes` T4):** relay never reached
+> the regime it was built for — the largest run ever observed is 14 packets against
+> a ≥40-packet break-even, and the one time it was measured against inline (the v2
+> revision below) it cost **1.84x** inline per packet. It is removed as a **scope
+> decision, not a retraction of that measurement**: no run has shown relay
+> worthless, only that this loop does not operate in the single-context regime it
+> would pay off in. The loop now has exactly one sequential mode — backlog size
+> never switches it, and no run dispatches a per-packet coordinator subagent.
+> `--relay`/`--inline` are still accepted on the command line — they get the same
+> kickoff notice as the retired `--parallel` flag ([ADR 0016](0016-parallel-worktree-lanes.md),
+> also superseded) and the loop runs its one sequential mode regardless. The
+> `gaffer:chief-engineer` agent definition is unaffected; other commands still
+> dispatch it. The one property relay's per-packet dispatch boundary incidentally
+> bought — a fresh, isolated context per unit of work — is not replaced by
+> anything; file-disjoint concurrent editing becomes loop-driver guidance instead
+> (`retire-unused-loop-modes` T4). Read the rest of this ADR, including its v2
+> revision, as the historical record of a decision that was retired deliberately
+> rather than measured out.
 
 ## Context
 

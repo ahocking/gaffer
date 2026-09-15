@@ -1,6 +1,6 @@
 # ADR 0018 — Rate-limit-aware cooperative pause (status line as the usage-limit sensor)
 
-- Status: Accepted
+- Status: Accepted — **superseded by the `retire-unused-loop-modes` feature**
 - Date: 2026-07-20
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: [ADR 0004](0004-graduated-autonomy-and-pausable-loop.md) (pausable loop),
@@ -14,6 +14,16 @@
   pauses itself just before the account hits either wall, instead of a lane dying
   mid-packet when the server cuts it off. It reuses **all** of 0017's machinery
   unchanged; it invents no new pause path.
+
+> **Superseded (2026-09-15, `retire-unused-loop-modes` T2):** the sensor never
+> worked reliably in the operator's own testing, so it is removed —
+> `scripts/statusline-pause-sensor.sh`, the `/gaffer:rate-limit-pause` toggle
+> skill, the `rate_limit_pause:` overrides block, and the sensor cases in
+> `scripts/test-pause.sh` are all deleted. The cooperative whole-run pause this
+> ADR amended (ADR 0017 — `/gaffer:pause`, `/gaffer:resume`, the sentinel file,
+> `hooks/pause-check.sh`) is unchanged and still the only pause path. Read the
+> rest of this ADR as the historical record of a decision that did not hold up
+> in practice.
 
 ## Context
 

@@ -100,17 +100,18 @@ Four fields per entry, added later as features are scoped: `slug` (matches
 `gspec/features/<slug>.md`), `order`, `why` (one line of rationale, required), and
 an interim `depends_on` that moves into PRD frontmatter once upstream proposal U5
 lands. **Do not add `status` or `parallel_group`** — completion is derived from the
-PRD's capability checkboxes and concurrency is computed by `packet-graph.sh`;
-storing either is a drift source. Do **not** install Spec Kit (`.specify/` /
-`speckit-*`) — removed in
+PRD's capability checkboxes, and `parallel_group` named a scheduling mechanism
+(ADR 0016) that is now retired; storing either is a drift source. Do **not**
+install Spec Kit (`.specify/` / `speckit-*`) — removed in
 [ADR 0013](../../docs/adr/0013-remove-speckit-gspec-only-backlog.md).
 
 There is a second plugin-owned file, **`.agents/task-files.yaml`**, which is
-deliberately **not** seeded: it records per-task file scope and is written on
-demand by `/gaffer:build-packet-dependency-tree` as features get scoped. An
-absent file already means "no scope known", which serializes conservatively, so an
-empty one would add nothing. Mention it exists when you report — it is what unlocks
-`--parallel` later.
+deliberately **not** seeded: it optionally records per-task file scope for
+`allowed_files` resolution (ADR 0020 `U1-local`). Nothing writes it
+automatically any more — the skill that used to populate it for `--parallel`
+mode is retired along with that mode (ADR 0016). An absent file already means
+"no scope known", which serializes conservatively, so leaving it unseeded costs
+nothing.
 
 ## 5. Wire orchestration & verify (Chief Engineer)
 - Confirm the `gaffer` plugin is enabled for this repo (via the user's

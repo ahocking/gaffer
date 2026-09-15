@@ -119,9 +119,19 @@ Look for, and cite the figures behind, at least:
   split (run-level and per role). A low ratio / high cacheCreation means agents are
   re-loading context instead of reusing it — the loop's biggest suspected hidden cost.
 - **Where spend concentrates** — the `by_agent_role` token split and the per-packet
-  `tool_calls` / wave table: which role, packet, or wave dominates.
-- **Parallel efficiency** (parallel runs) — packets per wave and their wall-times;
-  flag waves that serialized when the graph allowed concurrency.
+  `tool_calls` table: which role or packet dominates.
+- **Same-file overlap, via `totals.same_file_overlaps`** (retire-unused-loop-modes
+  T3) — a run-level count of (main session, subagent) pairs that edited the SAME
+  file: a subagent's span is its first-to-last recorded event, the main session
+  pairs with it only through the main session's own edit events falling inside that
+  span, and a pair counts once no matter how many files it shares. It replaces
+  parallel mode's mechanical file-disjointness guarantee with observability now that
+  the guarantee is gone — this is what tells the operator whether concurrent editing
+  guidance is actually holding. `null` means **unmeasured** (no events in the run, or
+  at least one Edit/Write/MultiEdit/NotebookEdit event with no `file_hash`), never a
+  clean `0` — say so in words, the same rule as every other `null` in this packet.
+  `totals.same_file_overlap_diagnostics` names the edit-event counts behind an
+  unmeasured stamp. It logs no path, only opaque per-file hashes.
 - **The relay-vs-inline crossover** — whether this run's shape supports or contradicts
   ADR 0012's 40-packet crossover (raised from 20 in its v2 revision). A run below the
   crossover cannot unseat it in either direction; say so rather than reading one arm as
@@ -158,9 +168,10 @@ Look for, and cite the figures behind, at least:
 
 **Honesty about the token source is mandatory:** if `token_source` is `none` or
 `transcript`, say so and scope the token-based claims accordingly (structural claims —
-timing, waves, tool counts — are unaffected). Then produce a **ranked, concrete** list
-of changes (e.g. "wave 3 lanes re-load ~40k each; widen file-disjointness so N more run
-concurrently", or "reviewer spends 2× the implementer in cacheCreation — hold its
+timing, tool counts — are unaffected). Then produce a **ranked, concrete** list
+of changes (e.g. "same-file overlaps: 3 — the implementer and the main session edited
+the same 2 files while both were active; tighten the declared file scopes so edits stay
+disjoint", or "reviewer spends 2× the implementer in cacheCreation — hold its
 context across packets"), most-impactful first, each tied to the metric that motivates it.
 
 **A recommendation that is really a trade-off is a decision block**

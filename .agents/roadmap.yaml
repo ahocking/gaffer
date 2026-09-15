@@ -80,6 +80,11 @@ features:
     why: "three defects its parent deliberately scoped out, all in scripts/runstate.sh and all still live: `set` is flat-top-level-only and silently appends a shadow key for a nested one (hit live on 2026-09-15, which had to route the cursor advance through `write`); the decode side was never unified, so four hand-written decoders must stay in step by hand against the parent's single encoder; and the pause sentinel's reason is still written unencoded. The parent's capabilities spoke only to the VALUE a write encodes — these are about WHICH KEY it lands on and the READ side that decodes it. Ordered immediately after it because they are the same surface, but separate because the parent is derived-done and ADR 0026 forbids reopening a completed record"
     depends_on: [runstate-write-integrity]
 
+
+  - slug: gspec-adapter-consistency
+    order: 25
+    why: "three internal-consistency defects review found in scripts/gspec-backlog.sh during loop-measurement-t2, none of them a live break today: the three gspec plan-layout paths are enumerated in two places (ADR 0020 says exactly one, and gspec has moved these files twice); three copies of the task-line regex were left underived when loop-measurement-t2 unified the other three, one of them in cmd_check_task's flip awk, which is the plugin's ONLY write into gspec/ — a divergence there is a checkbox the loop believes it flipped and did not; and two sweep assertions pass for the wrong reason, certifying a gate their fixtures never exercise. Ordered after loop-measurement, which is the feature that edits this file, so the two do not contend"
+    depends_on: [loop-measurement]
   - slug: metrics-coverage-gaps
     order: 30
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"

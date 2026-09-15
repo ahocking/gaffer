@@ -1,6 +1,6 @@
 ---
 spec-version: v2
-depends_on: [thin-loop-driver, loop-measurement, retire-unused-loop-modes, retire-autonomy-levels]
+depends_on: [thin-loop-driver, retire-unused-loop-modes, retire-autonomy-levels]
 ---
 
 # Feature: escalation-decider
@@ -61,7 +61,7 @@ The decider is the existing `chief-engineer` agent, slimmed, and given this role
 
 - `thin-loop-driver`: routes escalations to the decider and writes the handoff and result files it reads.
 - `retire-unused-loop-modes` and `retire-autonomy-levels`: both edit `chief-engineer` before it is slimmed; the latter fixes the decider's authority at what `full-autonomy` allows.
-- `loop-measurement`: provides the outcomes log that the review triggers count and the review reads, and records the outcomes the decider does not record.
+- `loop-measurement` — **not blocking, deliberately.** What this feature needs from it is the OUTCOMES log that the review triggers count and the review reads, and that records the outcomes the decider does not: T1–T8, shipped, with all four of its P0 capabilities checked. What is left there is the P1 spend-ANALYSIS tail, reordered to run AFTER this redesign because it is a before/after comparison. Completion is derived from capability checkboxes (ADR 0020 D2), so keeping the whole feature in `depends_on` would block this one behind work deliberately scheduled later — and, with `loop-measurement` now at order 24 and this feature at 23, behind a feature ordered after it.
 
 ## Assumptions & Risks
 

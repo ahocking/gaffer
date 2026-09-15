@@ -35,23 +35,23 @@ This feature **takes over `metrics-coverage-gaps`' P1 capability "Failed and unc
 
 ## Capabilities
 
-- [ ] **P0**: Every packet the loop begins records a start and a terminal outcome
+- [x] **P0**: Every packet the loop begins records a start and a terminal outcome
   - each time the `run-loop` or `resume` loop begins a packet, inline or through subagents, it records a start holding the packet id, the time and the session. Subagent dispatches inside a packet are not starts; continuing a paused packet records a continuation the same way, and beginning a packet again after any recorded outcome records a new start
   - it records each outcome when its ending happens, on triggers that exclude each other: **blocked**, the loop stops on a blocking question (to the human, or waiting on another packet), whatever then happens to the packet's work; **rolled-back**, the loop discards the packet's work to the last green checkpoint without asking; **failed**, verification still fails and the loop moves past the packet without a blocking question; **abandoned**, the operator's answer drops the packet, or the sweep finds a started packet whose task no longer exists, which it records instead of interrupted; **green**, the packet's work lands complete as a green commit. When a stop fits more than one, blocked wins over rolled-back and failed, and failed over rolled-back; a retry within the packet is neither a start nor an ending
   - a pause, or `resume` discarding a crashed session's leftovers, is not an ending; `resume` adopting a crashed session's green commit records green: a pause that commits unfinished work does not record green, and a paused packet keeps its open start until it is continued and ends
   - outcome records stay append-only; within a run, a packet's outcome is the last one attributed to that run after its latest start or continuation
 
-- [ ] **P0**: A packet left without an outcome is recorded as interrupted
+- [x] **P0**: A packet left without an outcome is recorded as interrupted
   - before beginning or continuing any packet, including the first after `resume`, the loop records interrupted (or abandoned) for every packet in this repo whose latest start or continuation has no terminal outcome recorded after it, except the packet at run-state's cursor when its status was paused on entry to `run-loop` or `resume`, so pausing is never read as an interruption. It names each by id and plain-English title in the next report it renders, and continues. This covers a crash and an allowance stop mid-packet
   - only this sweep records interrupted: no agent ends a packet it is working on that way, and the sweep never changes an outcome already recorded
   - when an interrupted packet is begun again and ends, its latest outcome is the packet's outcome, and the interruption counts in the run of the latest start or continuation it closed, which the interrupted record names, not in the run whose sweep recorded it
 
-- [ ] **P0**: Run metrics never read a missing outcome as success
+- [x] **P0**: Run metrics never read a missing outcome as success
   - `metrics.sh collect` builds packet rows from start records as well as green-commit trailers, so a packet that never committed still appears with its outcome. A packet has started in a run when that run's window holds a start or continuation record or a commit trailer for it, or an outcome record attributed to that run
   - a run's metrics count each started packet once, under its outcome in that run, interrupted included, and separately count started packets with no terminal outcome
   - `metrics.sh show` and `/gaffer:metrics show` label a run with any started packet lacking an outcome as incomplete, never as all green. A run with no start records, such as one from before this feature, reports outcome coverage as unmeasured, never as complete
 
-- [ ] **P0**: `/gaffer:metrics spend` reports API-equivalent spend over a time window
+- [x] **P0**: `/gaffer:metrics spend` reports API-equivalent spend over a time window
   - over a window the operator names (default: the last 7 days), it counts every assistant message whose timestamp falls in the window, across every Claude Code session transcript on the machine: main sessions and subagents, every project. A message the transcript repeats is counted once, by its message id, and messages without an id are counted as they are, with their count shown
   - it breaks spend down by project, model, agent role (main session or subagent type), effort level and cost part (input, cache write by 5-minute or 1-hour lifetime, cache read, output), each in tokens and dollars. A message whose transcript does not carry its effort or agent type is grouped as unrecorded, never guessed
   - dollars come from a price table stamped with the date it was last checked, shown in the report and labelled API-equivalent, not a bill. A model missing from the table shows its tokens with cost "unpriced", and totals state how many tokens were unpriced instead of counting them as $0

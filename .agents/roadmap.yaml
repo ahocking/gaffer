@@ -42,8 +42,20 @@ features:
     depends_on: [self-host-hardening]
 
   - slug: loop-measurement
-    order: 16
-    why: "part 2 of the 2026-09-14 loop-cost redesign, built FIRST so the redesign has a true before: every packet the loop begins records a start and a terminal outcome (27 of 98 packets had none in the week ending 2026-09-14, and the loop has only ever recorded green and blocked), and /gaffer:metrics spend reports API-equivalent spend across sessions, projects and machines. Takes over metrics-coverage-gaps' failed-and-uncommitted-packets capability"
+    order: 24
+    why: "part 2 of the 2026-09-14 loop-cost redesign. Its OUTCOMES half (T1-T8) and the
+      spend verb (T9-T11, T17) SHIPPED first, at order 16, because the redesign needed a true
+      before: every packet the loop begins now records a start and a terminal outcome (27 of 98
+      packets had none in the week ending 2026-09-14, and the loop had only ever recorded green
+      and blocked), and /gaffer:metrics spend reports API-equivalent spend across sessions,
+      projects and machines. Four of six capabilities are checked on that work.
+      REORDERED 16 -> 24 on 2026-09-15 on the operator's call. What is left is the P1 spend-ANALYSIS
+      tail: per-role cache-read shape and cache-write causes (T12-T13), --save/--combine across
+      machines (T14-T15), and re-running the 2026-09-14 figures (T16). That work is a before/after
+      comparison, so it is worth most AFTER the redesign lands, not before it - running it at
+      order 16 would have measured a loop about to be replaced. Ordered here so it comes up when
+      there is something to compare, rather than being marked deferred and never coming up at all.
+      Takes over metrics-coverage-gaps' failed-and-uncommitted-packets capability"
     depends_on: [run-metrics]
 
   - slug: retire-unused-loop-modes
@@ -84,8 +96,8 @@ features:
 
   - slug: gspec-adapter-consistency
     order: 25
-    why: "three internal-consistency defects review found in scripts/gspec-backlog.sh during loop-measurement-t2, none of them a live break today: the three gspec plan-layout paths are enumerated in two places (ADR 0020 says exactly one, and gspec has moved these files twice); three copies of the task-line regex were left underived when loop-measurement-t2 unified the other three, one of them in cmd_check_task's flip awk, which is the plugin's ONLY write into gspec/ — a divergence there is a checkbox the loop believes it flipped and did not; and two sweep assertions pass for the wrong reason, certifying a gate their fixtures never exercise. Ordered after loop-measurement, which is the feature that edits this file, so the two do not contend"
-    depends_on: [loop-measurement]
+    why: "three internal-consistency defects review found in scripts/gspec-backlog.sh during loop-measurement-t2, none of them a live break today: the three gspec plan-layout paths are enumerated in two places (ADR 0020 says exactly one, and gspec has moved these files twice); three copies of the task-line regex were left underived when loop-measurement-t2 unified the other three, one of them in cmd_check_task's flip awk, which is the plugin's ONLY write into gspec/ — a divergence there is a checkbox the loop believes it flipped and did not; and two sweep assertions pass for the wrong reason, certifying a gate their fixtures never exercise. Its only tie to loop-measurement is that loop-measurement-t2 introduced the shared pattern blocks these capabilities build on, and that task has LANDED - so no depends_on, matching the PRD. The remaining loop-measurement work is all spend.sh and touches no file here, so the original contention reason is spent"
+    depends_on: []
   - slug: metrics-coverage-gaps
     order: 30
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"

@@ -62,7 +62,7 @@ that sweep.
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh, skills/metrics/SKILL.md
 
-- [ ] **T4** **P0** Rewrite the loop instructions in `skills/run-loop/SKILL.md`, `skills/resume/SKILL.md` and `agents/chief-engineer.md` so that:
+- [x] **T4** **P0** Rewrite the loop instructions in `skills/run-loop/SKILL.md`, `skills/resume/SKILL.md` and `agents/chief-engineer.md` so that:
   - §0 and the relay contract are gone, there is one sequential mode, backlog size never switches it, and no run dispatches a per-packet coordinator — the `chief-engineer` agent definition stays for its other callers;
   - `--relay`, `--inline` and `--parallel` start normally, run the single mode, and are named in the kickoff report as flags that no longer exist, using an existing glyph so no template changes;
   - `resume` on a run-state recorded as `mode: parallel` stops before running any packet, names each lane branch and worktree it reads from run-state and whether run-state records it as merged, states that it merged none of them, names what the operator must clear before the loop can run again, and leaves run-state and every branch untouched;

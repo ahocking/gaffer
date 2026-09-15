@@ -809,6 +809,100 @@ assert_true "record-outcome rejects an unknown outcome" \
   "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p3 bogus S1 2>/dev/null)"
 assert_true "record-outcome requires both arguments" \
   "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p3 2>/dev/null)"
+RO_P1_TS="$(cd "$RO" && jq -r 'select(.packet == "p1") | .ts' "$RO/.agents/metrics/outcomes/S1.jsonl")"
+assert_true "record-outcome writes a sub-second UTC timestamp" \
+  "printf '%s' \"\$RO_P1_TS\" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z\$'"
+# I4: the terminal record must carry `session` alongside ts/packet/outcome, since
+# metrics.sh concatenates every selected session's log into one stream BEFORE
+# joining, destroying the filename as a source of the session id.
+RO_P1_SESS="$(cd "$RO" && jq -r 'select(.packet == "p1") | .session' "$RO/.agents/metrics/outcomes/S1.jsonl")"
+assert_true "record-outcome's written record carries the session field" \
+  "[ \"\$RO_P1_SESS\" = S1 ]"
+# A legacy terminal record (written before this change) has no `session` field.
+# It must still parse individually and degrade to null, not break the reader.
+LEGACY_OUTCOME_LINE='{"ts":"2026-01-01T00:00:00Z","packet":"legacy-p","outcome":"green"}'
+assert_true "a legacy terminal record without session still parses" \
+  "jq -e '.packet == \"legacy-p\" and .outcome == \"green\"' <<<\"\$LEGACY_OUTCOME_LINE\" >/dev/null"
+assert_true "a legacy terminal record without session yields null for .session, not an error" \
+  "[ \"\$(jq -r '.session // \"NULL\"' <<<\"\$LEGACY_OUTCOME_LINE\")\" = NULL ]"
+
+echo
+echo "== record-start: begin/continue a packet boundary (loop-measurement T1) =="
+RS1_OUT="$(cd "$RO" && "$RUNSTATE" record-start p4 S1)"
+RS1_LINE="$(tail -1 "$RO/.agents/metrics/outcomes/S1.jsonl")"
+assert_true "record-start reports success" \
+  "case \"\$RS1_OUT\" in *RECORDED=yes*) true;; *) false;; esac"
+assert_true "record-start writes kind=start" \
+  "case \"\$RS1_OUT\" in *KIND=start*) true;; *) false;; esac"
+# C1: assert every field of the WRITTEN record, not just stdout/line-count --
+# a whole-second ts, a dropped session, or a hardcoded packet id must each fail
+# one of these on their own.
+assert_true "record-start's written record carries the correct packet id" \
+  "[ \"\$(jq -r .packet <<<\"\$RS1_LINE\")\" = p4 ]"
+assert_true "record-start's written record carries the given session id" \
+  "[ \"\$(jq -r .session <<<\"\$RS1_LINE\")\" = S1 ]"
+assert_true "record-start's written record carries kind=start" \
+  "[ \"\$(jq -r .kind <<<\"\$RS1_LINE\")\" = start ]"
+assert_true "record-start's written record carries a sub-second UTC timestamp" \
+  "jq -r .ts <<<\"\$RS1_LINE\" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z\$'"
+RS2_OUT="$(cd "$RO" && "$RUNSTATE" record-start p4 --continue S1)"
+RS2_LINE="$(tail -1 "$RO/.agents/metrics/outcomes/S1.jsonl")"
+assert_true "record-start --continue writes a continuation record distinguishable by kind" \
+  "case \"\$RS2_OUT\" in *KIND=continue*) true;; *) false;; esac"
+assert_true "record-start --continue's written record carries the correct packet id" \
+  "[ \"\$(jq -r .packet <<<\"\$RS2_LINE\")\" = p4 ]"
+assert_true "record-start --continue's written record carries the given session id" \
+  "[ \"\$(jq -r .session <<<\"\$RS2_LINE\")\" = S1 ]"
+assert_true "record-start --continue's written record carries kind=continue" \
+  "[ \"\$(jq -r .kind <<<\"\$RS2_LINE\")\" = continue ]"
+assert_true "record-start --continue's written record carries a sub-second UTC timestamp" \
+  "jq -r .ts <<<\"\$RS2_LINE\" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z\$'"
+RS3_OUT="$(cd "$RO" && "$RUNSTATE" record-start p5 S1 --continue)"
+RS3_LINE="$(tail -1 "$RO/.agents/metrics/outcomes/S1.jsonl")"
+assert_true "record-start <pkt> <session> --continue (--continue after the session id) also works" \
+  "case \"\$RS3_OUT\" in *KIND=continue*) true;; *) false;; esac"
+assert_true "record-start <pkt> <session> --continue's written record carries kind=continue plus the right packet and session" \
+  "[ \"\$(jq -r '.kind + \"|\" + .packet + \"|\" + .session' <<<\"\$RS3_LINE\")\" = 'continue|p5|S1' ]"
+assert_true "a second record-start for the same packet appends a line, rewrites nothing" \
+  "[ \"\$(wc -l < \"$RO/.agents/metrics/outcomes/S1.jsonl\" | tr -d ' ')\" = 5 ]"
+assert_true "record-start requires a packet id" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-start 2>/dev/null)"
+assert_true "record-start in a non-git directory reports RECORDED=no, not a die" \
+  "OUT=\"\$(cd \"\$(mktemp -d)\" && \"\$RUNSTATE\" record-start p9 S9)\"; RC=\$?; [ \"\$RC\" = 0 ] && case \"\$OUT\" in *RECORDED=no*REASON=*) true;; *) false;; esac"
+
+# Same JSON-safety rule as record-outcome (ADR 0019 v3.4), shared via the same
+# id-charset guard: a `"` or `\` in the id would emit invalid JSON and make the
+# collector's `jq -s` drop every record in the file at once, silently. Run
+# inside the fixture repo (I2): an unwrapped call here executes against
+# whatever repo the sweep was launched from, and is harmless today only
+# because the charset check dies before the append runs -- reorder that and an
+# unwrapped case would write junk into a real outcomes log.
+assert_true "record-start rejects a packet id that would break its JSON (same error as record-outcome)" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-start 'pkt\"; drop' S1 2>/dev/null)"
+assert_true "record-start and record-outcome give the SAME charset error" \
+  "(cd \"$RO\" && [ \"\$(\"\$RUNSTATE\" record-start 'pkt\"; drop' S1 2>&1 >/dev/null)\" = \"\$(\"\$RUNSTATE\" record-outcome 'pkt\"; drop' green S1 2>&1 >/dev/null)\" ])"
+assert_true "record-start rejects a packet id containing a backslash" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-start 'pkt\drop' S1 2>/dev/null)"
+assert_true "record-outcome rejects a packet id containing a backslash" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome 'pkt\drop' green S1 2>/dev/null)"
+
+# record-outcome must keep refusing the two new boundary kinds as outcomes: its
+# accepted set stays exactly green|failed|rolled-back|blocked|abandoned.
+assert_true "record-outcome rejects 'start' as an outcome" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p10 start S1 2>/dev/null)"
+assert_true "record-outcome rejects 'continue' as an outcome" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p10 continue S1 2>/dev/null)"
+
+# A whole-second legacy line (as every record-outcome call wrote before this
+# feature) must survive a sub-second append untouched, and the file as a whole
+# must still parse -- by parsing the WHOLE FILE, not by grepping a substring.
+LEGACY_LINE='{"ts":"2026-01-01T00:00:00Z","packet":"legacy-p","outcome":"green"}'
+printf '%s\n' "$LEGACY_LINE" >> "$RO/.agents/metrics/outcomes/S1.jsonl"
+(cd "$RO" && "$RUNSTATE" record-start p6 S1 >/dev/null)
+assert_true "a whole-second legacy record is untouched after a sub-second append" \
+  "grep -qF '$LEGACY_LINE' \"$RO/.agents/metrics/outcomes/S1.jsonl\""
+assert_true "the outcomes log parses as valid JSON end to end (mixed legacy + sub-second lines)" \
+  "jq -s -e 'length > 0 and (map(type == \"object\") | all)' \"$RO/.agents/metrics/outcomes/S1.jsonl\" >/dev/null"
 
 echo
 echo "== findings: index hot, body cold (ADR 0022) =="

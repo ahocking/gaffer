@@ -56,7 +56,7 @@ that it blocks nothing.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Add `runstate.sh record-start <packet-id> [--continue] [session-id]`, which appends a start or continuation record (packet id, sub-second UTC time, session, kind) to the append-only outcomes log `record-outcome` writes, moving `record-outcome` to the same sub-second stamp, resolving the main checkout the same way and refusing the same id charset, with `test-runstate.sh` cases asserting append-only valid JSON and that `record-outcome` accepts neither kind as an outcome
+- [x] **T1** [P] **P0** Add `runstate.sh record-start <packet-id> [--continue] [session-id]`, which appends a start or continuation record (packet id, sub-second UTC time, session, kind) to the append-only outcomes log `record-outcome` writes, moving `record-outcome` to the same sub-second stamp, resolving the main checkout the same way and refusing the same id charset, with `test-runstate.sh` cases asserting append-only valid JSON and that `record-outcome` accepts neither kind as an outcome
   - deps: —
   - covers: Every packet the loop begins records a start and a terminal outcome
   - arch: —

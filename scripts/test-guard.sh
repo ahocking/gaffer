@@ -648,6 +648,249 @@ R_BYP_NESTED="$R_BYP_OUTER/nested"; mkdir -p "$R_BYP_NESTED/.agents"   # declare
 check_ask "bypass vetoed by nested root without the flag -> still asks" \
   "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"npm install left-pad"}}' "$R_BYP_NESTED")"
 
+echo "== driver mode (ADR 0028 / thin-loop-driver T5): refuse a main-thread write outside .agents/ =="
+DM="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM"
+mkdir -p "$DM/.agents/driver-mode"
+: > "$DM/.agents/driver-mode/sess-driver"
+
+# dm_payload <tool> <tool_input-json> [session_id] [agent_id]
+dm_payload() {
+  local s="" a=""
+  [ -n "${3:-}" ] && s=",\"session_id\":\"$3\""
+  [ -n "${4:-}" ] && a=",\"agent_id\":\"$4\""
+  printf '{"cwd":"%s","tool_name":"%s","tool_input":%s%s%s}' "$DM" "$1" "$2" "$s" "$a"
+}
+
+# check_deny_category <expected-category> <desc> <payload>: asserts exit 2 AND
+# that deny()'s stderr names the given category, so a driver-mode refusal
+# can't be mistaken for (or mask) an unrelated deny.
+check_deny_category() {
+  local want_cat="$1" desc="$2" payload="$3" err got
+  err="$(printf '%s' "$payload" | "$GUARD" 2>&1 >/dev/null)"; got=$?
+  if [ "$got" = 2 ] && printf '%s' "$err" | grep -q "category : ${want_cat}"; then
+    printf 'ok   (deny:%s) %s\n' "$want_cat" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want deny:%s, got exit %s) %s\n' "$want_cat" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+
+check 2 "driver mode: Edit outside .agents/ refused" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver)"
+check 2 "driver mode: Write outside .agents/ refused" \
+  "$(dm_payload Write '{"file_path":"src/util.ts","content":"x"}' sess-driver)"
+check 2 "driver mode: MultiEdit outside .agents/ refused" \
+  "$(dm_payload MultiEdit '{"file_path":"src/util.ts","edits":[]}' sess-driver)"
+check 2 "driver mode: NotebookEdit outside .agents/ refused" \
+  "$(dm_payload NotebookEdit '{"notebook_path":"nb.ipynb","new_source":"x"}' sess-driver)"
+
+check 2 "driver mode: sed -i outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/util.ts"}' sess-driver)"
+check 2 "driver mode: cat > outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"cat > src/util.ts <<EOF"}' sess-driver)"
+check 2 "driver mode: tee outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"echo x | tee src/util.ts"}' sess-driver)"
+check 2 "driver mode: cp outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"cp tmp src/util.ts"}' sess-driver)"
+
+echo "== driver mode: .agents/ targets stay allowed =="
+check 0 "driver mode: Edit under .agents/ allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/run-state.yaml"}' sess-driver)"
+check 0 "driver mode: Write under .agents/ allowed" \
+  "$(dm_payload Write '{"file_path":".agents/findings/f-001.md","content":"x"}' sess-driver)"
+check 0 "driver mode: cat > .agents/ heredoc allowed" \
+  "$(dm_payload Bash '{"command":"cat > .agents/run-state.yaml <<EOF"}' sess-driver)"
+# I3: a Windows-separated .agents/ target needs a REAL cwd to mean anything (an
+# absolute drive-letter path can't be judged against a real config root on a
+# POSIX test box) -- so this is RELATIVE, cwd-anchored, and paired with a
+# Windows-separated path that names something else, which must still refuse.
+check 0 "driver mode: relative backslash .agents/ target allowed" \
+  "$(dm_payload Edit '{"file_path":".agents\\run-state.yaml"}' sess-driver)"
+check 2 "driver mode: relative backslash path outside .agents/ refused" \
+  "$(dm_payload Edit '{"file_path":"src\\util.ts"}' sess-driver)"
+
+echo "== driver mode: agent_id present -> not the main thread, allowed =="
+check 0 "driver mode: same mark but agent_id present allowed (Edit)" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver agent-123)"
+check 0 "driver mode: same mark but agent_id present allowed (Bash write)" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/util.ts"}' sess-driver agent-123)"
+
+echo "== driver mode: no mark for this session -> judged as today =="
+check 0 "driver mode: another session's mark does not apply" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-other)"
+check 0 "driver mode: no session_id at all -> judged as today" \
+  "$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"src/util.ts"}}' "$DM")"
+
+echo "== driver mode: session_id path traversal never denies, never reads an arbitrary path =="
+check 0 "driver mode: session_id='..' treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '..')"
+check 0 "driver mode: session_id='.' treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '.')"
+check 0 "driver mode: session_id with a path separator treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '../driver-mode/sess-driver')"
+
+echo "== driver mode: secret floor first, then driver-mode -- and it survives bypass-ask-tier =="
+check_deny_category "secret-path" "driver mode: .env still refused as a secret, not driver-mode" \
+  "$(dm_payload Edit '{"file_path":".env"}' sess-driver)"
+check_deny_category "driver-mode" "driver mode: refusal names driver-mode as the category" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver)"
+
+DMB="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DMB"
+mkdir -p "$DMB/.agents/driver-mode"; : > "$DMB/.agents/driver-mode/sess-byp"
+printf 'bypass-ask-tier: true\n' > "$DMB/.agents/project-overrides.yaml"
+check 2 "driver mode still refuses with bypass-ask-tier: true" \
+  "$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"src/util.ts"},"session_id":"sess-byp"}' "$DMB")"
+
+echo "== driver mode: git commit and an .agents/ write are unaffected =="
+DM_GIT="$(new_repo feature)"; stage "$DM_GIT" "src/util.ts"
+mkdir -p "$DM_GIT/.agents/driver-mode"; : > "$DM_GIT/.agents/driver-mode/sess-git"
+
+# dm_commit_check <expected> <desc> <commit-message>: a real git commit, on a
+# feature branch, with autonomy raised, and a driver-mode mark on the session.
+dm_commit_check() {
+  local want="$1" desc="$2" msg="$3" payload got
+  payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git commit -m \\"%s\\""},"session_id":"sess-git"}' \
+    "$DM_GIT" "$msg")"
+  printf '%s' "$payload" | ORCH_AUTONOMY=supervised "$GUARD" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want %s, got %s) %s\n' "$want" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+dm_commit_check 0 "driver mode: plain git commit still allowed" "x"
+# I2: a write-pattern MATCH inside a commit message is not a real write --
+# these were wrongly refused before the sanitize-then-extract fix.
+dm_commit_check 0 "driver mode: commit message containing 'install' allowed" \
+  "feat: install the mv/cp path"
+dm_commit_check 0 "driver mode: commit message containing '->' allowed" \
+  "route escalate -> decider"
+# I5: both false-positive sources (a write keyword AND a redirection-shaped
+# '->') in the SAME message, still allowed.
+dm_commit_check 0 "driver mode: commit message with both '->' and 'install' allowed" \
+  "route escalate -> decider; install step"
+
+# I2: the rest -- a real heredoc write into .agents/ whose BODY contains every
+# false-positive word at once, two /dev/null-only redirects, and a quoted
+# 'tee' inside a --summary value. None of these actually write outside
+# .agents/, so none should be refused.
+check 0 "driver mode: heredoc into .agents/ whose body says install/->/cp allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh write .agents/run-state.yaml <<'"'"'EOF'"'"'\nnote: '"'"'ran npm install; next packet; route -> cp'"'"'\nEOF"}' sess-driver)"
+check 0 "driver mode: stderr-to-/dev/null read allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh status 2>/dev/null"}' sess-driver)"
+check 0 "driver mode: stdout-to-/dev/null read allowed" \
+  "$(dm_payload Bash '{"command":"bash scripts/gspec-backlog.sh nodes > /dev/null"}' sess-driver)"
+check 0 "driver mode: quoted 'tee' inside a --summary value allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh add-finding f1 x --summary \"use tee for logs\""}' sess-driver)"
+
+echo "== driver mode: CRITICAL C1 -- a real write hiding past a naive .agents/ substring check =="
+check 2 "driver mode: cp names .agents/ as SOURCE, writes outside -> refused" \
+  "$(dm_payload Bash '{"command":"cp .agents/x src/y"}' sess-driver)"
+check 2 "driver mode: cat reads .agents/, redirect writes outside -> refused" \
+  "$(dm_payload Bash '{"command":"cat .agents/f > src/z"}' sess-driver)"
+check 2 "driver mode: sed -i with one good and one bad file -> refused" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/x .agents/y"}' sess-driver)"
+check 2 "driver mode: tee target outside, .agents/ is only the INPUT redirect -> refused" \
+  "$(dm_payload Bash '{"command":"tee src/x < .agents/y"}' sess-driver)"
+check 2 "driver mode: .agents/ only in a trailing comment -> refused" \
+  "$(dm_payload Bash '{"command":"echo hi > src/x # .agents/"}' sess-driver)"
+check 2 "driver mode: a later segment names .agents/, an earlier one doesn't -> refused" \
+  "$(dm_payload Bash '{"command":"echo hi > src/x; echo > .agents/y"}' sess-driver)"
+
+echo "== driver mode: IMPORTANT I1 -- the Edit/Write path check is ANCHORED, not a substring test =="
+check 2 "driver mode: .agents/../src/x (traversal out of .agents/) refused" \
+  "$(dm_payload Edit '{"file_path":".agents/../src/x"}' sess-driver)"
+check 2 "driver mode: src/.agents/evil (nested, not the real .agents/) refused" \
+  "$(dm_payload Edit '{"file_path":"src/.agents/evil"}' sess-driver)"
+check 2 "driver mode: ../.agents/x (traversal into a parent) refused" \
+  "$(dm_payload Edit '{"file_path":"../.agents/x"}' sess-driver)"
+check 2 "driver mode: /tmp/other/.agents/x (a foreign absolute root) refused" \
+  "$(dm_payload Edit '{"file_path":"/tmp/other/.agents/x"}' sess-driver)"
+check 2 "driver mode: src/my-.agents/x (.agents/ is not a leading path segment) refused" \
+  "$(dm_payload Edit '{"file_path":"src/my-.agents/x"}' sess-driver)"
+check 2 "driver mode: src/foo.agents/x (foo.agents != .agents) refused" \
+  "$(dm_payload Edit '{"file_path":"src/foo.agents/x"}' sess-driver)"
+
+echo "== driver mode: unresolved shell variables and dangerous constructs refuse conservatively =="
+check 2 "driver mode: an unresolved \$VAR write target refused" \
+  "$(dm_payload Bash '{"command":"cp tmp $VAR"}' sess-driver)"
+check 2 "driver mode: command substitution alongside a write refused" \
+  "$(dm_payload Bash '{"command":"cp $(echo src/util.ts) .agents/y"}' sess-driver)"
+check 2 "driver mode: xargs alongside a write refused" \
+  "$(dm_payload Bash '{"command":"echo .agents/y | xargs cp tmp"}' sess-driver)"
+
+echo "== driver mode: N1 CRITICAL -- a quoted target must not vanish into nothing =="
+# Blanking a quoted region to SPACES erased both the write-pattern's own
+# "non-space char" evidence and the target itself. Every one of these is a
+# real write outside .agents/, or opaque enough that it must be refused.
+check 2 "N1: double-quoted target, spaced" \
+  "$(dm_payload Bash '{"command":"echo x > \"src/y\""}' sess-driver)"
+check 2 "N1: double-quoted target, glued to >" \
+  "$(dm_payload Bash '{"command":"echo x >\"src/y\""}' sess-driver)"
+check 2 "N1: quoted unresolved variable target" \
+  "$(dm_payload Bash '{"command":"echo x > \"$TMP\""}' sess-driver)"
+check 2 "N1: cp .agents/ as source, quoted dest outside" \
+  "$(dm_payload Bash '{"command":"cp .agents/a \"src/y\""}' sess-driver)"
+check 2 "N1: tee .agents/ and a quoted outside target" \
+  "$(dm_payload Bash '{"command":"echo x | tee .agents/a \"src/y\""}' sess-driver)"
+check 2 "N1: sed -i with a QUOTED expression, one bad file" \
+  "$(dm_payload Bash '{"command":"sed -i 's/a/b/' src/x .agents/y"}' sess-driver)"
+check 2 "N1: unquoted backslash before a stray trailing quote" \
+  "$(dm_payload Bash '{"command":"echo \\\" > src/y \""}' sess-driver)"
+
+echo "== driver mode: N2 CRITICAL -- content after a heredoc terminator is a real command =="
+check 2 "N2: a write AFTER the heredoc terminator is not part of the body" \
+  "$(dm_payload Bash '{"command":"cat <<'EOF' > .agents/x\nhi\nEOF\necho pwn > src/y"}' sess-driver)"
+
+echo "== driver mode: N3 CRITICAL -- '#' is a comment only at a word boundary, to end-of-line =="
+check 2 "N3: a trailing comment does not swallow the next line" \
+  "$(dm_payload Bash '{"command":"echo hi # note\necho pwn > src/y"}' sess-driver)"
+check 2 "N3: '#' mid-word is not a comment; the ';' after it still separates" \
+  "$(dm_payload Bash '{"command":"echo a#b; echo pwn > src/y"}' sess-driver)"
+
+echo "== driver mode: N4 CRITICAL -- a newline is a statement separator for the fast-path too =="
+# Pre-existing guard bug (not driver-mode-specific): only the FIRST word of a
+# multi-line command was ever checked by the read-only fast-path.
+check 2 "N4: multi-line command reaches the SECRET floor (no driver mode needed)" \
+  "$(bash_call '"echo hi\ncp a .env"')"
+check 2 "N4: multi-line write refused in driver mode" \
+  "$(dm_payload Bash '{"command":"true\ncp a src/y"}' sess-driver)"
+check 0 "N4: a purely read-only multi-line command still allows (slower path)" \
+  "$(bash_call '"git status\ngit log -1"')"
+
+echo "== driver mode: N5 IMPORTANT -- the clobber redirect (>|) is a write too =="
+check 2 "N5: >| target outside .agents/ refused in driver mode" \
+  "$(dm_payload Bash '{"command":"echo x >| src/y"}' sess-driver)"
+check 2 "N5: >| .env hits the SECRET floor (no driver mode needed)" \
+  "$(bash_call '">| .env"')"
+
+echo "== driver mode: N6 IMPORTANT -- cd/pushd invalidates every relative target =="
+check 2 "N6: cd src && a relative .agents/ write is really src/.agents/" \
+  "$(dm_payload Bash '{"command":"cd src && echo x > .agents/y"}' sess-driver)"
+
+echo "== driver mode: N7 IMPORTANT -- cp -t/--target-directory, and every mv source =="
+check 2 "N7a: cp -t names the real destination, not the last positional arg" \
+  "$(dm_payload Bash '{"command":"cp -t src .agents/x"}' sess-driver)"
+check 2 "N7b: mv removes its source too -- that is a write outside .agents/" \
+  "$(dm_payload Bash '{"command":"mv src/a .agents/b"}' sess-driver)"
+
+echo "== driver mode: M2 -- re-confirm the earlier false-positive fixes still hold =="
+m2_git_cmd='git commit -F - <<'"'"'EOF'"'"'\nnote: -> tee cp >\nEOF'
+m2_git_payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"%s"},"session_id":"sess-git"}' "$DM_GIT" "$m2_git_cmd")"
+printf '%s' "$m2_git_payload" | ORCH_AUTONOMY=supervised "$GUARD" >/dev/null 2>&1
+got=$?
+if [ "$got" = 0 ]; then
+  printf 'ok   (exit 0) M2: git commit -F - heredoc body with ->/tee/cp allowed\n'; pass=$((pass + 1))
+else
+  printf 'FAIL (want 0, got %s) M2: git commit -F - heredoc body with ->/tee/cp allowed\n' "$got"; fail=$((fail + 1))
+fi
+check 0 "M2: input redirect from a quoted variable allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh write .agents/run-state.yaml < \"$TMP\""}' sess-driver)"
+check 0 "M2: awk redirect into .agents/ allowed" \
+  "$(dm_payload Bash '{"command":"awk '{print}' file > .agents/loop/r/x"}' sess-driver)"
+check 0 "M2: a read-only pipeline ending in sed (no -i) allowed" \
+  "$(dm_payload Bash '{"command":"git log | grep foo | sed -E s/a/b/"}' sess-driver)"
+
 echo "== payload parsing: the guard must fail CLOSED when it cannot READ its input =="
 # Regression sweep for the "guard.sh fails open" report. Three independent
 # defects each disabled path enforcement while the guard still looked healthy

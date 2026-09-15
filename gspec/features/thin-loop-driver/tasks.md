@@ -76,7 +76,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Long runs compact, and can pause on a schedule
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T5** [P] **P0** Make `hooks/guard.sh` refuse Edit, Write, MultiEdit and NotebookEdit calls, and the shell writes `BASH_WRITE_PATTERNS` recognises, when the payload's `session_id` has a driver-mode mark in a discovered config root, the payload carries no `agent_id`, and the target is outside `.agents/`. The refusal names driver mode as the reason and `/gaffer:pause` as the way out. It is checked after the secret floor and before the ask tier. A payload without `session_id` is judged as it is today. `test-guard.sh` cases:
+- [x] **T5** [P] **P0** Make `hooks/guard.sh` refuse Edit, Write, MultiEdit and NotebookEdit calls, and the shell writes `BASH_WRITE_PATTERNS` recognises, when the payload's `session_id` has a driver-mode mark in a discovered config root, the payload carries no `agent_id`, and the target is outside `.agents/`. The refusal names driver mode as the reason and `/gaffer:pause` as the way out. It is checked after the secret floor and before the ask tier. A payload without `session_id` is judged as it is today. `test-guard.sh` cases:
   - each of the four tools and `sed -i`, `cat >`, `tee` and `cp` refused;
   - `.agents/` targets allowed, including a Windows-separated one;
   - the same payload with `agent_id` allowed;

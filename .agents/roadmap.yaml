@@ -40,9 +40,14 @@ features:
     why: "three defects its parent's whole-branch review found; ordered first because two of them degrade every run until fixed — the load-timing model is wrong in the two documents every packet reads, and the packet rules shipped today may not reach the scoping agent at all, so later features get scoped under machinery that is still broken"
     depends_on: [self-host-hardening]
 
-  - slug: retire-unused-loop-modes
+  - slug: loop-measurement
     order: 16
-    why: "part 1 of the 2026-09-14 loop-cost redesign: removes relay (break-even at 40+ packets, largest run ever 14), --parallel (0 lanes in 151 recorded metric runs) and rate-limit auto-pause (never reliable), and replaces parallel mode's file-disjoint guarantee with guidance plus a same-file overlap count. Supersedes loop-cost-controls (retired) and closes coercive-pause-enforcement unbuilt. Ordered first among open work because the later redesign features (thin loop driver, loop measurement, implementer checkpoints, migrate alignment) edit the same loop instructions this simplifies"
+    why: "part 2 of the 2026-09-14 loop-cost redesign, built FIRST so the redesign has a true before: every packet the loop begins records a start and a terminal outcome (27 of 98 packets had none in the week ending 2026-09-14, and the loop has only ever recorded green and blocked), and /gaffer:metrics spend reports API-equivalent spend across sessions, projects and machines. Takes over metrics-coverage-gaps' failed-and-uncommitted-packets capability"
+    depends_on: [run-metrics]
+
+  - slug: retire-unused-loop-modes
+    order: 17
+    why: "part 1 of the 2026-09-14 loop-cost redesign: removes relay (break-even at 40+ packets, largest run ever 14), --parallel (0 lanes in 151 recorded metric runs) and rate-limit auto-pause (never reliable), and replaces parallel mode's file-disjoint guarantee with guidance plus a same-file overlap count. Supersedes loop-cost-controls (retired) and closes coercive-pause-enforcement unbuilt. Ordered right after loop-measurement, so its effect is measured, and before the other redesign features (thin loop driver, implementer checkpoints, migrate alignment), which edit the same loop instructions this simplifies"
     depends_on: [run-metrics]
 
   - slug: run-state-cleanup
@@ -58,7 +63,7 @@ features:
   - slug: metrics-coverage-gaps
     order: 20
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"
-    depends_on: [run-metrics]
+    depends_on: [run-metrics, loop-measurement]
 
   # --- deferred ------------------------------------------------------------
   # `next` and `nodes-all` skip these, so the loop will not pick them up. They

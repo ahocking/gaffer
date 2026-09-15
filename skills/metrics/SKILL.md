@@ -1,7 +1,7 @@
 ---
 name: metrics
-description: Assemble, show, or analyze a run-metrics packet (ADR 0019 Tier 1). `collect` joins the event log + `[orch packet:<id>]` commit trailers + best-effort transcript tokens into a self-contained `.agents/metrics/<run-id>/run-metrics.json`; `show` prints a compact summary; `status` reports whether metrics is on and which sources are present; `analyze` hands the packet to Claude for ranked, concrete optimization advice. Use when the user asks where a run's compute went, how to make the loop cheaper/faster, or to collect/see metrics for a run.
-argument-hint: collect | show | status | analyze (omit to show the latest packet)
+description: Assemble, show, or analyze a run-metrics packet (ADR 0019 Tier 1). `collect` joins the event log + `[orch packet:<id>]` commit trailers + best-effort transcript tokens into a self-contained `.agents/metrics/<run-id>/run-metrics.json`; `show` prints a compact summary; `status` reports whether metrics is on and which sources are present; `analyze` hands the packet to Claude for ranked, concrete optimization advice; `spend` reports machine-wide API-equivalent token spend over a time window, priced from the published API rate card (not a bill). Use when the user asks where a run's compute went, how to make the loop cheaper/faster, to collect/see metrics for a run, or how much a window of usage cost across the machine.
+argument-hint: collect | show | status | analyze | spend [--days N | --since ISO --until ISO] (omit to show the latest packet)
 ---
 
 # Metrics → $ARGUMENTS
@@ -29,7 +29,9 @@ emits (and see step 3 — this report takes no header tally).
 - **`collect`** → assemble a fresh packet (step 2), then show it (step 3).
 - **`status`** → report enabled-state + source availability (step 4).
 - **`analyze`** → collect if needed, then reason over the packet (step 5).
-- **anything else** → say the valid verbs are `collect | show | status | analyze`.
+- **`spend [--days N] [--since ISO] [--until ISO] …`** → machine-wide API-equivalent
+  spend report over a window (step 6); pass any window flags through verbatim.
+- **anything else** → say the valid verbs are `collect | show | status | analyze | spend`.
 
 ## 2. `collect` — assemble the run packet
 
@@ -172,6 +174,45 @@ For a single small packet, reasoning inline is fine. For a deep or multi-run ana
 delegate to the **architect** (the optimization/architecture authority) via `Task`,
 handing it the packet path to `Read` — a dispatched agent has no `Skill` tool, so give
 it the file path, not this command (ADR 0012).
+
+## 6. `spend` — machine-wide API-equivalent spend report
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/spend.sh [--days N] [--since ISO] [--until ISO] \
+  [--projects-dir DIR] [--price-table FILE]
+```
+
+Unlike `collect`/`show` (one repo's run), this reads **every** Claude Code transcript on
+the machine — main sessions and subagents, every project — over a window: default the
+last **7 days** (`--days N`); `--since`/`--until` (ISO, e.g. `2026-09-08T00:00:00Z`)
+override it. Tokens are priced from `scripts/spend-prices.json` (or `--price-table
+FILE`). Pass `$ARGUMENTS`' window flags straight through; an unrecognized flag is a
+usage error (exit 1), not a silent no-op.
+
+It prints one JSON report to stdout; relay it, not the raw JSON, following the report
+conventions. Like `show`/`analyze` this is numbers-dense and takes **no header tally**;
+titles-over-ids and one line per finding still apply.
+
+- **Lead with the price table, not the total**: `price_table.date` and the report's own
+  `label` ("API-equivalent spend estimate from published per-token API prices — not a
+  bill."). Every dollar figure is priced as of that date and is an estimate, not a
+  bill — say so once, up front.
+- **`totals.dollars`** is the headline figure, broken down by `by_project` / `by_model`
+  / `by_role` / `by_effort` (each carrying `tokens`, `dollars`, `unpriced_tokens`,
+  `cache_write_unmeasured_tokens`). **Never fold `totals.unpriced_tokens` into a dollar
+  figure** — a model missing from the price table prices at 0 but is NOT free; state its
+  token count on its own line, never as "$0" or silence.
+- **Name every `unmeasured[]` entry in words**, not a silent zero — each already says
+  which field and how many tokens/messages it covers (an unavailable cache-write 5m/1h
+  split, an unrecorded agent role, an unrecorded model id, no effort recorded anywhere
+  in the window).
+- **Report the dedup and exclusion counts, not just the total**: `counts.messages_deduped_dropped`
+  (repeated message ids collapsed to the earliest row — scan-scoped, not window-scoped,
+  per the report's own `notes[]`), `counts.messages_excluded_no_usage_or_ts` and
+  `counts.messages_excluded_synthetic` (rows dropped for missing usage/timestamp, or a
+  synthetic no-cost turn), and `counts.messages_no_id` (kept, not deduped, per
+  `notes[]`). If `projects_dir.status` is `absent`, say the scan directory itself was
+  not found rather than reporting zero spend.
 
 ## Config
 

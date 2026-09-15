@@ -815,6 +815,72 @@ overlap, a run with no outcomes log reports `outcome: null` rather than green, a
 within budget is left byte-identical with no archive written, and trimming preserves the keys
 both before and after the note.
 
+## v3.5 revision (2026-09-15) — packets from starts; spend is machine-wide; trimmed by operator
+
+Three changes, all shipped before the planned save/combine and cache-cause analysis (T12–T16)
+were deferred by the operator. This section records what actually shipped.
+
+### 1. Packet rows from start records and commit trailers
+
+A packet appears in the collector only via its green-commit trailer — failed, interrupted, and
+uncommitted work produces no row. The first production capture read "42 of 42 green" which was
+survivorship reported as quality, with no record of the discarded work.
+
+`runstate.sh record-start <id> [--continue]` appends to `.agents/metrics/outcomes/<session>.jsonl`,
+the same append-only file `record-outcome` uses. Start and outcome records bracket the packet's
+lifetime, and the collector joins both, so every packet now has a row regardless of terminal
+state. Last record per id wins, so a packet that failed and was retried reads with the final
+outcome.
+
+This is append-only and deliberately **not** in run-state — same reasoning as the outcomes
+file itself: `record-start` must be callable from a lane without contending for the driver's
+single-writer run-state.
+
+### 2. `interrupted` has exactly one writer
+
+`interrupted` is written **only** by `runstate.sh sweep-open`, which closes any packet whose
+latest start has no terminal outcome (a `sweep` finding a stale start when paused or crashed).
+`record-outcome` **refuses** the `interrupted` value — the script enforces the rule rather than
+trusting prompt compliance. The paused cursor is exempt: a pause is a deliberate user signal, not
+a failure of the packet.
+
+Append-only outcomes mean no retraction, so if a packet transitions from started → interrupted →
+green, all three records exist and last-record-wins gives the truth.
+
+### 3. Spend is machine-wide and lives in `scripts/spend.sh`
+
+Spend calculation reads **every** transcript across every project on the host (not scoped to
+one repo like `metrics.sh collect`) and prices them in API-equivalent dollars from a dated
+rate table. `spend.sh` deduplicates assistant rows by `message.id` — a pre-v3.3 inflation source
+that when imported into spend would have overstated cost by ~2.6x — and stamps the table date
+and token source on its output so queries are accountable to the data they consumed.
+
+The rate table shipped with Claude 3-era pricing, overstating Opus **3×** across real sessions.
+Corrected before commit. Cache reads dominate real spend (66–70%), so cache rates are **stated**
+in the table, not derived from the 0.1× input/output ratio: Claude Fable 5.1 reads at 0.025×,
+where the standard formula would give 0.0025× — wrong by 4× — because Fable 5 and Fable 5.1
+differ **only** in their cache-read rate. The table carries `table_date` because the pricing
+page has no version stamp and the rate update interval is undocumented.
+
+### 4. Timestamp handling across precision tiers
+
+The field schema changed: audit trail records now carry sub-second timestamps (`"…:08.311Z"`),
+while older records are whole-second (`"…:08Z"`). As ASCII strings, `.` (0x2E) < `Z` (0x5A),
+so a `"…:08.311Z"` sorts below `"…:08Z"` — backwards. Any join that orders these must
+compare **parsed** times. Both the spend sweep and the metrics collector strip the fractional
+part before any date parse, and `metrics.sh`'s own `epoch()` helper returns **0** on macOS
+(BSD `date -u -d` does not exist; `-d @` is GNU-only and rejects the fraction) while working
+on GNU CI, so it could not be reused — separate handling was written.
+
+An `interrupted` record is written by a **later session's sweep** into that session's own
+`.agents/metrics/outcomes/<session>.jsonl`, but carries the `ts` and `session_id` of the
+**start it closes**, and is attributed to the **run it names** — never the run whose sweep
+physically wrote the record. This was the "collector bug most likely to ship without being
+caught" and was built right first time, verified against a two-session fixture.
+
+Regression cases live under the `v3.5` heading in `scripts/test-spend.sh`, plus imports of
+the v3.3 dedup test and the timestamp-handling sweep cases.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

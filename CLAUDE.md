@@ -43,7 +43,7 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 retro-specced, because that is archaeology over decisions that already have
 passing sweeps.
 
-- **The one retro-spec is `run-metrics`** (ADR 0019, v1→v3.4), and it exists
+- **The one retro-spec is `run-metrics`** (ADR 0019, v1→v3.5), and it exists
   because that ADR is the clearest case in the repo of a **decision record being
   used as a status tracker**: 866 lines carrying five stacked `v3.x` revision
   sections, mirrored again in this file, with **no ADR in the repo having a
@@ -403,6 +403,32 @@ passing sweeps.
   relay dispatch to recover two facts. It archives to `run-state-note-archive.md` and trims on
   **whole lines** so the YAML stays parseable. All four degrade to `null`/absent on legacy
   runs — **`null` means unmeasured, never clean**.
+  **v3.5 (2026-09-15) — packets from start records; spend is machine-wide; trimmed by operator.**
+  T12–T16 (cache-shape analysis, save/combine, and reproducing the 2026-09-14 figures) were
+  deferred, so this section documents only what shipped. (a) **Packet rows now come from start
+  records as well as commit trailers.** A packet was visible only via its green-commit trailer,
+  so failed, interrupted, and uncommitted work left no row — "42 of 42 green" was survivorship
+  without a record. `runstate.sh record-start <id> [--continue]` writes a start/continuation
+  record into the same append-only outcomes log (`.agents/metrics/outcomes/<session>.jsonl`),
+  and the collector joins both; a packet has a row regardless of outcome. (b) **`interrupted` has
+  exactly one writer.** Only `runstate.sh sweep-open` writes it (closing any packet whose latest
+  start has no terminal outcome); `record-outcome` refuses it, and the script enforces the
+  constraint rather than trusting a prompt. The paused cursor is exempt: a pause is not an
+  interruption. (c) **Spend is machine-wide and lives in `scripts/spend.sh`, not a `metrics.sh`
+  subcommand.** `metrics.sh collect` resolves one repo's checkout; spend reads every transcript
+  across every project, deduplicates assistant rows by `message.id` (a pre-3.3 inflation source
+  now imported), and prices them in API-equivalent dollars from a dated table. The table shipped
+  with Claude 3-era rates overstating Opus **3×**; corrected before commit. Cache reads are 66–70%
+  of real spend, so cache rates are stated rather than derived: Fable 5.1 reads at 0.025×
+  (where the standard 0.1× rule is wrong by 4×). Both fraction and table date carry load-bearing
+  detail. Timestamps are sub-second now (older records are whole-second); `.` < `Z` as ASCII,
+  so string-sorting requires parsed times — both the sweep and collector strip the fraction
+  before any date parse. An `interrupted` record is written by a **later session's sweep**,
+  into that session's own log, but carries the `ts` and `session` of the start it closes, and
+  is attributed to the run it **names** — never the run whose sweep physically wrote it. Plan
+  called this "the collector bug most likely to ship"; it was built right first time and
+  verified against a two-session fixture. Regression sweep: `scripts/test-spend.sh` joins the
+  ten existing sweeps.
 - **Search-tool selection is a PREFERENCE; only the write surface is a real control**
   (ADR 0019 v3.3 — **v3's cost claim is RETRACTED**). All seven `agents/*.md` carry a
   "structured tools, not the shell" section: `Grep`/`Glob`/`Read` to search and read,
@@ -881,6 +907,7 @@ scripts/test-worktree.sh       # ADR 0016 worktree lane lifecycle + safety gates
 scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a lane worktree) + ADR 0018 rate-limit sensor
 scripts/test-parallel-pause-e2e.sh  # ADR 0017 parallel-pause choreography (real worktree.sh + runstate.sh)
 scripts/test-metrics.sh        # ADR 0019 run-metrics: event log -> trailer/wave/token join -> packet, fail-soft
+scripts/test-spend.sh          # ADR 0019 v3.5 spend: machine-wide transcript dedup, pricing, timestamp handling
 scripts/test-gspec-backlog.sh  # ADR 0020 gspec adapter: version pin, derived completion, nodes, interlock
 scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, the packet-count check, and the CLAUDE.md conventions stamp
 scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies

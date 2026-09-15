@@ -61,7 +61,7 @@ that it blocks nothing.
   - covers: Every packet the loop begins records a start and a terminal outcome
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** [P] **P0** Give `gspec-backlog.sh task-status` a distinct `gone` state for an id whose feature plan exists but no longer names the task, kept out of `FINISHED=` and distinct from `unknown`, with `test-gspec-backlog.sh` cases including one proving the `FINISHED=` line is unchanged for existing callers
+- [x] **T2** [P] **P0** Give `gspec-backlog.sh task-status` a distinct `gone` state for an id whose feature plan exists but no longer names the task, kept out of `FINISHED=` and distinct from `unknown`, with `test-gspec-backlog.sh` cases including one proving the `FINISHED=` line is unchanged for existing callers
   - deps: —
   - covers: A packet left without an outcome is recorded as interrupted
   - arch: —

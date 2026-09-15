@@ -988,6 +988,15 @@ R="$TMPROOT/taskstatus"; mkdir -p "$R/gspec/tasks"
   printf -- '  - deps: T1\n'
 } > "$R/gspec/tasks/ts.md"
 
+# `$R` is a real git repo from here on: `gone` (loop-measurement T2) now
+# requires positive evidence from the plan's OWN git history, so the fixtures
+# below that exercise it need genuine commits, not just files on disk.
+git -C "$R" init -q
+git -C "$R" config user.email t@t
+git -C "$R" config user.name t
+git -C "$R" add -A
+git -C "$R" commit -q -m 'initial: ts T1 T2'
+
 out="$("$ADAPTER" task-status 'ts#T1' "$R")"; rc=$?
 check 'a finished task reads state finished'  "$(printf 'ts#T1\tfinished')" "$out"
 check 'the FINISHED= trailer names it'        'FINISHED=ts#T1' "$out"
@@ -1021,13 +1030,160 @@ check 'no plan file for that feature slug -> unknown' "$(printf 'other#T1\tunkno
 check 'and names the missing plan'                     'no plan file for feature other' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
 
+# `gone` now requires POSITIVE EVIDENCE from the plan's own git history
+# (loop-measurement T2 "gone must require positive evidence"), so give T99 a
+# real history: add it as a real task line, commit, then remove it again and
+# commit -- restoring ts.md to the exact T1/T2 content every other case in
+# this section still relies on.
+{
+  printf -- '---\nspec-version: v1\nfeature: ts\n---\n\n# Plan: ts\n\n## Plan\n\n'
+  printf -- '- [x] **T1** **P0** already finished\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** still open\n'
+  printf -- '  - deps: T1\n'
+  printf -- '- [ ] **T99** **P0** a task later re-decomposed away\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$R/gspec/tasks/ts.md"
+git -C "$R" add -A
+git -C "$R" commit -q -m 'ts: add T99'
+{
+  printf -- '---\nspec-version: v1\nfeature: ts\n---\n\n# Plan: ts\n\n## Plan\n\n'
+  printf -- '- [x] **T1** **P0** already finished\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** still open\n'
+  printf -- '  - deps: T1\n'
+} > "$R/gspec/tasks/ts.md"
+git -C "$R" add -A
+git -C "$R" commit -q -m 'ts: re-decompose away T99'
+
 out="$("$ADAPTER" task-status 'ts#T99' "$R")"; rc=$?
-check 'a task id absent from an EXISTING plan -> unknown' "$(printf 'ts#T99\tunknown')" "$out"
+check 'a task id absent from an EXISTING plan, WITH history evidence -> gone (loop-measurement T2)' "$(printf 'ts#T99\tgone')" "$out"
+refute 'and is NOT reported as unknown'                    "$(printf 'ts#T99\tunknown')" "$out"
 check 'and names the plan it looked in'                    'ts.md' "$out"
+check 'and the reason cites the history evidence'          'git history' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 on a task id absent from an existing plan (READ-ONLY: never the exit-4 drift signal check-task uses)' \
   || bad 'exit 0 on drift for task-status' "rc=$rc"
 
-# a mixed set: the exact FINISHED= line, comma-separated, no spaces
+# --- loop-measurement T2: gone requires POSITIVE EVIDENCE, not just absence -
+# The reviewer's remaining hole: a non-gspec packet id that merely happens to
+# prefix-match a live feature's slug (`ts-fix-login-bug` against feature
+# `ts`) must NOT read `gone` just because `ts` has a plan and the id is
+# absent from it -- it was never a gspec task here, so it must read `unknown`
+# (which `sweep-open` then sweeps as `interrupted`, the safe direction per
+# the plan preamble).
+out="$("$ADAPTER" task-status 'ts-fix-login-bug' "$R")"; rc=$?
+check 'a non-gspec id that prefix-collides with a live feature slug -> unknown, not gone' \
+  "$(printf 'ts-fix-login-bug\tunknown')" "$out"
+refute 'and must not be misreported as gone -- absence alone is not evidence' \
+  "$(printf 'ts-fix-login-bug\tgone')" "$out"
+check 'and the reason says the id never appears in that plan history' 'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a prefix-colliding non-gspec id' || bad 'exit 0 on a prefix-colliding non-gspec id' "rc=$rc"
+
+# the false-positive guard: an id mentioned only in PROSE in a historical
+# version of the plan (never as its own task line) must not read as evidence
+# either -- a bare substring search over history would get this wrong; the
+# structural task-line regex must not.
+RP="$TMPROOT/taskstatus-prose"; mkdir -p "$RP/gspec/tasks"
+git -C "$RP" init -q; git -C "$RP" config user.email t@t; git -C "$RP" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: pr\n---\n\n# Plan: pr\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** something; note: replaces the old T77 approach\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RP/gspec/tasks/pr.md"
+git -C "$RP" add -A
+git -C "$RP" commit -q -m 'T77 mentioned only in prose, never as a task line'
+out="$("$ADAPTER" task-status 'pr#T77' "$RP")"; rc=$?
+check 'an id mentioned only in PROSE in plan history -> unknown, not gone' "$(printf 'pr#T77\tunknown')" "$out"
+refute 'a prose mention must not be misread as a historical task line' "$(printf 'pr#T77\tgone')" "$out"
+check 'and the reason says it never appears as a task line' 'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an id that only ever appeared in prose' || bad 'exit 0 on an id that only ever appeared in prose' "rc=$rc"
+
+# fail-soft: the plan file exists and parses, but there is no git history to
+# consult at all -- must read unknown (history unavailable), never gone.
+RNG="$TMPROOT/taskstatus-nogit"; mkdir -p "$RNG/gspec/tasks"
+{
+  printf -- '---\nspec-version: v1\nfeature: ng\n---\n\n# Plan: ng\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task in a plan with no git repo at all\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RNG/gspec/tasks/ng.md"
+out="$("$ADAPTER" task-status 'ng#T99' "$RNG")"; rc=$?
+check 'no git repo at all -> unknown (history unavailable), not gone' "$(printf 'ng#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone'                          "$(printf 'ng#T99\tgone')" "$out"
+check 'and the reason says history is unavailable, not that the task never existed' 'unavailable' "$out"
+refute 'and must not claim positive evidence it does not have'                       'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no git repo at all' || bad 'exit 0 with no git repo at all' "rc=$rc"
+
+# fail-soft: a real git repo, but the plan file itself was never committed --
+# same "cannot confirm" reason, not "never existed".
+RUT="$TMPROOT/taskstatus-untracked"; mkdir -p "$RUT/gspec/tasks"
+git -C "$RUT" init -q; git -C "$RUT" config user.email t@t; git -C "$RUT" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: ut\n---\n\n# Plan: ut\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task in an untracked plan file\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RUT/gspec/tasks/ut.md"
+out="$("$ADAPTER" task-status 'ut#T99' "$RUT")"; rc=$?
+check 'plan file untracked in a real git repo -> unknown (history unavailable), not gone' \
+  "$(printf 'ut#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone'                          "$(printf 'ut#T99\tgone')" "$out"
+check 'and the reason says history is unavailable' 'unavailable' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with an untracked plan file' || bad 'exit 0 with an untracked plan file' "rc=$rc"
+
+# --- Critical 1 (loop-measurement T2 reviewer finding): an empty or ---------
+# unparseable plan must read unknown for EVERY id, never gone -- absence of
+# ANY parseable task line in the whole file is not positive evidence that one
+# specific id was removed. Pre-fix, `_task_lookup` prints nothing for both "no
+# such id" and "no ids at all here", and both fell into the gone catch-all.
+: > "$R/gspec/tasks/empty.md"
+out="$("$ADAPTER" task-status 'empty#T1' "$R")"; rc=$?
+check 'plan file EXISTS but is EMPTY -> unknown, not gone' "$(printf 'empty#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone'                "$(printf 'empty#T1\tgone')" "$out"
+check 'and the reason names the real cause'                 'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an empty plan file' || bad 'exit 0 on an empty plan file' "rc=$rc"
+
+{
+  printf -- '---\nspec-version: v1\nfeature: noparse\n---\n\n# Plan: noparse\n\n'
+  printf -- 'This plan has content, but no line this adapter recognizes as a task.\n'
+} > "$R/gspec/tasks/noparse.md"
+out="$("$ADAPTER" task-status 'noparse#T1' "$R")"; rc=$?
+check 'plan EXISTS with content, NO parseable task lines -> unknown, not gone' "$(printf 'noparse#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone'                                    "$(printf 'noparse#T1\tgone')" "$out"
+check 'and the reason names the real cause'                                     'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a plan with no parseable task lines' || bad 'exit 0 on a plan with no parseable task lines' "rc=$rc"
+
+# --- Critical 2 (loop-measurement T2 reviewer finding): the documented ------
+# `phase` / `phase-t2` packet-id collision (see `_resolve_task_id`) must not
+# silently read `gone` -- the longest-slug-wins guess that is safe for
+# check-task (a wrong guess there is a loud rc=4 "no such task") is not safe
+# here, because task-status has a silent-success state check-task lacks.
+RC="$TMPROOT/collision"; mkdir -p "$RC/gspec/tasks"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase\n---\n\n# Plan: phase\n\n## Plan\n\n'
+  printf -- '- [ ] **T2-T1** **P0** live unchecked task, in the SHORTER-slug feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RC/gspec/tasks/phase.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** an unrelated task, in the colliding SIBLING feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RC/gspec/tasks/phase-t2.md"
+
+out="$("$ADAPTER" nodes phase "$RC" 2>/dev/null)"
+check 'nodes phase reproduces the collision: it emits the ambiguous packet id' 'phase-t2-t1' "$out"
+
+out="$("$ADAPTER" task-status 'phase-t2-t1' "$RC")"; rc=$?
+check 'an ambiguous packet-id resolution -> unknown, not gone' "$(printf 'phase-t2-t1\tunknown')" "$out"
+refute 'and must not silently claim the live task in the OTHER feature was abandoned' \
+  "$(printf 'phase-t2-t1\tgone')" "$out"
+check 'and the reason names the collision'  'ambiguous' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an ambiguous packet-id resolution' || bad 'exit 0 on an ambiguous packet-id resolution' "rc=$rc"
+
+# a mixed set: the exact FINISHED= line, comma-separated, no spaces. This
+# fixture carries all four states (finished, unchecked, unknown, gone) and is
+# the regression guard for `skills/run-loop/SKILL.md`, which feeds FINISHED=
+# VERBATIM to `runstate.sh findings --stale --finished` -- the line's format
+# and content for every already-supported state must stay byte-identical to
+# what it was before `gone` existed.
 out="$("$ADAPTER" task-status 'ts#T1,ts#T2,fix-login-bug' "$R")"; rc=$?
 check 'finished line'   "$(printf 'ts#T1\tfinished')" "$out"
 check 'unchecked line'  "$(printf 'ts#T2\tunchecked')" "$out"
@@ -1035,6 +1191,166 @@ check 'unknown line'    "$(printf 'fix-login-bug\tunknown')" "$out"
 check 'the FINISHED= trailer names only the finished id, comma-separated, no spaces' 'FINISHED=ts#T1' "$out"
 refute 'and never includes the unchecked or unknown ids'                             'FINISHED=ts#T1,ts#T2' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 on a mixed set, including unknown members' || bad 'exit 0 on a mixed set' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'ts#T1,ts#T2,fix-login-bug,ts#T99' "$R")"; rc=$?
+check 'same fixture plus a gone id: finished line unchanged'  "$(printf 'ts#T1\tfinished')" "$out"
+check 'unchecked line unchanged'                                "$(printf 'ts#T2\tunchecked')" "$out"
+check 'unknown line unchanged'                                  "$(printf 'fix-login-bug\tunknown')" "$out"
+check 'the new gone line'                                       "$(printf 'ts#T99\tgone')" "$out"
+# exact-match, not substring: `check` would pass this even if `gone` leaked
+# into the trailer (FINISHED=ts#T1 is a substring of FINISHED=ts#T1,ts#T99),
+# which is exactly what the refute below is for -- and pinning it against the
+# line as a whole, not a fixed member order, is what actually proves gone
+# never joins the list.
+finished_line="$(printf '%s\n' "$out" | grep '^FINISHED=')"
+[ "$finished_line" = 'FINISHED=ts#T1' ] \
+  && ok 'FINISHED= still names the finished id, and only it -- gone does not change it' \
+  || bad 'FINISHED= still names the finished id, and only it -- gone does not change it' "$finished_line"
+refute 'gone is excluded from FINISHED= same as unchecked and unknown' 'FINISHED=ts#T1,ts#T99' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a mixed set including a gone member' || bad 'exit 0 on a mixed set including gone' "rc=$rc"
+
+# --- loop-measurement T2 round 2: cases the first sweep missed -------------
+# (reviewer finding: forcing each of these to break produced ZERO or only
+# vacuous failures). Each fixture below is built so the assertion genuinely
+# depends on the thing it names, not on an incidental fixture property.
+
+# Case 1 (Important 2, #1): the parseable-line-count gate (Critical 1) must
+# win over a FOUND -- a plan that is EMPTY right now, but was COMMITTED with
+# real content earlier (so the history probe ALONE would say FOUND), must
+# still read unknown. Without the tcount==0 short-circuit, `_task_lookup` on
+# an empty file returns nothing (indistinguishable from "no such id"), falls
+# through to the history probe, and the probe genuinely finds the earlier
+# commit. This needs REAL git history behind an empty file -- an untracked
+# empty file (as the earlier Critical-1 cases use) reads UNAVAILABLE and
+# never reaches this gate at all.
+REH="$TMPROOT/taskstatus-emptyhist"; mkdir -p "$REH/gspec/tasks"
+git -C "$REH" init -q; git -C "$REH" config user.email t@t; git -C "$REH" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: em\n---\n\n# Plan: em\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task that will be truncated away with the whole file\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$REH/gspec/tasks/em.md"
+git -C "$REH" add -A; git -C "$REH" commit -q -m 'em: T1 present'
+: > "$REH/gspec/tasks/em.md"
+git -C "$REH" add -A; git -C "$REH" commit -q -m 'em: truncate the whole plan to empty'
+out="$("$ADAPTER" task-status 'em#T1' "$REH")"; rc=$?
+check 'a plan EMPTY now but with real committed history for the id -> unknown, not gone (parseable-line count wins over history)' \
+  "$(printf 'em#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone even though the history probe alone would say FOUND' \
+  "$(printf 'em#T1\tgone')" "$out"
+check 'and the reason names the real cause (no parseable lines), not history' 'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an empty-with-history plan' || bad 'exit 0 on an empty-with-history plan' "rc=$rc"
+
+# Case 2 (Important 2, #2): the ambiguity gate (Critical 2) must sit AHEAD of
+# the history probe -- an ambiguous packet id whose longest-slug guess
+# genuinely has history evidence for that id (a real task there once, later
+# removed) must still read unknown, not gone, because the guess itself is
+# unconfirmed. Both plan files stay present on disk so the collision itself
+# still fires; only the guessed slug's plan needs the history.
+RCH="$TMPROOT/collision-history"; mkdir -p "$RCH/gspec/tasks"
+git -C "$RCH" init -q; git -C "$RCH" config user.email t@t; git -C "$RCH" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: phase\n---\n\n# Plan: phase\n\n## Plan\n\n'
+  printf -- '- [ ] **T9** **P0** an unrelated live task, in the SHORTER-slug feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** live for now, in the LONGER-slug feature (the longest-slug guess)\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase-t2.md"
+git -C "$RCH" add -A; git -C "$RCH" commit -q -m 'initial: T1 live in phase-t2'
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** replaces T1 after re-decomposition\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase-t2.md"
+git -C "$RCH" add -A; git -C "$RCH" commit -q -m 'phase-t2: re-decompose away T1'
+out="$("$ADAPTER" task-status 'phase-t2-t1' "$RCH")"; rc=$?
+check 'an ambiguous id whose longest-slug guess genuinely has history evidence -> unknown, not gone' \
+  "$(printf 'phase-t2-t1\tunknown')" "$out"
+refute "the ambiguity gate must block gone even though the history probe alone would say FOUND for the guessed slug" \
+  "$(printf 'phase-t2-t1\tgone')" "$out"
+check 'and the reason still names the collision' 'ambiguous' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an ambiguous id with genuine history for the guessed slug' \
+  || bad 'exit 0 on an ambiguous id with genuine history for the guessed slug' "rc=$rc"
+
+# Case 3 (Important 2, #3): the shallow-clone demotion must be load-bearing
+# -- a FULL clone of $R already reads gone for ts#T99 (asserted above); a
+# `--depth 1` SHALLOW clone of the exact same data, where the commit that
+# added T99 has fallen outside the shallow boundary, must read unknown.
+RSH="$TMPROOT/taskstatus-shallow"
+git clone -q --depth 1 "file://$R" "$RSH" 2>/dev/null
+out="$("$ADAPTER" task-status 'ts#T99' "$RSH")"; rc=$?
+check 'the same gone-worthy id, from a shallow clone of the same repo -> unknown (shallow demotion is load-bearing)' \
+  "$(printf 'ts#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone from a shallow clone' "$(printf 'ts#T99\tgone')" "$out"
+check 'and the reason says history is unavailable' 'unavailable' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a shallow clone' || bad 'exit 0 on a shallow clone' "rc=$rc"
+
+# Case 4 (Important 2, #4): a REAL git mv across the 3.x relocation (2.x
+# gspec/tasks/<slug>.md -> 3.x gspec/features/<slug>/tasks.md), with the
+# target id removed BEFORE the move -- so only the old, pre-relocation
+# path's history carries the evidence -- proves multi-path probing still
+# finds it now that `--follow` is gone.
+RMV="$TMPROOT/taskstatus-relocated"; mkdir -p "$RMV/gspec/tasks"
+git -C "$RMV" init -q; git -C "$RMV" config user.email t@t; git -C "$RMV" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: mv\n---\n\n# Plan: mv\n\n## Plan\n\n'
+  printf -- '- [ ] **T77** **P0** a task removed before the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T1** **P0** a task that survives the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RMV/gspec/tasks/mv.md"
+git -C "$RMV" add -A; git -C "$RMV" commit -q -m 'mv: T77 present under the 2.x layout'
+{
+  printf -- '---\nspec-version: v1\nfeature: mv\n---\n\n# Plan: mv\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task that survives the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RMV/gspec/tasks/mv.md"
+git -C "$RMV" add -A; git -C "$RMV" commit -q -m 'mv: re-decompose away T77, still under the 2.x layout'
+mkdir -p "$RMV/gspec/features/mv"
+git -C "$RMV" mv gspec/tasks/mv.md gspec/features/mv/tasks.md
+git -C "$RMV" commit -q -m 'mv: relocate to the 3.x feature-folder layout (pure rename, no content change)'
+out="$("$ADAPTER" task-status 'mv#T77' "$RMV")"; rc=$?
+check 'an id removed BEFORE a real 3.x relocation -> gone, found via the pre-relocation path (multi-path probing, no --follow)' \
+  "$(printf 'mv#T77\tgone')" "$out"
+check 'and names the CURRENT (3.x) plan path' 'gspec/features/mv/tasks.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 across a genuine 3.x relocation' || bad 'exit 0 across a genuine 3.x relocation' "rc=$rc"
+
+# The Critical's own regression guard: the cross-feature bait. One commit
+# deletes ONE feature's plan and adds a DIFFERENT feature's plan with heavily
+# overlapping boilerplate (gspec plan files are boilerplate-heavy by
+# construction), which is exactly the shape `git log --follow`'s similarity
+# heuristic mis-paired as one file's continuous history. `beta#T99` must read
+# unknown: T99 was only ever alpha's task, and alpha's path is never one of
+# beta's candidate paths under any layout.
+RBAIT="$TMPROOT/taskstatus-bait"; mkdir -p "$RBAIT/gspec/tasks"
+git -C "$RBAIT" init -q; git -C "$RBAIT" config user.email t@t; git -C "$RBAIT" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: alpha\n---\n\n# Plan: alpha\n\n## Plan\n\n'
+  printf -- '- [ ] **T99** **P0** alpha'"'"'s own task, later abandoned when alpha itself was retired\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T1** **P0** filler task A\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** filler task B\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T3** **P0** filler task C\n  - deps: \342\200\224\n'
+} > "$RBAIT/gspec/tasks/alpha.md"
+git -C "$RBAIT" add -A; git -C "$RBAIT" commit -q -m 'alpha: T99 present'
+rm "$RBAIT/gspec/tasks/alpha.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: beta\n---\n\n# Plan: beta\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** filler task A\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** filler task B\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T3** **P0** filler task C\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T4** **P0** filler task D, new to beta\n  - deps: \342\200\224\n'
+} > "$RBAIT/gspec/tasks/beta.md"
+git -C "$RBAIT" add -A; git -C "$RBAIT" commit -q -m 'retire alpha, introduce beta (unrelated feature, similar boilerplate)'
+out="$("$ADAPTER" task-status 'beta#T99' "$RBAIT")"; rc=$?
+check 'the cross-feature bait: an id that only ever belonged to the RETIRED feature, asked about under the NEW one -> unknown' \
+  "$(printf 'beta#T99\tunknown')" "$out"
+refute "and must not read gone from the OTHER feature's history via similarity-based rename pairing" \
+  "$(printf 'beta#T99\tgone')" "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on the cross-feature bait' || bad 'exit 0 on the cross-feature bait' "rc=$rc"
 
 # task-status is READ-ONLY: never touches gspec/ (check-task stays the one write)
 cp "$R/gspec/tasks/ts.md" "$TMPROOT/ts.before.md"

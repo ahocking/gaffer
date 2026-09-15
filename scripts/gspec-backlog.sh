@@ -97,16 +97,59 @@
 #                            EXISTING plan is genuine drift and exits 4.
 #   task-status <id[,id...]> [root]   READ-ONLY (run-state-cleanup T2): for each
 #                            packet id, one `<id>\t<state>\t<task-ref-or-reason>`
-#                            line, state one of finished|unchecked|unknown, then
-#                            one trailing `FINISHED=<comma-sep ids>` line fed
+#                            line, state one of finished|unchecked|gone|unknown,
+#                            then one trailing `FINISHED=<comma-sep ids>` line fed
 #                            VERBATIM to `runstate.sh findings --stale --finished`.
+#                            `gone` (loop-measurement T2) is DISTINCT from
+#                            `unknown`: it means the id's feature plan exists,
+#                            PARSES (at least one task line this adapter
+#                            recognizes -- see `_plan_task_line_count`, counted
+#                            with the SAME regex `_task_lookup` matches against,
+#                            never a second pattern), unambiguously resolved to
+#                            that plan, no longer names that task, AND the id
+#                            can be confirmed via `_task_history_probe` to have
+#                            been a task line in that plan's git history at
+#                            some earlier commit -- positive evidence the task
+#                            was re-decomposed away, which `sweep-open --gone`
+#                            (T3) records as `abandoned`. That history check is
+#                            the last gate, not a replacement for the ones
+#                            before it: a plan-id collision alone is not
+#                            enough, because a NON-gspec packet id can happen
+#                            to prefix-match a live feature's slug
+#                            (`ts-fix-login-bug` against feature `ts`) without
+#                            ever having been a task there -- without positive
+#                            evidence that id reads `unknown`, never `gone`.
+#                            `unknown` stays every case with no such positive
+#                            evidence: no gspec/, unresolvable id, no plan file
+#                            at all, a plan file with ZERO parseable task lines
+#                            (empty, truncated, or a format this adapter cannot
+#                            read -- an unreadable plan must never be reported
+#                            as "yes, that task is gone"), an AMBIGUOUS
+#                            packet-id resolution (the `<feature>-<id>`
+#                            collision documented at `_resolve_task_id` --
+#                            longest-slug-wins is safe for check-task, which
+#                            only ever gets a loud not-found, but the same
+#                            guess reported here as `gone` would silently claim
+#                            a live task in the OTHER matching feature was
+#                            abandoned, so an ambiguous resolution can only
+#                            ever read `unknown` here, never `gone`), the id
+#                            never appearing in the plan's git history (it was
+#                            never a gspec task here), or that history being
+#                            UNAVAILABLE (not a git repo, git missing, the plan
+#                            file untracked, or a shallow clone whose "not
+#                            found" could be truncated rather than genuine) --
+#                            `sweep-open` records `unknown` as `interrupted`,
+#                            the safe direction when absence of evidence is not
+#                            evidence of absence. `gone` is excluded from
+#                            `FINISHED=`, same as `unchecked` and `unknown`.
 #                            Accepts the same two id forms as check-task and
 #                            resolves them via the SAME shared function
 #                            (`_resolve_task_id`) so the two can never drift.
 #                            Every "gspec is optional" case reads `unknown`,
 #                            mirroring check-task's `CHECKED=none`; exit 0 for all
 #                            of them, non-zero only for a genuine usage error (no
-#                            ids, or an unreadable root).
+#                            ids, an unreadable root, or the REFUSED path shared
+#                            with check-task).
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -207,6 +250,23 @@ cmd_pin() {
 }
 
 # --- shared helpers ----------------------------------------------------------
+
+# The one task-line shape every parser in this file must agree on
+# (loop-measurement T2 Important 3): a checkbox followed by a bold-opened id,
+# with the id ending at the closing bold (canonical/shape B) or running on
+# into a space (shape A, where the bold spans id+description together). Split
+# into building blocks so a match against a SPECIFIC id (the history probe)
+# and a match against ANY id (lookup/count) derive from the same source
+# instead of five copies that can silently drift apart -- which is exactly
+# what let `_plan_task_line_count` and `_task_lookup` disagree before this.
+# `_task_lookup`/`_plan_task_line_count`/`_task_history_probe` derive from
+# these; `_nodes_for` (:714) and `cmd_plans` (:641) still carry their own
+# copies of the full pattern -- migrating them is welcome but not required
+# here (they agree with `_TASK_LINE_RE` today).
+_TASK_LINE_PREFIX='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*'
+_TASK_ID_CLASS='[A-Za-z][A-Za-z0-9_-]*[0-9]+'
+_TASK_LINE_SUFFIX='(\*\*|[[:space:]])'
+_TASK_LINE_RE="${_TASK_LINE_PREFIX}${_TASK_ID_CLASS}${_TASK_LINE_SUFFIX}"
 
 # Print a file's YAML frontmatter body (between the first `---` and the next),
 # or nothing when the file has none.
@@ -788,16 +848,25 @@ cmd_files_status() {
 #                               command substitution, where `exit` would only
 #                               kill the subshell capturing it, not the script.
 #                               Every caller must `die` on a REFUSED line itself.
-#   RESOLVED\t<slug>\t<id>      resolved to a real plan file. Whether <id>
+#   RESOLVED\t<slug>\t<id>\t<ambiguous>
+#                               resolved to a real plan file. Whether <id>
 #                               actually EXISTS in that plan -- and its checked
 #                               state -- is NOT determined here: check-task and
 #                               task-status each need a different answer to
 #                               that (flip-or-already-or-notfound vs.
 #                               finished/unchecked/unknown), so it stays out of
-#                               the shared part. See `_task_lookup`.
+#                               the shared part. See `_task_lookup`. <ambiguous>
+#                               is `1` when the packet-id form matched MORE THAN
+#                               ONE candidate slug (the `phase` / `phase-t2`
+#                               collision below) and `0` otherwise -- ADDITIVE,
+#                               field 4 on a line only ever read via `cut -f2`/
+#                               `-f3` by every existing caller, so this cannot
+#                               disturb check-task. Only task-status consumes
+#                               it, and only to keep a collision from reading as
+#                               `gone` (loop-measurement T2 Critical 2).
 _resolve_task_id() {
   local task="$1" root="$2"
-  local slug="" id=""
+  local slug="" id="" ambiguous=0
   case "$task" in
     *'#'*)
       slug="${task%%#*}"
@@ -847,7 +916,7 @@ _resolve_task_id() {
     # also means the resolved slug is always a real basename on disk, so --
     # unlike the canonical form above -- it is structurally incapable of
     # containing a path separator or '..'; no separate check needed here.
-    local best="" f cand
+    local best="" f cand matches=0
     while IFS=$'\t' read -r f cand; do
       [ -n "$cand" ] || continue
       case "$task" in
@@ -855,14 +924,20 @@ _resolve_task_id() {
           # Prefer the LONGEST matching slug, so a feature whose slug itself
           # ends in -t<digits> (e.g. phase-t2, task phase-t2-t1) still
           # resolves to the right plan and id instead of the shorter decoy.
-          # This is also why the ambiguity is safe: `nodes` emits
-          # <feature>-<tolower(id)>, so feature `phase` task `t2-t1` and
-          # feature `phase-t2` task `T1` both produce the node id
+          # This is also why the ambiguity is safe for check-task: `nodes`
+          # emits <feature>-<tolower(id)>, so feature `phase` task `t2-t1`
+          # and feature `phase-t2` task `T1` both produce the node id
           # `phase-t2-t1` -- a pre-existing namespace collision. Longest-wins
           # always picks the longer slug here; when the live task is
           # actually in the shorter-slug plan, resolution against that
-          # slug's id then fails and the result is a loud rc=4 "no such
-          # task", never a wrong flip.
+          # slug's id then fails and check-task's result is a loud rc=4 "no
+          # such task", never a wrong flip. That argument does NOT transfer
+          # to task-status, which has a silent success state (`gone`) that
+          # check-task lacks -- so every candidate slug that matches is
+          # counted, not just the longest, and the caller is told when more
+          # than one did (see `ambiguous` below / loop-measurement T2
+          # Critical 2).
+          matches=$((matches + 1))
           if [ "${#cand}" -gt "${#best}" ]; then best="$cand"; fi
           ;;
       esac
@@ -871,6 +946,7 @@ _resolve_task_id() {
       slug="$best"
       id="${task#"$best"-}"
     fi
+    [ "$matches" -gt 1 ] && ambiguous=1
   fi
 
   if [ -z "$slug" ] || [ -z "$id" ]; then
@@ -878,7 +954,7 @@ _resolve_task_id() {
     return 0
   fi
 
-  printf 'RESOLVED\t%s\t%s\n' "$slug" "$id"
+  printf 'RESOLVED\t%s\t%s\t%s\n' "$slug" "$id" "$ambiguous"
 }
 
 # _resolve_plan_path <slug> <root> — the plan-file location every caller shares,
@@ -911,10 +987,10 @@ _resolve_plan_path() {
 _task_lookup() {
   local plan="$1" want="$2"
   awk -v want="$want" '
-    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
+    /'"$_TASK_LINE_RE"'/ {
       desc = $0
-      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*/, "", desc)
-      match(desc, /^[A-Za-z][A-Za-z0-9_-]*[0-9]+/)
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
       lid = substr(desc, 1, RLENGTH)
       if (tolower(lid) == want) {
         checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
@@ -926,6 +1002,115 @@ _task_lookup() {
       if (!found && checked_id != "") print "already " checked_id
     }
   ' "$plan"
+}
+
+# _plan_task_line_count <plan> — how many task lines this adapter can actually
+# PARSE in a plan file (loop-measurement T2 Critical 1). Uses `_TASK_LINE_RE`,
+# the exact same pattern `_task_lookup` matches an id against -- NOT a second
+# copy, per this repo's standing rule that a count from a different regex
+# lies about precisely what it is asked to certify (see `cmd_plans`'s own
+# counter, which duplicates this same pattern for the same reason). Zero means
+# the plan is empty, truncated, mid-migration, or in a task-line shape this
+# adapter has never learned -- every one of those is "we cannot tell", never
+# positive evidence that a named task is gone.
+_plan_task_line_count() {
+  local plan="$1"
+  awk '
+    /'"$_TASK_LINE_RE"'/ { c++ }
+    END { print c+0 }
+  ' "$plan"
+}
+
+# _task_history_probe <relplan> <root> <idlc> <slug> — has a task line for
+# <idlc> EVER existed anywhere in <slug>'s plan history, in ANY gspec layout
+# (loop-measurement T2 "gone must require positive evidence")? Reuses
+# `_TASK_LINE_PREFIX`/`_TASK_LINE_SUFFIX` -- the exact structural shape
+# `_task_lookup`/`_plan_task_line_count` match, checkbox + bold id -- with the
+# generic id class replaced by this call's literal, case-folded id, so a
+# historical PROSE mention of the id text (a note, an acceptance criterion,
+# "see also T77") can never read as positive evidence; only that exact shape,
+# searched with `git log -i -G`, does. ONE `git log`, `--max-count=1` so the
+# walk stops at the first hit rather than scanning full history -- this runs
+# once per open packet id NOT found in its current plan, every sweep: 4 git
+# invocations (is-inside-work-tree, ls-files, is-shallow-repository, log) for
+# a genuinely missing id, and 0 for an id `_task_lookup` already resolved (the
+# probe is never reached), so the cost is bounded to the case that actually
+# needs it.
+#
+# Probes EVERY layout path for the slug in ONE `git log` invocation (3.x/2.x/
+# pre-2.0 -- the same three paths `_resolve_plan_path` tries, newest first)
+# rather than `git log --follow`, which was measurably WRONG here: `--follow`
+# is similarity-based rename detection, and gspec plan files are boilerplate-
+# heavy by construction (identical frontmatter, `# Plan:`, `## Plan`,
+# `- [ ] **Tn** **P0** …`, `- deps: —`), so a commit that deletes ONE
+# feature's plan and adds a DIFFERENT feature's plan gets paired as a rename
+# well under 100% similarity -- reporting positive history for an id that was
+# never a task in the plan actually being asked about. Multi-path probing has
+# no such heuristic: every candidate path is only ever this SAME slug's plan
+# under a different gspec layout, so a genuine 3.x relocation still resolves
+# (its own commit touched that exact path) while a same-commit cross-feature
+# swap does not (the id's pattern never touched the OTHER feature's path). Do
+# not "fix" this with `-M100%` instead of dropping `--follow` -- this repo's
+# own relocations are recorded R097-R099, not R100 (links were repaired
+# during the move), so a 100% threshold would stop following the very rename
+# it exists to handle. Prints exactly one of:
+#   FOUND         a commit's diff added or removed a task line for this id,
+#                 under any layout path for this slug
+#   NEVER         history for every layout path is readable and holds no such
+#                 line
+#   UNAVAILABLE   not a git repo, git missing, the CURRENTLY RESOLVED plan
+#                 file is untracked, or the repo is shallow (a "not found"
+#                 there could be truncated rather than genuine) -- every one
+#                 of these is "we cannot tell", never positive evidence
+#                 either way.
+# Every pathspec passed to git here is ROOT-RELATIVE (`gspec/...`, never
+# `$root/gspec/...`) and matched under `git -C "$root"`: `-C` already moves
+# git's effective cwd to `$root`, so a pathspec that re-prepends `$root` is
+# resolved a SECOND time against that same directory whenever `$root` itself
+# is relative (loop-measurement T2 Minor) -- `task-status ts#T99 ./sub`
+# silently read `unknown` instead of `gone` because the old `$plan` argument
+# carried the `$root/` prefix into the pathspec. An absolute `$root` masked
+# this, which is how it shipped.
+# Never lets a non-zero git exit escape under `set -euo pipefail` -- every
+# invocation is guarded with `|| true` or an explicit early return.
+_task_history_probe() {
+  local relplan="$1" root="$2" idlc="$3" slug="$4"
+  command -v git >/dev/null 2>&1 || { printf 'UNAVAILABLE\n'; return 0; }
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { printf 'UNAVAILABLE\n'; return 0; }
+
+  # Untracked (never committed) reads UNAVAILABLE, not NEVER: an empty `git
+  # log` result for a file with no history at all is not evidence the id was
+  # never there, it is evidence there is no history to check. Tested against
+  # the CURRENTLY RESOLVED plan path (the one this call already knows is
+  # real), not the other layouts' candidate paths below, which may never have
+  # existed for this slug at all.
+  git -C "$root" ls-files --error-unmatch -- "$relplan" >/dev/null 2>&1 \
+    || { printf 'UNAVAILABLE\n'; return 0; }
+
+  local shallow
+  shallow="$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null || true)"
+
+  # `-G` takes an EXTENDED regex, not the BRE the old class assumed (loop-
+  # measurement T2 Important 1): an unescaped `( ) | + ? { }` changes what the
+  # pattern MATCHES rather than erroring, which is the dangerous direction --
+  # `pr#T5|T77` and `pr#T(5)` both misread a still-live line as `gone` before
+  # this class covered them.
+  local esc pattern hit
+  esc="$(printf '%s' "$idlc" | sed 's/[][\.*^$/(){}|+?]/\\&/g')"
+  pattern="${_TASK_LINE_PREFIX}${esc}${_TASK_LINE_SUFFIX}"
+  hit="$(git -C "$root" log -i -G"$pattern" --max-count=1 --format=%H -- \
+    "gspec/features/$slug/tasks.md" \
+    "gspec/tasks/$slug.md" \
+    "gspec/features/$slug.plan.md" 2>/dev/null || true)"
+
+  if [ -n "$hit" ]; then
+    printf 'FOUND\n'
+  elif [ "$shallow" = "true" ]; then
+    printf 'UNAVAILABLE\n'
+  else
+    printf 'NEVER\n'
+  fi
 }
 
 cmd_check_task() {
@@ -1076,9 +1261,10 @@ cmd_task_status() {
         die "task-status: ${resolved#REFUSED }"
         ;;
       *)
-        local slug tid plan="" relplan="" pp
+        local slug tid ambiguous plan="" relplan="" pp
         slug="$(printf '%s' "$resolved" | cut -f2)"
         tid="$(printf '%s' "$resolved" | cut -f3)"
+        ambiguous="$(printf '%s' "$resolved" | cut -f4)"
         pp="$(_resolve_plan_path "$slug" "$root")"
         if [ -n "$pp" ]; then
           plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
@@ -1086,14 +1272,66 @@ cmd_task_status() {
         if [ -z "$plan" ]; then
           state="unknown"; reason="no plan file for feature $slug in any gspec layout"
         else
-          local idlc lookup
+          local idlc lookup tcount
           idlc="$(printf '%s' "$tid" | tr '[:upper:]' '[:lower:]')"
-          lookup="$(_task_lookup "$plan" "$idlc")"
-          case "$lookup" in
-            flip\ *)    state="unchecked"; reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
-            already\ *) state="finished";  reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
-            *)          state="unknown";   reason="no task $tid in $relplan" ;;
-          esac
+          # Critical 1: a plan file that resolved but has NO task lines this
+          # adapter can parse (empty, truncated, mid-migration, or an
+          # unrecognized task-line shape) must read `unknown`, not `gone` --
+          # `_task_lookup` printing nothing means either "no such id" or "no
+          # ids at all here", and only the first is positive evidence.
+          tcount="$(_plan_task_line_count "$plan")"
+          if [ "$tcount" -eq 0 ]; then
+            state="unknown"
+            reason="plan file $relplan has no task lines this adapter can parse"
+          else
+            lookup="$(_task_lookup "$plan" "$idlc")"
+            case "$lookup" in
+              flip\ *)    state="unchecked"; reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+              already\ *) state="finished";  reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+              *)
+                # Critical 2: the packet-id form's longest-slug-wins guess is
+                # safe for check-task (a wrong guess is a loud rc=4), but NOT
+                # here -- reporting `gone` on an ambiguous resolution would
+                # silently claim a task that is actually live in the OTHER
+                # colliding feature was abandoned. An ambiguous resolution
+                # can only ever read `unknown`.
+                if [ "$ambiguous" = "1" ]; then
+                  state="unknown"
+                  reason="packet id $id is ambiguous -- its feature slug collides with another feature's ($slug matched among others); cannot confirm the task no longer exists"
+                else
+                  # The plan file itself resolved and parsed (we got this
+                  # far), and no longer names this id -- but that absence is
+                  # only positive evidence of re-decomposition if the id
+                  # actually WAS a task here at some point (loop-measurement
+                  # T2 "gone requires positive evidence" gate). Without this
+                  # check, a non-gspec packet id that merely happens to
+                  # prefix-match a live feature's slug (`ts-fix-login-bug`
+                  # against feature `ts`) would misread as `gone` and
+                  # `sweep-open --gone` would record it `abandoned` -- the
+                  # PLAN preamble (loop-measurement) is explicit that a
+                  # non-gspec id with no plan is `unknown`/`interrupted`, the
+                  # safe direction; this is that same rule applied to a
+                  # prefix-collision id whose feature DOES have a plan.
+                  local hist
+                  hist="$(_task_history_probe "$relplan" "$root" "$idlc" "$slug")"
+                  case "$hist" in
+                    FOUND)
+                      state="gone"
+                      reason="no task $tid in $relplan (confirmed removed: $tid appears earlier in $relplan's git history)"
+                      ;;
+                    NEVER)
+                      state="unknown"
+                      reason="no task $tid in $relplan; $tid never appears in $relplan's git history -- it was never a gspec task here"
+                      ;;
+                    *)
+                      state="unknown"
+                      reason="no task $tid in $relplan; $relplan's git history is unavailable, so this cannot be confirmed either way"
+                      ;;
+                  esac
+                fi
+                ;;
+            esac
+          fi
         fi
         ;;
     esac

@@ -96,35 +96,3 @@ escalate_to_human_on: []
 # `main`/`master`. main/master merges, releases, and the danger floor ALWAYS stay
 # human, whatever this says. Recommended default for develop-flow repos:
 integration_branch: develop
-
-# Auto-pause the loop just before a Claude Code ROLLING USAGE LIMIT is hit — the
-# 5-hour AND the 7-day (weekly) window (ADR 0018). The plugin ships a status-line
-# SENSOR (scripts/statusline-pause-sensor.sh) that reads both windows' usage
-# percentages (the only place they are exposed) and, when EITHER crosses its
-# threshold, writes the SAME cooperative-pause sentinel a human/frontend would —
-# so a long unattended run drains to a green checkpoint instead of a lane dying
-# mid-packet when the server cuts it off. Everything after the write is ADR 0017.
-#
-# Requires BOTH a Pro/Max account (no rate_limits payload under API-key auth) AND a
-# `statusLine` entry in your user settings.json pointing at the installed sensor —
-# a plugin cannot set that for you. Turn it on (which wires settings.json for you)
-# with `/gaffer:rate-limit-pause on`; this block is the per-repo gate the
-# sensor reads at runtime, so `enabled: false` (or the `off` sub-command) keeps the
-# status line rendering percentages while NOT arming the pause for this repo.
-# Resolution (each knob): env -> this block -> default.  Best-effort early-warning,
-# never a hard stop — both cutoffs are enforced server-side.
-# rate_limit_pause:
-#   enabled: true               # env ORCH_RATE_PAUSE=off overrides; default true
-#   five_hour_threshold_pct: 90 # env ORCH_RATE_PAUSE_PCT;    arm at/above this 5h %
-#   seven_day_threshold_pct: 85 # env ORCH_RATE_PAUSE_7D_PCT; arm at/above this 7d %.
-#                               # Lower than the 5h default ON PURPOSE: the weekly
-#                               # ceiling is slower-moving and far costlier to
-#                               # exhaust (days stranded, not a couple of hours).
-
-# Max concurrent packet lanes for PARALLEL mode (`/gaffer:run-loop --parallel`,
-# ADR 0016). The scheduler runs at most this many file-disjoint packets at once, each
-# in its own git worktree, capped further by the harness's own subagent limit and your
-# account limits. Default 5 if unset. Raise it on a big, wide backlog with plenty of
-# independent features; lower it to be gentle on machine/account resources. Sequential
-# mode (the default) ignores this.
-max_parallel_packets: 5

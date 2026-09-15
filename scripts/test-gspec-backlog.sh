@@ -424,10 +424,13 @@ t2line="$(printf '%s\n' "$out" | awk -F'\t' '$1=="api-t2"')"
 # not "no token" but "no EDGE": nothing produces api#T1 because a checked task is
 # not a node, so done work cannot block T2. Asserted on the graph, not the TSV.
 check 'consumes token is still emitted for a checked dep' 'api#T1' "$t2line"
+# packet-graph.sh (retired) used to derive "no edge" from this by finding no
+# producer for the consumed token; asserted directly on the TSV now — a
+# checked task never becomes a node, so nothing can produce api#T1.
 "$ADAPTER" nodes api "$R" > "$TMPROOT/checkeddep.tsv"
-gdep="$("$HERE/packet-graph.sh" build "$TMPROOT/checkeddep.tsv" 2>&1)"
-t2dep="$(printf '%s\n' "$gdep" | awk '/id: api-t2$/{f=1} f&&/depends_on:/{print;exit}')"
-refute 'a dep on a checked task produces NO edge' 'api-t1' "$t2dep"
+prod1="$(awk -F'\t' '$5=="api#T1"' "$TMPROOT/checkeddep.tsv")"
+[ -z "$prod1" ] && ok 'a dep on a checked task has no producer row (no edge for a scheduler to find)' \
+  || bad 'a dep on a checked task has no producer row (no edge for a scheduler to find)' "$prod1"
 
 printf '\n== nodes: optional files: (forward-compat with U1) ==\n'
 mk_plan "$R" api <<'EOF'
@@ -498,7 +501,7 @@ out="$("$ADAPTER" nodes svc "$R" 2>/dev/null | awk -F'\t' '$1=="svc-t1"{print $3
 [ "$out" = 'authoritative/from-plan.sql' ] && ok 'plan-authored files: beats the sidecar' \
   || bad 'plan files: precedence' "got=$out"
 
-printf '\n== sidecar: end-to-end, scope actually unlocks a wave ==\n'
+printf '\n== sidecar: end-to-end, scope resolves as expected (was: unlocks a wave in packet-graph.sh, retired in retire-unused-loop-modes T2 — asserted directly on file scope now) ==\n'
 R="$TMPROOT/sidecar-e2e"; mkdir -p "$R/.agents"
 mk_prd "$R" par 0 1
 mk_plan "$R" par <<'EOF'
@@ -507,11 +510,11 @@ mk_plan "$R" par <<'EOF'
 - [ ] **T2** **P0** build the right side
   - deps: —
 EOF
-"$ADAPTER" nodes par "$R" > "$TMPROOT/par-noscope.tsv" 2>/dev/null
-g="$("$HERE/packet-graph.sh" build "$TMPROOT/par-noscope.tsv")"
-printf '%s\n' "$g" > "$TMPROOT/par-noscope.yaml"
-v="$("$HERE/packet-graph.sh" validate "$TMPROOT/par-noscope.yaml" 2>&1)"
-check 'with no scope both packets are conservatively serialized' 'conservatively_serialized: 2' "$v"
+out="$("$ADAPTER" nodes par "$R" 2>/dev/null)"
+t1f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t1"{print $3}')"
+t2f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t2"{print $3}')"
+[ -z "$t1f" ] && [ -z "$t2f" ] && ok 'with no files: line and no sidecar entry, both packets carry empty scope' \
+  || bad 'with no files: line and no sidecar entry, both packets carry empty scope' "t1=$t1f t2=$t2f"
 cat > "$R/.agents/task-files.yaml" <<'EOF'
 schema: 1
 tasks:
@@ -522,13 +525,11 @@ tasks:
     files: [src/right/**]
     fingerprint: build the right side
 EOF
-"$ADAPTER" nodes par "$R" > "$TMPROOT/par-scoped.tsv" 2>/dev/null
-printf '%s\n' "$("$HERE/packet-graph.sh" build "$TMPROOT/par-scoped.tsv")" > "$TMPROOT/par-scoped.yaml"
-v="$("$HERE/packet-graph.sh" validate "$TMPROOT/par-scoped.yaml" 2>&1)"
-check 'scoping removes the conservative serialization' 'conservatively_serialized: 0' "$v"
-rdy="$("$HERE/packet-graph.sh" ready "$TMPROOT/par-scoped.yaml" --max 5 2>&1)"
-[ "$(printf '%s\n' "$rdy" | grep -c .)" = 2 ] && ok 'both disjoint packets become concurrently dispatchable' \
-  || bad 'disjoint packets dispatchable' "ready=$rdy"
+out="$("$ADAPTER" nodes par "$R" 2>/dev/null)"
+t1f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t1"{print $3}')"
+t2f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t2"{print $3}')"
+[ "$t1f" = 'src/left/**' ] && [ "$t2f" = 'src/right/**' ] && ok 'sidecar scoping resolves each task to its own disjoint file scope' \
+  || bad 'sidecar scoping resolves each task to its own disjoint file scope' "t1=$t1f t2=$t2f"
 
 printf '\n== files-status: the sidecar audit ==\n'
 R="$TMPROOT/fstat"; mkdir -p "$R/.agents"
@@ -592,7 +593,12 @@ refute 'completed feature is skipped' 'finished-t1' "$out"
 refute 'blocked feature is skipped'   'waiting-t1' "$out"
 
 # =============================================================================
-printf '\n== nodes feed packet-graph.sh end to end ==\n'
+# retire-unused-loop-modes T2 deleted packet-graph.sh, the former end-to-end
+# consumer of `nodes` output; the loop now reads the TSV directly. That T2
+# packet's own requirement is that `nodes` and file-scope resolution are
+# UNCHANGED, so this case asserts the exact TSV bytes rather than piping
+# through a scheduler that no longer exists.
+printf '\n== nodes: TSV is byte-identical (id/feature/files/consumes/produces/fdeps) ==\n'
 R="$TMPROOT/e2e"; mkdir -p "$R"
 mk_prd "$R" svc 0 1
 mk_plan "$R" svc <<'EOF'
@@ -606,19 +612,16 @@ mk_plan "$R" svc <<'EOF'
   - deps: T1
   - files: [docs/api.md]
 EOF
-nodes="$TMPROOT/e2e-nodes.tsv"
-"$ADAPTER" nodes svc "$R" > "$nodes"
-if graph="$("$HERE/packet-graph.sh" build "$nodes" 2>&1)"; then
-  ok 'packet-graph.sh accepts adapter output'
-  check 'T1 lands in the first wave' 'svc-t1' "$graph"
-  printf '%s\n' "$graph" > "$TMPROOT/e2e-graph.yaml"   # validate needs a real file
-  v="$("$HERE/packet-graph.sh" validate "$TMPROOT/e2e-graph.yaml" 2>&1 || true)"
-  check 'the emitted graph validates' 'VALIDATE=ok' "$v"
-else
-  bad 'packet-graph.sh accepts adapter output' "$graph"
-fi
+out="$("$ADAPTER" nodes svc "$R")"
+expected="$(printf 'svc-t1\tsvc\tdb/schema.sql\t\tsvc#T1\t\nsvc-t2\tsvc\tsrc/api.ts\tsvc#T1\tsvc#T2\t\nsvc-t3\tsvc\tdocs/api.md\tsvc#T1\tsvc#T3\t')"
+[ "$out" = "$expected" ] && ok 'nodes TSV bytes unchanged (file scope carried through as before)' \
+  || bad 'nodes TSV bytes unchanged (file scope carried through as before)' "got:
+$out
+want:
+$expected"
 
-# A dangling consumes (dep on a checked task) must not crash the graph.
+# A dangling consumes (dep on a checked task) must not crash the adapter, and
+# the raw dep text still lands in the consumes column with no producer for it.
 R="$TMPROOT/dangle"; mkdir -p "$R"
 mk_prd "$R" d 0 1
 mk_plan "$R" d <<'EOF'
@@ -626,12 +629,13 @@ mk_plan "$R" d <<'EOF'
 - [ ] **T2** **P0** depends on done work
   - deps: T1
 EOF
-"$ADAPTER" nodes d "$R" > "$TMPROOT/dangle.tsv"
-if g2="$("$HERE/packet-graph.sh" build "$TMPROOT/dangle.tsv" 2>&1)"; then
-  ok 'dangling dep does not break graph build'
-else
-  bad 'dangling dep does not break graph build' "$g2"
-fi
+out2="$("$ADAPTER" nodes d "$R")"
+expected2="$(printf 'd-t2\td\t\td#T1\td#T2\t')"
+[ "$out2" = "$expected2" ] && ok 'dangling dep (checked producer) still emits a clean, unchanged TSV row' \
+  || bad 'dangling dep (checked producer) still emits a clean, unchanged TSV row' "got:
+$out2
+want:
+$expected2"
 
 # =============================================================================
 printf '\n== interlock: fail-soft outside the pinned contract (D5) ==\n'

@@ -78,8 +78,12 @@
 #                            goes through this adapter, and a layout census is a
 #                            gspec read like any other. Prints nothing when there
 #                            is no gspec project (D4).
-#   nodes <slug> [root]      emit packet-graph NODES TSV for one feature's UNCHECKED
-#                            tasks (feed to `packet-graph.sh build`).
+#   nodes <slug> [root]      emit a packet NODES TSV for one feature's UNCHECKED
+#                            tasks — one row per packet (id, feature, files,
+#                            consumes, produces, feature deps), read directly by
+#                            the loop for ordering and file scope. (Formerly also
+#                            fed to `packet-graph.sh build`, the parallel-mode
+#                            scheduler retired in retire-unused-loop-modes T2.)
 #   nodes-all [root]         the same for every incomplete, unblocked feature.
 #   interlock [root]         INTERLOCK=clear|busy|unknown — is a `gspec build`
 #                            driving this repo right now? (ADR 0020 D5.)
@@ -157,8 +161,9 @@
 #   1. a plan-authored `files:` sub-bullet (the upstream U1-up shape) — always wins;
 #   2. a `.agents/task-files.yaml` entry whose FINGERPRINT still matches the task's
 #      current text;
-#   3. empty — packet-graph.sh then treats the packet as overlapping everything and
-#      serializes it.
+#   3. empty — no scope recorded. (Parallel mode and its packet-graph.sh scheduler,
+#      which used to read this field to decide concurrency, are retired; the loop
+#      is sequential-only, so an empty scope has no behavioral effect today.)
 # The fingerprint is REQUIRED for an entry to be used, and that is the whole point:
 # gspec's `plan-decomposer` preserves task IDs on regenerate but RE-DECOMPOSES
 # unchecked work, so an unchecked `T5` can keep its id while its text becomes
@@ -168,11 +173,13 @@
 # Comparison is normalized (case, markdown emphasis, whitespace) so reformatting a
 # task does not invalidate its entry.
 #
-# HOW TASK DEPS BECOME GRAPH EDGES. packet-graph.sh derives ordering from
-# consumes/produces signature matching, so an intra-feature `deps: T1` is encoded
-# as produces `<feature>#T<n>` / consumes `<feature>#T<d>`. A dep on an ALREADY
-# CHECKED task simply finds no producer (checked tasks are not nodes) and yields
-# no edge — which is correct: done work must not block anything.
+# HOW TASK DEPS BECOME NODE EDGES. `nodes` encodes ordering as a
+# consumes/produces signature match, so an intra-feature `deps: T1` is emitted
+# as produces `<feature>#T<n>` / consumes `<feature>#T<d>`. (This is the same
+# encoding the retired packet-graph.sh scheduler used to derive concurrency
+# from; the loop reads it directly now.) A dep on an ALREADY CHECKED task
+# simply finds no producer (checked tasks are not nodes) and yields no edge —
+# which is correct: done work must not block anything.
 #
 # LAYOUTS (ADR 0020 D3, gspec 3.x). gspec 3.0 moved everything about a feature
 # into ONE folder, and the adapter reads all three shapes it has ever shipped:
@@ -217,9 +224,11 @@
 #
 # WHAT IS DELIBERATELY NOT INFERRED. gspec task lines carry no file scope, so
 # `allowed_files` is empty unless an (upstream-proposal-U1) `files:` line is
-# present. packet-graph.sh treats empty scope as "overlaps everything" and
-# serializes conservatively. That costs parallelism and never costs correctness;
-# guessing a narrow scope is how two lanes collide on an unlisted shared file.
+# present. An empty scope is never widened by a guess here — guessing a narrow
+# scope from task text is how two packets would end up colliding on an
+# unlisted shared file, which mattered when packet-graph.sh (now retired) used
+# this field to decide concurrency and still matters for `allowed_files`
+# itself, whatever consumes it.
 #
 # Exit codes: 0 = ok; 1 = usage / bad input; 3 = version-pin mismatch;
 #             4 = a required gspec artifact is missing.
@@ -438,7 +447,8 @@ _feature_done() {
 # `deferred: true` is NOT the `status` field ADR 0020 D2 prohibits, and the
 # distinction is the rule's own reasoning rather than a loophole. That prohibition
 # names two fields and says why: completion is DERIVED from the PRD's capability
-# checkboxes and concurrency is DERIVED by packet-graph.sh, so storing either is a
+# checkboxes and concurrency was DERIVED by packet-graph.sh (retired along with
+# parallel mode), so storing either is a
 # drift source. `deferred` is derived from neither — it is a HUMAN planning
 # decision, which is precisely what this file owns. It answers "should the loop
 # pick this up yet?", never "is this done?".
@@ -664,7 +674,7 @@ cmd_plans() {
   done < <(_plan_paths "$root") | sort -t"$(printf '\t')" -k1,1
 }
 
-# --- nodes: gspec tasks -> packet-graph NODES TSV ----------------------------
+# --- nodes: gspec tasks -> packet NODES TSV ----------------------------------
 
 _nodes_for() {
   local root="$1" slug="$2"
@@ -750,7 +760,7 @@ _nodes_for() {
       l=$0; sub(/^[[:space:]]+-[[:space:]]*deps[[:space:]]*:[[:space:]]*/,"",l); deps=l; next
     }
     # files: is NOT emitted by gspec today — forward-compat with upstream
-    # proposal U1. Absent => empty scope => packet-graph serializes conservatively.
+    # proposal U1. Absent => empty scope in the TSV; unwidened, per the header note.
     id != "" && /^[[:space:]]+-[[:space:]]*files[[:space:]]*:/ {
       l=$0; sub(/^[[:space:]]+-[[:space:]]*files[[:space:]]*:[[:space:]]*/,"",l)
       gsub(/^\[|\]$/,"",l); gsub(/[[:space:]]*,[[:space:]]*/,"|",l)

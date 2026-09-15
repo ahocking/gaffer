@@ -1049,7 +1049,54 @@ OVER_THRESHOLD=${over}"
   printf '%s\n' "$out"
 }
 
-# --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
+# --- shared: sub-second UTC timestamp, portably (loop-measurement T1) --------
+# GNU date supports %N (nanoseconds); modern BSD/macOS date supports plain %N
+# too but NOT GNU's field-width form (`%3N` comes back as the literal text
+# "3N" on macOS — probed by hand, not assumed), so this truncates to
+# milliseconds itself with a plain bash substring instead of relying on that
+# GNU-only syntax. A date with no %N support at all (old BSD) emits the
+# literal string "%N", non-digits, which the probe below catches. Probed by
+# EXECUTION, not `command -v` (this repo's standing rule elsewhere in
+# guard.sh/statusline-pause-sensor.sh — a `date` binary existing says nothing
+# about which variant it is). Cached per-process (`_RS_HAS_NANO`) so the probe
+# only runs once no matter how many records a single invocation writes.
+# Falls back to a literal ".000" suffix on a platform that cannot produce
+# sub-second resolution, so the field is always present and always the same
+# shape — callers must not assume the fraction is meaningful on every host.
+_RS_HAS_NANO=""
+_rs_now_ts() {
+  if [ -z "$_RS_HAS_NANO" ]; then
+    case "$(date -u +%N 2>/dev/null || true)" in
+      ''|*[!0-9]*) _RS_HAS_NANO=no ;;
+      *)           _RS_HAS_NANO=yes ;;
+    esac
+  fi
+  if [ "$_RS_HAS_NANO" = yes ]; then
+    # One date call (no race between a separate whole-second call and a
+    # separate %N call straddling a second boundary), then slice: %N is
+    # always 9 digits on every date that supports it, so this is a plain
+    # substring, never a numeric truncation.
+    local raw frac
+    raw="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    frac="${raw#*.}"
+    frac="${frac%%[!0-9]*}"
+    printf '%s.%sZ' "${raw%%.*}" "${frac:0:3}"
+  else
+    printf '%s.000Z' "$(date -u +%Y-%m-%dT%H:%M:%S)"
+  fi
+}
+
+# --- shared: packet-id charset guard (ADR 0019 v3.4, reused by T1) -----------
+# Same rule as a finding id: this value is interpolated into a JSON line, and a
+# `"` or `\` in it emits invalid JSON that makes the collector's `jq -s` drop
+# EVERY attestation in the file at once, silently, with no diagnostic.
+_rs_check_pkt_id() {
+  case "$1" in
+    *[!a-zA-Z0-9._-]*) die "packet id must be [a-zA-Z0-9._-]" ;;
+  esac
+}
+
+# --- shared: append one line to the ATTESTED-outcomes log --------------------
 # Append-only, one line per packet boundary, to .agents/metrics/outcomes/<session>.jsonl.
 # The collector reconstructs packets from green-commit trailers, so it structurally
 # cannot see a packet that failed or was rolled back — those never produce a commit.
@@ -1059,6 +1106,42 @@ OVER_THRESHOLD=${over}"
 # be callable from a lane without contending for it — the same reason packet boundaries
 # were left on commit trailers instead of migrating run-state's schema (ADR 0019).
 # Append-only + last-wins means a retried packet correctly ends up at its final state.
+#
+# Resolves the MAIN checkout the same way the hooks do: --git-common-dir points at
+# the main repo even from a lane worktree, so every lane records into one log. On any
+# failure (not a git repo, cannot create the dir, cannot append) this prints
+# RECORDED=no + REASON=... and returns 1 — non-fatal by design, callers must not die.
+#
+# CALLERS MUST INVOKE THIS IN AN `||` OR `if` CONTEXT, NEVER BARE. This file runs
+# under `set -euo pipefail`, which does not apply inside a condition — `foo || bar`
+# and `if foo; then` both suspend it for the call. A bare call would instead let
+# `return 1` exit the whole script, turning the non-fatal RECORDED=no contract into
+# a hard die. Both current callers already do this correctly (`|| return 0`); keep
+# it that way in any new caller.
+_rs_append_outcomes_line() {
+  local sess="$1" line="$2"
+  local gcd main_root dir rel
+  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -z "$gcd" ]; then
+    # Older git without --path-format=absolute: fall back to the plain (possibly
+    # relative) form and resolve it ourselves. Only `cd` into it when git actually
+    # produced a path — `cd "."` on a FAILED git call would silently resolve to
+    # the current directory and misreport a non-git directory as a valid repo.
+    rel="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    [ -n "$rel" ] && gcd="$(cd "$rel" 2>/dev/null && pwd || true)"
+  fi
+  [ -n "$gcd" ] || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 1; }
+  main_root="$(dirname "$gcd")"
+  dir="${main_root}/.agents/metrics/outcomes"
+  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 1; }
+  # Same atomicity argument as the metrics hook: a single short line, O_APPEND, well
+  # under PIPE_BUF, so concurrent lanes sharing a session id cannot tear each other.
+  printf '%s\n' "$line" >> "${dir}/${sess}.jsonl" 2>/dev/null \
+    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 1; }
+  return 0
+}
+
+# --- record an ATTESTED packet outcome (ADR 0019 v3.4) -----------------------
 # SESSION ID: `CLAUDE_CODE_SESSION_ID`, which is the variable Claude Code actually
 # exports to a Bash tool call. The first cut read `CLAUDE_SESSION_ID`, which does not
 # exist — so every attestation from every run fell through to the `adhoc` default and
@@ -1067,34 +1150,83 @@ OVER_THRESHOLD=${over}"
 # `.session_id` in the PostToolUse payload that names `.agents/metrics/events/<id>.jsonl`,
 # so `outcomes/<id>.jsonl` and `events/<id>.jsonl` share a key and the collector can
 # scope outcomes with the same `--session` selection it already applies to events.
+#
+# `session` is carried IN the record (loop-measurement T1), not just the filename,
+# for the same reason record-start carries it: `metrics.sh` concatenates every
+# selected session's log into one stream BEFORE joining, which destroys the
+# filename as a source of the session id. A terminal record written before this
+# change has no `session` field — readers must treat it as absent, not as an
+# error, and must not assume every line in an old log carries it.
 cmd_record_outcome() {
   local pkt="${1:-}" outcome="${2:-}" sess="${3:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
   [ -n "$pkt" ] && [ -n "$outcome" ] || die "usage: record-outcome <packet-id> <green|failed|rolled-back|blocked|abandoned> [session-id]"
-  # Same charset rule as a finding id: this value is interpolated into a JSON line, and
-  # a `"` or `\` in it emits invalid JSON that makes the collector's `jq -s` drop EVERY
-  # attestation at once, silently, with no diagnostic.
-  case "$pkt" in
-    *[!a-zA-Z0-9._-]*) die "packet id must be [a-zA-Z0-9._-]" ;;
-  esac
+  _rs_check_pkt_id "$pkt"
   case "$outcome" in
     green|failed|rolled-back|blocked|abandoned) ;;
     *) die "outcome must be one of: green failed rolled-back blocked abandoned" ;;
   esac
-  # Resolve the MAIN checkout the same way the hooks do: --git-common-dir points at
-  # the main repo even from a lane worktree, so every lane records into one log.
-  local gcd main_root dir
-  gcd="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  [ -n "$gcd" ] || gcd="$(cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .)" 2>/dev/null && pwd || true)"
-  [ -n "$gcd" ] || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 0; }
-  main_root="$(dirname "$gcd")"
-  dir="${main_root}/.agents/metrics/outcomes"
-  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 0; }
-  # Same atomicity argument as the metrics hook: a single short line, O_APPEND, well
-  # under PIPE_BUF, so concurrent lanes sharing a session id cannot tear each other.
-  printf '{"ts":"%s","packet":"%s","outcome":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pkt" "$outcome" >> "${dir}/${sess}.jsonl" 2>/dev/null \
-    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 0; }
+  local line
+  line="$(printf '{"ts":"%s","packet":"%s","session":"%s","outcome":"%s"}' "$(_rs_now_ts)" "$pkt" "$sess" "$outcome")"
+  _rs_append_outcomes_line "$sess" "$line" || return 0
   printf 'RECORDED=yes\nPACKET=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+}
+
+# --- record a packet START or CONTINUATION (loop-measurement T1) -------------
+# Same append-only log as record-outcome, same main-checkout resolution, same id
+# charset rule, same sub-second stamp. This is the OTHER end of the boundary
+# record-outcome writes: T3 (sweep-open) reads a packet's latest start/continue
+# with no terminal outcome at or after it as an interrupted packet, so the shape
+# here is load-bearing for that later feature and must not be reshaped there.
+#
+# Record shape (defined ONCE, here — T3/T4 consume it verbatim):
+#   {"ts":"<sub-second UTC>","packet":"<id>","session":"<session-id>","kind":"start"|"continue"}
+# `kind` is deliberately its own field (not folded into `outcome`, which stays
+# exactly the five terminal values) so a reader can tell a boundary record from
+# a terminal one by field shape alone: an outcome record has "outcome", a
+# start/continuation record has "kind". `session` is carried IN the record (not
+# just the filename) because T3's sweep can write a closing record into a LATER
+# session's log file while still needing to name the start it closes.
+#
+# A terminal record (record-outcome) now carries the same `session` field, so
+# both kinds are self-describing once concatenated across sessions — except a
+# terminal record written before that change, which has no `session` (readers
+# must treat it as absent, not malformed).
+#
+# TWO PROPERTIES THE TS FIELD HAS THAT T3/T4 MUST NOT ASSUME AWAY:
+# (a) a sub-second stamp and a whole-second stamp landing in the SAME second do
+#     NOT sort correctly as strings — "...:08.311Z" sorts before "...:08Z" because
+#     "." (0x2E) sorts before "Z" (0x5A) — so a reader ordering boundary/terminal
+#     records must compare PARSED times, never raw string comparison. There is
+#     already a live site doing exactly this string comparison:
+#     scripts/metrics.sh:621 filters the outcomes log with `(.ts // "") >= $ws`,
+#     where `$ws` (win_start) is always whole-second — that is a known hazard,
+#     tracked as a finding for a later packet, not fixed here.
+# (b) neither jq's `fromdateiso8601` nor this file's own sibling `metrics.sh`
+#     `epoch()` helper accepts the fractional form this function writes
+#     (verified: `epoch()` returns 0 on macOS for a "...NNN Z" timestamp, while
+#     working fine on a GNU runner) — strip the fraction before handing a
+#     timestamp to either.
+#
+# SESSION ID default: same variable, same rationale, as record-outcome above
+# (`CLAUDE_CODE_SESSION_ID`, not `CLAUDE_SESSION_ID` — see that comment block).
+cmd_record_start() {
+  # `--continue` may appear anywhere among the args, so scan rather than assume
+  # a fixed position: `record-start <pkt> --continue [sess]` and
+  # `record-start <pkt> [sess] --continue` must both work.
+  local cont=no args=() a
+  for a in "$@"; do
+    if [ "$a" = "--continue" ]; then cont=yes; else args+=("$a"); fi
+  done
+  local pkt="${args[0]:-}" sess="${args[1]:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  [ -n "$pkt" ] || die "usage: record-start <packet-id> [--continue] [session-id]"
+  _rs_check_pkt_id "$pkt"
+  local kind=start
+  [ "$cont" = yes ] && kind=continue
+  local line
+  line="$(printf '{"ts":"%s","packet":"%s","session":"%s","kind":"%s"}' \
+    "$(_rs_now_ts)" "$pkt" "$sess" "$kind")"
+  _rs_append_outcomes_line "$sess" "$line" || return 0
+  printf 'RECORDED=yes\nPACKET=%s\nKIND=%s\n' "$pkt" "$kind"
 }
 
 # --- stamp updated_at = now (UTC), atomically -------------------------------
@@ -1553,6 +1685,7 @@ case "$cmd" in
   outcome)       cmd_outcome       "$@" ;;
   trim-note)     cmd_trim_note     "$@" ;;
   record-outcome) cmd_record_outcome "$@" ;;
+  record-start)   cmd_record_start   "$@" ;;
   add-finding)   cmd_add_finding   "$@" ;;
   drop-finding)  cmd_drop_finding  "$@" ;;
   findings)      cmd_findings      "$@" ;;

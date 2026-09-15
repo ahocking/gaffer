@@ -75,6 +75,11 @@ features:
     why: "two live-fired corruption paths in the writer of the loop's ONLY durable state, found while running run-state-cleanup: `set` writes an unquoted YAML scalar (a packet-close note containing `: ` broke the parse), and `write` replaces the file with unvalidated stdin (a failed awk left a 26-byte stub). run-state is gitignored, so neither is recoverable by git. Ordered immediately after run-state-cleanup because that feature rewrites the packet-close sequence these paths sit in — fixing the writer first would collide with it, and fixing it later leaves every packet close running through a known corruption path. Also covers a third defect of the same shape: test-runstate.sh's YAML-parse assertions silently no-op on a host without PyYAML"
     depends_on: [run-state-cleanup]
 
+  - slug: runstate-write-integrity-gaps
+    order: 20
+    why: "three defects its parent deliberately scoped out, all in scripts/runstate.sh and all still live: `set` is flat-top-level-only and silently appends a shadow key for a nested one (hit live on 2026-09-15, which had to route the cursor advance through `write`); the decode side was never unified, so four hand-written decoders must stay in step by hand against the parent's single encoder; and the pause sentinel's reason is still written unencoded. The parent's capabilities spoke only to the VALUE a write encodes — these are about WHICH KEY it lands on and the READ side that decodes it. Ordered immediately after it because they are the same surface, but separate because the parent is derived-done and ADR 0026 forbids reopening a completed record"
+    depends_on: [runstate-write-integrity]
+
   - slug: metrics-coverage-gaps
     order: 30
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"

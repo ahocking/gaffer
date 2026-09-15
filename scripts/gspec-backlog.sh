@@ -3,7 +3,7 @@
 # gspec-backlog.sh — THE gspec adapter (ADR 0020 D2)
 # =============================================================================
 # The ONE place this plugin reads gspec. Every other component (run-loop §2,
-# resume, build-packet-dependency-tree, new-project) goes through here, so a
+# resume, new-project) goes through here, so a
 # gspec format change is one file to fix rather than seven skills and two agents.
 # That is the whole point: the 2026-08 breakage was not caused by gspec moving
 # `features/<slug>.plan.md` to `tasks/<slug>.md` — it was caused by nothing
@@ -1365,8 +1365,8 @@ cmd_nodes_all() {
   _has_gspec "$root" || return 0
   local slug
   # Deferred features emit no nodes, for the same reason `next` skips them:
-  # otherwise /gaffer:build-packet-dependency-tree schedules waves of work the
-  # human has explicitly decided not to start.
+  # otherwise the loop queues work the human has explicitly decided not to
+  # start.
   #
   # The filter is awk, NOT `while IFS=$'\t' read -r a b c ...`, and that is a bug
   # fix rather than a style choice. TAB is an IFS *whitespace* character, so bash

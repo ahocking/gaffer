@@ -32,6 +32,13 @@
 #   apply   [root]   perform the MECHANICAL moves (git mv where the repo is a git
 #                    repo, else mv), then verify. Refuses on a dirty tree unless
 #                    --force: a migration you cannot `git diff` is not reviewable.
+#                    Also cleans up the retired parallel-mode / rate-limit-pause
+#                    footprint (retire-unused-loop-modes T5) -- see the
+#                    "retire-unused-loop-modes cleanup" section below.
+#                    --remove-statusline additionally removes a user-level
+#                    statusLine ONLY when it points at the plugin's now-deleted
+#                    scripts/statusline-pause-sensor.sh; omit it and apply only
+#                    reports the finding (removal needs the operator's say-so).
 #   verify  [root]   post-migration checks: paths, adapter parse, packet counts.
 #   findings-audit [root]   READ-ONLY (run-state-cleanup T18): per findings-index
 #                    entry, without ever opening a body — whether it names
@@ -791,8 +798,8 @@ _convert_roadmap() {
     printf '#\n'
     printf '# Converted automatically: slug/order/why/depends_on are carried over.\n'
     printf '# `status` and `parallel_group` were DROPPED on purpose — completion is derived\n'
-    printf '# from each PRD s capability checkboxes, and concurrency is computed per run by\n'
-    printf '# packet-graph.sh. Storing either is how they drift.\n'
+    printf '# from each PRD s capability checkboxes, and storing it is how it drifts.\n'
+    printf '# `parallel_group` has no replacement: the loop runs one packet at a time.\n'
     printf '#\n'
     printf '# REVIEW THIS FILE: any prose in the old roadmap (## Notes, ## Unsequenced,\n'
     printf '# rationale in comments) was NOT translated. It is still in the original file.\n'
@@ -818,10 +825,106 @@ _convert_roadmap() {
   } > "$dest"
 }
 
+# --- retire-unused-loop-modes cleanup (T5) ------------------------------------
+# Parallel mode (ADR 0016) and the rate-limit auto-pause sensor (ADR 0018) were
+# retired from the shipped plugin. A consumer repo that had adopted either still
+# carries artifacts the plugin no longer creates or reads: the
+# `rate_limit_pause:` / `max_parallel_packets:` entries in its own
+# project-overrides.yaml (both this plugin's own copy and the template shipped
+# them), a user-level `statusLine` pointing at the now-deleted sensor script,
+# leftover per-lane pause files, and a TRACKED `.agents/packet-graph.yaml`.
+# `apply` cleans up what is safe to clean up mechanically and only ever REPORTS
+# the rest: a foreign statusLine (never touched), extra git worktrees (may hold
+# unmerged work -- listed, never deleted), and the consumer's own CLAUDE.md
+# (the human's standing instruction -- reported, never edited).
+
+# Every top-level section in project-overrides.yaml -- both this plugin's own
+# copy and templates/spec-driven-base's -- is a comment block plus a key,
+# separated from its neighbours by exactly one blank line, with no blank line
+# INSIDE a section. Paragraph removal is therefore exact: drop whichever whole
+# paragraphs match a target key, rejoin what remains with exactly one blank
+# line, and nothing else in the file moves.
+_strip_key_paragraphs() { # <file> <bare-key> [<bare-key> ...]
+  local f="$1"; shift
+  local pat; pat="$(printf '%s|' "$@")"; pat="${pat%|}"
+  awk -v pat="$pat" '
+    BEGIN { n = 0; p = 0 }
+    { lines[++n] = $0 }
+    END {
+      i = 1
+      while (i <= n) {
+        if (lines[i] ~ /^[[:space:]]*$/) { i++; continue }
+        content = ""; keep = 1
+        while (i <= n && lines[i] !~ /^[[:space:]]*$/) {
+          stripped = lines[i]
+          gsub(/^[[:space:]]*#?[[:space:]]*/, "", stripped)
+          if (stripped ~ ("^(" pat "):")) keep = 0
+          content = content lines[i] "\n"
+          i++
+        }
+        if (keep) { p++; para[p] = content }
+      }
+      for (k = 1; k <= p; k++) {
+        if (k > 1) printf "\n"
+        printf "%s", para[k]
+      }
+    }
+  ' "$f"
+}
+
+# Rewrites <file> in place, dropping the rate_limit_pause: and
+# max_parallel_packets: paragraphs (active OR commented-out example, and their
+# introducing comment lines -- both live in the same paragraph). Returns 0 and
+# mutates the file if something was dropped, 1 (file byte-identical) otherwise.
+# Mode-preserving and atomic, same discipline as _drop_backlog_done above.
+_strip_overrides_retired_keys() {
+  local f="$1" tmp
+  [ -f "$f" ] || return 1
+  tmp="$(mktemp "$(dirname "$f")/.migrate-overrides.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$f" "$tmp"
+  _strip_key_paragraphs "$f" "rate_limit_pause" "max_parallel_packets" > "$tmp"
+  if cmp -s "$f" "$tmp"; then
+    rm -f "$tmp"; trap - EXIT
+    return 1
+  fi
+  mv "$tmp" "$f"
+  trap - EXIT
+  return 0
+}
+
+# The configured `.statusLine.command`, or empty (no statusLine key, or the
+# file doesn't exist). jq when available; otherwise a textual fallback scoped
+# to the "statusLine" object only, so a `"command"` key belonging to some
+# OTHER top-level block is never picked up by accident. Handles both the
+# common pretty-printed shape and a minified single-line settings.json.
+_statusline_command() {
+  local settings="$1"
+  [ -f "$settings" ] || return 0
+  if command -v jq >/dev/null 2>&1 && jq -e . "$settings" >/dev/null 2>&1; then
+    jq -r '.statusLine.command // empty' "$settings" 2>/dev/null
+    return 0
+  fi
+  awk '
+    /"statusLine"[[:space:]]*:/ { inblock = 1 }
+    inblock && match($0, /"command"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      s = substr($0, RSTART, RLENGTH)
+      sub(/^"command"[[:space:]]*:[[:space:]]*"/, "", s)
+      sub(/"$/, "", s)
+      print s
+      exit
+    }
+    inblock && /\}/ { exit }
+  ' "$settings"
+}
+
 cmd_apply() {
-  local root force=0 a
+  local root force=0 remove_statusline=0 a
   root="$(_root "${1:-}")"
-  for a in "$@"; do [ "$a" = "--force" ] && force=1; done
+  for a in "$@"; do
+    [ "$a" = "--force" ] && force=1
+    [ "$a" = "--remove-statusline" ] && remove_statusline=1
+  done
   [ -d "$root" ] || die "no such directory: $root"
 
   # A migration you cannot `git diff` is not a migration you can review.
@@ -913,6 +1016,119 @@ cmd_apply() {
       ureason4="$(printf '%s' "$unrec4" | cut -f3)"
       printf 'UNRECOGNIZED_BACKLOG_DONE=.agents/run-state.yaml lines %s-%s: %s -- left untouched, needs a human (apply will not drop this)\n' \
         "$ustart4" "$uend4" "$ureason4"
+    fi
+  fi
+
+  # 5. project-overrides.yaml -- drop the retired rate_limit_pause: block and
+  #    max_parallel_packets: key (active or commented-out example), plus the
+  #    comment lines introducing each. Everything else in the file -- in
+  #    particular bypass-ask-tier, integration_branch, autonomy_ceiling and
+  #    escalate_to_human_on -- is a different paragraph and survives untouched.
+  if [ -f "$root/.agents/project-overrides.yaml" ]; then
+    if _strip_overrides_retired_keys "$root/.agents/project-overrides.yaml"; then
+      printf 'CLEANED=rate_limit_pause: block and max_parallel_packets: key removed from .agents/project-overrides.yaml -- both are retired (ADR 0016/0018 superseded); every other line is unchanged\n'
+      did=1
+    fi
+  fi
+
+  # 6. A user-level statusLine pointing at the plugin's now-deleted
+  #    scripts/statusline-pause-sensor.sh. Global, not repo-scoped, so the path
+  #    is resolved the same way the (now-retired) rate-limit-pause skill did --
+  #    never anything under $root. A statusLine pointing anywhere else is not
+  #    ours and is never even mentioned, let alone touched. Removal happens
+  #    only with --remove-statusline (the operator's confirmation) and only
+  #    when jq is available -- hand-editing JSON without a real parser risks
+  #    corrupting a file this script does not own.
+  local settings; settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  if [ -f "$settings" ]; then
+    local sl_cmd; sl_cmd="$(_statusline_command "$settings")"
+    case "$sl_cmd" in
+      *statusline-pause-sensor.sh)
+        if [ "$remove_statusline" = 1 ]; then
+          if command -v jq >/dev/null 2>&1; then
+            local stmp; stmp="$(mktemp "$(dirname "$settings")/.migrate-settings.XXXXXX")"
+            if jq 'del(.statusLine)' "$settings" > "$stmp" 2>/dev/null; then
+              mv "$stmp" "$settings"
+              printf 'REMOVED=statusLine removed from %s -- it pointed at the retired statusline-pause-sensor.sh\n' "$settings"
+              did=1
+            else
+              rm -f "$stmp"
+              printf 'SKIP=could not parse %s as JSON -- statusLine left untouched\n' "$settings"
+            fi
+          else
+            printf 'SKIP=jq is required to safely remove a key from settings.json -- statusLine left untouched (install jq and re-run apply --remove-statusline)\n'
+          fi
+        else
+          printf 'FOUND=statusLine in %s still points at the retired statusline-pause-sensor.sh -- re-run apply with --remove-statusline to remove it\n' "$settings"
+        fi
+        # Whether declined, removed just now, or removal failed: the status
+        # line is only re-read at session START, so this run cannot promise
+        # the sensor is inert yet -- never assert the removal already "took".
+        printf 'NOTE=the status line is re-read at session start, so a declined removal -- or one made but not yet reloaded -- may still arm a pause until the next session\n'
+        ;;
+      "") : ;;   # no statusLine configured -- nothing to do
+      *) : ;;    # a statusLine that is not ours -- never touched, never mentioned
+    esac
+  fi
+
+  # 7. Leftover per-lane pause files (`.agents/pause.<task-id>`, ADR 0017's
+  #    per-lane variant, matching this repo's own .gitignore pattern
+  #    `.agents/pause.*`). Nothing writes these any more -- parallel mode is
+  #    retired -- so they are safe to delete outright. The whole-run
+  #    `.agents/pause` sentinel itself does NOT match this glob (no trailing
+  #    dot-suffix) and is never touched; it is ADR 0017 and is not retired.
+  if ls "$root"/.agents/pause.* >/dev/null 2>&1; then
+    local pf pn=0
+    for pf in "$root"/.agents/pause.*; do
+      [ -f "$pf" ] || continue
+      rm -f "$pf"
+      pn=$((pn+1))
+    done
+    if [ "$pn" -gt 0 ]; then
+      printf 'REMOVED=%s leftover per-lane pause file(s) deleted from .agents/ (parallel mode is retired; .agents/pause itself is untouched)\n' "$pn"
+      did=1
+    fi
+  fi
+
+  # 8. .agents/packet-graph.yaml -- unlike the metrics/pause bookkeeping, this
+  #    one is TRACKED (ADR 0016), so deleting it is a change the operator must
+  #    commit themselves; apply never commits anything.
+  if [ -f "$root/.agents/packet-graph.yaml" ]; then
+    if _is_git "$root"; then
+      git -C "$root" rm -q -f ".agents/packet-graph.yaml" >/dev/null 2>&1 || rm -f "$root/.agents/packet-graph.yaml"
+    else
+      rm -f "$root/.agents/packet-graph.yaml"
+    fi
+    printf 'REMOVED=.agents/packet-graph.yaml deleted -- parallel mode is retired. It was TRACKED, so this is a change YOU need to commit.\n'
+    did=1
+  fi
+
+  # 9. Extra git worktrees. Parallel mode is retired, but a worktree may still
+  #    hold unmerged work -- deleting one is destructive and irreversible from
+  #    this script's side, so it is only ever LISTED, never removed.
+  if _is_git "$root"; then
+    local wt_list; wt_list="$(git -C "$root" worktree list 2>/dev/null | tail -n +2)"
+    if [ -n "$wt_list" ]; then
+      printf 'WORKTREES=extra git worktree(s) found -- parallel mode is retired, but a worktree may hold unmerged work, so these are only LISTED, never deleted:\n'
+      printf '%s\n' "$wt_list" | while IFS= read -r wline; do
+        [ -n "$wline" ] || continue
+        printf '  %s\n' "$wline"
+      done
+    fi
+  fi
+
+  # 10. The consumer's own CLAUDE.md. It is the human's standing instruction,
+  #     never rewritten by this script -- report any line that routes to a
+  #     removed mode or command and let them edit it themselves.
+  if [ -f "$root/CLAUDE.md" ]; then
+    local claude_stale
+    claude_stale="$(grep -niE 'relay mode|--parallel|worktree lane|packet-graph|build-packet-dependency-tree|rate-limit-pause|statusline-pause-sensor' "$root/CLAUDE.md" 2>/dev/null || true)"
+    if [ -n "$claude_stale" ]; then
+      printf 'CLAUDEMD_ROUTES=CLAUDE.md has line(s) routing to a removed mode or command -- reported only, never edited (it is your standing instruction):\n'
+      printf '%s\n' "$claude_stale" | while IFS= read -r sline; do
+        [ -n "$sline" ] || continue
+        printf '  %s\n' "$sline"
+      done
     fi
   fi
 
@@ -1019,5 +1235,5 @@ case "${1:-}" in
   apply)          shift; cmd_apply          "$@" ;;
   verify)         shift; cmd_verify         "$@" ;;
   findings-audit) shift; cmd_findings_audit "$@" ;;
-  *) die "usage: migrate.sh {detect|plan|apply [--force]|verify|findings-audit} [root]" ;;
+  *) die "usage: migrate.sh {detect|plan|apply [--force] [--remove-statusline]|verify|findings-audit} [root]" ;;
 esac

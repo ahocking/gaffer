@@ -6,14 +6,14 @@
 # scope rule, restated at each shape that carries the bucket. They apply to every
 # human-facing report in this plugin; the three shapes below apply only to the loop.
 #
-# `check-in.md` is the AGENT-TO-AGENT wire format. A lane or a dispatched Chief
-# Engineer returns that shape to the scheduler, which parses it and records state
+# `check-in.md` is the AGENT-TO-AGENT wire format. A dispatched Chief Engineer
+# returns that shape to whoever dispatched it, which parses it and records state
 # from it. It is unchanged and must stay machine-shaped.
 #
 # Three shapes. The letters are stable identifiers, NOT an order; in time you meet
 # them C → A → B:
 #
-#   A. CHECK-IN     — a packet or a wave of lanes came back. Emitted per landing.
+#   A. CHECK-IN     — a packet came back. Emitted per landing.
 #   B. STOP REPORT  — the loop stopped (done, paused, blocked, or out of gas).
 #   C. KICKOFF      — emitted BEFORE a run starts, and on resume. The cheapest
 #                     moment to correct a wrong assumption.
@@ -22,10 +22,9 @@
 # defined in `report-conventions.md`.
 
 
-# --- A. CHECK-IN (a packet landed, or a wave of lanes came back) ---------------
-# One line per packet or lane, in the order they landed. Sequential mode is a single
-# line; parallel mode is one per lane. Keep it under roughly eight lines — this is
-# read on a phone, between other things.
+# --- A. CHECK-IN (a packet landed) --------------------------------------------
+# One line per packet, in the order they landed. Keep it under roughly eight
+# lines — this is read on a phone, between other things.
 #
 # ✅ N landed is THIS SESSION (report-conventions.md's header-tally rule) — count the
 # check-ins already rendered this run, nothing read from disk.
@@ -36,26 +35,26 @@
 > 🔀 **<Title>** — <what it is asking, one clause>
 > ⛔ **<Title>** — <what failed>. Rolled back to `<sha>`, nothing lost.
 
-> <a decision block, when a lane raised one and the run keeps going>
+> <a decision block, when the packet raised one and the run keeps going>
 
-▶ **Next** — <the next packet by title, or what the other lanes are doing>
+▶ **Next** — <the next packet by title>
 
-# Put the decision block directly under the lanes, not in a separate section — a
-# check-in has at most one or two. Do NOT promote the whole check-in to a stop report
-# for a decision the run does not need answered right now; that is how a still-running
-# loop starts reading as stopped.
+# Put the decision block directly under the landed line(s), not in a separate
+# section — a check-in has at most one or two. Do NOT promote the whole check-in
+# to a stop report for a decision the run does not need answered right now; that
+# is how a still-running loop starts reading as stopped.
 #
 # When something changed the picture — a scope that turned out bigger, an assumption
 # that proved wrong, a dependency discovered — add ONE `⚠️ **Worth knowing** — …`
-# line after the lanes. It is not a place to restate what landed, and it is not the
-# findings index (that lives in run-state and is read on request).
+# line after the landed line(s). It is not a place to restate what landed, and it
+# is not the findings index (that lives in run-state and is read on request).
 #
 # A sweep runs before every start/continuation (loop-measurement T8). When it closed
 # any packets, add ONE line naming each by title and id:
 #
 #   > ⚠️ **Picked up from last time** — <Title> (`<id>`) swept as interrupted
 
-# Worked example — parallel wave, one lane asking:
+# Worked example:
 #
 #   ▶ **RUNNING** · Transaction import · ✅ **2 landed** · 🔀 **1 decision** · ⬚ **3 left**
 #
@@ -73,7 +72,7 @@
 #   > **→ Pick A** — recoverable, and confirm-flows are the ones users abandon.
 #   > *Silence = A, matches logged.*
 #
-#   ▶ **Next** — the other three lanes keep going.
+#   ▶ **Next** — Import audit log.
 
 
 # --- B. STOP REPORT (the loop stopped, for any reason) ------------------------
@@ -177,10 +176,10 @@
 # the run-state word is ▶ **RESUMING** and the plan is what is LEFT, not what the
 # original run set out to do.
 
-▶ **STARTING** · <what this run is for, in plain words> · ⬚ **N packets** · <M waves | sequential>
+▶ **STARTING** · <what this run is for, in plain words> · ⬚ **N packets** · <M phases>
 
-> **Wave 1 — <theme>** · ⬚ <Title> · ⬚ <Title> · ⬚ <Title>
-> **Wave 2 — <theme>** · ⬚ <Title> · ⬚ <Title>
+> **Phase 1 — <theme>** · ⬚ <Title> · ⬚ <Title> · ⬚ <Title>
+> **Phase 2 — <theme>** · ⬚ <Title> · ⬚ <Title>
 
 ⚠️ **Assuming** — <the one assumption most likely to be wrong, and what it costs if it is>
 
@@ -190,7 +189,7 @@
 
 ▶ **Autonomy** <level> · **Stops at** <branch ready for review | integrated on <branch>>
 
-# - **Group by wave or theme, not as a numbered list of every packet.** Up to six
+# - **Group by phase or theme, not as a numbered list of every packet.** Up to six
 #   packets may be listed individually; past that, three to five themed lines with
 #   their packets inline. A 30-line numbered list is not a plan the human can check,
 #   it is a wall they scroll past.
@@ -206,7 +205,7 @@
 # - **`Won't touch:` names only what this backlog actually gets near** — a migration it
 #   borders, the auth code it stops short of. Do not recite the whole danger floor; a
 #   boilerplate list the human learns to skip is worse than no list.
-# - **Do not fabricate a duration.** Packet and wave counts are real; a time estimate
+# - **Do not fabricate a duration.** Packet and phase counts are real; a time estimate
 #   is a guess unless this repo's own history supports one. Say the counts and stop.
 # - **If the plan itself has an open choice** — an ordering that could go two ways, a
 #   packet that may be out of scope — put a decision block here rather than choosing
@@ -214,11 +213,11 @@
 
 # Worked example:
 #
-#   ▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **9 packets** · 3 waves
+#   ▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **9 packets** · 3 phases
 #
-#   > **Wave 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
-#   > **Wave 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
-#   > **Wave 3 — polish** · ⬚ Date filter · ⬚ Error messages · ⬚ Export filters · ⬚ Bulk re-categorise
+#   > **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
+#   > **Phase 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
+#   > **Phase 3 — polish** · ⬚ Date filter · ⬚ Error messages · ⬚ Export filters · ⬚ Bulk re-categorise
 #
 #   ⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.
 #   If that's wrong, duplicate detection gets substantially bigger.

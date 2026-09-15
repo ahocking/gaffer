@@ -190,7 +190,6 @@
 # sections omitted.
 #
 #   `review-change`   verdict — ✅ ready / ⚠️ issues / 🔀 risks-as-decisions / ▶ next
-#   `build-packet-dependency-tree`  the plan it prints IS a kickoff — use shape C
 #   `metrics show` / `analyze`      numbers-dense by nature; no tally, no glyph
 #                                   gutter, but titles-over-ids and one line per
 #                                   finding still apply, and every recommendation

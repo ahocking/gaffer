@@ -1056,8 +1056,8 @@ OVER_THRESHOLD=${over}"
 # milliseconds itself with a plain bash substring instead of relying on that
 # GNU-only syntax. A date with no %N support at all (old BSD) emits the
 # literal string "%N", non-digits, which the probe below catches. Probed by
-# EXECUTION, not `command -v` (this repo's standing rule elsewhere in
-# guard.sh/statusline-pause-sensor.sh — a `date` binary existing says nothing
+# EXECUTION, not `command -v` (this repo's standing rule, see guard.sh — a
+# `date` binary existing says nothing
 # about which variant it is). Cached per-process (`_RS_HAS_NANO`) so the probe
 # only runs once no matter how many records a single invocation writes.
 # Falls back to a literal ".000" suffix on a platform that cannot produce
@@ -1474,8 +1474,7 @@ cmd_touch() {
 
 DRIVER_STALE_SECS="${ORCH_DRIVER_STALE_SECS:-900}"   # 15 min
 
-# ISO-8601 UTC -> epoch seconds, on both BSD and GNU date (same dual-dialect
-# problem statusline-pause-sensor.sh solves, ADR 0018). Empty on failure.
+# ISO-8601 UTC -> epoch seconds, on both BSD and GNU date. Empty on failure.
 _iso_epoch() {
   [ -n "${1:-}" ] || return 0
   date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \

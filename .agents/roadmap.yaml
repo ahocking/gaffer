@@ -18,9 +18,10 @@
 # ADR 0019's five stacked `v3.x` revision sections were the clearest case of a
 # decision record being used as a status tracker.
 #
-# DO NOT add `status` or `parallel_group`. Both are DERIVED:
+# DO NOT add `status`. It is DERIVED:
 #   completion  -> every capability checkbox in the PRD is `[x]`
-#   concurrency -> computed per run by scripts/packet-graph.sh
+# `parallel_group` is not a field either: parallel mode is retired
+# (`retire-unused-loop-modes`), so nothing computes concurrency at all.
 
 schema: 1
 

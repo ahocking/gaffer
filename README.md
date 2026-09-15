@@ -46,12 +46,13 @@ would stop the loop on a repo whose backlog the adapter reads perfectly well. Th
 pin exists to catch a format the code *cannot parse*, not to nag a repo into
 migrating.
 
-**gspec is optional.** Four and a half of the five pillars — the guardrail, the
-autonomy dial, the pause/resume checkpointing, worktree-isolated parallelism, and
-run-metrics — have no spec dependency at all. A backlog may equally come from
-`.agents/run-state.yaml` or from an explicit argument to `/gaffer:run-loop`, and a repo
-with no `gspec/` directory loses only the spec-derived backlog, not the execution
-layer.
+**gspec is optional.** The guardrail, the autonomy dial, the pause/resume
+checkpointing, and run-metrics have no spec dependency at all. A backlog may
+equally come from `.agents/run-state.yaml` or from an explicit argument to
+`/gaffer:run-loop`, and a repo with no `gspec/` directory loses only the
+spec-derived backlog, not the execution layer. (A fifth pillar,
+worktree-isolated parallelism under `--parallel`, existed here too — ADR 0016 —
+but is retired; see `retire-unused-loop-modes`.)
 
 ## Components
 
@@ -67,13 +68,11 @@ layer.
 | `agents/doc-writer.md` | **haiku** documentation/summarization agent; writes README/setup/usage docs and changelog-style summaries from established fact under `allowed_paths.docs`. Never touches code, tests, ADRs, or design decisions. |
 | `skills/new-project/SKILL.md` | Chain: bootstrap a spec-driven repo — generic overlay + **version-pinned** gspec + a seeded `.agents/roadmap.yaml` — stops before the initial commit. |
 | `skills/review-change/SKILL.md` | Chain: review uncommitted changes → ready/issues/risks/next-step. |
-| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 40 packets — ADR 0012). |
+| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). One sequential mode; backlog size no longer switches execution modes (ADR 0012, superseded). |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
-| `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session; picks relay vs inline from what **remains** (ADR 0012). |
+| `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session, from wherever it left off. |
 | `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
-| `skills/rate-limit-pause/SKILL.md` | Show or set rate-limit auto-pause (ADR 0018): `on` wires the status-line sensor into `settings.json` + enables it here; `off` disables per-repo; `off --teardown` removes the global sensor; `status` reports state. |
-| `skills/build-packet-dependency-tree/SKILL.md` | Build `.agents/packet-graph.yaml` — packet nodes from the gspec backlog, ordering edges from task deps, mutual-exclusion edges from computed `allowed_files` overlap, grouped into waves. Prerequisite for `--parallel` (ADR 0016). |
-| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), then **verify the backlog actually parses**. |
+| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), clean up the retired parallel-mode/rate-limit-pause footprint, then **verify the backlog actually parses**. |
 | `skills/metrics/SKILL.md` | Assemble / show / analyze a run-metrics packet (ADR 0019): where a run's compute went, per packet, agent, model, tool, and skill. |
 | `scripts/migrate.sh` | Deterministic half of `/gaffer:migrate`: detect / plan / apply / verify. Refuses a dirty tree, never deletes, never overwrites, and ends by counting packets. |
 | `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, and the fingerprint-guarded file-scope sidecar. Nothing else may parse `gspec/`. |
@@ -85,7 +84,6 @@ layer.
 | `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005). |
 | `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
 | `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. |
-| `scripts/statusline-pause-sensor.sh` | A `statusLine` command that reads the 5-hour + 7-day usage percentages and arms the ADR 0017 pause sentinel when either crosses its threshold (ADR 0018). Opt-in, Pro/Max only. |
 | `.mcp.json` | Stubbed git / github / filesystem MCP servers (tokens via env vars only). |
 
 ### Model routing intent
@@ -208,39 +206,23 @@ ORCH_AUTONOMY=supervised claude
 #   /gaffer:resume          # pick the run back up in a later session
 ```
 
-### How the loop runs: inline or relayed (ADR 0012)
+### The loop runs one sequential mode (ADR 0012, superseded)
 
-`run-loop` and `resume` count the backlog first and pick how to execute it. You do
-not have to choose, and the mode is announced in one line before the run starts.
+`run-loop` and `resume` run a single sequential mode — backlog size no longer
+switches execution modes, and no run dispatches a per-packet coordinator
+subagent. `--relay`/`--inline`/`--parallel` are still accepted on the command
+line for compatibility; they print a one-line notice that the mode they name is
+retired and the loop runs its one mode regardless.
 
-| Backlog | Mode | Why |
-| --- | --- | --- |
-| **< 40 packets** | **inline** — the session runs the loop itself | The default, and the only mode any production run has needed. Relaying costs more here and prevents nothing. |
-| **≥ 40 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Inline's coordinator grows and hits a forced, lossy compaction near packet ~28, so past that a relay is the only mode that finishes a long run. |
-
-> **On the numbers:** the crossover was **raised from 20 to 40 on 2026-08-10**, when the
-> first real production comparison (62 packets across two repos) measured relay at
-> **1.84x inline per packet** — the opposite direction to the token extrapolation that
-> set the original 20. Relay is *retained rather than deleted* because that figure is
-> not clean: 65–96% of tool duration in those runs sits in the coordinator's own
-> context, much of it busy-wait polling, and each poll re-caches the standing context
-> being measured. A clean two-arm A/B is the open question, and **deleting relay is a
-> legitimate outcome of it**. Do not treat relay as the cheaper mode at any size.
-
-Override either way with **`--relay`** or **`--inline`**:
-
-```bash
-/gaffer:run-loop --relay     # flat context cost, even on a short backlog
-/gaffer:run-loop --inline    # cheapest per packet; also for debugging the loop
-```
-
-`resume` counts what **remains**, not the run's original size — a 40-packet run with
-4 left is a small backlog now and finishes inline.
-
-**20 is a measured crossover, not a preference**, and it was measured on small
-packets — heavier packets grow the coordinator faster and move the real crossover
-down. See [ADR 0012](docs/adr/0012-delegated-loop-driver.md) for the method, the
-numbers, and what would change them.
+> **On the numbers, why relay was retired rather than kept as an option:** the
+> one real production comparison (62 packets across two repos) measured relay at
+> **1.84x inline per packet** — the opposite direction from the token
+> extrapolation that originally set its 20-packet crossover (later raised to
+> 40). The regime relay was built for was **never reached**: the largest real
+> run observed across this repo's own history is **9–14 packets**, well under
+> even the original threshold. This is a scope decision, not a retraction of
+> that measurement — see [ADR 0012](docs/adr/0012-delegated-loop-driver.md) for
+> the full record, including the v2 measurement revision.
 
 **Setting autonomy on Claude Desktop (no terminal).** The `ORCH_AUTONOMY=… claude`
 form above is terminal-only — the Desktop app launches from Finder/Dock and
@@ -273,48 +255,22 @@ behind (ADR 0005). Check-ins are **produced** by the plugin and **delivered** by
 the frontend (Claude Desktop / Dispatch) — there is no notification transport
 here.
 
-### Auto-pause before a usage limit (ADR 0018)
+### Auto-pause before a usage limit (ADR 0018, superseded)
 
-A long unattended run — especially a wide `--parallel` one — can exhaust the
-account's **rolling usage limits** (a fast **5-hour** window and a slower, costlier
-**7-day/weekly** one) mid-flight. When either trips, Claude Code stops serving
-responses **server-side**, and a lane blocked on that cutoff is stranded on a
-mid-edit tree — exactly the loss the cooperative pause exists to avoid. This feature
-**sees the limit coming and drains to a green checkpoint first.**
-
-The catch is *sensing* it: the usage percentages are delivered to **exactly one
-place** — the `statusLine` command's stdin JSON (`rate_limits.five_hour` /
-`.seven_day`), only after the first API response and only on **Pro/Max**. No hook
-payload carries them and nothing persists them to disk. So the plugin ships a
-`statusLine` **sensor** (`scripts/statusline-pause-sensor.sh`): it renders the
-percentages *and*, when either window crosses its threshold, writes the **same
-`.agents/pause` sentinel** a human would — after which it is the ordinary ADR 0017
-cooperative pause, byte-for-byte (the prompt-poll is still the authoritative stop).
-
-Turn it on with the toggle skill — it resolves the installed sensor path and wires
-`settings.json` for you (a plugin cannot, and `${CLAUDE_PLUGIN_ROOT}` does **not**
-expand in the `statusLine` context, so the entry needs a resolved absolute path):
-
-```bash
-/gaffer:rate-limit-pause on      # wire settings.json + enable here
-/gaffer:rate-limit-pause status  # what's wired + effective thresholds
-/gaffer:rate-limit-pause off     # per-repo disable (status line stays)
-/gaffer:rate-limit-pause off --teardown   # also remove the GLOBAL sensor
-```
-
-Thresholds default to **5-hour 90% / 7-day 85%** (the weekly one lower on purpose —
-exhausting the 7-day window strands the account for *days*, not the couple of hours a
-5-hour reset costs). Configure per repo in `.agents/project-overrides.yaml` under
-`rate_limit_pause:`, with an `ORCH_RATE_PAUSE` / `ORCH_RATE_PAUSE_PCT` /
-`ORCH_RATE_PAUSE_7D_PCT` env fast-path. It is **best-effort early-warning, not a hard
-stop**: both cutoffs are server-side; if one outruns the drain, crash-reconcile
-`restart` is still the floor (which is why packets are commit-sized). Under API-key
-auth there is no `rate_limits` payload and the sensor is inert. See
-[ADR 0018](docs/adr/0018-rate-limit-aware-cooperative-pause.md).
+The plugin used to ship a `statusLine` sensor that watched Claude Code's rolling
+5-hour/7-day usage percentages and armed a pause before either limit hit. It
+never worked reliably in practice and is retired: the sensor script, the
+`/gaffer:rate-limit-pause` toggle skill, and the `rate_limit_pause:` overrides
+block are all deleted. The cooperative whole-run pause it amended is
+unaffected — `/gaffer:pause` and `/gaffer:resume` still work exactly as
+described above. `/gaffer:migrate` cleans up a leftover `rate_limit_pause:`
+block or a stale `statusLine` entry in a repo that had adopted it. See
+[ADR 0018](docs/adr/0018-rate-limit-aware-cooperative-pause.md) for the
+historical record.
 
 ### Measuring runs (ADR 0019)
 
-To find where a run — especially a wide `--parallel` one — spends its compute, the
+To find where a run spends its compute, the
 plugin captures a **run-metrics packet**: one self-contained
 `.agents/metrics/<run-id>/run-metrics.json` per run, built to be read by a human or
 **handed to Claude for optimization advice**. Collection is automatic and costs zero
@@ -322,8 +278,8 @@ tokens: a `PostToolUse` hook logs tool events (metadata + low-sensitivity labels
 per-tool `duration_ms`, the running skill, the dispatched `subagent_type`, and a Bash
 command **head** only; never full command text, arguments, or paths) as the run goes,
 and `scripts/metrics.sh collect` joins that event spine with
-packet boundaries derived from the `[orch packet:<id>]` commit trailers, the
-`packet-graph.yaml` wave map, and best-effort token/cost from the session transcripts:
+packet boundaries derived from the `[orch packet:<id>]` commit trailers and
+best-effort token/cost from the session transcripts:
 
 ```bash
 /gaffer:metrics collect   # assemble the packet for the current run
@@ -337,7 +293,9 @@ cacheCreation, the biggest hidden cost when subagents re-load context), **per-ro
 per-packet, per-skill, and per-command-class spend** (which skill/process costs most,
 and which commands dump the most output — the "where an output filter like RTK helps"
 map), **model-per-agent** (so opus/sonnet/haiku tokens are cost-comparable), per-tool
-**duration**, an **active/idle wall split**, and **per-wave parallel efficiency**. Tokens come from the
+**duration**, an **active/idle wall split**, and same-file concurrent-edit
+counts (`totals.same_file_overlaps` — the observability that replaces the
+retired parallel scheduler's file-disjointness guarantee). Tokens come from the
 transcripts by default (a **version-fragile** source, so the collector **fails soft** to
 structural-only and stamps `token_source` — a partial run is never misread as complete);
 **Tier 0 OpenTelemetry** is an optional, deferred richer source, not required. Enable/
@@ -351,14 +309,15 @@ pairs for every category, the closed cross-tree bypasses, the autonomy×branch×
 commit matrix, and the `guard-extra` loading); run it after any change to
 `guard.sh`. `scripts/test-runstate.sh` is the pause/resume + crash-recovery sweep
 (the reconcile decision table, atomic writes, the SessionStart hook; ADR
-0004/0005/0009); `scripts/test-pause.sh` covers the cooperative-pause sentinel/hook
-(ADR 0017) **and the rate-limit sensor's threshold/reason/idempotency/YAML-config
-behavior** (ADR 0018) — run it after any change to `runstate.sh`, `pause-check.sh`,
-`statusline-pause-sensor.sh`, or the loop skills. `scripts/test-metrics.sh` covers
-the run-metrics core (ADR 0019) — the event-log → trailer/wave/token join, fail-soft
-to structural-only, the skill/command-class/duration enrichment and its head-only
-command classifier (leak-tested), and the logger hook's no-`permissionDecision`
-contract — against a synthetic git repo and fake transcripts (no live agent). CI runs
+0004/0005/0009 — plus read-only compatibility cases proving a legacy
+`mode: parallel` run-state still parses now that the lane-writing subcommands
+are gone); `scripts/test-pause.sh` covers the cooperative-pause sentinel/hook
+(ADR 0017) — run it after any change to `runstate.sh` or `pause-check.sh`.
+`scripts/test-metrics.sh` covers the run-metrics core (ADR 0019) — the
+event-log → trailer/token join, fail-soft to structural-only, the
+skill/command-class/duration enrichment and its head-only command classifier
+(leak-tested), and the logger hook's no-`permissionDecision` contract —
+against a synthetic git repo and fake transcripts (no live agent). CI runs
 them on every push.
 
 ## Develop it (working on the plugin itself)
@@ -449,8 +408,7 @@ Try it out inside the session:
 - Skills are **namespaced by plugin**: `/gaffer:new-project`,
   `/gaffer:review-change`, `/gaffer:run-loop`,
   `/gaffer:pause`, `/gaffer:resume`, `/gaffer:set-autonomy`,
-  `/gaffer:rate-limit-pause`, `/gaffer:metrics`,
-  `/gaffer:build-packet-dependency-tree`.
+  `/gaffer:metrics`, `/gaffer:migrate`.
 - Agents appear as `chief-engineer`, `architect`, `ux-designer`, `reviewer`,
   `implementer` (delegate to them via the Task tool or let a skill drive them).
 - To sanity-check the guardrail directly:

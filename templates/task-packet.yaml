@@ -12,14 +12,12 @@ task_id: <feature-000-scope>            # e.g. feature-004-backend
 # Which agent runs this packet.
 role: <implementer | architect | reviewer>
 
-# Where the work happens: normally the SINGLE local checkout, on the packet's
+# Where the work happens: the SINGLE local checkout, on the packet's
 # `orch/<task_id>` feature branch cut from the integration base
 # (`.agents/project-overrides.yaml` → `integration_branch`, default `develop`).
 # The Chief Engineer runs `git switch -c orch/<task_id> <base>` before delegating.
-# There is no separate worktree (ADR 0009) — EXCEPT in parallel mode
-# (`/gaffer:run-loop --parallel`, ADR 0016), where this packet runs as one
-# concurrent LANE in its own git worktree at `../<repo>-worktrees/<task_id>` on the
-# same `orch/<task_id>` branch. Either way the packet targets that one branch.
+# There is no separate worktree for a loop packet (ADR 0009) — a worktree is for
+# self-contained work off the default branch, never for this contract.
 
 # How much the Chief Engineer may do without a human on this packet. See ADR 0004
 # and ADR 0006. Precedence at runtime: env ORCH_AUTONOMY > .agents/autonomy > this

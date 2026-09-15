@@ -141,6 +141,7 @@ READ_ONLY_GIT='status|log|diff|show|blame|rev-parse|rev-list|describe|shortlog|r
 #      or `cp … .env` would otherwise bypass the Edit/Write sensitive-path check.
 BASH_WRITE_PATTERNS=(
   '>[[:space:]]*[^|&>[:space:]]'                          # output redirection to a file
+  '>\|[[:space:]]*[^&>[:space:]]'                         # clobber redirect (>|) -- N5
   '(^|[^[:alnum:]])tee([^[:alnum:]]|$)'
   '(^|[^[:alnum:]])sed[[:space:]]+.*-i'                   # in-place sed
   '(^|[^[:alnum:]])(cp|mv|dd|rsync|install|ln)([^[:alnum:]]|$)'
@@ -512,6 +513,425 @@ discover_config() {
   done
 }
 
+# --- driver mode (ADR 0028 / thin-loop-driver T5) -----------------------------
+# A driver-mode mark is a FILE `.agents/driver-mode/<session_id>` in a
+# discovered config root, written/removed only by `runstate.sh driver-mode`
+# (T3). Its CONTENT is irrelevant -- existence alone means "this session is
+# the loop driver." The guard refuses a write only when ALL of:
+#   1) the payload's session_id has a mark in some discovered config root,
+#   2) the payload carries NO agent_id (a dispatched subagent always does --
+#      ADR 0028 Result 1. NEVER branch on agent_type: a `claude --agent` main
+#      thread carries agent_type with no agent_id and must still be refused),
+#   3) the target is outside .agents/.
+# Checked AFTER the secret floor (a secret path is refused as a secret first)
+# and BEFORE the ask tier -- and it refuses even when bypass-ask-tier is true,
+# because this is a hard deny via deny(), not something ask()'s bypass skips.
+#
+# session_id becomes a PATH COMPONENT below, so it is validated FIRST: anything
+# outside [A-Za-z0-9._-], or exactly "." or "..", is treated as NO mark -- judge
+# the call exactly as it is today, never deny, never stat an arbitrary path.
+_valid_session_id() {   # $1 = raw session_id
+  local s="$1"
+  [ -n "$s" ] || return 1
+  case "$s" in
+    .|..)                return 1 ;;
+    *[!A-Za-z0-9._-]*)   return 1 ;;
+  esac
+  return 0
+}
+
+# Does a mark exist for this (already-validated) session id, in ANY discovered
+# config root? Existence only -- content is never read.
+driver_mode_marked() {   # $1 = validated session_id
+  local root
+  discover_config
+  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    [ -f "${root}/.agents/driver-mode/${1}" ] && return 0
+  done
+  return 1
+}
+
+# Does the payload cwd RESOLVE to a discovered config root exactly (not merely
+# live somewhere under one)? A relative `.agents/...` target only unambiguously
+# names the repo's real .agents/ directory when cwd IS that root.
+_cwd_is_config_root() {
+  local resolved r
+  resolved="$(cd "$SHELL_CWD" 2>/dev/null && pwd -P)" || return 1
+  for r in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    [ "$r" = "$resolved" ] && return 0
+  done
+  return 1
+}
+
+# ANCHORED judgment of a single candidate write target -- not a substring
+# test. Used for Edit/Write/MultiEdit/NotebookEdit paths directly, and for
+# every target `_driver_mode_extract_targets` pulls out of a Bash command.
+#   - an unresolved shell variable ($VAR) in the target can never be verified
+#     safe -> refuse;
+#   - any ".." path segment -> refuse (traversal);
+#   - an absolute path (POSIX or a Windows drive letter) is OK only when it
+#     starts with `<root>/.agents/` for some discovered CONFIG_ROOT, compared
+#     case-insensitively (Windows path/drive-letter casing);
+#   - a relative path is OK only when it matches `^(\./)?\.agents/` AND the
+#     payload cwd itself is a discovered config root (see _cwd_is_config_root).
+_driver_mode_path_ok() {   # $1 = raw candidate target
+  local raw="${1:-}" norm
+  [ -n "$raw" ] || return 1
+  # unresolved variable, or the sanitizer's quoted-region placeholder -> a
+  # target we cannot verify at all is refused, never guessed at (N1).
+  case "$raw" in *'$'*|*'__Q__'*) return 1 ;; esac
+  norm="${raw//\\//}"
+  case "/${norm}/" in *'/../'*) return 1 ;; esac  # any ".." segment -> refuse
+  case "$norm" in
+    /*|[A-Za-z]:/*)
+      discover_config
+      local lc_norm root lc_root
+      lc_norm="$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')"
+      for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+        lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
+        case "$lc_norm" in
+          "${lc_root}/.agents/"*) return 0 ;;
+        esac
+      done
+      return 1
+      ;;
+    *)
+      discover_config
+      _cwd_is_config_root || return 1
+      case "$norm" in
+        .agents/*|./.agents/*) return 0 ;;
+        *)                     return 1 ;;
+      esac
+      ;;
+  esac
+}
+
+# --- driver mode: sanitizing and target-extraction for Bash writes -----------
+# A raw Bash command cannot be judged by pattern-matching the whole string (a
+# BASH_WRITE_PATTERNS hit inside a commit message, a heredoc body, a quoted
+# arg, or a `2>/dev/null`/`2>&1` redirect is not a real write). So in driver
+# mode ONLY, the command is reduced to a form safe to re-match and to extract
+# real targets from. This NEVER changes how the existing SECRET/REVIEW/ASK
+# checks match -- those still run against the raw command exactly as before.
+
+# Drop every heredoc BODY (and its terminator line), on ANY line of the
+# command, then keep scanning what follows -- a command AFTER the terminator
+# is a real, separate statement and must still be judged (N2). The delimiter
+# is read off the SAME line as `<<`/`<<-`: an optional `-` (strips leading
+# tabs from candidate terminator lines too), optional surrounding quotes, then
+# the delimiter's leading `[A-Za-z0-9_]+` run. No terminator found before the
+# command ends -> drop to the end (the same fail-safe direction as before,
+# now reached only when it's actually true, not the default).
+_driver_mode_drop_heredocs() {   # $1 = raw command
+  local cmd="$1" out='' line delim='' in_heredoc=0 strip_tabs=0 rest tag k tn ch check
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_heredoc" = 1 ]; then
+      check="$line"
+      if [ "$strip_tabs" = 1 ]; then
+        while [ "${check:0:1}" = "$(printf '\t')" ]; do check="${check:1}"; done
+      fi
+      [ "$check" = "$delim" ] && in_heredoc=0
+      continue   # the body line, and the terminator line itself, are dropped
+    fi
+    out="${out}${line}"$'\n'
+    case "$line" in
+      *'<<'*)
+        rest="${line#*<<}"
+        strip_tabs=0
+        case "$rest" in -*) strip_tabs=1; rest="${rest#-}" ;; esac
+        while [ -n "$rest" ]; do
+          case "${rest:0:1}" in
+            ' '|"$(printf '\t')") rest="${rest:1}" ;;
+            *) break ;;
+          esac
+        done
+        tag="${rest#[\"\']}"
+        delim=""
+        tn=${#tag}
+        for ((k = 0; k < tn; k++)); do
+          ch="${tag:$k:1}"
+          case "$ch" in
+            [A-Za-z0-9_]) delim="${delim}${ch}" ;;
+            *) break ;;
+          esac
+        done
+        [ -n "$delim" ] && in_heredoc=1
+        ;;
+    esac
+  done <<< "$cmd"
+  printf '%s' "${out%$'\n'}"
+}
+
+# Blank every quoted region to ONE placeholder word (never spaces -- see N1)
+# and every `#` comment (only when `#` starts a word: at the very start, or
+# right after whitespace / `;` / `&` / `|` / `(`, and only to the next
+# newline, per N3), leaving redirection operators, command names and real
+# (unquoted) targets untouched so they can still be pattern-matched and
+# extracted. A single placeholder word means a quoted arg still occupies
+# exactly one token position (so e.g. a quoted sed EXPRESSION doesn't
+# silently vanish and shift a real file onto seen_expr -- N1), and it can
+# never itself look like a safe target: `_driver_mode_path_ok` refuses it.
+_driver_mode_sanitize_cmd() {   # $1 = raw command
+  local cmd firstline
+  cmd="$(_driver_mode_drop_heredocs "$1")"
+  local out='' i=0 n=${#cmd} c q='' prev=''
+  while [ "$i" -lt "$n" ]; do
+    c="${cmd:$i:1}"
+    if [ -n "$q" ]; then
+      if [ "$q" = '"' ] && [ "$c" = '\' ]; then
+        i=$((i + 2)); continue        # escaped char inside "..." -> consumed
+      fi
+      if [ "$c" = "$q" ]; then
+        q=''; out="${out} __Q__ "; prev='x'
+      fi
+      i=$((i + 1)); continue
+    fi
+    case "$c" in
+      "'"|'"') q="$c"; i=$((i + 1)); continue ;;
+      '\')
+        out="${out}${c}${cmd:$((i + 1)):1}"; prev='x'; i=$((i + 2)); continue ;;
+      '#')
+        case "$prev" in
+          ''|' '|$'\t'|$'\n'|';'|'&'|'|'|'(')
+            while [ "$i" -lt "$n" ] && [ "${cmd:$i:1}" != $'\n' ]; do i=$((i + 1)); done
+            continue
+            ;;
+          *) out="${out}${c}"; prev="$c"; i=$((i + 1)); continue ;;
+        esac
+        ;;
+      *) out="${out}${c}"; prev="$c"; i=$((i + 1)); continue ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Remove redirects that never name a real file -- `>`/`>>`/`N>` to /dev/null,
+# and fd-duplication (`2>&1`, `1>&2`, `2>&-`). Applied on top of the sanitized
+# copy, before both the write-pattern re-check and target extraction, so a
+# command whose ONLY "write" is one of these is never treated as a write at
+# all (e.g. `bash x.sh > /dev/null`, `scripts/runstate.sh status 2>/dev/null`).
+_driver_mode_neutralize_redirects() {   # $1 = sanitized command
+  printf '%s' "$1" \
+    | sed -E 's/[0-9]?(>>?|>\|)[[:space:]]*\/dev\/null//g' \
+    | sed -E 's/[0-9]?>&[0-9-]+//g'
+}
+
+# Constructs that can hide an additional write or target from this simple
+# scanner, so their presence alongside a matched write form is refused rather
+# than guessed at: command substitution, backticks, `eval`, `xargs`, and
+# `sh -c`/`bash -c`. Checked on the sanitized copy, so one QUOTED (inert) is
+# not mistaken for a real one.
+_driver_mode_bash_dangerous() {   # $1 = sanitized command
+  local s="$1"
+  case "$s" in
+    *'$('*|*'`'*) return 0 ;;
+  esac
+  printf '%s' "$s" | grep -Eq '(^|[^[:alnum:]])(eval|xargs)([^[:alnum:]]|$)' && return 0
+  printf '%s' "$s" | grep -Eq '(^|[^[:alnum:]])(sh|bash)[[:space:]]+-c([^[:alnum:]]|$)' && return 0
+  return 1
+}
+
+# Split a sanitized command into segments on `;`, `&&`, `||` and `|` (plain
+# substring replace -- the sanitizer already blanked every quoted region, so
+# none of these can be DATA at this point). One segment per output line.
+_driver_mode_bash_segments() {   # $1 = sanitized (and redirect-neutralized) command
+  local s="$1"
+  s="${s//'&&'/$'\n'}"
+  s="${s//'||'/$'\n'}"
+  s="${s//;/$'\n'}"
+  s="${s//|/$'\n'}"
+  printf '%s\n' "$s"
+}
+
+# Extracts every write TARGET from one segment, one per output line. Narrow by
+# design: it recognizes exactly the forms BASH_WRITE_PATTERNS matches (a bare
+# `>`/`>>` redirect, `tee`, `sed -i`, the `cp`/`mv`/`install`/`ln`/`rsync`
+# last-arg family, `dd of=`, `truncate`) and prints NOTHING for anything else
+# -- an unrecognized write shape yields no target, which the caller treats as
+# "refuse", never as "allow".
+_driver_mode_extract_targets() {   # $1 = one segment
+  local seg="$1" tok first
+  # (1) explicit `>`/`>>`/`>|` (optionally fd-numbered) redirection targets.
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    case "$tok" in
+      '&'*) ;;
+      *) printf '%s\n' "$tok" ;;
+    esac
+  done < <(printf '%s' "$seg" \
+    | grep -oE '[0-9]?(>{1,2}|>\|)[[:space:]]*[^[:space:];&|]+' \
+    | sed -E 's/^[0-9]?(>{1,2}|>\|)[[:space:]]*//')
+
+  # Tokenize on whitespace via `read -a` (never unquoted `( )`, which would
+  # glob-expand `*`/`?`/`[` against the guard process's own cwd).
+  local -a words plain
+  read -ra words <<< "$seg"
+  [ "${#words[@]}" -gt 0 ] || return 0
+
+  # Drop any redirection operator (bare or glued to its target, e.g. `>`,
+  # `>file`, `>|file`, `2>&1`) and, for a BARE operator, the token right after
+  # it too -- so a `<`/`>`/`>|` target is never mistaken for a plain argument.
+  plain=()
+  local w skip_next=0
+  for w in "${words[@]}"; do
+    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$w" in
+      '>'|'>>'|'>|'|'<'|[0-9]'>'|[0-9]'>>'|[0-9]'>|'|[0-9]'<') skip_next=1; continue ;;
+      '>'*|'>>'*|'>|'*|'<'*|[0-9]'>'*|[0-9]'>>'*|[0-9]'>|'*|[0-9]'<'*) continue ;;
+      *) plain+=("$w") ;;
+    esac
+  done
+  [ "${#plain[@]}" -gt 0 ] || return 0
+  first="${plain[0]##*/}"
+
+  case "$first" in
+    tee)
+      for w in "${plain[@]:1}"; do
+        case "$w" in -*) ;; *) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+    cp|install|ln)
+      # -t/--target-directory NAMES the real destination (N7a): without it,
+      # every other positional arg is a SOURCE (only read), and only the last
+      # positional arg is written. rsync has no -t/--target-directory (its
+      # own -t means "preserve times") so it is NOT in this case.
+      local tdir='' k
+      for ((k = 1; k < ${#plain[@]}; k++)); do
+        case "${plain[$k]}" in
+          -t) tdir="${plain[$((k + 1))]:-}"; break ;;
+          --target-directory=*) tdir="${plain[$k]#--target-directory=}"; break ;;
+        esac
+      done
+      if [ -n "$tdir" ]; then
+        printf '%s\n' "$tdir"
+      elif [ "${#plain[@]}" -gt 1 ]; then
+        printf '%s\n' "${plain[${#plain[@]}-1]}"
+      fi
+      ;;
+    mv)
+      # mv REMOVES every source it renames away from, which is a write at
+      # that path too (N7b) -- so every positional arg is a target, not just
+      # the destination (or the -t/--target-directory value, if given).
+      local tdir='' k
+      for ((k = 1; k < ${#plain[@]}; k++)); do
+        case "${plain[$k]}" in
+          -t) tdir="${plain[$((k + 1))]:-}"; break ;;
+          --target-directory=*) tdir="${plain[$k]#--target-directory=}"; break ;;
+        esac
+      done
+      [ -n "$tdir" ] && printf '%s\n' "$tdir"
+      for w in "${plain[@]:1}"; do
+        case "$w" in -*) ;; *) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+    rsync)
+      [ "${#plain[@]}" -gt 1 ] && printf '%s\n' "${plain[${#plain[@]}-1]}"
+      ;;
+    dd)
+      printf '%s' "$seg" | grep -oE '(^|[^[:alnum:]])of=[^[:space:];&|]+' | sed -E 's/^.*of=//'
+      ;;
+    truncate)
+      local i=1 n=${#plain[@]}
+      while [ "$i" -lt "$n" ]; do
+        case "${plain[$i]}" in
+          -s)          i=$((i + 2)); continue ;;
+          --size=*|-s*|-*) ;;
+          *)           printf '%s\n' "${plain[$i]}" ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+    sed)
+      case "$seg" in
+        *-i*)
+          local j=1 m=${#plain[@]} seen_expr=0
+          while [ "$j" -lt "$m" ]; do
+            case "${plain[$j]}" in
+              -*) ;;
+              *)
+                if [ "$seen_expr" = 0 ]; then seen_expr=1
+                else printf '%s\n' "${plain[$j]}"
+                fi
+                ;;
+            esac
+            j=$((j + 1))
+          done
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# The whole driver-mode Bash decision: 0 = REFUSE, 1 = no objection.
+_driver_mode_bash_refuses() {   # $1 = raw command
+  local raw="$1" san neutral seg tgt matched=1 targets_found=0 wp saw_cd=0 first_word
+
+  san="$(_driver_mode_sanitize_cmd "$raw")"
+  neutral="$(_driver_mode_neutralize_redirects "$san")"
+
+  for wp in "${BASH_WRITE_PATTERNS[@]}"; do
+    if printf '%s' "$neutral" | grep -Eq "$wp"; then matched=0; break; fi
+  done
+  [ "$matched" = 1 ] && return 1   # nothing left that looks like a real write
+
+  _driver_mode_bash_dangerous "$neutral" && return 0   # can't be judged safely
+
+  # N6: `cd`/`pushd` anywhere in the command invalidates every RELATIVE
+  # target -- once the working directory can change mid-command, a relative
+  # target that looks like `.agents/...` may really land at `src/.agents/...`,
+  # which this scanner has no way to resolve. Scanned as its own pass (not
+  # sequentially) because a change anywhere makes every relative target
+  # suspect, not only the ones after it.
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    read -r first_word _ <<< "$seg"
+    case "$first_word" in cd|pushd) saw_cd=1 ;; esac
+  done < <(_driver_mode_bash_segments "$neutral")
+
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    while IFS= read -r tgt; do
+      [ -n "$tgt" ] || continue
+      targets_found=$((targets_found + 1))
+      if [ "$saw_cd" = 1 ]; then
+        case "$tgt" in
+          /*|[A-Za-z]:/*) ;;             # absolute -- unaffected by cd/pushd
+          *) return 0 ;;                 # relative after a cd/pushd -- refuse
+        esac
+      fi
+      _driver_mode_path_ok "$tgt" || return 0   # a bad/unresolvable target
+    done < <(_driver_mode_extract_targets "$seg")
+  done < <(_driver_mode_bash_segments "$neutral")
+
+  [ "$targets_found" -ge 1 ] || return 0   # write matched, no target found
+  return 1
+}
+
+# Lazy + memoized: session_id/agent_id are read from the payload only once, and
+# only by a caller that actually reaches a driver-mode check (Edit/Write/
+# MultiEdit/NotebookEdit, or a matched Bash write pattern) -- never paid for on
+# the read-only Bash fast-path.
+_DRIVER_MODE_INFO_READ=""
+SESSION_ID=""
+AGENT_ID=""
+_read_driver_mode_info() {
+  [ -n "$_DRIVER_MODE_INFO_READ" ] && return 0
+  SESSION_ID="$(json_field "$INPUT" session_id)"
+  AGENT_ID="$(json_field "$INPUT" agent_id)"
+  _DRIVER_MODE_INFO_READ=1
+}
+
+# True iff this call must be judged as a MAIN-THREAD driver-mode call: a
+# validated session_id carries a mark, and the payload has no agent_id. A
+# payload with no session_id (or an invalid one) is judged exactly as it is
+# today, because _valid_session_id already returns false for it.
+driver_mode_active() {
+  _read_driver_mode_info
+  [ -n "${AGENT_ID:-}" ] && return 1
+  _valid_session_id "$SESSION_ID" || return 1
+  driver_mode_marked "$SESSION_ID"
+}
+
 # --- resolve the active autonomy level (ADR 0004) ----------------------------
 # Precedence: env ORCH_AUTONOMY > <repo>/.agents/autonomy > default. An unknown
 # value falls back to the default (the most restrictive, fail-safe choice). The
@@ -702,6 +1122,8 @@ deny() {
       echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor holds at every autonomy level — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
     payload-unreadable)
       echo "  hint     : the guardrail could not read this tool call's payload, so it cannot judge it — and a control that cannot read its input must DENY, not allow. Install a working JSON parser on PATH: 'jq' is the reliable one. On Windows/Git Bash, 'python3' is usually the Microsoft Store App Execution Alias, which is on PATH but is NOT a parser. Check with: hooks/guard.sh --selftest" >&2 ;;
+    driver-mode|driver-mode-via-bash)
+      echo "  hint     : this session is in driver mode (ADR 0028) — it dispatches agents to make packet edits and must not edit outside .agents/ directly. An unresolved shell variable (\$VAR) in a write target can't be verified safe either — write temp files under .agents/ instead. If you need a hands-on edit, pause the loop first: /gaffer:pause." >&2 ;;
   esac
   echo "If this is intended, approve it explicitly (or run it yourself)." >&2
   exit 2
@@ -816,7 +1238,12 @@ split_pipeline() {
 is_read_only() {
   local cmd="$1" seg first
   case "$cmd" in
-    *'>'*|*'<'*|*'`'*|*'$'*|*';'*|*'&'*) return 1 ;;
+    # A literal newline is a statement separator exactly like `;` -- without
+    # this, only the FIRST word of a multi-line command was ever checked
+    # (e.g. "echo hi\ncp a .env" fast-pathed on "echo" alone, and the second
+    # line's write never got judged at all -- a pre-existing hole, not a
+    # driver-mode one). This can only DECLINE more commands, never allow one.
+    *'>'*|*'<'*|*'`'*|*'$'*|*';'*|*'&'*|*$'\n'*) return 1 ;;
   esac
   split_pipeline "$cmd" || return 1
   for seg in "${SPLIT_SEGS[@]}"; do
@@ -1095,6 +1522,17 @@ case "$TOOL" in
       if printf '%s' "$CMD" | grep -Eq "$wp"; then
         if cmd_hits_path "$CMD" "${SECRET_PATH_PATTERNS[@]}"; then
           deny "secret-path-via-bash" "$MATCHED_SENSITIVE" "$CMD"
+        # Driver mode (ADR 0028 T5): checked after the secret floor, before the
+        # REVIEW ask below. The command is sanitized (quotes/heredoc body/
+        # comments blanked, benign /dev/null and fd-dup redirects removed)
+        # before it is re-matched and its write targets extracted, so a
+        # commit message, heredoc body or quoted arg that merely CONTAINS a
+        # write-shaped word never trips this. Every extracted target must
+        # anchor inside .agents/; an unrecognised write shape (no target could
+        # be determined) or a dangerous construct ($( ` eval xargs sh -c)
+        # refuses conservatively rather than guessing.
+        elif driver_mode_active && _driver_mode_bash_refuses "$CMD"; then
+          deny "driver-mode-via-bash" "session ${SESSION_ID} is in driver mode (no agent_id)" "$CMD"
         elif cmd_hits_path "$CMD" "${REVIEW_PATH_PATTERNS[@]}"; then
           ask "review-path-via-bash" "$MATCHED_SENSITIVE" "$CMD"
         fi
@@ -1135,6 +1573,13 @@ case "$TOOL" in
         deny "secret-path" "$pat" "$PATH_VAL"
       fi
     done
+    # Driver mode (ADR 0028 T5): after the secret floor, before the REVIEW ask.
+    # Anchored, not a substring test -- _driver_mode_path_ok rejects a ".."
+    # segment, requires an absolute path to sit under a discovered config
+    # root's .agents/, and requires a relative path's cwd to BE that root.
+    if driver_mode_active && ! _driver_mode_path_ok "$PATH_VAL"; then
+      deny "driver-mode" "session ${SESSION_ID} is in driver mode (no agent_id)" "$PATH_VAL"
+    fi
     for pat in "${REVIEW_PATH_PATTERNS[@]}"; do
       if printf '%s' "$PATH_MATCH" | grep -Eiq "$pat"; then
         ask "review-path" "$pat" "$PATH_VAL"

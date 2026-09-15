@@ -1,0 +1,82 @@
+# Status line — what every loop-dispatched agent returns (thin-loop-driver, ADR 0028)
+
+Every agent the loop dispatches — the `implementer`, `doc-writer`, `researcher`,
+`architect`, `ux-designer`, `reviewer`, and the escalation-decider stand-in
+(`chief-engineer`, interim) — returns **exactly one line** as the whole of its
+response to the driver, and writes everything else (diffs described, review
+findings, research answers, reasoning) to its **result file** via
+`runstate.sh write-result`. The driver never opens that file — it passes the
+path straight back to whoever routes on it (the reviewer verdict, an
+escalation decision, or the operator asking a question) or to the operator
+directly.
+
+## Grammar
+
+```
+<status> · <what changed> · result: <needs-reading|no> · <path>
+```
+
+Four fields, separated by ` · ` (space, U+00B7 MIDDLE DOT, space), in this
+exact order:
+
+1. **`<status>`** — one word, first field, so the driver can split on ` · `
+   and take the first token without parsing anything else. For the
+   `reviewer` this is one of `pass`, `fix`, `escalate` (its verdict). For the
+   escalation-decider stand-in this is one of `retry`, `reorder`,
+   `append-task`, `hand-off-feature`, `ask-operator` (its decision). Any
+   other dispatched agent — a fresh implementer attempt, the architect or
+   UX designer implementing a design-heavy packet, the doc-writer, the
+   researcher answering an operator question — reports its own outcome in
+   plain language (`done`, `blocked`), since nothing routes on it directly.
+2. **`<what changed>`** — one short clause, plain English, no `file:line`
+   list and no diff. Enough for the driver to relay to the operator without
+   opening the result file.
+3. **`result: <needs-reading|no>`** — literally `result:` followed by
+   `needs-reading` when the result file carries something the next reader
+   (the driver, another agent, or the operator) should actually open, or
+   `no` when the status line already says everything that matters. This is
+   a claim the agent makes about its own result file, not a promise the
+   result file is empty when it says `no` — `write-result` always writes
+   one.
+4. **`<path>`** — the result file's path, exactly as `runstate.sh
+   write-result` printed it (`RESULT=<path>`), so the reader can open it
+   without reconstructing it.
+
+**Parse `<status>` as everything before the FIRST ` · `, and `<path>` as
+everything after the LAST ` · `.** The middle two fields are free text and may
+themselves contain ` · ` (a clause with its own aside, for instance) — do not
+assume the line splits cleanly into exactly four pieces by that separator.
+Only the first and last boundaries are load-bearing.
+
+## Passing this line to a shell — single-quote it, always
+
+Whoever routes on this line (the driver, calling `runstate.sh route` or
+`write-result`) passes it as a shell argument: `--status '<line>'`, single
+-quoted, never double-quoted. A double-quoted `"<line>"` lets a backtick or
+`$(...)` inside the agent's own text execute in the driver's shell — the
+guard treats quoted text as inert, but only single quotes actually are.
+Single-quoting also means a literal `'` inside the line must be escaped as
+`'\''` (close the quote, an escaped literal quote, reopen the quote) — this
+is the ONE escaping rule, stated here once, and every caller uses it the same
+way rather than re-deriving it. **A status line must not contain a
+backtick (`` ` ``) or a `$`** — nothing legitimate in a one-clause status
+report needs either, and forbidding them outright is simpler and safer than
+trusting every caller's quoting.
+
+## The same line opens the result file
+
+`runstate.sh write-result <run-state> <path> --status '<line>'` writes the
+status line as the file's **first line**, followed by whatever the agent
+piped in on stdin. An agent that later needs to recall what it already
+reported can read its own result file rather than holding it in context; a
+different agent picking the file up sees the status line first and the detail
+below it.
+
+## One line, no exceptions
+
+A status line that grows past one line — a second line, a wrapped paragraph,
+an embedded list — breaks this contract: the driver never opens the result
+file, so anything after the first line is invisible to it and to whatever the
+driver dispatches next. Nothing mechanically refuses a multi-line reply; the
+**reviewer** is what catches it, the same way it catches any other
+acceptance-criterion failure, and reports it as a `fix`.

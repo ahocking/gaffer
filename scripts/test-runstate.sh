@@ -1523,6 +1523,556 @@ assert_true "only the new-shape entry counts toward STALE_COUNT" \
   "printf '%s\n' \"\$STALE_LEGACY\" | grep -q '^STALE_COUNT=1\$'"
 
 echo
+echo "== driver-mode: enter/exit/status, keyed by session (thin-loop-driver T3) =="
+DM="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$DM" init -q
+git -C "$DM" config user.email t@t; git -C "$DM" config user.name t
+mkdir -p "$DM/.agents"
+printf 'schema: 3\nstatus: running\n' > "$DM/.agents/run-state.yaml"
+dm_status() { (cd "$DM" && "$RUNSTATE" driver-mode status "$1"); }
+
+assert_true "driver-mode enter reports on" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode enter --model claude-sonnet-5 --effort high --threshold unknown DMS1) | grep -qx 'DRIVER_MODE=on'"
+assert_true "driver-mode status reads on right after enter (round trip)" \
+  "[ \"\$(dm_status DMS1)\" = 'DRIVER_MODE=on' ]"
+assert_true "driver-mode exit reports off" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode exit DMS1) | grep -qx 'DRIVER_MODE=off'"
+assert_true "driver-mode status reads off after exit (round trip)" \
+  "[ \"\$(dm_status DMS1)\" = 'DRIVER_MODE=off' ]"
+assert_true "a repeated exit is a no-op, not an error" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode exit DMS1) | grep -qx 'DRIVER_MODE=off'"
+assert_true "another session that never entered reads off" \
+  "[ \"\$(dm_status DMS2)\" = 'DRIVER_MODE=off' ]"
+assert_true "entering one session never marks another" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode enter --model m --effort e --threshold t DMS3 >/dev/null) && [ \"\$(dm_status DMS2)\" = 'DRIVER_MODE=off' ] && [ \"\$(dm_status DMS3)\" = 'DRIVER_MODE=on' ]"
+assert_true "the driver-mode log is valid append-only JSON, one record per line" \
+  "jq -s -e 'length > 0 and (map(type == \"object\") | all)' \"$DM/.agents/metrics/driver-mode/DMS1.jsonl\" >/dev/null"
+# The exact call sequence above for DMS1 was: enter, exit, exit (the repeated
+# no-op exit). `length > 0` alone would pass even if a record went missing or
+# the append order were scrambled -- assert the shape too.
+assert_true "the driver-mode log holds EXACTLY 3 records (enter, exit, exit), in order" \
+  "[ \"\$(jq -r '.kind' \"$DM/.agents/metrics/driver-mode/DMS1.jsonl\" | paste -sd, -)\" = 'enter,exit,exit' ]"
+assert_true "the enter record carries model/effort/threshold" \
+  "jq -e 'select(.kind == \"enter\") | .model == \"claude-sonnet-5\" and .effort == \"high\" and .threshold == \"unknown\"' \"$DM/.agents/metrics/driver-mode/DMS1.jsonl\" >/dev/null"
+assert_true "driver-mode enter never writes to the outcomes log" \
+  "[ ! -d \"$DM/.agents/metrics/outcomes\" ]"
+assert_true "sweep-open --list prints nothing after only a driver-mode enter" \
+  "[ -z \"\$(cd \"$DM\" && \"\$RUNSTATE\" sweep-open --list)\" ]"
+assert_true "driver-mode enter rejects a session id containing '..'" \
+  "(cd \"$DM\" && ! \"\$RUNSTATE\" driver-mode enter --model m --effort e --threshold t '..' 2>/dev/null)"
+assert_true "driver-mode enter rejects a session id with an illegal character" \
+  "(cd \"$DM\" && ! \"\$RUNSTATE\" driver-mode enter --model m --effort e --threshold t 'bad/id' 2>/dev/null)"
+assert_true "driver-mode status rejects a hostile session id rather than reading it" \
+  "(cd \"$DM\" && ! \"\$RUNSTATE\" driver-mode status '../escape' 2>/dev/null)"
+
+echo "-- driver-mode enter refuses an adhoc fallback; exit/status may still use it (review fix 11) --"
+assert_true "driver-mode enter refuses when neither an arg nor CLAUDE_CODE_SESSION_ID is given" \
+  "(cd \"$DM\" && ! env -u CLAUDE_CODE_SESSION_ID \"\$RUNSTATE\" driver-mode enter --model m --effort e --threshold t 2>/dev/null)"
+assert_true "the refusal names the reason (no adhoc mark left behind)" \
+  "(cd \"$DM\" && env -u CLAUDE_CODE_SESSION_ID \"\$RUNSTATE\" driver-mode enter --model m --effort e --threshold t 2>&1 >/dev/null) | grep -qi 'adhoc'"
+assert_true "  and no mark was written for 'adhoc'" \
+  "[ ! -f \"$DM/.agents/driver-mode/adhoc\" ]"
+assert_true "driver-mode status with no session id still reports off (adhoc fallback kept for queries)" \
+  "[ \"\$(cd \"$DM\" && env -u CLAUDE_CODE_SESSION_ID \"\$RUNSTATE\" driver-mode status)\" = 'DRIVER_MODE=off' ]"
+
+echo "-- _rs_json_escape: a tab or other control byte must not break routing.jsonl/the driver-mode log (review fix 6) --"
+DM_TAB_OUT="$(cd "$DM" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t DMSTAB)"
+(cd "$DM" && "$RUNSTATE" driver-mode exit DMSTAB >/dev/null)
+assert_true "a tab in driver-mode enter's --model still yields valid JSON" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode enter --model \$'tab\\there' --effort e --threshold t DMSCTRL >/dev/null) && jq -s -e 'map(type == \"object\") | all' \"$DM/.agents/metrics/driver-mode/DMSCTRL.jsonl\" >/dev/null"
+assert_true "the tab was collapsed to a space, not left raw in the JSON" \
+  "[ \"\$(jq -r 'select(.kind == \"enter\") | .model' \"$DM/.agents/metrics/driver-mode/DMSCTRL.jsonl\")\" = 'tab here' ]"
+assert_true "a \\001 control byte in --effort still yields valid JSON (deleted, not left raw)" \
+  "(cd \"$DM\" && \"\$RUNSTATE\" driver-mode enter --model m --effort \$'ctrl\\001here' --threshold t DMSCTRL2 >/dev/null) && jq -s -e 'map(type == \"object\") | all' \"$DM/.agents/metrics/driver-mode/DMSCTRL2.jsonl\" >/dev/null"
+assert_true "  and the \\001 byte itself is gone from the decoded value" \
+  "[ \"\$(jq -r 'select(.kind == \"enter\") | .effort' \"$DM/.agents/metrics/driver-mode/DMSCTRL2.jsonl\")\" = 'ctrlhere' ]"
+
+echo
+echo "== session-start.sh: clears its OWN session's driver-mode mark on startup/resume (T6) =="
+sess_payload() { printf '{"session_id":"%s","source":"%s","hook_event_name":"SessionStart"}' "$1" "$2"; }
+run_ss_hook() { # run_ss_hook <project-dir> <payload>
+  printf '%s' "$2" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_PROJECT_DIR="$1" bash "$HOOK"
+}
+SSD="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$SSD" init -q
+git -C "$SSD" config user.email t@t; git -C "$SSD" config user.name t
+mkdir -p "$SSD/.agents"
+printf 'schema: 3\nstatus: running\n' > "$SSD/.agents/run-state.yaml"
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSA >/dev/null)
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSB >/dev/null)
+run_ss_hook "$SSD" "$(sess_payload SSA startup)" >/dev/null
+assert_true "a reopened session's mark is cleared on startup" \
+  "[ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSA)\" = 'DRIVER_MODE=off' ]"
+assert_true "another session's mark is untouched by that same hook run" \
+  "[ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSB)\" = 'DRIVER_MODE=on' ]"
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSC >/dev/null)
+run_ss_hook "$SSD" "$(sess_payload SSC resume)" >/dev/null
+assert_true "a resumed session's mark is cleared on resume" \
+  "[ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSC)\" = 'DRIVER_MODE=off' ]"
+assert_true "session-start.sh emits valid JSON even while clearing a mark" \
+  "run_ss_hook \"$SSD\" \"\$(sess_payload SSB startup)\" | python3 -c 'import json,sys; json.load(sys.stdin)'"
+# This fixture's run-state carries status: running, so the hook's OTHER job
+# (the resume notice) fires regardless of whether a mark was cleared -- these
+# two assert the mark-clearing logic fails open (no crash, no nonzero exit,
+# the rest of the hook still runs) rather than asserting silence, which would
+# only be true with no run-state present at all (see the pre-existing "hook is
+# silent when no run-state" case above).
+assert_true "session-start.sh fails open with no session_id in the payload (exit 0, still emits its normal resume notice)" \
+  "run_ss_hook \"$SSD\" '{\"source\":\"startup\"}' | grep -q additionalContext"
+assert_true "re-clearing an already-cleared mark is a no-op, not an error" \
+  "run_ss_hook \"$SSD\" \"\$(sess_payload SSB startup)\" | grep -q additionalContext && [ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSB)\" = 'DRIVER_MODE=off' ]"
+
+echo "-- CR safety: a jq whose output carries a trailing CRLF must not defeat session-id extraction (review fix 7) --"
+# Reproduces ADR 0019 v3.1's own defect one layer up: a native Windows jq
+# build opens stdout in TEXT mode, so ITS OWN OUTPUT carries a trailing CRLF
+# even on a pipe, and plain bash's `$(...)` strips only the trailing `\n` --
+# the `\r` survives into `sess`, `_rs_check_session_id` then rejects it
+# (correctly: a bare CR is not `[A-Za-z0-9._-]`), and this hook's own
+# `|| true` swallows that failure SILENTLY, so the mark never clears. Built
+# with `printf`, never `sed 's/$/\r/'` -- BSD/macOS sed inserts a literal
+# "r" character there, not a carriage return (the exact gotcha CLAUDE.md
+# documents for this class of fix). The probe query (`._p`) is left clean so
+# jq is still selected as the parser; only the session_id query's own output
+# carries the defect, isolating the extraction-branch fix from the (separate,
+# out-of-scope here) parser-detection-probe question.
+CRJQ_DIR="$(mktemp -d)"
+cat > "$CRJQ_DIR/jq" <<'FAKEJQ'
+#!/bin/sh
+if [ "$1" = "-er" ] && [ "$2" = "._p" ]; then
+  printf 'ok\n'
+  exit 0
+fi
+if [ "$1" = "-r" ] && [ "$2" = '.session_id // empty' ]; then
+  input="$(cat)"
+  sid="$(printf '%s' "$input" | grep -o '"session_id":"[^"]*"' | sed 's/.*:"//; s/"$//')"
+  printf '%s\r\n' "$sid"
+  exit 0
+fi
+exit 1
+FAKEJQ
+chmod +x "$CRJQ_DIR/jq"
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSCRLF >/dev/null)
+PATH="$CRJQ_DIR:$PATH" run_ss_hook "$SSD" "$(sess_payload SSCRLF startup)" >/dev/null
+assert_true "a CRLF-corrupted jq extraction still clears the right session's mark (tr -d '\\r' strips it first)" \
+  "[ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSCRLF)\" = 'DRIVER_MODE=off' ]"
+
+echo
+echo "== driver-mode-compact.sh: re-arms the driver after compaction, never on a bare clear (T6) =="
+COMPACT_HOOK="${PLUGIN_ROOT}/hooks/driver-mode-compact.sh"
+run_compact_hook() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_PROJECT_DIR="$SSD" bash "$COMPACT_HOOK"; }
+assert_true "driver-mode-compact.sh exists and is executable" "[ -x '$COMPACT_HOOK' ]"
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSD1 >/dev/null)
+COMPACT_OUT="$(run_compact_hook "$(sess_payload SSD1 compact)")"
+assert_true "a compacted session's mark is KEPT, not cleared" \
+  "[ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSD1)\" = 'DRIVER_MODE=on' ]"
+assert_true "the compact hook tells the model to Read agents/loop-driver.md" \
+  "printf '%s' \"\$COMPACT_OUT\" | grep -q 'agents/loop-driver.md'"
+assert_true "the compact hook injects additionalContext" \
+  "printf '%s' \"\$COMPACT_OUT\" | grep -q additionalContext"
+assert_true "the compact hook emits valid JSON" \
+  "printf '%s' \"\$COMPACT_OUT\" | python3 -c 'import json,sys; json.load(sys.stdin)'"
+assert_true "the compact hook is silent for a session with no mark" \
+  "[ -z \"\$(run_compact_hook \"\$(sess_payload SSD2 compact)\")\" ]"
+assert_true "the compact hook fails open with no session_id (silent, no crash)" \
+  "[ -z \"\$(run_compact_hook '{\"source\":\"compact\"}')\" ]"
+# ADR 0028: /clear mints a NEW session_id, so this hook (registered on
+# `compact` ONLY -- see the hooks.json `matcher == "compact"` assertion below,
+# which is the REAL pin against ever running on a `clear` source) never
+# legitimately sees a `clear` source in production. This case is honestly
+# near-vacuous on its own: the hook script itself never reads or branches on
+# `source` at all, so feeding it one directly proves only that it has no
+# clearing logic to trigger -- not that the harness will never call it that
+# way. Kept as a direct pin on THIS script's own (lack of) behavior, distinct
+# from the matcher assertion, which pins the REGISTRATION.
+assert_true "this hook has no clearing logic to trigger, regardless of the payload's source field" \
+  "run_compact_hook \"\$(sess_payload SSD1 clear)\" >/dev/null; [ \"\$(cd \"$SSD\" && \"\$RUNSTATE\" driver-mode status SSD1)\" = 'DRIVER_MODE=on' ]"
+
+echo "-- CR safety: a CRLF-corrupted jq extraction must not silence the re-arm note (review fix 7) --"
+# Same fake jq as the session-start.sh CRLF case above (CRJQ_DIR), reused
+# here: this hook's own status LOOKUP (not a clear) must still find the
+# mark and emit the note once the CR is stripped.
+(cd "$SSD" && "$RUNSTATE" driver-mode enter --model m --effort e --threshold t SSCRLF2 >/dev/null)
+COMPACT_CRLF_OUT="$(PATH="$CRJQ_DIR:$PATH" run_compact_hook "$(sess_payload SSCRLF2 compact)")"
+assert_true "a CRLF-corrupted jq extraction still finds the mark and emits the re-arm note" \
+  "printf '%s' \"\$COMPACT_CRLF_OUT\" | grep -q 'agents/loop-driver.md'"
+
+echo
+echo "== hooks.json: driver-mode-compact.sh registered on SessionStart compact (T6) =="
+HOOKS_JSON="${PLUGIN_ROOT}/hooks/hooks.json"
+assert_true "hooks.json is valid JSON" "jq -e . '$HOOKS_JSON' >/dev/null"
+assert_true "a SessionStart entry matches 'compact' and runs driver-mode-compact.sh" \
+  "jq -e '.hooks.SessionStart[] | select(.matcher == \"compact\") | .hooks[].command | test(\"driver-mode-compact.sh\")' '$HOOKS_JSON' >/dev/null"
+assert_true "the existing startup|resume SessionStart entry is unchanged" \
+  "jq -e '.hooks.SessionStart[] | select(.matcher == \"startup|resume\") | .hooks[].command | test(\"session-start.sh\")' '$HOOKS_JSON' >/dev/null"
+
+echo
+echo "== begin-run: mint run_id once, create + prune .agents/loop/ (thin-loop-driver T7) =="
+BR="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$BR" init -q
+git -C "$BR" config user.email t@t; git -C "$BR" config user.name t
+mkdir -p "$BR/.agents"
+printf 'schema: 3\nstatus: running\n' > "$BR/.agents/run-state.yaml"
+BR_OUT1="$(cd "$BR" && "$RUNSTATE" begin-run .agents/run-state.yaml)"
+BR_RUN_ID="$(printf '%s\n' "$BR_OUT1" | sed -n 's/^RUN_ID=//p')"
+assert_true "begin-run reports a RUN_ID" "[ -n \"\$BR_RUN_ID\" ]"
+assert_true "begin-run creates the run directory" \
+  "[ -d \"$BR/.agents/loop/\$BR_RUN_ID\" ]"
+assert_true "begin-run writes run_id into run-state" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$BR/.agents/run-state.yaml\" run_id)\" = \"\$BR_RUN_ID\" ]"
+assert_true "begin-run leaves run-state valid YAML" "yamlok \"$BR/.agents/run-state.yaml\""
+BR_OUT2="$(cd "$BR" && "$RUNSTATE" begin-run .agents/run-state.yaml)"
+BR_RUN_ID2="$(printf '%s\n' "$BR_OUT2" | sed -n 's/^RUN_ID=//p')"
+assert_true "a second begin-run mints the SAME run_id (minted once, resume keeps it)" \
+  "[ \"\$BR_RUN_ID2\" = \"\$BR_RUN_ID\" ]"
+assert_true "a second begin-run with nothing else to prune reports no REMOVED= line" \
+  "! printf '%s\n' \"\$BR_OUT2\" | grep -q '^REMOVED='"
+
+# Fabricate THREE run_id-shaped directories that sort BEFORE $BR_RUN_ID (a
+# real current timestamp, so any earlier YYYYMMDDTHHMMSS prefix sorts below
+# it lexically), plus one NON-shaped directory that must survive regardless
+# of age. Pruning is by NAME SHAPE now, never by mtime -- the defect this
+# replaced was `stat -f %m` reading as the FILE MODE on GNU `stat`, not a
+# time, which silently kept the WRONG directory (or none at all) on
+# Linux/Git Bash. Using fabricated names (not real mtimes) proves the fix
+# does not depend on the filesystem's clock at all.
+mkdir -p "$BR/.agents/loop/20260101T000000-aaaa" \
+         "$BR/.agents/loop/20260102T000000-bbbb" \
+         "$BR/.agents/loop/20260103T000000-cccc" \
+         "$BR/.agents/loop/operator-scratch"
+BR_OUT3="$(cd "$BR" && "$RUNSTATE" begin-run .agents/run-state.yaml)"
+assert_true "begin-run prunes the OLDEST shape-matching directory" \
+  "printf '%s\n' \"\$BR_OUT3\" | grep -qx 'REMOVED=20260101T000000-aaaa'"
+assert_true "begin-run prunes the second-oldest shape-matching directory" \
+  "printf '%s\n' \"\$BR_OUT3\" | grep -qx 'REMOVED=20260102T000000-bbbb'"
+assert_true "begin-run keeps the current run's directory" \
+  "[ -d \"$BR/.agents/loop/\$BR_RUN_ID\" ]"
+assert_true "begin-run keeps the newest OTHER (previous) shape-matching directory" \
+  "[ -d \"$BR/.agents/loop/20260103T000000-cccc\" ]"
+assert_true "begin-run does not also remove the newest previous directory" \
+  "! printf '%s\n' \"\$BR_OUT3\" | grep -qx 'REMOVED=20260103T000000-cccc'"
+assert_true "a non-run_id-shaped directory survives unconditionally" \
+  "[ -d \"$BR/.agents/loop/operator-scratch\" ]"
+assert_true "a non-run_id-shaped directory is never reported as REMOVED" \
+  "! printf '%s\n' \"\$BR_OUT3\" | grep -qx 'REMOVED=operator-scratch'"
+
+echo
+echo "== begin-run refuses a hostile run_id read back from run-state (thin-loop-driver review fix) =="
+BRH="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$BRH" init -q
+git -C "$BRH" config user.email t@t; git -C "$BRH" config user.name t
+mkdir -p "$BRH/.agents"
+printf 'schema: 3\nstatus: running\nrun_id: ../../../escape\n' > "$BRH/.agents/run-state.yaml"
+assert_true "begin-run refuses a run_id containing '..' rather than creating a directory outside the repo" \
+  "(cd \"$BRH\" && ! \"\$RUNSTATE\" begin-run .agents/run-state.yaml 2>/dev/null)"
+assert_true "the refused begin-run created no .agents/loop/ at all" \
+  "[ ! -d \"$BRH/.agents/loop\" ]"
+
+echo
+echo "== .agents/loop/ run-directory files survive the pause stash (thin-loop-driver T7) =="
+BRG="$(cd "$(mktemp -d)" && pwd -P)"
+printf 'hello\n' > "$BRG/README.md"
+printf '.agents/loop/\n.agents/run-state.yaml\n' > "$BRG/.gitignore"
+git -C "$BRG" init -q
+git -C "$BRG" config user.email t@t; git -C "$BRG" config user.name t
+git -C "$BRG" add -A; git -C "$BRG" commit -qm init
+BRG_GREEN="$(git -C "$BRG" rev-parse HEAD)"
+mkdir -p "$BRG/.agents"
+printf 'schema: 3\nstatus: running\nlast_green_commit: %s\nbacklog:\n  cursor: p1\n  pending:\n    - p1\n' "$BRG_GREEN" > "$BRG/.agents/run-state.yaml"
+BRG_RUN_ID="$(cd "$BRG" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+printf 'scratch handoff\n' > "$BRG/.agents/loop/$BRG_RUN_ID/scratch.md"
+assert_true "the run directory does not dirty git status (it is ignored)" \
+  "[ -z \"\$(git -C '$BRG' status --porcelain)\" ]"
+assert_true "reconcile reads clean with the run directory present" \
+  "[ \"\$(\"\$RUNSTATE\" reconcile \"$BRG/.agents/run-state.yaml\" \"$BRG\" | sed -n 's/^DECISION=//p')\" = clean ]"
+git -C "$BRG" stash push --include-untracked -m 'orch pause scratch' >/dev/null 2>&1 || true
+assert_true "the run directory's file survives git stash --include-untracked (ignored files are skipped)" \
+  "[ -f \"$BRG/.agents/loop/\$BRG_RUN_ID/scratch.md\" ]"
+assert_true "reconcile still reads clean after the stash" \
+  "[ \"\$(\"\$RUNSTATE\" reconcile \"$BRG/.agents/run-state.yaml\" \"$BRG\" | sed -n 's/^DECISION=//p')\" = clean ]"
+
+echo "-- the REAL .gitignore files actually ignore .agents/loop/ and .agents/driver-mode/ (review fix 10) --"
+# BRG's own fixture .gitignore (above) only proves the STASH survives when a
+# path is ignored -- it says nothing about whether the plugin's real,
+# shipped .gitignore files actually name these paths. `git check-ignore`
+# against a copy of each real file, in its own throwaway repo, is the direct
+# pin: if either file's entry ever drifts or gets removed, this fails even
+# though the BRG case above would still pass (it writes its OWN minimal
+# .gitignore, unrelated to the shipped ones).
+for GI_REL in ".gitignore" "templates/spec-driven-base/.gitignore"; do
+  GI_SRC="${PLUGIN_ROOT}/${GI_REL}"
+  GI_CHECK="$(cd "$(mktemp -d)" && pwd -P)"
+  git -C "$GI_CHECK" init -q
+  cp "$GI_SRC" "$GI_CHECK/.gitignore"
+  assert_true "${GI_REL} ignores .agents/loop/x" \
+    "git -C '$GI_CHECK' check-ignore -q '.agents/loop/x'"
+  assert_true "${GI_REL} ignores .agents/driver-mode/x" \
+    "git -C '$GI_CHECK' check-ignore -q '.agents/driver-mode/x'"
+done
+
+echo
+echo "== handoff + write-result: script-written files for read-only-tooled agents (thin-loop-driver T8) =="
+HW="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$HW" init -q
+git -C "$HW" config user.email t@t; git -C "$HW" config user.name t
+mkdir -p "$HW/.agents"
+printf 'schema: 3\nstatus: running\n' > "$HW/.agents/run-state.yaml"
+HW_RUN_ID="$(cd "$HW" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+HW_RUN_DIR="$HW/.agents/loop/$HW_RUN_ID"
+
+HANDOFF_OUT="$(printf 'T9 Add route\nfull body text here.\n' | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-h --tier integration --agent implementer))"
+HANDOFF_PATH="$(printf '%s\n' "$HANDOFF_OUT" | sed -n 's/^HANDOFF=//p')"
+assert_true "handoff reports a HANDOFF= path" "[ -n \"\$HANDOFF_PATH\" ]"
+assert_true "handoff writes the file inside this run's packet directory" \
+  "[ -f \"$HW_RUN_DIR/pkt-h/handoff.md\" ]"
+assert_true "the handoff is headed by the packet id" \
+  "head -1 \"$HW_RUN_DIR/pkt-h/handoff.md\" | grep -q '^# pkt-h:'"
+assert_true "the handoff header carries the title (the piped text's first line)" \
+  "head -1 \"$HW_RUN_DIR/pkt-h/handoff.md\" | grep -q 'T9 Add route'"
+assert_true "the handoff header carries the tier" \
+  "grep -qx 'tier: integration' \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries the agent" \
+  "grep -qx 'agent: implementer' \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the full piped body is present" \
+  "grep -q 'full body text here.' \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries an ABSOLUTE run-state path (review fix #8)" \
+  "grep -qx \"run-state: $HW/.agents/run-state.yaml\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries the agent-specific result path, absolute" \
+  "grep -qx \"result: $HW_RUN_DIR/pkt-h/implementer.md\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries the fixed review path, absolute" \
+  "grep -qx \"review: $HW_RUN_DIR/pkt-h/review.md\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
+
+echo "-- handoff title precedence: TEXT= wins, then first non-KEY= line, then the packet id (review fix 1) --"
+# A literal copy of scripts/gspec-backlog.sh handoff's own success shape (see
+# its header comment: PACKET=/FEATURE=/ID=/CHECKED=/TEXT=/... in that exact
+# order) -- the real producer's FIRST line is `PACKET=`, never the title, so
+# a naive `head -1` would have taken "PACKET=slug-t3" as the title.
+ADAPTER_SHAPE='PACKET=slug-t3
+FEATURE=slug
+ID=T3
+CHECKED=0
+TEXT=Add the driver-mode subcommand
+FILES=scripts/runstate.sh
+COVERS=none
+PRD=gspec/features/slug/prd.md
+ARCH=absent'
+printf '%s\n' "$ADAPTER_SHAPE" | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-adapter --tier integration --agent implementer) >/dev/null
+assert_true "adapter-shaped stdin: the title comes from TEXT=, not the first line" \
+  "head -1 \"$HW_RUN_DIR/pkt-adapter/handoff.md\" | grep -q 'Add the driver-mode subcommand'"
+assert_true "adapter-shaped stdin: the title is never a bare KEY=value line" \
+  "! head -1 \"$HW_RUN_DIR/pkt-adapter/handoff.md\" | grep -q 'PACKET=slug-t3'"
+
+# The REAL producer, run against a repo with no gspec/ directory at all, so
+# it takes the NOGSPEC path and prints exactly `HANDOFF=unknown\nREASON=...`
+# -- both lines match `^[A-Z_]+=` and neither carries a `TEXT=` line, so
+# there is nothing usable and the title must fall through to the packet id.
+GSPECSH="${PLUGIN_ROOT}/scripts/gspec-backlog.sh"
+NOGSPEC_OUT="$("$GSPECSH" handoff pkt-nogspec "$HW" 2>/dev/null || true)"
+assert_true "the real gspec-backlog.sh handoff, with no gspec/ dir, carries no TEXT= line" \
+  "! printf '%s\n' \"\$NOGSPEC_OUT\" | grep -q '^TEXT='"
+printf '%s\n' "$NOGSPEC_OUT" | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-nogspec --tier integration --agent implementer) >/dev/null
+assert_true "no TEXT= line and only KEY=value lines: the title falls back to the packet id" \
+  "head -1 \"$HW_RUN_DIR/pkt-nogspec/handoff.md\" | grep -qx '# pkt-nogspec: pkt-nogspec'"
+
+printf '' | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-empty --tier integration --agent implementer) >/dev/null
+assert_true "empty stdin: the title falls back to the packet id" \
+  "head -1 \"$HW_RUN_DIR/pkt-empty/handoff.md\" | grep -qx '# pkt-empty: pkt-empty'"
+
+echo "-- handoff/write-result: charset and traversal refusals (review fixes 3/12/13) --"
+assert_true "handoff refuses a packet id of '.'" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml . --tier integration --agent implementer)) 2>/dev/null"
+assert_true "handoff refuses a packet id of '..'" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml .. --tier integration --agent implementer)) 2>/dev/null"
+assert_true "handoff refuses a packet id containing '..'" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml 'pkt/../escape' --tier integration --agent implementer)) 2>/dev/null"
+assert_true "a '..'-refused handoff never escaped to write .agents/loop/handoff.md" \
+  "[ ! -f \"$HW/.agents/loop/handoff.md\" ]"
+assert_true "handoff refuses a --tier value outside [a-z-]+" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml pkt-badtier --tier \$'integration\\nInjected: line' --agent implementer)) 2>/dev/null"
+assert_true "handoff refuses an --agent value outside [a-z-]+" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml pkt-badagent --tier integration --agent \$'implementer\\nInjected: line')) 2>/dev/null"
+
+echo "-- write-result: a symlinked directory under the run dir cannot escape it (review fix 3) --"
+WR_OUTSIDE="$(mktemp -d)"
+ln -s "$WR_OUTSIDE" "$HW_RUN_DIR/pkt-h/escape-link"
+assert_true "write-result refuses a path through a symlinked directory that resolves outside the run dir" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/escape-link/pwned.md\" --status x)) 2>/dev/null"
+assert_true "the symlink escape attempt wrote nothing outside the run dir" \
+  "[ ! -f \"$WR_OUTSIDE/pwned.md\" ]"
+
+WR_TARGET="$HW_RUN_DIR/pkt-h/review.md"
+WR_OUT1="$(printf 'first body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "fix: first pass"))"
+assert_true "write-result reports RESULT=" "printf '%s\n' \"\$WR_OUT1\" | grep -q '^RESULT='"
+assert_true "the status line is the file's first line" \
+  "head -1 \"$WR_TARGET\" | grep -qx 'fix: first pass'"
+assert_true "the body follows the status line" \
+  "grep -q 'first body' \"$WR_TARGET\""
+WR_STATUS_MULTILINE="$(printf 'line one\nline two')"
+printf 'second body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "$WR_STATUS_MULTILINE") >/dev/null
+assert_true "a rewrite REPLACES the file, not appends" \
+  "! grep -q 'first body' \"$WR_TARGET\" && grep -q 'second body' \"$WR_TARGET\""
+assert_true "write-result collapses a newline in the status to a single line" \
+  "[ \"\$(head -1 \"$WR_TARGET\")\" = 'line one line two' ]"
+assert_true "write-result refuses an absolute path outside the run directory" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml /etc/passwd --status x)) 2>/dev/null"
+assert_true "write-result refuses a traversal back out of the run directory" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/../../../../etc/passwd\" --status x)) 2>/dev/null"
+assert_true "handoff refuses a bad packet-id charset" \
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml 'bad id' --tier integration --agent implementer)) 2>/dev/null"
+
+echo "-- a failure between mktemp and mv leaves no leftover temp file (review fix 16) --"
+# `mv` itself is shadowed to always fail, via PATH -- the same fake-binary
+# technique this file already uses for jq/python3 (see the "no-tools host"
+# T8 cases above). Isolated to ONE dispatch each: handoff/write-result call
+# `mv` exactly once in their own code path, so this cannot mask a failure
+# elsewhere in the same invocation.
+FAKEMV_DIR="$(mktemp -d)"
+printf '#!/bin/sh\nexit 1\n' > "$FAKEMV_DIR/mv"; chmod +x "$FAKEMV_DIR/mv"
+
+HANDOFF_MVFAIL_RC=0
+printf 'x\n' | (cd "$HW" && PATH="$FAKEMV_DIR:$PATH" "$RUNSTATE" handoff .agents/run-state.yaml pkt-mvfail --tier integration --agent implementer) >/dev/null 2>&1 \
+  || HANDOFF_MVFAIL_RC=$?
+assert_true "handoff fails when mv itself fails (forced via a shadowed mv)" \
+  "[ \"\$HANDOFF_MVFAIL_RC\" != 0 ]"
+assert_true "  and leaves no leftover .handoff.* temp file behind" \
+  "! ls \"$HW_RUN_DIR/pkt-mvfail\"/.handoff.* >/dev/null 2>&1"
+assert_true "  and wrote no handoff.md either (mv never succeeded)" \
+  "[ ! -f \"$HW_RUN_DIR/pkt-mvfail/handoff.md\" ]"
+
+WR_MVFAIL_TARGET="$HW_RUN_DIR/pkt-h/mvfail.md"
+WR_MVFAIL_RC=0
+printf 'x\n' | (cd "$HW" && PATH="$FAKEMV_DIR:$PATH" "$RUNSTATE" write-result .agents/run-state.yaml "$WR_MVFAIL_TARGET" --status x) >/dev/null 2>&1 \
+  || WR_MVFAIL_RC=$?
+assert_true "write-result fails when mv itself fails (forced via a shadowed mv)" \
+  "[ \"\$WR_MVFAIL_RC\" != 0 ]"
+assert_true "  and leaves no leftover .write-result.* temp file behind" \
+  "! ls \"$HW_RUN_DIR/pkt-h\"/.write-result.* >/dev/null 2>&1"
+assert_true "  and wrote no mvfail.md either (mv never succeeded)" \
+  "[ ! -f \"$WR_MVFAIL_TARGET\" ]"
+
+echo
+echo "== route: verdict -> action mapping, attempt pool, packet_attempts limit (thin-loop-driver T9) =="
+RT="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RT" init -q
+git -C "$RT" config user.email t@t; git -C "$RT" config user.name t
+mkdir -p "$RT/.agents"
+printf 'schema: 3\nstatus: running\n' > "$RT/.agents/run-state.yaml"
+RT_RUN_ID="$(cd "$RT" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+RT_ROUTING="$RT/.agents/loop/$RT_RUN_ID/routing.jsonl"
+rt_route() { (cd "$RT" && "$RUNSTATE" route .agents/run-state.yaml "$@"); }
+
+assert_true "route pass -> land" "rt_route rt-pass pass | grep -qx 'ACTION=land'"
+assert_true "route escalate -> decider" "rt_route rt-esc escalate | grep -qx 'ACTION=decider'"
+assert_true "route reorder -> discard-advance" "rt_route rt-reo reorder | grep -qx 'ACTION=discard-advance'"
+assert_true "route append-task -> discard-advance" "rt_route rt-app append-task | grep -qx 'ACTION=discard-advance'"
+assert_true "route hand-off-feature -> discard-advance" "rt_route rt-hof hand-off-feature | grep -qx 'ACTION=discard-advance'"
+assert_true "route ask-operator -> stop" "rt_route rt-ask ask-operator | grep -qx 'ACTION=stop'"
+
+(cd "$RT" && "$RUNSTATE" record-start rt-fix S1 >/dev/null)
+FIX1_OUT="$(rt_route rt-fix fix)"
+assert_true "the first fix (default limit 1) -> attempt" \
+  "printf '%s\n' \"\$FIX1_OUT\" | grep -qx 'ACTION=attempt'"
+assert_true "  and the printed ATTEMPTS=/LIMIT= values are exactly right, not just the action" \
+  "printf '%s\n' \"\$FIX1_OUT\" | grep -qx 'ATTEMPTS=1' && printf '%s\n' \"\$FIX1_OUT\" | grep -qx 'LIMIT=1'"
+assert_true "a second fix on the same start (limit exhausted) -> decider" \
+  "rt_route rt-fix fix | grep -qx 'ACTION=decider'"
+RETRY_OUT="$(rt_route rt-fix retry)"
+assert_true "a retry past the limit is refused as stop, not looped back to decider" \
+  "printf '%s\n' \"\$RETRY_OUT\" | grep -qx 'ACTION=stop'"
+assert_true "the over-limit retry refusal carries a blocking question naming the packet" \
+  "printf '%s\n' \"\$RETRY_OUT\" | grep -q 'question:.*rt-fix'"
+
+(cd "$RT" && "$RUNSTATE" record-start rt-reset S1 >/dev/null)
+rt_route rt-reset fix >/dev/null   # attempts=1, exhausts the default limit of 1
+(cd "$RT" && "$RUNSTATE" record-start rt-reset --continue S1 >/dev/null)
+assert_true "a continuation does NOT reset the attempt count" \
+  "rt_route rt-reset fix | grep -qx 'ACTION=decider'"
+(cd "$RT" && "$RUNSTATE" record-start rt-reset S1 >/dev/null)   # a genuine new start
+assert_true "a genuine new start DOES reset the attempt count" \
+  "rt_route rt-reset fix | grep -qx 'ACTION=attempt'"
+
+printf 'packet_attempts: 3\n' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-lim3 S1 >/dev/null)
+assert_true "a configured packet_attempts raises the limit accordingly" \
+  "rt_route rt-lim3 fix | grep -qx 'ACTION=attempt' && rt_route rt-lim3 fix | grep -qx 'ACTION=attempt' && rt_route rt-lim3 fix | grep -qx 'ACTION=attempt' && rt_route rt-lim3 fix | grep -qx 'ACTION=decider'"
+printf 'packet_attempts: 0\n' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-lim0 S1 >/dev/null)
+assert_true "packet_attempts: 0 falls back to a limit of 1" \
+  "rt_route rt-lim0 fix | grep -qx 'ACTION=attempt' && rt_route rt-lim0 fix | grep -qx 'ACTION=decider'"
+printf 'packet_attempts: bogus\n' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-liminv S1 >/dev/null)
+assert_true "an invalid packet_attempts falls back to a limit of 1" \
+  "rt_route rt-liminv fix | grep -qx 'ACTION=attempt' && rt_route rt-liminv fix | grep -qx 'ACTION=decider'"
+printf '' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-limmiss S1 >/dev/null)
+assert_true "a missing packet_attempts key falls back to a limit of 1" \
+  "rt_route rt-limmiss fix | grep -qx 'ACTION=attempt' && rt_route rt-limmiss fix | grep -qx 'ACTION=decider'"
+
+echo "-- a retry WITHIN the limit is an attempt, not just a retry PAST it (review fix 8) --"
+printf 'packet_attempts: 2\n' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-retryok S1 >/dev/null)
+assert_true "a fix consuming the first of 2 attempts -> attempt" \
+  "rt_route rt-retryok fix | grep -qx 'ACTION=attempt'"
+RETRYOK_OUT="$(rt_route rt-retryok retry)"
+assert_true "a retry consuming the second (and last) of 2 attempts -> STILL attempt, not stop" \
+  "printf '%s\n' \"\$RETRYOK_OUT\" | grep -qx 'ACTION=attempt'"
+assert_true "  with ATTEMPTS=2 LIMIT=2 printed exactly" \
+  "printf '%s\n' \"\$RETRYOK_OUT\" | grep -qx 'ATTEMPTS=2' && printf '%s\n' \"\$RETRYOK_OUT\" | grep -qx 'LIMIT=2'"
+
+echo "-- packet_attempts: '3' (quoted) must not silently fall back to 1 (review fix 14) --"
+printf "packet_attempts: '3'\n" > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-quoted S1 >/dev/null)
+assert_true "a single-quoted packet_attempts value is honoured (limit 3, not 1)" \
+  "rt_route rt-quoted fix | grep -qx 'LIMIT=3'"
+printf 'packet_attempts: "3"\n' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-quoted2 S1 >/dev/null)
+assert_true "a double-quoted packet_attempts value is honoured (limit 3, not 1)" \
+  "rt_route rt-quoted2 fix | grep -qx 'LIMIT=3'"
+printf '' > "$RT/.agents/project-overrides.yaml"
+
+echo "-- parsed-time ordering, not string ordering, for the attempt count (review fix 8) --"
+# A whole-second start and a SUB-second routing record landing in the SAME
+# wall-clock second: a raw string compare would read "...:05.500Z" as
+# earlier than "...:05Z" ("." sorts below "Z"), wrongly EXCLUDING the
+# routing record from the count. Fabricated directly (not via real timing),
+# mirroring sweep-open's own same-second-a fixture.
+RTORD_OUTCOMES="$RT/.agents/metrics/outcomes"
+printf '{"ts":"2026-01-01T00:00:05Z","packet":"rt-ord","session":"S1","kind":"start"}\n' > "$RTORD_OUTCOMES/ORD.jsonl"
+printf '{"ts":"2026-01-01T00:00:05.500Z","packet":"rt-ord","token":"fix","action":"attempt","status":""}\n' >> "$RT_ROUTING"
+ORD_OUT="$(rt_route rt-ord fix)"
+assert_true "a sub-second routing record in the same wall-clock second as a whole-second start IS counted (parsed time, not string compare)" \
+  "printf '%s\n' \"\$ORD_OUT\" | grep -qx 'ATTEMPTS=2'"
+
+echo "-- the outcomes log is byte-unchanged by route calls (review fix 8) --"
+RT_OUTCOMES_CKSUM_BEFORE="$(cksum "$RT/.agents/metrics/outcomes"/*.jsonl 2>/dev/null | sort)"
+rt_route rt-cksum-a pass >/dev/null
+rt_route rt-cksum-b escalate >/dev/null
+rt_route rt-cksum-c ask-operator >/dev/null
+RT_OUTCOMES_CKSUM_AFTER="$(cksum "$RT/.agents/metrics/outcomes"/*.jsonl 2>/dev/null | sort)"
+assert_true "the outcomes log's cksum is identical before and after a batch of pure route calls" \
+  "[ \"\$RT_OUTCOMES_CKSUM_BEFORE\" = \"\$RT_OUTCOMES_CKSUM_AFTER\" ]"
+
+assert_true "route writes valid append-only JSON to this run's routing.jsonl" \
+  "jq -s -e 'length > 0 and (map(type == \"object\") | all)' \"$RT_ROUTING\" >/dev/null"
+assert_true "route never writes into the outcomes log (every record there is still record-start's kind= shape, never a token=/action= routing record)" \
+  "jq -s -e 'map(has(\"kind\") and (has(\"token\") | not)) | all' \"$RT/.agents/metrics/outcomes\"/*.jsonl >/dev/null"
+
+printf 'a fresh handoff\n' | (cd "$RT" && "$RUNSTATE" handoff .agents/run-state.yaml rt-hof --tier integration --agent implementer) > "$RT/handoff-attempt.out" 2>&1 || true
+assert_true "handoff refuses a packet whose latest routing record is hand-off-feature" \
+  "grep -qx 'HANDOFF=refused' \"$RT/handoff-attempt.out\""
+assert_true "the refusal names the reason" \
+  "grep -qx 'REASON=hand-off-feature' \"$RT/handoff-attempt.out\""
+assert_true "a refused handoff writes no handoff.md" \
+  "[ ! -f \"$RT/.agents/loop/$RT_RUN_ID/rt-hof/handoff.md\" ]"
+
+echo "-- a hand-off-feature record in a PREVIOUS run does not refuse the SAME packet id in a NEW run (review fix 5/8) --"
+# A genuinely fresh run-state (no run_id yet) mints a DIFFERENT run_id, so
+# its own routing.jsonl starts empty -- the refusal must be scoped to the
+# CURRENT run's own routing log, never a previous run's.
+printf 'schema: 3\nstatus: running\n' > "$RT/.agents/run-state.yaml"
+RT_RUN_ID2="$(cd "$RT" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+assert_true "the fresh run-state mints a DIFFERENT run_id than the earlier run" \
+  "[ \"\$RT_RUN_ID2\" != \"\$RT_RUN_ID\" ]"
+HOF_NEWRUN_OUT="$(printf 'a fresh handoff\n' | (cd "$RT" && "$RUNSTATE" handoff .agents/run-state.yaml rt-hof --tier integration --agent implementer))"
+assert_true "the SAME packet id, hand-off-feature'd only in the PREVIOUS run, is NOT refused in the new run" \
+  "printf '%s\n' \"\$HOF_NEWRUN_OUT\" | grep -q '^HANDOFF=' && ! printf '%s\n' \"\$HOF_NEWRUN_OUT\" | grep -qx 'HANDOFF=refused'"
+assert_true "  and it actually wrote a handoff.md in the NEW run's own directory" \
+  "[ -f \"$RT/.agents/loop/\$RT_RUN_ID2/rt-hof/handoff.md\" ]"
+
+echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'passed: %s   failed: %s   (no python3+PyYAML on this host — %s parse assertion(s) could not assert; not asserting vacuously)\n' \

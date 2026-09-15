@@ -11,9 +11,11 @@ must guarantee: the loop's working tree ends **clean** at a **green commit**, an
 `.agents/run-state.yaml` records enough to reconstruct the backlog in a fresh
 session. Never pause mid-edit. See [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md).
 
-The **Chief Engineer** runs this. Do **not** cross a hard gate to pause — pausing
-never justifies a migration, a `main` commit, a dependency change, or a
-sensitive-path edit.
+The session running the loop as the **loop-driver** (ADR 0028) runs this, not
+the Chief Engineer — the Chief Engineer is only ever dispatched, per packet, as
+the interim escalation-decider stand-in. Do **not** cross a hard gate to
+pause — pausing never justifies a migration, a `main` commit, a dependency
+change, or a sensitive-path edit.
 
 A pause may be requested mid-run by a human/frontend touching the sentinel
 (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause "<reason>"`,
@@ -36,7 +38,8 @@ Inspect the loop's working tree — the single local checkout, currently on the
   discard.
 - **Uncommitted work that is green and in policy** (build+tests pass, branch is
   not `main`/`master`, no hard-gate path in the diff) → commit it on the branch
-  first (this is the Chief Engineer's soft-gate commit), making it the
+  first (this is the driver's soft-gate commit — `git commit` is not a write
+  the guard's driver-mode edit block refuses), making it the
   checkpoint. **You are responsible for verifying green build+tests before this
   commit — the guardrail hook cannot run the suite.** Put the write-ahead trailer
   `[orch packet:<cursor>]` in the commit message (its own line), so that if a
@@ -67,8 +70,10 @@ Inspect the loop's working tree — the single local checkout, currently on the
 
 ## 2. Verify the checkpoint
 
-Confirm both hold before writing state — if either fails, stop and report; do not
-write a run-state that lies:
+Confirm both hold before writing state — if either fails, stop and report
+(then run `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh driver-mode exit`
+immediately after that stop report — idempotent even if this session never
+entered driver mode); do not write a run-state that lies:
 
 ```bash
 git status --porcelain      # must be EMPTY (clean tree)
@@ -189,6 +194,11 @@ re-open the repo to embellish it:
 If you are reporting into an automated caller rather than to the human, emit the
 wire check-in from `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md` as well — it is what
 the scheduler parses.
+
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh driver-mode exit` immediately
+after emitting that stop report — driver mode ends whenever the loop renders
+its stop report, whether it stopped, paused, or finished (ADR 0028), and a
+pause is exactly that: a stop.
 
 Then **stop cleanly**. Do not start the next packet. A later session resumes with
 `/gaffer:resume`.

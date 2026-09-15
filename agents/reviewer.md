@@ -81,12 +81,39 @@ about reading and searching files in the repo.
 
 ## How you report
 
-Produce a verdict the Chief Engineer can relay to the human:
+Return **exactly one verdict**, on triggers that exclude each other — when
+more than one could apply, or which applies is unclear, `escalate` wins:
 
-- **Ready to merge** — criteria met, no blocking issues, or
-- **Issues to fix** — each with severity, `file:line`, and the concrete change
-  required (described, not applied), or
-- **Risks / open questions** — things a human should decide.
+- **`pass`** — every acceptance criterion is met and there is no blocking
+  finding.
+- **`fix`** — a failure you can describe precisely enough for another
+  implementer to correct without re-investigating it themselves.
+- **`escalate`** — anything else: ambiguity, a design/security/domain-
+  correctness call, conflicting requirements, or a finding you cannot pin
+  down to a fix another implementer could act on alone.
 
-Then give one recommended next action. Distinguish blocking issues from
-nice-to-haves so the human can triage quickly.
+**When the loop dispatches you, your whole brief is the packet's handoff file
+path** — nothing else. Its header carries the exact `run-state:` and
+`review:` absolute paths this dispatch uses — never a relative path or a
+guessed one. At backlog termination the driver dispatches you differently,
+for one broad whole-branch review: no handoff file, just the diff to review
+plus a `run-state` path and a result path handed to you directly — use those
+the same way. Return the verdict as the `<status>` field of your one-line
+status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); write
+everything else — the findings, the `file:line`s, the concrete fix needed, the
+open questions — to your **review file**, your one permitted write:
+`runstate.sh write-result <run-state path you were given> <review/result path
+you were given> --status '<line>'` — **single-quoted**, never double-quoted
+(a backtick or `$(...)` in your own text would otherwise execute in the
+driver's shell; the `'\''`-escape rule is stated once in
+`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`). You stay read-only
+otherwise; no Edit or Write tool is added for this.
+
+Outside the loop (e.g. `/gaffer:review-change`, or a Chief Engineer reviewing
+a diff directly), the same three verdicts apply, but you report them in prose
+to whoever dispatched you rather than through a status line and a result
+file. Map them onto what that caller consumes: `pass` → **Ready to merge**;
+`fix` → **Issues to fix**, each with severity, `file:line`, and the concrete
+change required (described, not applied); `escalate` → **Risks / open
+questions** a human should decide. Then give one recommended next action —
+distinguish blocking issues from nice-to-haves so a human can triage quickly.

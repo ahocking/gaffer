@@ -1,62 +1,54 @@
 ---
 name: run-loop
-description: Drive the guided autonomy loop across a backlog of task packets. For each packet — branch off the integration base in the local checkout, implement → test → review, commit on branch if green, update run-state, emit a check-in — then pull the next. Honors the session autonomy level and the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces check-ins; it integrates onto a non-`main` branch at full-autonomy but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (a feature's plan under gspec/features/<slug>/) or a run-state backlog.
+description: Drive the guided autonomy loop across a backlog of task packets, in driver mode (ADR 0028). For each packet — branch off the integration base, write its handoff file, dispatch a fresh agent with only that path, route the reviewer's verdict mechanically, commit on branch if green, update run-state — then pull the next. Honors the session autonomy level and the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces reports; it integrates onto a non-`main` branch at full-autonomy but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (a feature's plan under gspec/features/<slug>/) or a run-state backlog.
 argument-hint: (optional — a backlog source or a starting packet; else reads .agents/run-state.yaml, then the gspec backlog)
 ---
 
 # Run the guided loop $ARGUMENTS
 
-Drive the implement → test → review → commit-on-branch loop across a backlog,
-one **commit-sized, resumable** packet at a time. The **Chief Engineer** — this
-session — runs the whole loop itself. There is **one sequential mode**; backlog
-size never switches it, and no run dispatches a per-packet coordinator. Its safety
-rests on the layers below it — the autonomy-aware commit gate in `hooks/guard.sh`,
-per-packet `orch/<task-id>` feature branches in the single local checkout, and the
-durable checkpoint in `.agents/run-state.yaml` — so honor them, do not route around
-them. See [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md)
-and [ADR 0009](../../docs/adr/0009-single-directory-feature-branch-workflow.md).
+`Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now, once, before anything
+else — it is your role for the rest of this run (ADR 0028). That file holds the
+**judgment**: routing, the escalation-decider stand-in, operator Q&A, and
+mid-run edits. This skill holds the **mechanics**: preflight, the backlog,
+dispatch ordering, commit trailers, and termination. Read both once; your
+context persists across packets, so do not re-read either per packet.
+
+There is **one sequential mode**; backlog size never switches it, and no
+packet is implemented inline — every packet goes to a dispatched agent. Its
+safety rests on the layers below it — the guard's driver-mode edit block
+(`hooks/guard.sh`), per-packet `orch/<task-id>` feature branches in the single
+local checkout, and the durable checkpoint in `.agents/run-state.yaml` — so
+honor them, do not route around them. See
+[ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md),
+[ADR 0009](../../docs/adr/0009-single-directory-feature-branch-workflow.md),
+and [ADR 0028](../../docs/adr/0028-loop-driver-mode.md).
 
 ## Flags this loop no longer has
 
-`--relay`, `--inline`, and `--parallel` are still accepted in `$ARGUMENTS` and must
-**not** error — something invoking this skill may still pass one from habit. None of
-them change anything any more: relay dispatch was retired
-([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded) and worktree
-parallel mode was retired ([ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md),
-superseded). If `$ARGUMENTS` contains any of them, run the single sequential mode
-below and say so in the kickoff (§2) with one `⚠️ **--<flag>** no longer does
-anything — this loop runs one sequential mode.` line per flag present, using the
-existing ⚠️ glyph — no new report shape.
-
-## Concurrency
-
-**File-editing agents run one at a time, unless their declared file scopes are
-disjoint** — this loop dispatches a single `implementer` per packet for exactly that
-reason. **Read-only agents** (a `researcher`, a `reviewer`, an `Explore`-style search)
-may fan out freely; nothing they do needs serializing. **Worktree isolation is not
-part of this loop.** Reach for it only on self-contained work starting fresh off the
-default branch — a spike, an experiment, a deliberate refactor — **never** for an
-implementer working a packet on this loop's own `orch/<task-id>` branch: a worktree
-branched mid-run lacks the earlier packets' commits and is never merged back
-automatically, so it silently drops the packet from the branch the loop is building.
+`--relay`, `--inline`, and `--parallel` are still accepted in `$ARGUMENTS` and
+must **not** error — something invoking this skill may still pass one from
+habit. None of them change anything any more: relay dispatch was retired
+([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded) and
+worktree parallel mode was retired
+([ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md), superseded). If
+`$ARGUMENTS` contains any of them, run the loop below and say so in the
+kickoff (§2) with one `⚠️ **--<flag>** no longer does anything — this loop
+runs one sequential mode.` line per flag present.
 
 ## The report contract — `Read` it before you emit anything
 
-**`Read` both of these now, once, before the kickoff:**
+`Read` `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (the glyph
+vocabulary, the indentation contract, the header tally, the decision block)
+and `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shapes **C**
+kickoff, **A** check-in, **B** stop report) now, once, before the kickoff.
+**Naming a path is not reading it** — unread, you render from memory and
+produce free prose, which is the exact failure these files exist to prevent.
 
-- `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` — the glyph vocabulary, the
-  indentation contract, the header tally, and the decision block. Every human-facing
-  report owes them.
-- `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` — shapes **C** (kickoff), **A**
-  (check-in) and **B** (stop report), which this loop emits in that order.
+## 1. Preflight (stop here if unmet) — driver mode is NOT yet entered
 
-**Naming a path is not reading it.** The steps below reference these files by path at
-each emission point; unless you have actually loaded them you will render from memory
-and produce free prose, which is the exact failure they exist to prevent. **One read
-covers the whole run** — your context persists across packets, so do not re-read them
-per packet.
-
-## 1. Preflight (stop here if unmet)
+Nothing in this section needs `driver-mode exit` on a stop: entering driver
+mode is deliberately deferred to §2, after preflight passes, so a preflight
+stop never has a mark to clear.
 
 - **gspec contract + interlock (ADR 0020).** If the repo has a `gspec/` directory,
   run `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check` and
@@ -68,18 +60,11 @@ per packet.
   gspec project — gspec is optional (ADR 0020 D4).
 - **Drifted completion record (ADR 0025 D1, gspec repos only).** Scan **every
   ref**, not just the current branch — at preflight the checkout is normally
-  still on the integration branch (step 3.1 is what creates `orch/<task-id>`),
-  so a scan bounded to "the branch I'm on" almost never fires; and the case
-  this exists to catch — a packet that landed, merged, and never got its
-  checkbox flipped — usually lives in already-merged history, not on a live
-  feature branch. This is the runtime form of the migration check (T17), and
-  matches its anchoring, not `reconstruct`'s: `reconstruct`'s extraction is
-  unanchored (safe there only because it is bounded to `base..HEAD`, so prose
-  merely mentioning the trailer format is unlikely ever to land inside that
-  narrow range), and widening to `--all` removes that accidental protection.
-  Anchor the match to the **whole line** — a real trailer, not prose that
-  mentions one — the same fix `migrate.sh`'s `_trailer_landed` already applies
-  for this exact reason:
+  still on the integration branch, so a scan bounded to "the branch I'm on"
+  almost never fires, and the case this exists to catch — a packet that
+  landed, merged, and never got its checkbox flipped — usually lives in
+  already-merged history. Anchor the match to the **whole line** — a real
+  trailer, not prose that mentions one:
   ```bash
   IDS=$(git log --all --format=%B \
     | grep -oE '^[[:space:]]*\[orch packet:[a-z0-9][a-z0-9-]*\][[:space:]]*$' \
@@ -90,18 +75,16 @@ per packet.
   task, read-only:
   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "$IDS"`. Any line
   reading `unchecked` names a packet that landed but whose task checkbox is not
-  set — a genuine **drift**, possibly because the work was reverted since. **Say
-  so in the kickoff (§2); do not flip the checkbox and do not block the run** —
-  reconciling a drifted record is the human's call, not the loop's to make
-  silently.
+  set — a genuine **drift**. **Say so in the kickoff (§2); do not flip the
+  checkbox and do not block the run** — reconciling a drifted record is the
+  human's call.
 - **Autonomy level.** Resolve it (env `ORCH_AUTONOMY` > `.agents/autonomy` >
   `interactive`, clamped by `autonomy_ceiling`). The loop is meant for
   **`supervised`**, **`autonomous`**, or **`full-autonomy`**. At **`interactive`** it
   cannot commit unattended — either say so and stop, or run a single packet and halt
   at the commit for human approval. `autonomous` and `full-autonomy` drive *across*
   packets without checking in between green landings; **`full-autonomy`
-  additionally integrates** (merge/rebase/push onto non-`main` branches — see step
-  3.4).
+  additionally integrates** (merge/rebase/push onto non-`main` branches — see §3.7).
 - **Branch.** Never run on `main`/`master`. Work happens on `orch/<task-id>`
   feature branches **in the single local checkout**; `git commit`/`merge`/`push` to
   a protected branch is denied by the guard at every level anyway. The integration
@@ -109,427 +92,362 @@ per packet.
   **non-`main`** `integration_branch` from `.agents/project-overrides.yaml`
   (default `develop`, else `main`/`master`).
 
-## 2. Establish the backlog
+## 2. Enter driver mode, then establish the backlog and the run
 
-- If **`.agents/run-state.yaml` exists**, you are resuming — follow
-  `/gaffer:resume`: switch to the feature branch at `last_green_commit`,
-  surface any `blocking` questions, and start from `backlog.cursor`.
+**Enter driver mode now, right after preflight passes and before anything
+else here:**
+
+```
+runstate.sh driver-mode enter --model <this session's model, from SessionStart> \
+  --effort unknown --threshold unknown
+```
+
+Pass `--effort unknown` unless the operator has explicitly stated their
+effort level this session — nothing records it automatically yet.
+(`compact-threshold`, a real threshold lookup, is a later addition — pass
+`unknown` for `--threshold` until it exists.) **Never ask the operator to
+change either** — state them as read, in the kickoff, and move on.
+
+**If `enter` refuses** (no session id available, from neither an argument nor
+`$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report saying so. Never
+run the rest of this loop unmarked — driver mode's whole safety property is
+the guard's edit block, and there is nothing to block without a mark.
+
+`Read` `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` once now, before
+building or continuing the backlog — the template carries two REQUIRED rules
+every packet's handoff must carry regardless of source: an acceptance
+criterion naming the matching regression sweep when its file scope touches
+enforcement or automation code (a hook, a guard/policy script, CI logic), and
+a `session_boundary` declaration when its file scope touches a surface
+loaded at session start (`hooks.json`, a settings file that registers hooks,
+or an agent/skill's frontmatter). §3.3 applies these per packet; do not
+re-read this file per packet.
+
+- If **`.agents/run-state.yaml` exists**, you are resuming — `Read`
+  `${CLAUDE_PLUGIN_ROOT}/skills/resume/SKILL.md` and follow it instead of the
+  rest of this section (it keeps `run_id` via its own `begin-run` call;
+  calling `driver-mode enter` again there is harmless — idempotent).
 - Otherwise build the backlog **through the adapter** — the single place this
   plugin reads gspec (ADR 0020 D2). Never parse `gspec/` yourself:
   - `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` picks the feature —
     lowest `order` among incomplete-and-unblocked, where **completion is derived**
     from the PRD's capability checkboxes and never stored. It prints `NEXT=<slug>`
-    and the `PLAN=` file. With no `.agents/roadmap.yaml` it falls back to
-    dependency-then-slug order and says so — the roadmap is an override, not a
-    prerequisite.
+    and the `PLAN=` file.
   - `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh nodes <slug>` turns that
-    feature's plan into packet nodes (one per **unchecked** task), wherever that
-    plan lives. Each node becomes one packet.
-  - Or take `$ARGUMENTS` / an existing run-state backlog instead — gspec is one of
-    three backlog sources, not a requirement.
+    feature's plan into packet nodes (one per **unchecked** task). Each node
+    becomes one packet.
+  - Or take `$ARGUMENTS` / an explicit backlog instead — gspec is one of three
+    backlog sources, not a requirement. **For a packet not sourced from
+    gspec**, its task text (written into run-state now, from the template
+    you just read) is what `gspec-backlog.sh handoff` has no equivalent for —
+    it becomes that packet's handoff body directly at §3.3.
 
-  Then write an initial `.agents/run-state.yaml` from
-  `${CLAUDE_PLUGIN_ROOT}/templates/run-state.yaml` (cursor = first packet, everything
-  else pending). Write it atomically via
+  Write an initial `.agents/run-state.yaml` from
+  `${CLAUDE_PLUGIN_ROOT}/templates/run-state.yaml` (cursor = first packet,
+  everything else pending), atomically:
   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh write .agents/run-state.yaml`.
 
-**Mark the run live, and claim the driver.** Set `status: running`
-(`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh set .agents/run-state.yaml status
-running`) as soon as you begin driving, then
-`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh claim-driver .agents/run-state.yaml`.
-`status: running` is the crash signal; the **driver claim** is what tells a crashed
-run apart from *another session driving right now* (ADR 0020 D5) — without it a
-second session reads `running` as a crash and starts driving too, breaking the
-single-writer invariant this file depends on. Keep the status truthful — only
-`/gaffer:pause` (→ `paused`/`blocked`) and completion (→ `done`) clear it.
-**Clear any stale pause sentinel** left by a prior run so it cannot immediately
-re-halt this one: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause
-.agents/pause` (ADR 0017).
+**Mark the run live, begin it, and claim the driver.**
 
-**Then emit the kickoff — before the first packet.** Shape C in
-`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: the packet list in plain words,
-the one assumption most likely to be wrong, which packets you expect will need a
-decision, the hard gates this backlog gets near, the autonomy level, and where the
-run stops. Emit it **here**, after preflight and after the backlog resolves, so it
-states resolved facts rather than intentions.
+```
+runstate.sh set .agents/run-state.yaml status running
+runstate.sh begin-run .agents/run-state.yaml      # RUN_ID=, RUN_DIR=, REMOVED=...
+runstate.sh claim-driver .agents/run-state.yaml
+runstate.sh clear-pause .agents/pause
+```
 
-This is the cheapest correction point in the whole run — a wrong assumption caught
-in a sentence here costs a sentence; caught at the stop report it costs the packets
-built on it. So do not skip it because the backlog "looks obvious," and do not pad it
-into a plan document: six packets in order, or themes with counts past that. If the
-plan itself has an open choice — an ordering that could go two ways, a packet that
-might be out of scope — put a decision block in the kickoff rather than choosing
-silently and surfacing it eight packets later.
+`begin-run` mints `run_id` only when absent (a resume keeps it — a run spans
+sessions) and prunes every run directory except the current and newest
+previous one. `status: running` is the crash signal; the **driver claim** is
+what tells a crashed run apart from *another session driving right now* (ADR
+0020 D5). Keep the status truthful — only `/gaffer:pause`
+(→ `paused`/`blocked`) and completion (→ `done`) clear it. Clearing the pause
+sentinel here stops a stale request from immediately re-halting this run.
 
-At **`interactive`**, the kickoff is also the approval request: emit it and wait.
+**Then emit the kickoff** — shape C in
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: the packet list in
+plain words, the model/effort/threshold `driver-mode enter` recorded (stated,
+never offered for change), the one assumption most likely to be wrong, which
+packets you expect will need a decision, the hard gates this backlog gets
+near, the autonomy level, and where the run stops. Emit it **here**, after
+preflight and after the backlog resolves. At **`interactive`**, the kickoff is
+also the approval request: emit it and wait.
 
 ## 3. Loop — for the packet at `backlog.cursor`
 
-1. **Branch.** Create (or switch to) the packet's feature branch in the local
-   checkout: `git switch -c orch/<task-id> <base>` — where `<base>` is the
-   integration branch (`.agents/project-overrides.yaml` → `integration_branch`,
-   else `develop`, else `main`/`master`). If `orch/<task-id>` already exists
-   (resuming), just `git switch orch/<task-id>`. No worktree, no separate
-   directory — all work happens here.
+1. **Branch.** Create (or switch to) the packet's feature branch:
+   `git switch -c orch/<task-id> <base>` (integration branch from
+   `.agents/project-overrides.yaml` → `integration_branch`, else `develop`,
+   else `main`/`master`); `git switch orch/<task-id>` if it already exists. No
+   worktree, no separate directory.
+2. **Sweep for packets left open, before recording this one.**
+   `runstate.sh sweep-open --list` prints one `OPEN=<id>` line per open
+   packet. If it printed any, comma-join the ids and resolve them —
+   `gspec-backlog.sh task-status "<id,id,...>"` (one `<id>\t<state>\t<reason>`
+   line per id, plus `FINISHED=<csv>`); the `gone` set is every id whose state
+   reads `gone`. Comma-join those and pass them to `--gone`, then sweep for
+   real: `runstate.sh sweep-open --gone "<id,id,...>"` (omit `--gone` and skip
+   `task-status` entirely when `--list` printed nothing). Each `SWEPT=<id>`
+   names a packet to report by title in the next report.
+3. **Write the handoff, then start.** Decide the packet's `tier`
+   (`mechanical`, `integration`, `design-heavy`, or `docs`) and, from it, the
+   `--agent`: `implementer` for `mechanical`/`integration`, `architect` or
+   `ux-designer` for `design-heavy` (whichever the file hints scope to),
+   `doc-writer` for `docs`.
 
-   **Sweep for packets left open, immediately before recording this one** (T3):
-   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`; it prints one
-   `OPEN=<id>` line per open packet. If it printed any, comma-join the ids (the
-   `paste -sd,` idiom at :84–87) into one string and resolve them —
-   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` —
-   which prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
-   `FINISHED=<csv>` line; the `gone` set is the ids whose second column reads
-   `gone`. Comma-join THOSE into their own string and pass them to `--gone`
-   (skip both `task-status` and `--gone` when `--list` printed nothing:
-   `task-status` refuses an empty id list). Then sweep for real:
-   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --gone "<id,id,...>"`
-   (omit `--gone` entirely if there were none). Each `SWEPT=<id>` it prints
-   names a packet to report by title in the next check-in or stop report
-   (`templates/report-templates.md` shapes A/B).
+   **Check for `HANDOFF=unknown` before piping anything.** Run
+   `gspec-backlog.sh handoff <cursor>` first and read its output: a leading
+   `HANDOFF=unknown` line means this id does not resolve in gspec (a
+   deleted/renamed task, or a genuinely non-gspec packet). When you have
+   run-state's own task text for this packet (a non-gspec-sourced backlog
+   entry), pipe that instead of the adapter's output. Otherwise **skip the
+   packet with no record** — advance the cursor and report the skip, the
+   same as a refused handoff below.
 
-   **Attest the start — you, the driver, alone; never inside a subagent
-   dispatch, and never for a retry within the packet.** Beginning this
-   packet — including beginning it again after any recorded outcome —
-   records a fresh start: `runstate.sh record-start <cursor>`. Continuing a
-   packet a pause left mid-work, rather than beginning it anew, records a
-   continuation instead: `runstate.sh record-start <cursor> --continue`.
-2. **Scope.** `Read`
-   `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before you fill anything
-   in — naming a path is not reading it (ADR 0023's report-format precedent):
-   the template carries rules you cannot fill from memory, including which
-   acceptance criterion is REQUIRED when the packet touches enforcement or
-   automation code, and when `session_boundary` must be declared. One read
-   (~2.4k tokens) covers this context — do not re-read it per packet within
-   it. This applies to you, filling the packet here — not to the
-   `implementer`/`reviewer`/`doc-writer`, who are handed an already-filled packet.
-   Then fill it: narrow `allowed_files`,
-   acceptance criteria, `forbidden`, build/test commands, and the packet
-   `autonomy`. **Set `tier` here** — `mechanical` (fully-specified, one file),
-   `integration` (multi-file/wiring, design settled), `design-heavy` (the design
-   emerges while editing), or `docs` (prose only). This is the routing decision
-   for the packet and it is **required**: it selects the agent in §3.3, and it is
-   copied verbatim into the commit trailer in §3.4. Decide it now, while you have
-   the packet in front of you — deciding it at commit time is how it ends up
-   unset, and an unset tier makes the packet unmeasurable. `design-heavy` also
-   requires a one-sentence `tier_reason`.
-3. **Implement → test → review (fresh subagent per packet).** Dispatch a
-   **fresh** `implementer` whose brief is built *only* from the packet (goal,
-   `allowed_files`, `interfaces`, `acceptance_criteria`, `commands`, `method`) —
-   do **not** pour this loop's accumulated context into it. Isolated context keeps
-   it focused and keeps *your* coordinator context clean.
-   **The packet's `tier` (§3.2) picks the agent, and the agent's frontmatter picks
-   the model:** `mechanical`/`integration` → `implementer` (sonnet); `design-heavy`
-   → `architect` for the design, then `implementer` for the code; `docs` →
-   `doc-writer` (haiku). **Do not pass `model` at dispatch.** Every agent declares
-   its own `model:` in frontmatter and a dispatch that omits `model` resolves to
-   that frontmatter value — the frontmatter *is* the routing policy, so restating
-   it per-call adds nothing and drifts. Pass `model` **only** to deliberately
-   deviate from an agent's declared tier, and record why in `tier_reason`; such an
-   override is an escalation and the audit surfaces it.
-   **Dispatching is the default, not the optimization.** Implementing inline means
-   the code is written in the opus coordinator context, which is the single most
-   expensive place in the run to write it — it is legitimate only for a
-   `design-heavy` packet where the design genuinely emerges as you edit, and it
-   needs a `tier_reason`. Everything else gets dispatched.
-   When `method: tdd`, the implementer writes the test first and **sees it fail**
-   before writing implementation code. Testing method and standards are the
-   project's to declare, not this plugin's — follow `gspec/practices.md` when it
-   exists (ADR 0020 D7). Then run the packet's build+tests and **read the real
-   output before claiming anything** — evidence, never "should pass"; a claim of
-   green without the command output behind it is the failure this gate exists to
-   catch. Then have the `reviewer` check the branch change set
-   (`git diff <base>...HEAD`) against every acceptance criterion. Re-dispatch a
-   scoped fix subagent for any Critical/Important finding and re-review before the
-   gate.
-4. **Decide (the soft/hard gate split):**
-   - **Green and in policy** — build+tests pass, branch is not `main`/`master`,
-     the diff touches **no** hard-gate path:
+   Append the applicable REQUIRED line(s) from §2's read of
+   `task-packet.yaml` — a real instruction, not a formality: a sweep
+   criterion when this packet's file scope touches enforcement/automation
+   code, a `session_boundary` line when it touches a session-start-loaded
+   surface, both if it touches both, neither otherwise. Then write the
+   handoff:
+   ```
+   { gspec-backlog.sh handoff <cursor>
+     printf '%s\n' "REQUIRED: the regression sweep covering <area> passes, with a new case for this change"   # only if applicable
+     printf '%s\n' "REQUIRED session_boundary: <what could not be verified in this run; what the next session must check>"  # only if applicable
+   } | runstate.sh handoff .agents/run-state.yaml <cursor> --tier <tier> --agent <agent>
+   ```
+   (or pipe run-state's task text in place of the first line, for a
+   non-gspec packet, per the `HANDOFF=unknown` check above). **A refused
+   handoff (`HANDOFF=refused`, e.g. a packet already routed
+   `hand-off-feature` this run) skips the packet — advance the cursor and
+   report the skip; do not call `record-start`.** Only once `HANDOFF=<path>`
+   prints do you attest the start: `runstate.sh record-start <cursor>` for a
+   fresh beginning, or `runstate.sh record-start <cursor> --continue` when
+   you are picking a pause-interrupted packet back up rather than beginning
+   it anew.
 
-     **Flip the gspec checkbox first, so it lands in this same commit** — the
-     work and the record that it happened must land atomically, never in a
-     follow-up commit (ADR 0025 D1). Run
-     `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <cursor>` (it
-     accepts the packet-id form the loop already holds — never do your own id
-     surgery) and act on its exit code before you commit:
-     - **exit 0, `CHECKED=<feature>#T<n>` or `CHECKED=already`** — stage the
-       touched plan file — the adapter reports which as `FILE=` — alongside the
-       packet's own files; it goes into the same commit as the code.
-     - **exit 0, `CHECKED=none`** — the backlog is not gspec-sourced (a
-       run-state or explicit-argument backlog has no checkbox). This is
-       **skipped, not failed** — commit as normal with nothing staged from
-       `gspec/`.
-     - **exit 4** — the plan exists but no longer names this task id: genuine
-       **drift** (e.g. the plan was regenerated since this packet was scoped).
-       Commit as normal, but say so plainly in the check-in — this is a report,
-       never a reason to halt the loop.
-     - **exit 1** — the id is malformed (contains `/` or `..`): a real usage
-       error, not drift. Stop and report; do not commit over it.
+   **Read back the handoff's header** (`grep '^run-state:\|^result:\|^review:'
+   <path>`) — it names the exact `run-state`, `result`, and `review` paths,
+   absolute, that this packet's dispatches and your own `route` calls use for
+   the rest of this packet. Pass the handoff path to the dispatched agent;
+   its header is what tells that agent, and you, where to write and route.
+4. **Dispatch, then route.** Dispatch a **fresh** agent (the `--agent` from
+   §3.3) with the handoff path **only** — on a re-attempt, also pass the
+   review file's path (from the handoff header, per §3.3). Read its one
+   status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); never open
+   its result file yourself. Then dispatch the `reviewer` with the handoff
+   path (and the review path on a re-attempt) and read its verdict the same
+   way. Pass that verdict, with its status line as `--status`, to `route`,
+   **using the run-state path from this packet's handoff header** and
+   **single-quoting the status text** — never double-quote it, since a
+   backtick or `$(...)` in the agent's own text would otherwise execute in
+   your shell (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md` states the
+   `'\''`-escape rule once; use it here):
+   ```
+   runstate.sh route <run-state-from-handoff-header> <cursor> <token> --status '<line>'
+   ```
+5. **Act on `route`'s action** (judgment for `decider` lives in
+   `agents/loop-driver.md` §Routing — this is the mechanical shape):
+   - **`land`** — commit green, §3.6.
+   - **`attempt`** — dispatch a fresh agent with the handoff and review paths;
+     record no start.
+   - **`decider`** — dispatch the `chief-engineer` (the interim
+     `escalation-decider` stand-in) with the handoff and review paths, **plus
+     the `ATTEMPTS=`/`LIMIT=` this same `route` call just printed** (so it
+     knows whether a `retry` is even possible), and nothing else. Pass its
+     returned token, with its status line as `--status` (single-quoted, same
+     rule as above), back to `route`; record nothing yourself.
+   - **`discard-advance`** — before discarding, check for a decider commit on
+     this branch (`git log <base>..HEAD --grep '\[orch decider:'`); if one
+     exists, **do not delete the branch** — it is left behind, unmerged, and
+     §4's termination step accounts for it. Then discard the packet's
+     uncommitted work non-destructively:
+     ```
+     git stash push --include-untracked -m "orch discard: <cursor>"
+     ```
+     (never `git reset --hard`/`git clean -fd` — the guard hard-denies both,
+     and a stash is recoverable). `runstate.sh record-outcome <cursor>
+     rolled-back`, advance the cursor. **`reorder`'s mechanism is not built**
+     (that is `escalation-decider`'s job): treat it exactly like
+     `append-task`/`hand-off-feature` here — discard-advance as above — and
+     surface the decider's proposed new order as a question in the stop
+     report for the operator to act on; do not reorder `pending` yourself.
+   - **`stop`** — the hard-gate/genuine-ambiguity path. Take the question
+     text verbatim from `route`'s own `question:` line when it printed one
+     (the retry-past-limit case); otherwise use the status line of whichever
+     agent triggered this (the decider's `ask-operator` line, or the
+     reviewer's `escalate` line when no decider was dispatched). Hand that
+     question, with severity `blocking` and `packet: <cursor>`, to
+     `/gaffer:pause` — **do not write run-state yourself here**; pause's own
+     step 3 persists it into `pending_questions` (carrying every existing
+     entry through), verifies the checkpoint, sets `status: blocked`, renders
+     the stop report, and runs `driver-mode exit` itself (§4 "Blocked" is the
+     one-line pointer back to this).
+6. **Land (the `land` action).** Flip the gspec checkbox first, so it lands in
+   this same commit (ADR 0025 D1):
+   `gspec-backlog.sh check-task <cursor>`, and act on its exit code before you
+   commit:
+   - **exit 0, `CHECKED=<feature>#T<n>` or `CHECKED=already`** — stage the
+     touched plan file (`FILE=` names it) alongside the packet's own files, in
+     the same commit.
+   - **exit 0, `CHECKED=none`** — non-gspec backlog; commit as normal with
+     nothing staged from `gspec/`.
+   - **exit 4** — the plan no longer names this task id: genuine **drift**.
+     Commit as normal, but say so in the report; never a reason to halt.
+   - **exit 1** — malformed id: a real usage error. `runstate.sh
+     record-outcome <cursor> failed`, then stop and report — do not commit
+     over it — and run `runstate.sh driver-mode exit` immediately after that
+     stop report.
 
-     **You commit on the branch.** You are responsible for having verified green
-     build+tests first — the hook cannot. Put the write-ahead trailer
-     `[orch packet:<cursor>]` on its own line in the
-     commit message — this is what lets a resume *adopt* the commit if a crash
-     lands between it and the run-state write below, instead of escalating (ADR
-     0005). **Both routing trailers below are REQUIRED**, on their own lines (ADR
-     0019 self-label) — a *factual* record of the decision, not a grade. A commit
-     missing them makes the packet unmeasurable and the audit flags it as
-     `unlabelled`:
-     - `[orch tier:mechanical|integration|design-heavy|docs]` — **copy the packet's
-       `tier` field verbatim** (§3.2). You are not re-deriving it here; the
-       decision was already made at scope time. If the work turned out to be a
-       different tier than you scoped, record what it *actually* was and say so in
-       the check-in — a tier that changed mid-packet is a scoping signal worth
-       seeing, not something to paper over.
-     - `[orch impl:inline|delegated]` — `delegated` if you dispatched the
-       `implementer` for the code, `inline` if you (the opus orchestrator) wrote
-       it yourself.
-     State what you actually did; the collector cross-checks the label against who
-     really edited and what was dispatched (`metrics.sh` → `audit.*`), so an
-     inaccurate label only makes the audit flag *you*. A `design-heavy`/`inline`
-     packet is a legitimate opus edit; a `mechanical`/`inline` one is the leak this
-     measures. Then update run-state **atomically** (`runstate.sh write`): set
-     `last_green_commit` to the new SHA, advance `cursor` to the **next**
-     packet — **from here on, call the packet you just committed `<landed>`**,
-     since this write just moved `cursor` off it onto the next one, and the
-     check-in below and every close-out step after it need the one that just
-     closed, not the one about to start — keep `status: running`, and **carry
-     the whole `findings:` index through verbatim** — `write` REPLACES the
-     file, so an entry you omit is not edited out, it is unlinked: the body
-     stays on disk in `.agents/findings/` with nothing pointing at it. **There
-     is no `done:` field to append to** (ADR 0025) — the gspec checkbox flipped
-     above, or this commit's own `[orch packet:<landed>]` trailer, is the
-     completion record now. (This is also why `drop-finding` and `add-finding`,
-     below, both come *after* the write — they remove/append entries the write
-     would otherwise clobber.) The status check-in is emitted further down,
-     once the stale-findings scan has a number to give it — see that bullet.
+   **Commit on the branch.** Trailers, each on its own line (ADR 0019
+   self-label — a factual record, not a grade):
+   - `[orch packet:<cursor>]` — the write-ahead trailer; lets a resume *adopt*
+     the commit on a crash between it and the run-state write (ADR 0005).
+   - `[orch tier:mechanical|integration|design-heavy|docs]` — the tier §3.3
+     decided. If the work turned out to be a different tier, record what it
+     *actually* was.
+   - `[orch impl:delegated]` — always `delegated`: no packet is implemented
+     inline in this loop.
 
-     Then close the packet out — every time:
+   Then update run-state atomically (`runstate.sh write`): `last_green_commit`
+   = the new SHA, `cursor` advances to the **next** packet (call the packet
+   you just committed `<landed>` from here on), `status: running` stays, and
+   carry the whole `findings:` index through verbatim (`write` REPLACES the
+   file — an omitted entry is unlinked, not edited out).
 
-     - **Attest the outcome — the `green` trigger:** `runstate.sh record-outcome
-       <landed> green`. Do this on **every** boundary, not just green ones — see
-       the other four triggers below.
-     - **Keep `note:` to the CURRENT packet.** It is one line for the resuming
-       session, not a log. Overwrite it; never append to what is there, and never
-       add an "earlier history" section — the archive is
-       `runstate.sh trim-note .agents/run-state.yaml`, which moves the overflow to
-       `run-state-note-archive.md`. Left to accumulate it reached **164,678 chars —
-       87% of the whole run-state, ~41k tokens, 15 stacked histories** — and a
-       resuming session re-reads all of it to recover just two facts: did it land,
-       what is next.
-     - **Drop stale findings naming `<landed>`, staleness read from evidence, not
-       say-so** (ADR 0024). The checkbox flip above (or this commit's own
-       trailer, for a non-gspec packet) is the first positive evidence `<landed>`
-       finished — but a finding can name *other*, still-open packets too, and
-       their finished-ness has to come from the same evidence the capability
-       admits: the gspec checkbox, or a commit trailer, never a bare assertion
-       that a name is done:
-       ```bash
-       IDS=$(runstate.sh findings .agents/run-state.yaml | cut -f4 | tr ',' '\n' | sort -u | paste -sd, -)
-       # empty IDS -> no findings at all, skip the rest
-       FINISHED=$(gspec-backlog.sh task-status "$IDS" | grep '^FINISHED=' | cut -d= -f2-)
-       FINISHED="${FINISHED:+${FINISHED},}<landed>"
-       runstate.sh findings .agents/run-state.yaml --stale --finished "$FINISHED"
-       ```
-       `task-status`'s `FINISHED=` line is documented to be fed **verbatim** to
-       `--stale --finished` — that pairing is the reason the two subcommands
-       share one id-resolution function; do not hand-roll a substitute for any
-       *other* id. `<landed>` itself is unioned in on top, and that union is not
-       a substitute either — it is the capability's **second** admissible
-       evidence source (a commit trailer, not the gspec checkbox), and we
-       already hold it directly: this commit's own `[orch packet:<landed>]`
-       trailer, written a few steps above. That is what closes the non-gspec
-       case (`CHECKED=none`), where `task-status` reads `<landed>` itself as
-       `unknown` forever since it has no checkbox to check. From the
-       output, act only on `STALE=yes` lines whose `packets=` names `<landed>` —
-       this is still bounded to **this packet's own findings**, never an
-       unattended sweep of the whole index: a `STALE=yes` entry that does not
-       name `<landed>` belongs to whichever packet's close names it instead. For
-       each: **filing a backlog task IS the capture** — if the finding is really
-       "this should be built/fixed" and has not already been filed, file it (the
-       same arm 1/arm 2 routing §4 uses) *before* dropping; **a spent sign-off is
-       NOT** — an owner-gate approval or a scoping note whose only job was to
-       gate a packet that is now done needs no capture, drop it directly. Either
-       way, drop with `runstate.sh drop-finding .agents/run-state.yaml <id>` — it
-       removes the index entry and the body together, so neither is left
-       orphaned.
-     - **Emit the status check-in.** If the scan above ran, read
-       `STALE_COUNT`/`OVER_THRESHOLD` off that same `findings --stale --finished`
-       call; if it was skipped for empty `IDS` there are no findings at all, so
-       omit the field. Those counts are measured **before** this packet's drops,
-       so they describe the index the packet inherited, not what it left behind —
-       over-reporting is the safe direction for a backstop. Follow
-       `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`'s contract exactly: include
-       `stale-findings: <N>` (`<N>` = `STALE_COUNT`, which may legitimately be 0)
-       only when `OVER_THRESHOLD=yes`; omit the field otherwise — its absence
-       means "index under threshold", never "checked and found zero". Emit the
-       **status** check-in (`${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`,
-       `landed: <landed>` @ its SHA) — and if the human is reading you directly
-       (inline mode, or you are the session they are talking to), emit it in the
-       **human check-in shape** instead
-       (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape A): a few
-       lines, every id titled, no diff and no file list.
-     - **Anything worth keeping past this packet is a FINDING, not note content**
-       (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id> "<one line>"
-       --packets <id[,id...]>`. **`--packets` must name the packet(s) the finding
-       actually constrains — never `<landed>`.** `add-finding`'s own contract is
-       a constraint on a packet that has **not executed yet**; naming the packet
-       you just closed makes the entry born stale (the evidence this close just
-       produced satisfies it immediately) and it can never be dropped for the
-       reason it was filed. Name whichever still-pending packet the finding
-       actually bears on — usually the next one it affects; `--packets` is
-       **mandatory** regardless (ADR 0024, there is no run-wide finding). Then
-       write the detail into the `.agents/findings/<id>.md` it creates when you
-       also pass `--body` (opt-in — most findings are fully carried by their
-       summary). Route it
-       first — this is the ADR 0020 seam and getting it wrong builds a shadow backlog:
-       - **"this should be built/fixed"** → **not a finding.** That is backlog: a
-         gspec task/feature, sequenced via `.agents/roadmap.yaml`.
-       - **"this is a gotcha, a constraint, or a decision and why"** → a finding.
-       A resolved question is a finding (the decision plus its rationale) — do **not**
-       grow a `resolved_questions:` list in run-state; a real run grew one to 21,664
-       chars precisely because there was nowhere else to put it.
-   - **Hard gate touched, genuine ambiguity, conflicting specs, or still red
-     after honest diagnosis** — do **not** force it: record a severity-tagged
-     **blocking question** in `run-state.pending_questions`, then **pause** via
-     `/gaffer:pause` (roll to the last green commit, discard non-checkpoint
-     scratch, never leave the tree dirty) and **stop**. Emit the blocking-question
-     check-in — and to the human, the **stop report**
-     (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B), with the
-     ambiguity written as an answerable decision: the two real options and what
-     follows from each, not a description of the problem.
+   **Outcome vocabulary — five triggers, each excluding the others; when a
+   stop fits more than one, `blocked` wins over `rolled-back` and `failed`,
+   and `failed` wins over `rolled-back`:**
+   - **green** — right here, on a land.
+   - **blocked** — the `stop` action (§3.5) records it, once `/gaffer:pause`
+     verifies the checkpoint.
+   - **rolled-back** — the `discard-advance` action (§3.5).
+   - **failed** — verification is still red after honest diagnosis and the
+     loop moves past with no blocking question; the check-task exit-1 usage
+     error just above is this trigger.
+   - **abandoned** — the operator's answer to a blocking question drops the
+     packet rather than retrying it (including on resume, when they say so).
+   A retry within a packet is neither a start nor an ending, and records
+   nothing.
 
-     **Attest this outcome too** — exactly one of five triggers, each excluding
-     the others; when a stop fits more than one, **blocked wins over
-     rolled-back and failed, and failed wins over rolled-back**. A retry
-     within the packet is neither a start nor an ending, and records nothing:
-     - **blocked** — the loop stops here on a blocking question (to the human,
-       or waiting on another packet), whatever then happens to the packet's
-       work: `runstate.sh record-outcome <cursor> blocked`. This is the case
-       just above.
-     - **rolled-back** — the loop discards the packet's work to the last green
-       checkpoint **without asking**: `runstate.sh record-outcome <cursor>
-       rolled-back`. (A pause that sets scratch aside is not this — see the
-       pause checkpoint below: a pause is never an ending.)
-     - **failed** — verification is still red after honest diagnosis and the
-       loop moves past the packet with **no** blocking question:
-       `runstate.sh record-outcome <cursor> failed`.
-     - **abandoned** — the operator's answer to a blocking question drops the
-       packet: `runstate.sh record-outcome <cursor> abandoned`. (The sweep's
-       own `abandoned` — a started packet whose task no longer exists — is
-       `sweep-open`'s business, not this step's.)
-
-     This is the branch that makes the metric honest. A packet only becomes visible
-     to the collector by way of its green-commit trailer, so work that failed or was
-     rolled back leaves **no trace at all** and the run reads "42 of 42 green" —
-     survivorship restated as quality, looking *better* the more work was thrown
-     away. Recording it here is the only place the truth exists.
-   - **Integrate (only at `full-autonomy`).** After the packet lands green on its
-     `orch/<task-id>` branch, you may take the day-to-day integration steps the guard
-     now delegates at this level: **merge** the branch into the **non-`main`**
-     integration branch (`.agents/project-overrides.yaml` → `integration_branch`,
-     else a non-`main` branch such as `develop`), **rebase** a branch to keep it
-     current, and **push** feature/integration branches for CI. Never target `main`:
-     a merge whose incoming diff hits a hard-gate path re-escalates, and
-     merge-to-`main`/release/PR/deploy stay the human's gate (see below). At
-     `supervised`/`autonomous` you stop at the green commit — leave integration to
-     the human.
-5. **Advance.** With no blocker, pull the next packet and repeat. Under
-   `supervised`, check in (and optionally hand back) between packets; under
-   `autonomous`/`full-autonomy`, continue automatically. **First check for a pause
-   request** (below) — a granted pause takes effect here, at the packet boundary.
-
-### Pause checkpoint (ADR 0017)
-
-A human/frontend can request a graceful pause at any time by touching the
-sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
-"<reason>"`. You honor it **cooperatively at safe boundaries** — never mid-edit:
-
-- **Poll at each packet boundary** (before pulling the next packet, and after a
-  green landing): `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh pause-status
-  .agents/pause`. If a `Read`/`Bash` tool advisory surfaces the request sooner
-  (the `pause-check.sh` hook), treat it the same way.
-- **Beat the driver heartbeat at the same boundary:**
-  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh heartbeat .agents/run-state.yaml`
-  (ADR 0020 D5). A stale heartbeat is what lets the *next* session tell a crash
-  from a live driver; the checkpoint you already stop at is the natural place for
-  it, and a run that stops beating simply reads as crashed — which is correct.
-- **On `PAUSE=1`:** finish the current packet to a green commit if it is already
-  green and in policy (commit with the `[orch packet:<cursor>]` trailer); otherwise
-  leave the last green commit untouched. Then hand to **`/gaffer:pause`**,
-  which verifies the clean checkpoint, persists `status: paused`, clears the
-  sentinel, and emits the check-in. **Stop.** Do not start the next packet.
-  **A pause is never an ending** — it records none of the five outcomes above;
-  the packet's start (if any) stays open until a later session continues it
-  and it ends there.
+   Then close it out, every time:
+   - `runstate.sh record-outcome <landed> green`.
+   - Overwrite `note:` with one line for the resuming session; never append.
+   - **Drop stale findings naming `<landed>`**, from evidence, not say-so:
+     ```bash
+     IDS=$(runstate.sh findings .agents/run-state.yaml | cut -f4 | tr ',' '\n' | sort -u | paste -sd, -)
+     # empty IDS -> no findings at all, skip the rest
+     FINISHED=$(gspec-backlog.sh task-status "$IDS" | grep '^FINISHED=' | cut -d= -f2-)
+     FINISHED="${FINISHED:+${FINISHED},}<landed>"
+     runstate.sh findings .agents/run-state.yaml --stale --finished "$FINISHED"
+     ```
+     For each `STALE=yes` line naming `<landed>`: file a backlog task first if
+     it is really "this should be built/fixed" and not already filed (the
+     arm 1/arm 2 routing in §4); a spent sign-off needs no capture. Either way
+     drop with `runstate.sh drop-finding .agents/run-state.yaml <id>`. That
+     same `findings --stale --finished` call also prints `OVER_THRESHOLD=` —
+     when it reads `yes`, name the count (`STALE_COUNT`) as `stale-findings:
+     <N>` in the report below; its absence means under threshold, never
+     checked-and-clean.
+   - **Anything worth keeping past this packet is a finding, not note
+     content** (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id>
+     "<one line>" --packets <id[,id...]>`, naming a still-pending packet — never
+     `<landed>` itself, which the close you just ran already satisfies.
+   - Report the landing — one line naming `<landed>` by plain-English title
+     and outcome, per `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`
+     shape A.
+7. **Integrate (only at `full-autonomy`).** After the packet lands green, you
+   may merge the branch into the integration branch, rebase it to keep it
+   current, and push feature/integration branches — never targeting `main`; a
+   merge whose incoming diff hits a hard-gate path re-escalates. At
+   `supervised`/`autonomous` you stop at the green commit.
+8. **Advance.** With no blocker, pull the next packet and repeat.
+   Poll the pause sentinel first — `runstate.sh pause-status .agents/pause`
+   (or a `Bash`/`Edit` advisory surfacing it sooner) — at each packet boundary,
+   and beat the driver heartbeat at the same point: `runstate.sh heartbeat
+   .agents/run-state.yaml`. **On `PAUSE=1`:** finish the current packet to a
+   green commit if it is already green and in policy, otherwise leave the
+   last green commit untouched; then hand to `/gaffer:pause`, which persists
+   `status: paused`, clears the sentinel, and stops. A pause records none of
+   the outcomes above — the packet's start stays open for a later session.
 
 ## 4. Termination
 
-- **Backlog complete** → before declaring done, dispatch **one broad whole-branch
-  review** (opus) over the *integrated* diff — the whole feature vs its base
-  (`git diff <base>...HEAD`, or the integration branch vs its base at
-  `full-autonomy`). Per-packet reviews are scoped to one packet each and miss
-  cross-packet integration issues; this final pass is the net for them. For any
-  Critical/Important finding (ADR 0026), route by scope in two arms tried in order,
-  never editing the completed record and never bypassing the immutability control with a
-  shell append (`cat >>`, `printf >>`).
+- **Backlog complete** → before declaring done, dispatch **one broad
+  whole-branch review** (the `reviewer`, opus) over the integrated diff (`git
+  diff <base>...HEAD`, or the integration branch vs its base at
+  `full-autonomy`). There is no handoff file for this one — hand it the diff
+  directly, plus `.agents/run-state.yaml`'s path and a result path of your
+  choosing under the run directory (any path works; this review is not
+  packet-scoped). It writes its findings through `write-result` to that path
+  and returns one status line as usual.
 
-  - **Arm 1** applies when **some feature in the backlog** — not necessarily the one this
-    run built — is **incomplete**, has a plan file with at least one **unchecked** task
-    line, and an **unchecked capability in its PRD covers the finding** — both tests must
-    hold separately. Append a new unchecked task line to that feature's plan file
-    (the `PLAN=` path) as an `Edit` anchored on an unchecked line, carrying a
-    truthful `covers:` naming that capability. The immutability hook still runs and still
-    adjudicates: every checked task's **block** (its task line plus its `deps:`/`covers:`
-    follow-on lines, up to the next task line) must survive byte-identically in the
-    resulting file; a rejection is a **signal** that a checked block was disturbed, or
-    that arm 1 was the wrong arm. Write bounds: append only, never modifying an existing
-    line, never touching a PRD capability checkbox. Cursor back to the appended task.
-    Choose the plan by **scope match**, never by proximity, recency, or convenience.
+  **You do not open that review file — this would be the one exception to
+  "never open a result file", so instead it stays zero: dispatch the
+  `architect` with the review file's path, `.agents/run-state.yaml`'s path,
+  and a result path of your own choosing under the run directory** to do the
+  ADR 0026 routing itself, for any Critical/Important finding, in two arms
+  tried in order, never editing a completed record and never bypassing the
+  immutability control with a shell append:
 
-  - **Arm 2** is everything else, including every case where the parent plan is fully
-    checked: the finding becomes a **new feature**. A dispatched context has no `Skill`
-    tool (ADR 0012), so hand off on the `normal`-severity question block in
-    `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`: `gate:` records arm-2, `question:`
-    names the proposed slug, scope, and parent, `state:` stays `continuing on other
-    packets` (meaning the question does not block the run — at §4 the backlog is
-    complete). Main-context session runs `/gspec-feature`, adds a `.agents/roadmap.yaml`
-    entry (`depends_on:` the parent, `order` after it), and writes **no plan file** until
-    the work comes up. Never use the check-in's `Findings:` key — "this should be
-    built/fixed" is backlog (ADR 0022), not a finding. **`-gaps` does not stack** — a
-    second-order gap gets a slug naming its scope.
+  - **Arm 1** applies when some feature in the backlog is **incomplete**, has
+    a plan file with at least one **unchecked** task line, and an **unchecked
+    capability in its PRD covers the finding** — both tests hold separately.
+    The architect appends a new unchecked task line to that feature's plan
+    file as an `Edit` anchored on an unchecked line, carrying a truthful
+    `covers:` naming that capability, and **commits that edit itself** (the
+    same pattern the escalation-decider stand-in uses for its own
+    `append-task`) — write bounds: append only, never modify an existing
+    line, never touch a PRD checkbox. Choose the plan by **scope match**,
+    never by proximity or convenience.
+  - **Arm 2** is everything else, including a fully-checked parent plan: the
+    finding becomes a **new feature**. The architect does not run
+    `/gspec-feature` itself — it names the proposed slug/scope/parent in its
+    result file and reports this in its status line. **You are the main
+    context now** (whether a plain session or `claude --agent
+    gaffer:loop-driver`, ADR 0028 — there is no separate dispatched
+    coordinator here to lack a `Skill` tool), so once driver mode has exited
+    below you may run `/gspec-feature` yourself; until then, record it as a
+    question in the stop report for the operator.
+
+  The architect returns one status line summarizing what it routed and
+  where; relay that, not the review file's contents.
+
+  **Before declaring done, also account for any branch left behind by a
+  `discard-advance` carrying a decider commit** (§3.5): `git branch --list
+  'orch/*'` and check each for a `[orch decider:` trailer beyond `<base>`.
+  At `full-autonomy`, merge each such branch into the integration branch
+  now, before finishing. Below `full-autonomy`, list each one (branch name,
+  commit, one-line summary of what it did) in the stop report instead of
+  merging it — the human decides whether to land it.
 
   Once every finding is routed and the whole-branch review is clean, set
-  `status: done` (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh set
-  .agents/run-state.yaml status done`) so a later session does not try to resume a
-  finished run. Then **snapshot run-metrics (best-effort, ADR 0019):**
-  `${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true` — assembles
-  `.agents/metrics/<run-id>/run-metrics.json` from the run's event spine + commit
-  trailers + transcripts. **Non-critical bookkeeping**: if it errors or `jq` is
-  absent, ignore it — it must never affect termination. Then emit the **stop report**
-  (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): what shipped in plain
-  words, anything left undone, any decision still open, the single recommended next
-  action, and `branch <orch/task-id>` **ready for review** as the state line
-  (optionally fold in a `metrics.sh show` one-liner). **Stop there.**
-- **Blocked** → you are already paused with a blocking question; emit the stop report
-  with that question written as an answerable decision, and stop.
-
-**The stop report is the last thing the human reads, so it is the one that has to
-scan.** Every packet id gets a plain title, every decision states what follows from
-each option, and nothing is padded to look thorough — the human asks follow-ups when
-they want more, and a report they have to mine is one they will not read.
+  `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then
+  snapshot run-metrics (best-effort, non-critical): `metrics.sh collect ||
+  true`. Emit the **stop report** (`report-templates.md` shape B): what
+  shipped in plain words, anything left undone, any decision still open
+  (including any arm-2 question and any un-merged decider-commit branch),
+  the single recommended next action, and `branch <orch/task-id>` ready for
+  review as the state line. **Then `runstate.sh driver-mode exit` —
+  immediately after every stop report, no exceptions.**
+- **Blocked** → the `stop` action (§3.5) already handed this off to
+  `/gaffer:pause`, which verified the checkpoint, persisted the blocking
+  question, set `status: blocked`, rendered the stop report, and ran
+  `driver-mode exit` — there is nothing further to render here.
 
 ## Never, at any autonomy level
 
 Commit/merge/**push to `main`/`master`** (or remote `main`), open a PR, run a
-migration or schema change, install/upgrade dependencies, edit a sensitive/hard-gate
-path, deploy, or rewrite history (`--amend`, interactive rebase, force-push,
-`reset --hard`). **Merging to `main`, releasing, and opening a PR are the human's
-hard gate at every level, including `full-autonomy`** — the loop stops at "ready for
-the human to release" (a green commit on the feature branch at `supervised`/
-`autonomous`; integrated onto the non-`main` integration branch at `full-autonomy`).
-Every iteration is a green commit on a branch, so a crash or shutdown mid-loop
-resumes cleanly from the last checkpoint.
+migration or schema change, install/upgrade dependencies, edit a
+sensitive/hard-gate path, deploy, or rewrite history (`--amend`, interactive
+rebase, force-push, `reset --hard`). **Merging to `main`, releasing, and
+opening a PR are the human's hard gate at every level, including
+`full-autonomy`** — the loop stops at "ready for the human to release" (a
+green commit on the feature branch at `supervised`/`autonomous`; integrated
+onto the non-`main` integration branch at `full-autonomy`). Every iteration is
+a green commit on a branch, so a crash or shutdown mid-loop resumes cleanly
+from the last checkpoint.
 
 At **`full-autonomy` only**, the merge/rebase/push onto **non-`main`** branches
-described in step 3.4 are delegated — that is the *sole* addition; everything in the
-paragraph above still stops for the human.
+described in §3.7 are delegated — that is the *sole* addition; everything in
+the paragraph above still stops for the human.

@@ -258,6 +258,45 @@ ADR 0013's "one roadmap" standing rule is unchanged and now easier to hold: ther
 one sequencing source, it is smaller, and two of its former fields cannot drift
 because they are no longer written down.
 
+#### D2 amendment (2026-09-15) — capability acceptance-criteria bullets, for `handoff`
+
+**The consumed contract widens by exactly one thing: a capability's indented
+acceptance-criteria sub-bullets** (`  - <criterion>`, including a wrapped
+multi-line one, kept whole) **are now read, not just the capability line
+itself.** Everything else D2 says about the PRD is unchanged — completion is
+still derived only from the checkbox, never from a criterion's text or count.
+
+`gspec-backlog.sh handoff <packet-id>` is the reason and the **only** reader.
+`thin-loop-driver` (T8, T16) needs a self-contained handoff file it can pipe
+straight into an implementer's brief — task text, file scope, and *what "done"
+means for this task*, which for a capability-level PRD lives one level below
+the checkbox, in its sub-bullets. Nothing else in this plugin reads them:
+`_feature_done` still stops at the checkbox, `nodes`/`nodes-all` still never
+open the PRD for anything but `depends_on`, and **`runstate.sh` still never
+reads `gspec/` at all** — the handoff file is gspec-backlog.sh's output, piped
+in by the loop, not a second gspec reader growing inside run-state.
+
+**The match is exact, never fuzzy, by the same reasoning as every other lookup
+in this file.** `handoff` matches a task's `covers:` quote (split on the
+`' · '` separator already in use for more than one capability) against a
+capability's text with only outer-whitespace trimmed — no normalization, no
+partial match. A quote that matches nothing is reported as `UNMATCHED=`, the
+same shape as an unresolved id elsewhere in this adapter: loud and specific,
+never guessed at. This is what keeps the widened contract from becoming a
+second, softer place completion could be inferred from — a criterion's
+*wording* is never load-bearing here, only whether the quote naming it exists
+verbatim.
+
+**Scope stays narrow on purpose.** `arch.md` and `design.html` are still
+outside the contract; `handoff` prints their paths (or that they are absent)
+for an implementer to read directly, exactly as `next` already does for
+`arch.md` — it does not parse either. The legacy `**P0 — text**` capability
+shape `_feature_done` accepts for completion has no sub-bullet shape reliable
+enough to reproduce, so a quote against a legacy-shaped PRD correctly reads
+`UNMATCHED=` rather than guessing at one; regenerating with `/gspec-feature`
+remains the remedy, as it is everywhere else legacy shapes surface in this
+adapter.
+
 ### D3 — Pin gspec, on two independent axes
 
 gspec is published to npm (all releases 1.0.0 → 2.7.0; `latest` = 2.7.0), so

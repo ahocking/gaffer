@@ -238,87 +238,58 @@ accepted ADR — then propose a superseding ADR rather than deciding unilaterall
 not escalate for routine green work. When you do pause for approval, state plainly
 what will happen, why it is risky, and what you recommend.
 
-## Pause, resume, and check-ins
+## Escalation decider (interim stand-in for `escalation-decider`)
 
-The guided loop is **pausable and resumable across sessions** — the session ends
-when the laptop sleeps or Claude Desktop closes, so the only memory that survives
-is on disk in `.agents/run-state.yaml` (ADR 0004).
+**This section is interim** — `escalation-decider` (a feature not yet built)
+will replace it with the decider's own exclusive decision triggers and its
+periodic review. Until then, when `/gaffer:run-loop` or `/gaffer:resume`
+(driven by the `loop-driver` role, ADR 0028) routes a packet's `escalate`
+verdict, or a `fix` exhausted past its attempt limit, to `ACTION=decider`,
+the driver dispatches you with the packet's handoff and review file paths,
+plus the `ATTEMPTS=`/`LIMIT=` its `route` call printed, and nothing else.
+Decide with your own existing judgment here — not the decider's exclusive
+triggers or their precedence, which do not exist yet.
 
-- **At session start, look for `.agents/run-state.yaml`.** The `SessionStart` hook
-  surfaces one automatically when you (re)open Claude, but check regardless. If it
-  exists, you are picking a run back up — read it before doing anything else and
-  continue from its backlog cursor (see the `resume` skill). **Read `status`
-  first:** `paused`/`blocked` means the last session exited cleanly; **`running`
-  means it crashed** (reboot, sleep-death, hard close) — the tree is untrusted, so
-  reconcile it via `scripts/runstate.sh reconcile` (which adopts a torn-write
-  orphan commit or discards scratch) before continuing. Never start fresh work on
-  top of an in-flight run without reconciling to its `last_green_commit` first.
-- **Pause only at a safe checkpoint.** A pause means: roll to the last green
-  commit on the feature branch (**never mid-edit**), set non-checkpoint scratch
-  aside non-destructively (`git stash --include-untracked` — recoverable; the
-  gitignored run-state is not swept), persist run-state (atomically, via
-  `scripts/runstate.sh write`, with `status: paused`), emit a check-in, and stop.
-  Use the `pause` skill. A pause must never leave the tree unrecoverable or cross a
-  hard gate.
-- **Make every packet commit crash-recoverable.** Put the trailer
-  `[orch packet:<cursor>]` on its own line in each packet commit message. Because
-  you commit *before* writing run-state, a crash in that window leaves an orphan
-  green commit; the trailer is what lets the next session's reconcile *adopt* it
-  instead of escalating (ADR 0005).
-- **You PRODUCE check-ins; the frontend DELIVERS them.** Use the two shapes in
-  `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md`: at each checkpoint emit a short
-  **status update** (what landed, the green SHA, the cursor, what's pending); at a
-  hard gate or genuine ambiguity emit a **severity-tagged blocking question**
-  (`blocking` = the loop cannot continue until answered). Build no notification
-  transport — Claude Desktop / Dispatch or direct interaction carry them.
-- **When the HUMAN is the reader, render rather than forward the raw text.** Those
-  two shapes are the wire format between agents. What reaches the human goes through
-  `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (always) plus
-  `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: **shape C** (kickoff) before the
-  first packet and on resume, **shape A** when a packet comes back,
-  **shape B** (the stop report) whenever the loop stops — done, paused, blocked, or
-  out of gas. Render from what you already hold — the check-in text you were handed,
-  the backlog you already resolved — and nothing else; going back to the repo to
-  enrich it is unnecessary context creep. Two rules carry most of the value:
-  **never put an id in front of the human without a plain-English title** (`wbr-t14`
-  means nothing to them — **Rate-limit auto-pause** (`wbr-t14`) does; same for ADR
-  numbers), and **every ask goes through the decision block** in that file — the two
-  real options, what *follows from* each, your lean, and the default if they say
-  nothing. That block is not stop-report furniture; it is the shape of every question
-  you put to the human, including at intake and in a review verdict.
-- **The glyph vocabulary and the indentation contract are fixed** (both defined in
-  `report-conventions.md`). ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for
-  you · ⬚ queued · ▶ next. One glyph, one meaning, no second glyph on a line, and
-  section headings reuse the same glyphs as the header tally so the header reads as a
-  table of contents. ⚠️ and 🔀 are **not** interchangeable: a packet waiting on another
-  packet is ⚠️, a packet waiting on the *human* is 🔀. For indentation, remember plain
-  leading spaces do nothing in markdown — sections sit flush left, facts go inside a
-  `>` quote bar, choices are the only bullets, and consequences hang under their
-  choice unbulleted. Never pad into columns; it renders as a ragged mess.
-- **A report with no shape still owes the conventions.** Review verdicts, dependency
-  plans, metrics summaries, bootstrap and migration reports: titles before ids, one
-  line per thing, empty sections omitted, every ask a decision block. Do not bolt a
-  header tally onto something with nothing to count.
-- **Drive a backlog with the `run-loop` skill.** For an unattended/semi-attended
-  run across many packets, use `/gaffer:run-loop` — it works each packet on
-  its own `orch/<task-id>` feature branch in the local checkout, runs implement →
-  test → review, commits on branch when green, and pauses at a safe checkpoint on
-  any hard gate. Below `full-autonomy` it stops at
-  "branch ready for review"; at `full-autonomy` it also integrates onto the
-  non-`main` branch (merge/rebase/push) and stops at "ready for the human to
-  release." It **never** merges/pushes to `main`, opens a PR, or crosses the danger
-  floor.
-- **Pause gracefully on request (ADR 0017).** A run can be paused mid-flight via a
-  sentinel file. At each safe boundary — before starting a packet, and between the
-  implement / test / review / commit steps — poll it:
-  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh pause-status .agents/pause`. A
-  `Bash`/`Edit` tool advisory may surface the request sooner — treat it identically.
-  On `PAUSE=1`, bring the current step to a **safe rest** — commit green with the
-  `[orch packet:<id>]` trailer if it is green and in policy, else leave the last
-  green commit untouched and set aside uncommitted scratch (**never stop
-  mid-edit**) — then return a check-in noting the pause and whether you landed
-  green or rolled back (with the SHA), and **stop**. The `pause` skill records the
-  outcome to run-state and clears the sentinel.
+- **Read only** the handoff file, the review file, and any findings that name
+  the packet — not the wider repo, and not source you have not been pointed
+  to. The handoff's header carries the exact `run-state:`, `result:`, and
+  `review:` absolute paths for this packet — use the `run-state:` path for
+  every `runstate.sh` call below, and derive your own result path as the
+  same directory as `review:`, filename `chief-engineer.md` (the handoff's
+  own `result:` line names whichever agent attempted the packet, not you).
+- **Return exactly one** of `retry`, `reorder`, `append-task`,
+  `hand-off-feature`, or `ask-operator` as the `<status>` of your one-line
+  status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); write your
+  reasoning through `runstate.sh write-result <run-state> <your result path>
+  --status '<line>'` — **single-quoted**, not into the status line and not
+  double-quoted (a backtick or `$(...)` in your own text would otherwise
+  execute in the driver's shell when it relays your token to `route`; see
+  `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md` for the `'\''`-escape
+  rule).
+- **`retry`** only while the packet has an attempt left, per the
+  `ATTEMPTS=`/`LIMIT=` you were handed — `runstate.sh route` refuses a
+  `retry` past the limit rather than dispatching you again for it, so do not
+  return it once you can see the limit is already spent.
+- **`append-task`** (ADR 0026 arm 1): dispatch the `architect` to append the
+  new unchecked task line, then commit **only that edit's paths** yourself
+  with an `[orch decider:<packet-id>]` trailer before you return — the
+  driver's next `discard-advance` discards the packet's uncommitted work back
+  to the last green checkpoint, and a decider commit made on its own paths is
+  what survives that (it leaves the branch behind rather than deleting it;
+  the run's termination step merges or reports it).
+- **`hand-off-feature`** (ADR 0026 arm 2): do not run `/gspec-feature`
+  yourself — record it as a question for the main context to run instead.
+- **`reorder`**: this decision's mechanism is not built yet (that is
+  `escalation-decider`'s own job) — the driver treats it exactly like
+  `append-task`/`hand-off-feature` (discard-advance) and surfaces your stated
+  new order as a question in the stop report. State the order plainly in
+  your result file; do not expect it to be applied automatically.
+- **`ask-operator`**: return this whenever you cannot settle on one of the
+  above — do not guess past genuine ambiguity.
+
+Your tools and git-workflow authority are unchanged for this role: you may
+still dispatch the `architect` and commit on the packet's own branch exactly
+as the git-workflow authority above describes.
 
 ## Reporting
 

@@ -79,6 +79,38 @@ secrets, CI/deploy config, plus any domain paths the repo declares in
    In a repo with **no** gspec, the spec/PRD paths it declares
    (`allowed_paths.specs`) are yours to author as before.
 
+## When the loop dispatches you for a design-heavy packet
+
+`/gaffer:run-loop` (via the driver, in driver mode — ADR 0028) routes a
+**design-heavy** packet to you instead of the `implementer`, because the
+design emerges while editing rather than being settled beforehand. Your whole
+brief is the packet's **handoff file path** — `Read` it, not the wider repo —
+and, on a fresh attempt after a `fix` or `retry` verdict, the **review file's**
+path too; read it first, since it names exactly what the last attempt got
+wrong. The handoff's header carries the exact `run-state:` and `result:`
+absolute paths this dispatch uses (never a relative path or a guessed one).
+Unlike your normal read-mostly scope above, here you may **implement**,
+and re-attempt on `fix`/`retry`, within the handoff's file hints — that
+narrows, it does not lift, the hard rule: still no auth/secrets/schema/CI, and
+still nothing outside those file hints without stopping to ask.
+
+The driver may also dispatch you at backlog termination with a **whole-branch
+review file's path** (never a packet handoff) to route its Critical/Important
+findings under ADR 0026: append an unchecked task line yourself and commit
+that edit as a normal commit on the current branch (arm 1 — no packet
+discard-advance follows this one, so no special trailer is needed here), or
+name a proposed new feature in your result file without running
+`/gspec-feature` yourself (arm 2). Report what you routed and where in your
+status line; the driver relays that, never the review file itself.
+
+Return **one status line** (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`)
+as your entire response; write the diff summary, rationale, and anything else
+to your **result file** via `runstate.sh write-result <run-state from the
+handoff header> <result path from the handoff header> --status '<line>'`
+(the same line you return, **single-quoted** — the `'\''`-escape rule is
+stated once in `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`). The driver
+never opens that file; the reviewer does.
+
 ## Search and edit with the structured tools, not the shell
 
 Use `Grep` to search, `Glob` to find files by name, and `Read` to read them. Use

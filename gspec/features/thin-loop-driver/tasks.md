@@ -56,12 +56,12 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Long runs compact, and can pause on a schedule
   - arch: —
   - files: docs/adr/0028-loop-driver-mode.md
-- [ ] **T2** [P] **P0** Add `gspec-backlog.sh handoff <packet-id>`, which prints the task text, its file scope resolved exactly as `nodes` resolves it, each `covers:` capability with its PRD acceptance-criteria bullets verbatim, and the PRD and `arch.md` paths, and amend ADR 0020 to add acceptance-criteria bullets to the consumed contract. A `covers:` quote that matches no capability is reported, never guessed, and a non-gspec id prints `unknown`. `test-gspec-backlog.sh` cases cover all three plan layouts, a multi-bullet criterion, a ` · `-separated multi-capability `covers:`, an unmatched quote and a checked task.
+- [x] **T2** [P] **P0** Add `gspec-backlog.sh handoff <packet-id>`, which prints the task text, its file scope resolved exactly as `nodes` resolves it, each `covers:` capability with its PRD acceptance-criteria bullets verbatim, and the PRD and `arch.md` paths, and amend ADR 0020 to add acceptance-criteria bullets to the consumed contract. A `covers:` quote that matches no capability is reported, never guessed, and a non-gspec id prints `unknown`. `test-gspec-backlog.sh` cases cover all three plan layouts, a multi-bullet criterion, a ` · `-separated multi-capability `covers:`, an unmatched quote and a checked task.
   - deps: —
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh, docs/adr/0020-gspec-boundary-and-version-pin.md
-- [ ] **T3** [P] **P0** Add `runstate.sh driver-mode <enter|exit|status> [session-id]`, with the session defaulting to `CLAUDE_CODE_SESSION_ID`:
+- [x] **T3** [P] **P0** Add `runstate.sh driver-mode <enter|exit|status> [session-id]`, with the session defaulting to `CLAUDE_CODE_SESSION_ID`:
   - `enter --model <m> --effort <e|unknown> --threshold <n|unknown>` writes the mark `.agents/driver-mode/<session>` and appends an enter record to `.agents/metrics/driver-mode/<session>.jsonl`;
   - `exit` removes the mark and appends an exit record;
   - `status` prints `DRIVER_MODE=on|off`.
@@ -76,7 +76,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Long runs compact, and can pause on a schedule
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T5** [P] **P0** Make `hooks/guard.sh` refuse Edit, Write, MultiEdit and NotebookEdit calls, and the shell writes `BASH_WRITE_PATTERNS` recognises, when the payload's `session_id` has a driver-mode mark in a discovered config root, the payload carries no `agent_id`, and the target is outside `.agents/`. The refusal names driver mode as the reason and `/gaffer:pause` as the way out. It is checked after the secret floor and before the ask tier. A payload without `session_id` is judged as it is today. `test-guard.sh` cases:
+- [x] **T5** [P] **P0** Make `hooks/guard.sh` refuse Edit, Write, MultiEdit and NotebookEdit calls, and the shell writes `BASH_WRITE_PATTERNS` recognises, when the payload's `session_id` has a driver-mode mark in a discovered config root, the payload carries no `agent_id`, and the target is outside `.agents/`. The refusal names driver mode as the reason and `/gaffer:pause` as the way out. It is checked after the secret floor and before the ask tier. A payload without `session_id` is judged as it is today. `test-guard.sh` cases:
   - each of the four tools and `sed -i`, `cat >`, `tee` and `cp` refused;
   - `.agents/` targets allowed, including a Windows-separated one;
   - the same payload with `agent_id` allowed;
@@ -87,12 +87,12 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: hooks/guard.sh, scripts/test-guard.sh
-- [ ] **T6** **P0** Make `hooks/session-start.sh` clear its own session's driver-mode mark on `startup` and `resume`. Add `hooks/driver-mode-compact.sh`, registered in `hooks/hooks.json` on SessionStart `compact`. When its session has a mark, it prints a context-only note to `Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` and continue as the driver; otherwise it prints nothing. It handles `clear` as T1 found: when `/clear` keeps the session id, the compact hook's matcher is `compact|clear`. `test-runstate.sh` cases cover a reopened session's mark cleared, a compacted session's mark kept, the `clear` behaviour T1 recorded, another session's mark untouched, valid JSON envelopes, and failing open with no session id.
+- [x] **T6** **P0** Make `hooks/session-start.sh` clear its own session's driver-mode mark on `startup` and `resume`. Add `hooks/driver-mode-compact.sh`, registered in `hooks/hooks.json` on SessionStart `compact`. When its session has a mark, it prints a context-only note to `Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` and continue as the driver; otherwise it prints nothing. It handles `clear` as T1 found: when `/clear` keeps the session id, the compact hook's matcher is `compact|clear`. `test-runstate.sh` cases cover a reopened session's mark cleared, a compacted session's mark kept, the `clear` behaviour T1 recorded, another session's mark untouched, valid JSON envelopes, and failing open with no session id.
   - deps: T1, T3
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: hooks/session-start.sh, hooks/driver-mode-compact.sh, hooks/hooks.json, scripts/test-runstate.sh
-- [ ] **T7** **P0** Add `runstate.sh begin-run <run-state>`, which:
+- [x] **T7** **P0** Add `runstate.sh begin-run <run-state>`, which:
   - mints a sortable `run_id` into run-state only when it is absent;
   - creates `.agents/loop/<run_id>/`;
   - removes every other run directory except the newest previous one;
@@ -103,7 +103,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, templates/run-state.yaml, .gitignore, templates/spec-driven-base/.gitignore
-- [ ] **T8** **P0** Add two writers to `runstate.sh`:
+- [x] **T8** **P0** Add two writers to `runstate.sh`:
   - `handoff <run-state> <packet-id> --tier <tier> --agent <agent>` writes stdin atomically to `.agents/loop/<run_id>/<packet-id>/handoff.md`, headed by the packet id, title, tier and agent, and prints `HANDOFF=<path>`;
   - `write-result <run-state> <path> --status "<line>"` refuses any path outside the current run directory, collapses newlines in the status to spaces, and atomically writes the status line followed by stdin.
 
@@ -112,7 +112,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T9** **P0** Add `runstate.sh route <run-state> <packet-id> <token> [--status "<line>"]`, which appends a routing record to `.agents/loop/<run_id>/routing.jsonl` and prints one action with `ATTEMPTS=` and `LIMIT=`:
+- [x] **T9** **P0** Add `runstate.sh route <run-state> <packet-id> <token> [--status "<line>"]`, which appends a routing record to `.agents/loop/<run_id>/routing.jsonl` and prints one action with `ATTEMPTS=` and `LIMIT=`:
   - `pass` → `land`;
   - `fix` → `attempt` while attempts remain, else `decider`; `retry` → `attempt` while attempts remain, since the PRD counts attempts from either route and `escalation-decider` returns `retry` only when one is left, and a `retry` past the limit is refused as `stop`, carrying a blocking question that names the over-limit `retry`, rather than looped;
   - `escalate` → `decider`; `reorder`, `append-task` and `hand-off-feature` → `discard-advance`; `ask-operator` → `stop`;
@@ -141,12 +141,12 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Reports are thin and built from files
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T12** [P] **P0** Add `templates/status-line.md`. It defines the one status line every loop-dispatched agent returns: status, what changed, whether its result file needs reading, and that file's path. The same line opens the result file written with `runstate.sh write-result`. It also states that a status line longer than one line breaks the contract and review must catch it.
+- [x] **T12** [P] **P0** Add `templates/status-line.md`. It defines the one status line every loop-dispatched agent returns: status, what changed, whether its result file needs reading, and that file's path. The same line opens the result file written with `runstate.sh write-result`. It also states that a status line longer than one line breaks the contract and review must catch it.
   - deps: T8
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: templates/status-line.md
-- [ ] **T13** [P] **P0** Replace the report section of `agents/reviewer.md` with the three verdicts and their exclusive triggers:
+- [x] **T13** [P] **P0** Replace the report section of `agents/reviewer.md` with the three verdicts and their exclusive triggers:
   - `pass`: the acceptance criteria are met and there is no blocking finding;
   - `fix`: a failure the review file describes precisely enough for another implementer to correct;
   - `escalate`: anything else, and whenever more than one could apply or which applies is unclear.
@@ -156,7 +156,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: The reviewer verdict routes each packet mechanically · Agents take a handoff file and return one status line
   - arch: —
   - files: agents/reviewer.md
-- [ ] **T14** [P] **P0** Update `agents/implementer.md`, `doc-writer.md`, `researcher.md`, `architect.md` and `ux-designer.md`:
+- [x] **T14** [P] **P0** Update `agents/implementer.md`, `doc-writer.md`, `researcher.md`, `architect.md` and `ux-designer.md`:
   - each takes a handoff path as its whole brief, plus the review file's path on a fresh attempt;
   - each returns one status line per `templates/status-line.md` and writes everything else with `runstate.sh write-result`;
   - the architect and UX designer may implement, and re-attempt, a design-heavy packet within its handoff's file hints;
@@ -165,7 +165,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically · The operator can ask questions and request edits mid-run
   - arch: —
   - files: agents/implementer.md, agents/doc-writer.md, agents/researcher.md, agents/architect.md, agents/ux-designer.md
-- [ ] **T15** [P] **P0** Add `agents/loop-driver.md` with `model: inherit`. It declares no `tools:` restriction, so a session launched with `claude --agent` keeps `Task`, `Bash` and `Read` for the loop and Edit and Write for after its stop report. Its instructions:
+- [x] **T15** [P] **P0** Add `agents/loop-driver.md` with `model: inherit`. It declares no `tools:` restriction, so a session launched with `claude --agent` keeps `Task`, `Bash` and `Read` for the loop and Edit and Write for after its stop report. Its instructions:
   - pass only paths, read one status line, never open a result file, and never poll while an agent works;
   - route every verdict through `runstate.sh route`, and until `escalation-decider` ships, answer `ACTION=decider` by dispatching `chief-engineer` with the handoff and review paths and passing its returned decision token, with its status line as `--status`, to `route`;
   - answer operator questions from handoff files, status lines and findings before dispatching the researcher;
@@ -184,7 +184,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically · The operator can ask questions and request edits mid-run
   - arch: —
   - files: agents/loop-driver.md, agents/chief-engineer.md
-- [ ] **T16** **P0** Slim `skills/run-loop/SKILL.md` to the driver role, moving judgment into `agents/loop-driver.md`, so that:
+- [x] **T16** **P0** Slim `skills/run-loop/SKILL.md` to the driver role, moving judgment into `agents/loop-driver.md`, so that:
   - it `Read`s that file, then enters driver mode with the session's model and effort before the kickoff and never asks to change them, then runs `begin-run`;
   - when it begins a packet, after the existing sweep, it pipes `gspec-backlog.sh handoff` (or, for a packet not from gspec, its task text from run-state) into `runstate.sh handoff`, choosing the architect or UX designer for a design-heavy packet at that point, and runs `record-start` only once the handoff is written; a refused handoff skips the packet with no record;
   - it dispatches with the handoff path only, and passes every returned verdict or decision to `route` with its status line as `--status`;
@@ -200,7 +200,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically
   - arch: —
   - files: skills/run-loop/SKILL.md
-- [ ] **T17** **P0** Carry driver mode into `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
+- [x] **T17** **P0** Carry driver mode into `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
   - after its legacy-parallel check, `resume` enters driver mode and runs `begin-run`, keeping the run's `run_id`, then follows `run-loop`'s dispatch-and-route steps by `Read`;
   - every stop path in both skills runs `driver-mode exit` right after its stop report;
   - `pause` names the driver session, not the Chief Engineer, as the one running it.

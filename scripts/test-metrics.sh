@@ -4,9 +4,9 @@
 # =============================================================================
 # Exercises scripts/metrics.sh (the JOIN/ASSEMBLE core) and hooks/metrics-log.sh
 # (the event logger) against SYNTHETIC fixtures — a throwaway git repo with
-# `[orch packet:<id>]` trailers, a per-session event log, a packet-graph wave map,
-# and fake Claude Code transcripts. No live agent, no real ~/.claude. Exit 0 = all
-# passed (CI runs it on push). A behavior worth having is a behavior worth a test.
+# `[orch packet:<id>]` trailers, a per-session event log, and fake Claude Code
+# transcripts. No live agent, no real ~/.claude. Exit 0 = all passed (CI runs it on
+# push). A behavior worth having is a behavior worth a test.
 # =============================================================================
 
 set -uo pipefail
@@ -40,7 +40,7 @@ commit_at() { # commit_at <iso-Z> <packet-id>
 commit_at "2026-07-21T10:00:03Z" "feat-001"
 commit_at "2026-07-21T10:00:06Z" "feat-002"
 
-# --- .agents fixtures: event log, packet-graph waves, run-state ---------------
+# --- .agents fixtures: event log, run-state ------------------------------------
 mkdir -p "$REPO/.agents/metrics/events"
 EV="$REPO/.agents/metrics/events/S1.jsonl"
 cat > "$EV" <<'JSON'
@@ -50,16 +50,6 @@ cat > "$EV" <<'JSON'
 {"ts":"2026-07-21T10:00:04Z","session_id":"S1","agent_id":"a2","agent_type":"reviewer","tool":"Bash","duration_ms":40,"cmd_class":"git diff"}
 {"ts":"2026-07-21T10:00:05Z","session_id":"S1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":50}
 JSON
-
-cat > "$REPO/.agents/packet-graph.yaml" <<'YAML'
-waves:
-  - wave: 1
-    packets:
-      - id: feat-001
-  - wave: 2
-    packets:
-      - id: feat-002
-YAML
 
 cat > "$REPO/.agents/run-state.yaml" <<'YAML'
 schema: 3
@@ -123,10 +113,8 @@ check "role main read"       "1200" "$(jq -r '.by_agent_role.main.tokens.cache_r
 
 # per-packet windows: feat-001 (:01,:03] -> :02,:03 = 2 (both implementer);
 #                     feat-002 (:03,:06] -> :04(reviewer),:05(implementer) = 2
-check "pkt feat-001 wave"        "1" "$(jq -r '.packets[]|select(.id=="feat-001").wave' "$OUT")"
 check "pkt feat-001 tool_calls"  "2" "$(jq -r '.packets[]|select(.id=="feat-001").tool_calls' "$OUT")"
 check "pkt feat-001 implementer" "2" "$(jq -r '.packets[]|select(.id=="feat-001").by_agent.implementer' "$OUT")"
-check "pkt feat-002 wave"        "2" "$(jq -r '.packets[]|select(.id=="feat-002").wave' "$OUT")"
 check "pkt feat-002 tool_calls"  "2" "$(jq -r '.packets[]|select(.id=="feat-002").tool_calls' "$OUT")"
 check "pkt feat-002 reviewer"    "1" "$(jq -r '.packets[]|select(.id=="feat-002").by_agent.reviewer' "$OUT")"
 
@@ -368,20 +356,6 @@ for _ in $(seq 1 15); do emit laneX & emit laneY & done; wait
 check "concurrent: all 30 appends present" "30" "$(wc -l < "$CEV/C1.jsonl" 2>/dev/null | tr -d ' ')"
 corrupt=0; while IFS= read -r ln; do printf '%s' "$ln" | jq -e . >/dev/null 2>&1 || corrupt=$((corrupt+1)); done < "$CEV/C1.jsonl"
 check "concurrent: 0 torn/corrupt lines" "0" "$corrupt"
-
-echo "== P5-M: by_lane rollup attributes spend per worktree lane =="
-LREPO="$ROOT/lrepo"; mkdir -p "$LREPO"; git -C "$LREPO" init -q
-LEV="$LREPO/.agents/metrics/events"; mkdir -p "$LEV"
-cat > "$LEV/LN.jsonl" <<'JSON'
-{"ts":"2026-07-21T10:00:00Z","session_id":"LN","agent_id":"a","agent_type":"implementer","tool":"Bash","duration_ms":100,"lane_id":"repo-wt-t1"}
-{"ts":"2026-07-21T10:00:01Z","session_id":"LN","agent_id":"a","agent_type":"implementer","tool":"Bash","duration_ms":200,"lane_id":"repo-wt-t1"}
-{"ts":"2026-07-21T10:00:02Z","session_id":"LN","agent_id":"b","agent_type":"implementer","tool":"Bash","duration_ms":50,"lane_id":"repo-wt-t2"}
-JSON
-LOUT="$ROOT/lrm.json"
-"$METRICS" collect --main-root "$LREPO" --projects-dir "$ROOT/none" --out "$LOUT" >/dev/null 2>&1
-check "by_lane t1 tool_calls"  "2"   "$(jq -r '.totals.by_lane["repo-wt-t1"].tool_calls' "$LOUT")"
-check "by_lane t1 duration_ms" "300" "$(jq -r '.totals.by_lane["repo-wt-t1"].duration_ms' "$LOUT")"
-check "by_lane t2 tool_calls"  "1"   "$(jq -r '.totals.by_lane["repo-wt-t2"].tool_calls' "$LOUT")"
 
 echo "== scope: commit trailers OUTSIDE the run window are excluded =="
 # A prior run's packet (committed before this run's first event) must NOT be folded
@@ -941,7 +915,7 @@ check "show: no retracted 279M"    "0" "$(grep -c '279M lifetime' "$METRICS")"
 check "show: cc_shape rendered"    "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'median=.*p90=.*max=9000')"
 check "show: cc_shape not unmeasured" "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^cc_shape: unmeasured')"
 # outcome must appear in the packets table, and render as ? (not green) when unattested
-check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | wave | outcome')"
+check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | outcome')"
 check "show: null outcome is not green" "0" \
   "$(printf '%s\n' "$SHOW_OUT" | awk '/^packets \(id/{p=1;next} p&&/^  /{print}' | grep -c '| green |')"
 
@@ -1049,6 +1023,81 @@ check "show: contention named"        "1" "$(printf '%s\n' "$XSHOW" | grep -c 's
 # and the hook must stamp a hash for it in the first place
 check "hook: MultiEdit on write surface" "1" \
   "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
+
+echo
+echo "== retire-unused-loop-modes T3: same-file overlap between file-editing agents =="
+# Parallel mode's mechanical file-disjointness guarantee is gone; this is the
+# observability that replaces it. A subagent's span is its first-to-last event; the
+# main session pairs with it only through the main session's OWN edit events falling
+# INSIDE that span; a pair counts once no matter how many hashes it shares.
+#
+# i1 shares TWO files with main while main's edits sit inside i1's span -> ONE pair,
+# not two (the "counts once" rule). i2 shares NO file with main even though main also
+# edits inside i2's span -> must not add a pair. Expected total: 1.
+OVREPO="$ROOT/ovrepo"; mkdir -p "$OVREPO"; git -C "$OVREPO" init -q
+OVEV="$OVREPO/.agents/metrics/events"; mkdir -p "$OVEV"
+cat > "$OVEV/OV1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"OV1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"OV1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:05Z","session_id":"OV1","agent_id":"i2","agent_type":"gaffer:reviewer","tool":"Edit","file_hash":"dddddddddddd"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:07Z","session_id":"OV1","agent_id":"i2","agent_type":"gaffer:reviewer","tool":"Edit","file_hash":"ffffffffffff"}
+JSON
+OVOUT="$ROOT/ovrun.json"
+"$METRICS" collect --main-root "$OVREPO" --projects-dir "$ROOT/none" --out "$OVOUT" >/dev/null 2>&1 \
+  || bad "overlap collect exits 0" "collect returned nonzero"
+check "overlap: measured (every edit carries a hash)" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: main-subagent pair sharing two files counts ONCE" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: no-shared-file subagent does not add a pair" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: diagnostics count every edit event" "7" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events' "$OVOUT")"
+check "overlap: diagnostics report 0 missing hashes when measured" "0" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events_missing_hash' "$OVOUT")"
+check "overlap: show renders the measured count" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$OVOUT" 2>/dev/null)" | grep -c '^same-file overlaps.*: 1$')"
+
+echo "== retire-unused-loop-modes T3: a run with a hash-less edit event reads unmeasured =="
+# $OUT (the S1 scenario at the top of this file) predates file_hash: its implementer
+# Edit events carry no hash at all. 0 and unmeasured must never be conflated — this
+# repo has already shipped a bug where `show` rendered a null as 0.
+check "overlap: unmeasured (hash-less edit event) is null, not 0" "null" \
+  "$(jq -r '.totals.same_file_overlaps' "$OUT")"
+check "overlap: hash-less diagnostics name the missing count" "2" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events_missing_hash' "$OUT")"
+check "overlap: hash-less note explains why" "1" \
+  "$(jq -r '[.notes[]|select(startswith("same_file_overlaps=unmeasured") and contains("carry no file_hash"))]|length' "$OUT")"
+check "overlap: show renders unmeasured, not a bare 0" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$OUT" 2>/dev/null)" | grep -c '^same-file overlaps.*: unmeasured')"
+
+echo "== retire-unused-loop-modes T3: an event-less run reads unmeasured, not 0 =="
+# $OUT3 (the BARE repo above) has no .agents/metrics/events directory at all.
+check "overlap: unmeasured (no events) is null, not 0" "null" \
+  "$(jq -r '.totals.same_file_overlaps' "$OUT3")"
+check "overlap: event-less diagnostics are zeroed" "0" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events' "$OUT3")"
+check "overlap: event-less note explains why" "1" \
+  "$(jq -r '[.notes[]|select(startswith("same_file_overlaps=unmeasured") and contains("no events"))]|length' "$OUT3")"
+
+# --- packet-graph.yaml / wave map / by_lane are gone: metrics.sh must not depend on
+# scripts/packet-graph.sh (a later task deletes it). A stray packet-graph.yaml must
+# be silently ignored, not read.
+GONEREPO="$ROOT/gonerepo"; mkdir -p "$GONEREPO/.agents"; git -C "$GONEREPO" init -q
+echo 'waves:
+  - wave: 1
+    packets:
+      - id: x' > "$GONEREPO/.agents/packet-graph.yaml"
+GONEOUT="$ROOT/gonerun.json"
+"$METRICS" collect --main-root "$GONEREPO" --projects-dir "$ROOT/none" --out "$GONEOUT" >/dev/null 2>&1 \
+  || bad "packet-graph-ignored collect exits 0" "collect returned nonzero"
+check "packet-graph.yaml present but unread: no wave key anywhere" "0" \
+  "$(jq -r '[.. | objects | keys[]? | select(. == "wave")] | length' "$GONEOUT")"
+check "packet-graph.yaml present but unread: no by_lane key" "0" \
+  "$(jq -r '(.totals | has("by_lane")) | if . then 1 else 0 end' "$GONEOUT")"
 
 echo
 echo "== loop-measurement T4: packet rows come from records too, not just trailers =="

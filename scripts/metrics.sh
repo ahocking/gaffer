@@ -5,11 +5,11 @@
 # The deterministic, zero-token half of the metrics feature. The PostToolUse hook
 # (hooks/metrics-log.sh) COLLECTS a per-session event spine as a run goes; this
 # script JOINS that spine with (a) packet boundaries derived from the
-# `[orch packet:<id>]` commit trailers that already exist in git, (b) the parallel
-# wave map in .agents/packet-graph.yaml if present, and (c) best-effort token/cost
-# from the Claude Code session transcripts — into ONE self-contained, portable
-# rollup: .agents/metrics/<run-id>/run-metrics.json. That packet is the artifact a
-# human reads or hands to Claude (/gaffer:metrics analyze) for optimization.
+# `[orch packet:<id>]` commit trailers that already exist in git, and (b) best-effort
+# token/cost from the Claude Code session transcripts — into ONE self-contained,
+# portable rollup: .agents/metrics/<run-id>/run-metrics.json. That packet is the
+# artifact a human reads or hands to Claude (/gaffer:metrics analyze) for
+# optimization.
 #
 # WHY DERIVE PACKET BOUNDARIES FROM GIT (not run-state, cf. ADR 0019 revision):
 #   run-state's packets[] is a nested structure with a strict single-writer/atomic
@@ -245,7 +245,6 @@ cmd_collect() {
   local agents="${main_root}/.agents"
   local evdir="${agents}/metrics/events"
   local rs="${agents}/run-state.yaml"
-  local graph="${agents}/packet-graph.yaml"
 
   # --- run identity ----------------------------------------------------------
   local mode="unknown" branch="" integ=""
@@ -433,15 +432,6 @@ cmd_collect() {
     by_role: (group_by(.agent_type)|map({key:.[0].agent_type, value:(map(.duration_ms//0)|add)})|from_entries)
   }' "$tmp/events.json" > "$tmp/durations.json" 2>/dev/null || echo '{"total":0,"by_role":{}}' > "$tmp/durations.json"
 
-  # by_lane (ADR 0019 v2 / P5-M): per-worktree-lane spend, for parallel runs. Empty on
-  # sequential runs (no lane_id). Sum of lane durations >> wall means lanes overlapped
-  # (real concurrency); ~= wall means the "parallel" run actually serialized.
-  jq '
-    [ .[] | select(.lane_id != null) ] | group_by(.lane_id)
-    | map({key:.[0].lane_id, value:{tool_calls:length, duration_ms:(map(.duration_ms//0)|add)}})
-    | from_entries
-  ' "$tmp/events.json" > "$tmp/bylane.json" 2>/dev/null || echo '{}' > "$tmp/bylane.json"
-
   # --- run window: the [start,end] the trailer scan and packet chaining use ---
   # Prefer explicit flags, else the selected-events span. win_start is the lower
   # bound that excludes prior runs' commit trailers; win_end is only enforced when
@@ -614,21 +604,7 @@ cmd_collect() {
     echo '[]' > "$tmp/pk_ends.json"
   fi
 
-  # --- 3. wave map from packet-graph.yaml (packet -> wave), if present --------
-  # tolerant parse: look for `wave: N` headers and `- id: <pkt>` / `<pkt>:` entries.
-  echo '{}' > "$tmp/waves.json"
-  if [ -f "$graph" ]; then
-    awk '
-      /(^|[[:space:]])wave:[[:space:]]*[0-9]+/ {
-        for (i=1;i<=NF;i++) if ($i=="wave:") { w=$(i+1) }
-      }
-      /- id:[[:space:]]*/ { id=$0; sub(/.*- id:[[:space:]]*/,"",id); gsub(/[[:space:]]/,"",id); if (w!="") print id "\t" w }
-    ' "$graph" 2>/dev/null \
-    | jq -R -s 'split("\n")|map(select(length>0))|map(split("\t"))|map({key:.[0],value:(.[1]|tonumber?)})|from_entries' \
-    > "$tmp/waves.json" 2>/dev/null || echo '{}' > "$tmp/waves.json"
-  fi
-
-  # --- 3b. ATTESTED packet boundaries + outcomes (ADR 0019 v3.4, loop-measurement T4) -
+  # --- 3. ATTESTED packet boundaries + outcomes (ADR 0019 v3.4, loop-measurement T4) -
   # Optional, append-only, written by the loop via `runstate.sh record-start` /
   # `record-outcome` / `sweep-open` at each packet boundary — including boundaries
   # that do NOT produce a commit, which is the entire point. The collector cannot
@@ -722,7 +698,7 @@ cmd_collect() {
        | map({key: .[0].packet, value: ((sort_by(._ms))[-1].ts)}) | from_entries) as $record_end
     # SWEPT (C1): sweep-open closes an open packet by copying the boundary ts
     # VERBATIM into the terminal record it writes (that verbatim copy is what
-    # makes the close idempotent, see the comment above section 3b). A terminal
+    # makes the close idempotent, see the comment above section 3). A terminal
     # record whose _ms is BYTE-IDENTICAL to the latest boundary it closes
     # therefore carries no information about how long the packet actually ran; a
     # terminal recorded directly (record-outcome id abandoned, not via sweep)
@@ -983,7 +959,6 @@ cmd_collect() {
   # (idle-gap-aware) and per-packet tokens (from turns with a ts in the window).
   jq \
      --slurpfile ev "$tmp/events.json" \
-     --slurpfile waves "$tmp/waves.json" \
      --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
      --argjson gap "$idle_gap" \
@@ -995,7 +970,6 @@ cmd_collect() {
      . as $ends
      | ($ev[0] // []) as $events
      | ($turns[0] // []) as $turns
-     | ($waves[0] // {}) as $wavemap
      | ($outc[0] // {}) as $outcomes
      | ($have_ts=="true") as $ts_ok
      # Does this run use the tier/impl convention at ALL? A run where NO packet
@@ -1058,7 +1032,6 @@ cmd_collect() {
          | ($p.swept == true) as $is_swept
          | {
              id: $p.id,
-             wave: ($wavemap[$p.id]),
              # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
              # This read "green" unconditionally. It was not a measurement: a packet
              # EXISTS here only because a `[orch packet:]` trailer was found, and that
@@ -1159,6 +1132,57 @@ cmd_collect() {
     | { count: length, by_agent: (group_by(.agent_type)|map({key:(.[0].agent_type),value:length})|from_entries) }
   ' "$tmp/events.json" > "$tmp/unattributed.json" 2>/dev/null || echo '{"count":0,"by_agent":{}}' > "$tmp/unattributed.json"
 
+  # --- 6b. same-file overlap between file-editing agents (retire-unused-loop-modes T3) -
+  # Parallel worktree isolation used to guarantee file-disjointness MECHANICALLY, by
+  # scheduling — that guarantee is gone, so this is the observability that replaces it:
+  # a run-level count of how often the main session and a dispatched subagent actually
+  # edited the SAME file. Derived entirely from events the hook already writes (no new
+  # hook field): a subagent's SPAN is its first-to-last recorded event (any tool, not
+  # just edits); the main session pairs with a subagent only through the main session's
+  # OWN edit events whose ts falls inside that span (inclusive); the pair counts once,
+  # however many file hashes they share, and ONLY subagent<->main pairs are counted —
+  # two subagents are never paired against each other. Ts comparison is a plain string
+  # compare here (safe: every hook event ts is the same whole-second `...Z` form; no
+  # sub-second boundary/outcome record ever enters this join).
+  #
+  # `0` and `unmeasured` must never be conflated (this repo has already shipped a `show`
+  # that rendered a null as 0 and told a legacy run it was clean): unmeasured when the
+  # run has NO events at all, or when ANY Edit/Write/MultiEdit/NotebookEdit event in the
+  # run is missing a file_hash (an older hook build, or a hash the hook could not
+  # compute) — either makes the count unreliable, so it must not read as a clean 0.
+  # Logs no file path: file_hash is the opaque 12-char token the hook already stamps,
+  # so this reports SHAPE only ("did they touch the same file?"), same rule as the
+  # edits/contended_files signal above.
+  jq '
+    def is_edit_tool: (.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit");
+    . as $all
+    | ([ $all[] | select(is_edit_tool) ]) as $edits
+    | if ($all|length) == 0 then
+        { pairs: null, reason: "no_events", edit_events: 0, edit_events_missing_hash: 0 }
+      elif ($edits | any(.file_hash == null)) then
+        { pairs: null, reason: "missing_hash",
+          edit_events: ($edits|length),
+          edit_events_missing_hash: ($edits | map(select(.file_hash == null)) | length) }
+      else
+        ( $edits | map(select((.agent_id // "") != "")) | group_by(.agent_id) ) as $sub_edit_groups
+        | ( $all | map(select((.agent_id // "") != "")) | group_by(.agent_id)
+            | map({key: .[0].agent_id, value: {start: (map(.ts)|min), end: (map(.ts)|max)}})
+            | from_entries ) as $spans
+        | ( $edits | map(select((.agent_id // "") == "")) ) as $main_edits
+        | ( $sub_edit_groups | map(.[0].agent_id) ) as $sub_ids
+        | ( [ $sub_ids[] as $sid
+              | ( $sub_edit_groups | map(select(.[0].agent_id == $sid)) | .[0] ) as $sub_own
+              | ( $sub_own | map(.file_hash) | unique ) as $sub_hashes
+              | ( $spans[$sid] ) as $span
+              | ( $main_edits | map(select(.ts >= $span.start and .ts <= $span.end))
+                  | map(.file_hash) | unique ) as $main_hashes
+              | select( $sub_hashes | any(. as $h | ($main_hashes | index($h)) != null) )
+            ] | length ) as $n
+        | { pairs: $n, reason: null, edit_events: ($edits|length), edit_events_missing_hash: 0 }
+      end
+  ' "$tmp/events.json" > "$tmp/overlap.json" 2>/dev/null \
+    || echo '{"pairs":null,"reason":"error","edit_events":0,"edit_events_missing_hash":0}' > "$tmp/overlap.json"
+
   # --- 7. assemble the packet -------------------------------------------------
   [ -n "$out" ] || out="${agents}/metrics/${run_id}/run-metrics.json"
   mkdir -p "$(dirname "$out")" 2>/dev/null || die "cannot create $(dirname "$out")"
@@ -1195,7 +1219,7 @@ cmd_collect() {
     --slurpfile bytool "$tmp/bytool.json" \
     --slurpfile bycmd "$tmp/bycmd.json" \
     --slurpfile durations "$tmp/durations.json" \
-    --slurpfile bylane "$tmp/bylane.json" \
+    --slurpfile overlap "$tmp/overlap.json" \
     --slurpfile sids "$tmp/events.json" \
     --slurpfile recj "$tmp/recordjoin.json" \
     --arg unknown_note "$unknown_note" \
@@ -1204,6 +1228,7 @@ cmd_collect() {
     | ($activity[0] // {active:0,idle:0}) as $act
     | ($unattr[0] // {count:0,by_agent:{}}) as $un
     | ($durations[0] // {total:0,by_role:{}}) as $dur
+    | ($overlap[0] // {pairs:null,reason:null,edit_events:0,edit_events_missing_hash:0}) as $ov
     | ($rt | to_entries | map(.value.tokens) | {
         input:(map(.input//0)|add // 0), output:(map(.output//0)|add // 0),
         cache_read:(map(.cache_read//0)|add // 0), cache_creation:(map(.cache_creation//0)|add // 0)
@@ -1251,7 +1276,17 @@ cmd_collect() {
         by_tool: ($bytool[0] // {}),
         by_command_class: ($bycmd[0] // {}),
         by_skill: ($byskill[0] // {}),
-        by_lane: ($bylane[0] // {}),
+        # SAME-FILE OVERLAP (retire-unused-loop-modes T3). Parallel mode used to
+        # guarantee file-disjointness mechanically; this is the observability that
+        # replaces it now that the guarantee is gone. null means UNMEASURED (no
+        # events, or an edit event with no file_hash), never a clean 0 — see the
+        # section-6b comment above for the exact pairing rule. (No apostrophes in
+        # here: the whole program is one single-quoted shell word.)
+        same_file_overlaps: $ov.pairs,
+        same_file_overlap_diagnostics: {
+          edit_events: ($ov.edit_events // 0),
+          edit_events_missing_hash: ($ov.edit_events_missing_hash // 0)
+        },
         tokens: $tot,
         by_model: ($bymodel[0] // {}),
         by_effort: ($byeffort[0] // {}),
@@ -1346,6 +1381,14 @@ cmd_collect() {
         "totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.",
         "by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.",
         "active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.",
+        "totals.same_file_overlaps counts (main session, subagent) pairs that edited the SAME file: the span of a subagent is its first-to-last event, the main session pairs with it only through its own edit events falling inside that span, and a pair counts once no matter how many files it shares. This replaces the mechanical file-disjointness guarantee parallel mode used to provide, now that the guarantee is gone; it never logs a path, only opaque file hashes.",
+        (if $ov.pairs == null then
+           (if $ov.reason == "no_events" then
+              "same_file_overlaps=unmeasured: this run has no events."
+            elif $ov.reason == "missing_hash" then
+              "same_file_overlaps=unmeasured: \($ov.edit_events_missing_hash) of \($ov.edit_events) edit event(s) in this run carry no file_hash (pre-instrumentation hook, or a hash the hook could not compute)."
+            else "same_file_overlaps=unmeasured." end)
+         else empty end),
         "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
         "audit.dispatches_with_model_override counts EXPLICIT `model` args at dispatch (a deliberate deviation). An omitted model is correct — it resolves to the `model:` frontmatter of the target agent; read by_agent_role.<role>.models for what each role actually ran on.",
         (($packets[0] // []) as $pkn
@@ -1440,10 +1483,15 @@ cmd_show() {
     "",
     "by command class (rtk-targeting: calls / duration):",
     ((.totals.by_command_class // {}) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.calls) calls / \(.value.duration_ms)ms"),
-    (if ((.totals.by_lane // {}) | length) > 0 then
-       "", "by lane (parallel — sum(lane dur) >> wall means real concurrency):",
-       ((.totals.by_lane) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms")
-     else empty end),
+    "",
+    # `0` and `unmeasured` must render as visibly different strings — see the
+    # section-6b comment in collect (above) for why they are never allowed to collapse.
+    (((.totals.same_file_overlaps)) as $sfo
+     | if $sfo == null then
+         "same-file overlaps (main + subagent editing the same file while both active): unmeasured (\(.totals.same_file_overlap_diagnostics.edit_events // 0) edit event(s), \(.totals.same_file_overlap_diagnostics.edit_events_missing_hash // 0) missing a file_hash)"
+       else
+         "same-file overlaps (main + subagent editing the same file while both active): \($sfo)"
+       end),
     "",
     # The audit sits ABOVE the packets table on purpose: it is the "something is off"
     # section, and a run with 14 packets pushed it far enough down the page that a real
@@ -1473,8 +1521,8 @@ cmd_show() {
     # started packet with no commit, or a pause commit that never got a terminal
     # outcome, now appears with outcome=null (not green). `?` still means unattested,
     # never "clean" or "green".
-    "packets (id | wave | outcome | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls // "?") calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")\(if .swept == true then "  ⚠ swept by a later session — unmeasured, not zero" else "" end)"),
+    "packets (id | outcome | tool_calls | active | dur | out-tok):",
+    (.packets[] | "  \(.id) | \(.outcome // "?") | \(.tool_calls // "?") calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")\(if .swept == true then "  ⚠ swept by a later session — unmeasured, not zero" else "" end)"),
     # Per-role edit counts alone cannot tell "the orchestrator corrected the implementer"
     # from "they worked on different files". Only same-file overlap can, so print the
     # counts and the contention together or the numbers invite the wrong reading.

@@ -8,8 +8,10 @@ argument-hint: (optional — a specific run-state path if not .agents/run-state.
 
 Pick a paused run back up from disk. Because the previous session is gone, the
 **only** trustworthy memory is `.agents/run-state.yaml` — read it first and let it
-drive. The **Chief Engineer** — this session — runs the whole resume itself. There
-is one sequential mode; the remaining backlog size never switches it. See
+drive. This session takes on the **loop-driver** role (ADR 0028) for the rest of
+the run — passing paths, reading status lines, routing mechanically — the same
+role a fresh `/gaffer:run-loop` takes on. There is one sequential mode; the
+remaining backlog size never switches it. See
 [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md).
 
 ## The report contract — `Read` it before you emit anything
@@ -57,10 +59,41 @@ report (shape B):
   `.agents/run-state.yaml` itself, which still reads `mode: parallel` — nothing here
   rewrites or migrates it.
 
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh driver-mode exit` immediately
+after that stop report. This check runs first, but this session can still
+reach it already marked — `/gaffer:run-loop` §2 enters driver mode before
+its own redirect to this skill, so this stop path may run with a mark
+already set. `driver-mode exit` is idempotent (a no-op if there is no mark),
+so calling it here is always safe regardless of which caller reached this
+skill.
+
 `$ARGUMENTS` containing `--parallel` does **not** trigger this on its own — there is
 no parallel driver left to resume into. Only the run-state's own recorded `mode:`
 does. Everything below is the sequential resume, for a run-state that does not
 record `mode: parallel`.
+
+## 0. Enter driver mode and resume the run
+
+Right after the parallel-mode check above returns normal (no `mode: parallel`),
+before reading anything else (ADR 0028):
+
+```
+runstate.sh driver-mode enter --model <this session's model> \
+  --effort unknown --threshold unknown
+```
+
+Pass `--effort unknown` unless the operator has explicitly stated their
+effort level this session — nothing records it automatically yet. If
+`driver-mode enter` refuses (no session id available, from neither an
+argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report
+saying so; never resume the loop unmarked. `Read`
+`${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now too — it is your role for
+the rest of this session, same as a fresh `/gaffer:run-loop`.
+
+**`begin-run` waits until §1 has established the checkpoint** (below) — it
+dies on a missing run-state, and at this point the file may not exist yet
+(the reconstruct path in §1 can still be building it). Call it once §1
+concludes, right before §2.
 
 ## Concurrency
 
@@ -81,10 +114,12 @@ is building.
 the repo has a `gspec/` directory, run
 `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check` and `… interlock`. A
 `CHECK=fail` means the specs moved to a gspec version this plugin does not support —
-stop and say so rather than resuming against a contract you cannot read. An
-`INTERLOCK=busy` means a `gspec build` is driving this repo right now — stop; a
-resume that starts driving beside it puts two drivers in one checkout. Both are
-no-ops without a gspec project.
+stop and say so rather than resuming against a contract you cannot read, then run
+`runstate.sh driver-mode exit` right after that stop report (driver mode is already
+active from §0). An `INTERLOCK=busy` means a `gspec build` is driving this repo
+right now — stop the same way, with the same exit call; a resume that starts
+driving beside it puts two drivers in one checkout. Both checks are no-ops
+without a gspec project.
 
 Read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status`,
 `branch`, `last_green_commit`, `backlog.cursor`/`pending`, and
@@ -113,7 +148,8 @@ not have it, but the feature branch and its commit trailers usually survive):
    `RECONSTRUCT=escalate` with what to fix first.
 3. **Verify `TIP` is actually green** — run the packet build+tests on it. The
    script cannot; you must. If it is **red**, do not fabricate a green
-   checkpoint — treat it as crash scratch and **escalate to the human**.
+   checkpoint — treat it as crash scratch, **escalate to the human** with a
+   stop report, and run `runstate.sh driver-mode exit` right after it.
 4. Rebuild the backlog **through the adapter** (ADR 0020 D2) — never by parsing
    `gspec/` yourself: `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` for the
    feature, then `… nodes <slug>` for its unchecked tasks (or `$ARGUMENTS`).
@@ -132,7 +168,8 @@ not have it, but the feature branch and its commit trailers usually survive):
    recovery. Then continue below.
 
 If reconstruction is impossible (no `orch/*` branch anywhere, no committed
-backlog), there is genuinely nothing to resume — say so and stop.
+backlog), there is genuinely nothing to resume — say so, stop, and run
+`runstate.sh driver-mode exit` immediately after that stop report.
 
 **Read `status` first — it tells you HOW the last session ended (ADR 0005):**
 
@@ -148,6 +185,13 @@ backlog), there is genuinely nothing to resume — say so and stop.
 **here**, before step 2 overwrites `status` to `running`.
 
 ## 2. Re-establish the working tree at the green checkpoint
+
+**Begin the run now** — `.agents/run-state.yaml` is guaranteed to exist at
+this point (it either already did, or §1's reconstruct path just wrote it):
+`runstate.sh begin-run .agents/run-state.yaml`. It **keeps** the existing
+`run_id` (a run spans sessions, and this one is continuing) while pruning old
+run directories down to the current run and the newest previous one. Calling
+it any earlier, before the checkpoint file is confirmed to exist, would die.
 
 Switch to the packet's feature branch in the local checkout (idempotent —
 `git switch orch/<task-id>`; the branch already exists from the paused run), then
@@ -186,7 +230,8 @@ Act on the `DECISION=` it prints:
   <cursor> green`. Advance `cursor`, and write run-state atomically via
   `runstate.sh write`. The packet is done — do not redo it.
 - **`escalate`** — diverged history, multiple unexplained commits, or an untagged /
-  mismatched orphan. **Stop and ask the human.** Do not discard commits you cannot
+  mismatched orphan. **Stop and ask the human**, then `runstate.sh driver-mode
+  exit` right after that stop report. Do not discard commits you cannot
   account for.
 
 Once reconciled, set `status: running` (`runstate.sh set .agents/run-state.yaml
@@ -218,7 +263,8 @@ answerable choice with what follows from each option and your lean, not the raw
 `pending_questions` text. These were written by a session that no longer exists, so
 give the human the plain-English title of the packet they block — they will not
 recognise the id. Non-blocking questions are surfaced but do not halt progress on
-unrelated packets.
+unrelated packets. When this stop report is the whole of what this session does,
+run `runstate.sh driver-mode exit` right after emitting it.
 
 ## 4. Continue from the cursor
 
@@ -250,19 +296,23 @@ empty id list). Then sweep for real, same `--paused-cursor`/`--gone`:
 title in the next check-in or stop report (`templates/report-templates.md` shapes
 A/B) — the kickoff above needs nothing, since a sweep always runs after it.
 
-`Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3 for its start and
-outcome steps — the same fresh-start/continuation split and the five exclusive
-triggers govern the cursor packet and every packet after it. Record the cursor
-packet now: `runstate.sh record-start <cursor> --continue` when the same
-paused-on-entry reading holds, else `runstate.sh record-start <cursor>` (a fresh
+Write the cursor packet's handoff exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — decide its
+`tier`/`--agent`, pipe `gspec-backlog.sh handoff` (or its non-gspec task text)
+into `runstate.sh handoff`, and skip the packet with no record if the handoff
+is refused. Only once it is written do you attest the start:
+`runstate.sh record-start <cursor> --continue` when the same paused-on-entry
+reading held in step 1, else `runstate.sh record-start <cursor>` (a fresh
 start — its prior attempt, if any, already closed with a recorded outcome).
 
-Then pick up the packet at `backlog.cursor` and
-continue the implement → test → review → commit-on-branch loop under the session's
-autonomy level, from §3.2 (Scope) on — §3.1's branch/sweep/attest-start step is
-already done above for this packet. Honor the same gates as before: the Chief
-Engineer owns routine commits above `interactive` (and merge/rebase/push onto
-non-`main` branches at `full-autonomy`), verifying green build+tests itself; hard
-gates — `main`, releases, migrations, secrets, deploys, the danger floor — still
-stop for the human. Keep `.agents/run-state.yaml` current as packets land, so the
-next pause is cheap.
+Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
+(dispatch with the handoff path, route every verdict, land, integrate,
+advance) and §4 (termination) — this resume dispatches and routes exactly as
+a fresh run does, under the session's autonomy level, for the cursor packet
+and every packet after it. Honor the same gates as before: the driver owns
+routine commits above `interactive` (and merge/rebase/push onto non-`main`
+branches at `full-autonomy`); hard gates — `main`, releases, migrations,
+secrets, deploys, the danger floor — still stop for the human. Keep
+`.agents/run-state.yaml` current as packets land, so the next pause is cheap,
+and run `runstate.sh driver-mode exit` immediately after whichever stop
+report run-loop §4 renders.

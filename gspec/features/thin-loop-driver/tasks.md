@@ -141,12 +141,12 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Reports are thin and built from files
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T12** [P] **P0** Add `templates/status-line.md`. It defines the one status line every loop-dispatched agent returns: status, what changed, whether its result file needs reading, and that file's path. The same line opens the result file written with `runstate.sh write-result`. It also states that a status line longer than one line breaks the contract and review must catch it.
+- [x] **T12** [P] **P0** Add `templates/status-line.md`. It defines the one status line every loop-dispatched agent returns: status, what changed, whether its result file needs reading, and that file's path. The same line opens the result file written with `runstate.sh write-result`. It also states that a status line longer than one line breaks the contract and review must catch it.
   - deps: T8
   - covers: Agents take a handoff file and return one status line
   - arch: —
   - files: templates/status-line.md
-- [ ] **T13** [P] **P0** Replace the report section of `agents/reviewer.md` with the three verdicts and their exclusive triggers:
+- [x] **T13** [P] **P0** Replace the report section of `agents/reviewer.md` with the three verdicts and their exclusive triggers:
   - `pass`: the acceptance criteria are met and there is no blocking finding;
   - `fix`: a failure the review file describes precisely enough for another implementer to correct;
   - `escalate`: anything else, and whenever more than one could apply or which applies is unclear.
@@ -156,7 +156,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: The reviewer verdict routes each packet mechanically · Agents take a handoff file and return one status line
   - arch: —
   - files: agents/reviewer.md
-- [ ] **T14** [P] **P0** Update `agents/implementer.md`, `doc-writer.md`, `researcher.md`, `architect.md` and `ux-designer.md`:
+- [x] **T14** [P] **P0** Update `agents/implementer.md`, `doc-writer.md`, `researcher.md`, `architect.md` and `ux-designer.md`:
   - each takes a handoff path as its whole brief, plus the review file's path on a fresh attempt;
   - each returns one status line per `templates/status-line.md` and writes everything else with `runstate.sh write-result`;
   - the architect and UX designer may implement, and re-attempt, a design-heavy packet within its handoff's file hints;
@@ -165,7 +165,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically · The operator can ask questions and request edits mid-run
   - arch: —
   - files: agents/implementer.md, agents/doc-writer.md, agents/researcher.md, agents/architect.md, agents/ux-designer.md
-- [ ] **T15** [P] **P0** Add `agents/loop-driver.md` with `model: inherit`. It declares no `tools:` restriction, so a session launched with `claude --agent` keeps `Task`, `Bash` and `Read` for the loop and Edit and Write for after its stop report. Its instructions:
+- [x] **T15** [P] **P0** Add `agents/loop-driver.md` with `model: inherit`. It declares no `tools:` restriction, so a session launched with `claude --agent` keeps `Task`, `Bash` and `Read` for the loop and Edit and Write for after its stop report. Its instructions:
   - pass only paths, read one status line, never open a result file, and never poll while an agent works;
   - route every verdict through `runstate.sh route`, and until `escalation-decider` ships, answer `ACTION=decider` by dispatching `chief-engineer` with the handoff and review paths and passing its returned decision token, with its status line as `--status`, to `route`;
   - answer operator questions from handoff files, status lines and findings before dispatching the researcher;
@@ -184,7 +184,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically · The operator can ask questions and request edits mid-run
   - arch: —
   - files: agents/loop-driver.md, agents/chief-engineer.md
-- [ ] **T16** **P0** Slim `skills/run-loop/SKILL.md` to the driver role, moving judgment into `agents/loop-driver.md`, so that:
+- [x] **T16** **P0** Slim `skills/run-loop/SKILL.md` to the driver role, moving judgment into `agents/loop-driver.md`, so that:
   - it `Read`s that file, then enters driver mode with the session's model and effort before the kickoff and never asks to change them, then runs `begin-run`;
   - when it begins a packet, after the existing sweep, it pipes `gspec-backlog.sh handoff` (or, for a packet not from gspec, its task text from run-state) into `runstate.sh handoff`, choosing the architect or UX designer for a design-heavy packet at that point, and runs `record-start` only once the handoff is written; a refused handoff skips the packet with no record;
   - it dispatches with the handoff path only, and passes every returned verdict or decision to `route` with its status line as `--status`;
@@ -200,7 +200,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Agents take a handoff file and return one status line · The reviewer verdict routes each packet mechanically
   - arch: —
   - files: skills/run-loop/SKILL.md
-- [ ] **T17** **P0** Carry driver mode into `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
+- [x] **T17** **P0** Carry driver mode into `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
   - after its legacy-parallel check, `resume` enters driver mode and runs `begin-run`, keeping the run's `run_id`, then follows `run-loop`'s dispatch-and-route steps by `Read`;
   - every stop path in both skills runs `driver-mode exit` right after its stop report;
   - `pause` names the driver session, not the Chief Engineer, as the one running it.

@@ -1829,6 +1829,12 @@ assert_true "the handoff header carries the agent" \
   "grep -qx 'agent: implementer' \"$HW_RUN_DIR/pkt-h/handoff.md\""
 assert_true "the full piped body is present" \
   "grep -q 'full body text here.' \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries an ABSOLUTE run-state path (review fix #8)" \
+  "grep -qx \"run-state: $HW/.agents/run-state.yaml\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries the agent-specific result path, absolute" \
+  "grep -qx \"result: $HW_RUN_DIR/pkt-h/implementer.md\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
+assert_true "the handoff header carries the fixed review path, absolute" \
+  "grep -qx \"review: $HW_RUN_DIR/pkt-h/review.md\" \"$HW_RUN_DIR/pkt-h/handoff.md\""
 
 echo "-- handoff title precedence: TEXT= wins, then first non-KEY= line, then the packet id (review fix 1) --"
 # A literal copy of scripts/gspec-backlog.sh handoff's own success shape (see

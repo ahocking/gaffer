@@ -190,7 +190,18 @@
 #                                    writes stdin atomically to
 #                                    .agents/loop/<run_id>/<packet-id>/handoff.md,
 #                                    headed by the packet id, a title, the
-#                                    tier and the agent. The title is the
+#                                    tier and the agent, plus three ABSOLUTE-
+#                                    path header lines (`run-state:`,
+#                                    `result:`, `review:`) so a dispatched
+#                                    agent's own `write-result`/`route` calls
+#                                    resolve correctly regardless of its cwd
+#                                    (review fix #8 -- a relative path, or a
+#                                    /tmp-vs-/private/tmp alias, would
+#                                    silently resolve elsewhere). `result:` is
+#                                    `<pktdir>/<agent>.md`; `review:` is
+#                                    always `<pktdir>/review.md`, the same
+#                                    path across every agent dispatched for
+#                                    the packet. The title is the
 #                                    piped body's `TEXT=` line when one
 #                                    exists (gspec-backlog.sh handoff's own
 #                                    shape), else its first line that is not
@@ -1885,6 +1896,14 @@ cmd_handoff() {
   local pktdir="${rundir}/${pkt}"
   mkdir -p "$pktdir" 2>/dev/null || die "cannot create ${pktdir}"
 
+  # Absolute paths, so a dispatched agent's `write-result`/`route` calls work
+  # regardless of its own cwd -- a subagent is not guaranteed the driver's
+  # cwd, and a relative path (or a /tmp-vs-/private/tmp alias on macOS) would
+  # silently resolve somewhere else (thin-loop-driver review fix #8).
+  local abs_f abs_pktdir
+  abs_f="$(_rs_lexical_abspath "$f")"
+  abs_pktdir="$(_rs_lexical_abspath "$pktdir")"
+
   local body title target
   body="$(cat)"
   title="$(_rs_handoff_title "$body" "$pkt")"
@@ -1901,7 +1920,10 @@ cmd_handoff() {
   _rs_tmp="$(mktemp "${pktdir}/.handoff.XXXXXX")" || die "cannot create temp file in ${pktdir}"
   { printf '# %s: %s\n\n' "$pkt" "$title"
     printf 'tier: %s\n' "$tier"
-    printf 'agent: %s\n\n' "$agent"
+    printf 'agent: %s\n' "$agent"
+    printf 'run-state: %s\n' "$abs_f"
+    printf 'result: %s\n' "${abs_pktdir}/${agent}.md"
+    printf 'review: %s\n\n' "${abs_pktdir}/review.md"
     printf '%s\n' "$body"
   } > "$_rs_tmp"
   mv -f "$_rs_tmp" "$target"

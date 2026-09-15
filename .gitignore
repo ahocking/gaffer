@@ -67,6 +67,15 @@ scratch/
 .agents/driver-mode/
 .agents/loop/
 
+# Orchestration pause sentinel — the cooperative-pause REQUEST channel (ADR
+# 0017). A human or frontend writes `.agents/pause`; the loop polls it at safe
+# boundaries. It is a request, not history: unignored, it dirties the tree the
+# pause checkpoint must leave clean and is swept by the pause stash. `pause.*`
+# covers per-lane files a retired parallel run may have left behind (inert;
+# `/gaffer:migrate` removes them). Mirrors templates/spec-driven-base/.gitignore.
+.agents/pause
+.agents/pause.*
+
 # gspec build run-state — transient driver bookkeeping, not product history.
 # The adapter reads `.gspec/build/status.json` for the two-drivers interlock
 # (ADR 0020 D5) and does so FAIL-SOFT, so its absence is a supported state and

@@ -25,6 +25,13 @@
 #                              `- [ ] **P<n>**: <text>`; completion is DERIVED
 #                              from them (ADR 0020 D2 — never stored). Optional
 #                              frontmatter `depends_on:` (forward-compat with U5).
+#                              A capability's indented acceptance-criteria
+#                              sub-bullets (`  - <criterion>`, verbatim, a
+#                              wrapped multi-line one included whole) are ALSO
+#                              consumed — the D2 amendment (2026-09-15) that
+#                              widened this contract for `handoff` below, the
+#                              ONE reader of them (`_prd_capability`).
+#                              `runstate.sh` still never reads gspec/.
 #
 # ...where <plan> and <prd> are LAYOUT-DEPENDENT and resolved in exactly one
 # place each — `_resolve_plan_path` / `_resolve_prd_path`, enumerated by
@@ -154,6 +161,38 @@
 #                            of them, non-zero only for a genuine usage error (no
 #                            ids, an unreadable root, or the REFUSED path shared
 #                            with check-task).
+#   handoff <packet-id> [root]   print everything an agent needs to start a
+#                            packet: the task text; its file scope, resolved by
+#                            calling `_nodes_for` and reading its row for this
+#                            packet id — the SAME precedence `nodes` uses (plan
+#                            `files:` > fingerprint-matched sidecar > empty),
+#                            never a second copy of it; each `covers:`
+#                            capability (split on the `' · '` separator) with
+#                            that capability's PRD acceptance-criteria
+#                            sub-bullets verbatim (ADR 0020's D2 amendment); and
+#                            the PRD and `arch.md` paths — `ARCH=` is always
+#                            printed, as `absent` when there is no arch.md, so a
+#                            caller never has to guess whether the line was
+#                            omitted or forgotten. A `covers:` quote matching no
+#                            PRD capability prints `UNMATCHED=<quote>`, never
+#                            guessed. `<packet-id>` accepts the same two forms
+#                            as check-task/task-status, resolved by the SAME
+#                            `_resolve_task_id`. A CHECKED task still prints —
+#                            handoff is a read — but its `FILES=` is always
+#                            empty, since `nodes` never computes scope for a
+#                            checked task (it emits no row for one); a `NOTE=`
+#                            line says so. A packet id that cannot be resolved
+#                            to a real task prints `HANDOFF=unknown` plus
+#                            `REASON=`, exit 0 (mirrors task-status's `unknown`,
+#                            not check-task's rc=4 — handoff never writes, so
+#                            there is no "genuine drift" to report loudly here).
+#                            Only a real usage error (no packet id, or a
+#                            REFUSED unsafe canonical-form slug) is non-zero.
+#                            Output is line-oriented (`KEY=value` lines, plus
+#                            `COVERS=`/`UNMATCHED=` blocks with indented
+#                            sub-bullet lines under a `COVERS=`) so a caller can
+#                            pipe it straight into `runstate.sh handoff`'s
+#                            stdin without reparsing it into another shape.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -1123,6 +1162,338 @@ _task_history_probe() {
   fi
 }
 
+# --- handoff: everything an agent needs to start a packet --------------------
+# (thin-loop-driver T2 / ADR 0020 D2 amendment, 2026-09-15; hardened in review,
+# 2026-09-15.) Three helpers, read-only, each reusing a shared piece rather
+# than copying it:
+#   _task_record     the task-line shape, via the SAME `_TASK_LINE_RE` family
+#                     `_task_lookup`/`_plan_task_line_count` already share —
+#                     never a second regex for "what is a task line". Captures
+#                     the FULL multi-line task body, not just the header's
+#                     inline text — the handoff is the implementer's whole
+#                     brief, so a nested bullet or a trailing paragraph must
+#                     not be silently dropped.
+#   _prd_capability   an exact (trimmed, unguessed) match of a `covers:` quote
+#                     against a PRD capability line, plus that capability's
+#                     sub-bullet block, verbatim.
+#   _split_covers     the `' · '` (U+00B7) separator `covers:` uses for more
+#                     than one capability, matched by its UTF-8 octal escape
+#                     (`\302\267`) rather than a literal multibyte character in
+#                     source — the same reason `_nodes_for` matches the em dash
+#                     as `\342\200\224` rather than `—` (:719).
+# Every value that can hold arbitrary plan/PRD text (a covers quote, task
+# text) is passed to awk through `ENVIRON`, never `awk -v` — this repo's
+# standing rule (see runstate.sh's `cmd_set`): `-v` runs escape-sequence
+# processing on the VALUE, so a quote containing `\d` or similar reads as
+# something other than what is on disk, corrupting a match silently rather
+# than loudly.
+# File SCOPE is deliberately not reparsed here at all: `cmd_handoff` calls
+# `_nodes_for` itself and reads the row it already computes for this packet
+# id, which is what "share the code path, do not copy it" means for the
+# files: > sidecar > empty precedence — there is no second copy of that
+# precedence anywhere in this section.
+
+# _task_record <plan> <idlc> — everything `handoff` needs about the first task
+# line whose id, case-folded, equals <idlc>: checked state, the plan's own
+# literal id text (not <idlc>, so a caller gets the real casing regardless of
+# how it typed the lookup), the header line's own inline text (marker-stripped
+# exactly as `_nodes_for` strips it — [P] / **P<n>** / [GATE:...] — the same
+# clean description `_nodes_for` uses for its fingerprint comparison), the raw
+# `- covers:` value (unsplit — `_split_covers` is the one place that
+# ' · '-splits it), and the task's FULL BODY: every line between the header
+# and the next task line, EXCLUDING the `- deps:` / `- covers:` / `- arch:` /
+# `- files:` / `- supersedes:` metadata lines. Nested bullets and a trailing
+# paragraph are body, not metadata, and are captured verbatim, in order.
+# Prints nothing when <idlc> is not a task in <plan>.
+#
+# Output is line-oriented, NEVER one row split with `cut`: one `KEY<TAB>value`
+# line per header field (CHECKED, ID, COVERS, TEXT), then a bare `BODY` line,
+# then the task's body lines verbatim, one per output line. A `cut -f<n>`
+# against a single joined row is exactly what a tab embedded in free text (a
+# task's own text, or a covers quote) would silently corrupt — shifting every
+# later field — so this shape makes that structurally impossible instead of
+# merely unlikely; `cmd_handoff` reads each header line with a first-tab
+# split, whose remainder half keeps any further embedded tab in the value
+# intact.
+_task_record() {
+  local plan="$1" want="$2"
+  WANT="$want" awk '
+    /'"$_TASK_LINE_RE"'/ {
+      if (found) exit
+      desc = $0
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
+      lid = substr(desc, 1, RLENGTH)
+      if (tolower(lid) != ENVIRON["WANT"]) { in_target = 0; next }
+      in_target = 1; found = 1; realid = lid
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      desc = substr(desc, RLENGTH + 1)
+      sub(/^\*\*/, "", desc)                  # canonical/B: bold closed after the id
+      sub(/^[[:space:]]*\[P\][[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*\*\*P[0-9]+\*\*[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*\*\*\[GATE:[^]]*\]\*\*[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*`?\[GATE:[^]]*\]`?[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]+/, "", desc)
+      taskdesc = desc
+      next
+    }
+    in_target && /^[[:space:]]+-[[:space:]]*covers[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*covers[[:space:]]*:[[:space:]]*/, "", l); covers = l
+      next
+    }
+    # Everything else this plan line-shape uses is metadata, not body.
+    in_target && /^[[:space:]]+-[[:space:]]*(deps|arch|files|supersedes)[[:space:]]*:/ { next }
+    # Any other line while inside the target task -- a nested bullet, its
+    # wrapped continuation, a blank separator, or a trailing paragraph -- is
+    # body, captured verbatim and in order. A markdown heading ends the task
+    # (the same rule _prd_capability uses): a `## Phase 2` or `## Notes` section
+    # after a task is plan structure, never part of the task body.
+    in_target && /^#/ { in_target = 0; next }
+    in_target { bn++; body[bn] = $0 }
+    END {
+      if (!found) exit
+      while (bn > 0 && body[bn] ~ /^[[:space:]]*$/) bn--   # trailing blanks are separators
+      printf "CHECKED\t%s\n", checked
+      printf "ID\t%s\n", realid
+      printf "COVERS\t%s\n", covers
+      printf "TEXT\t%s\n", taskdesc
+      print "BODY"
+      for (i = 1; i <= bn; i++) print body[i]
+    }
+  ' "$plan"
+}
+
+# _prd_capability <prd> <text> — is <text> (outer whitespace trimmed) the
+# verbatim text of some `- [ ] **P<n>**: <text>` capability line in <prd>? No
+# other normalization: a `covers:` quote is expected to be copied verbatim
+# from the PRD, and a near-match is exactly the guess AC2 forbids. Prints
+# "MATCH" followed by every physical line of that capability's sub-bullet
+# block, verbatim — a wrapped multi-line bullet reproduces whole, across as
+# many output lines as it has in the source — or "NOMATCH" alone. Recognizes
+# only the canonical `**P<n>**:` capability shape (what `/gspec-feature`
+# writes); the legacy `**P0 — text**` shape `_feature_done` also accepts has
+# no reliable sub-bullet shape of its own to reproduce, so a quote against a
+# legacy PRD correctly reads NOMATCH rather than guessing at one.
+#
+# Block-boundary rule (deliberately precise, not "blank line ends it"): the
+# block ends at the NEXT capability line, at a heading (`^#`), or at the
+# first line that is neither blank nor indented. A blank line is buffered,
+# not decided on immediately — if the next line is still indented, the blank
+# was interior to a wrapped multi-paragraph bullet and is flushed back in; if
+# the next line is unindented (a stray top-level bullet, a new section, EOF),
+# the buffered blank is discarded and the block ends there without ever
+# printing that top-level line. This is also why `if (found) exit` on the
+# NEXT capability-line match matters and is covered by a sweep case: `found`
+# is sticky (never reset once a match is made), so without that `exit`,
+# `inblock` would stay 1 across a later NON-matching capability line and its
+# body would bleed into this one's block.
+_prd_capability() {
+  local prd="$1" want="$2"
+  if [ ! -f "$prd" ]; then printf 'NOMATCH\n'; return 0; fi
+  WANT="$want" awk '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+\*\*:/ {
+      if (found) exit
+      t = $0
+      sub(/^-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+\*\*:[[:space:]]*/, "", t)
+      if (trim(t) == ENVIRON["WANT"]) { found = 1; print "MATCH" }
+      inblock = found
+      pend = 0
+      next
+    }
+    inblock && /^#/ { exit }
+    inblock && /^[[:space:]]*$/ { pend++; next }
+    inblock && /^[[:space:]]+/ {
+      while (pend > 0) { print ""; pend-- }
+      print
+      next
+    }
+    inblock { exit }   # unindented, non-blank, non-heading: the block ends here, unabsorbed
+    END { if (!found) print "NOMATCH" }
+  ' "$prd"
+}
+
+# _split_covers <covers> — one trimmed capability quote per line, splitting on
+# `' · '` (U+00B7, matched by its UTF-8 octal escape \302\267 rather than a
+# literal multibyte character in source — see the section header). Prints
+# nothing for an empty value or the "no covers" sentinels `_nodes_for` already
+# recognizes for `deps:` (`-`, the octal-escaped em dash) — `cmd_handoff`
+# prints `COVERS=none` for that case, since nothing here reads that as
+# distinct from a real, single, empty-after-split quote.
+_split_covers() {
+  local s="$1"
+  [ -n "$s" ] || return 0
+  S="$s" awk '
+    BEGIN {
+      s = ENVIRON["S"]
+      gsub(/^[ \t]+|[ \t]+$/, "", s)
+      if (s == "" || s == "-" || s == "\342\200\224") exit
+      n = split(s, a, " \302\267 ")
+      for (i = 1; i <= n; i++) {
+        v = a[i]
+        gsub(/^[ \t]+|[ \t]+$/, "", v)
+        if (v != "") print v
+      }
+    }
+  '
+}
+
+# cmd_handoff <packet-id> [root] — see the `handoff` entry in the header
+# Subcommands list for the full output-shape and exit-code contract. Output:
+#   PACKET=<feature>-<id>
+#   FEATURE=<slug>
+#   ID=<the plan's own literal task id>
+#   CHECKED=<0|1>
+#   TEXT=<the task header's own inline text>
+#     <body line, 2-space indented, one per following output line>
+#     ...                                    (present only when the task has
+#                                              a body beyond its header line)
+#   FILES=<pipe-separated, or empty>
+#   NOTE=...                                 (present only when CHECKED=1)
+#   COVERS=<capability 1 text>
+#     <criterion line, 2-space indented, verbatim, possibly several>
+#   COVERS=<capability 2 text>
+#     ...
+#   COVERS=none                              (in place of the COVERS= blocks
+#                                              above, when the task declares
+#                                              no covers: at all)
+#   UNMATCHED=<covers quote matching no PRD capability>   (zero or more)
+#   PRD=<relpath, or "none">
+#   ARCH=<relpath, or "absent">
+cmd_handoff() {
+  local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
+  local root; root="$(_root "${2:-}")"
+
+  local resolved; resolved="$(_resolve_task_id "$task" "$root")"
+  case "$resolved" in
+    NOGSPEC)
+      printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+      return 0
+      ;;
+    UNRESOLVED)
+      printf 'HANDOFF=unknown\nREASON=not a gspec task id — no plan resolves this packet\n'
+      return 0
+      ;;
+    REFUSED\ *)
+      die "handoff: ${resolved#REFUSED }"
+      ;;
+  esac
+
+  local slug id
+  slug="$(printf '%s' "$resolved" | cut -f2)"
+  id="$(printf '%s' "$resolved" | cut -f3)"
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  local rec; rec="$(_task_record "$plan" "$idlc")"
+  if [ -z "$rec" ]; then
+    printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$slug" "$id" "$relplan"
+    return 0
+  fi
+
+  # Parse _task_record's line-oriented output: header KEY<TAB>value lines,
+  # then a bare BODY line, then the task's body lines verbatim. Never `cut`
+  # against a joined row — see _task_record's own comment for why. Splitting
+  # on the FIRST tab (parameter expansion, not a second `read`) keeps any
+  # further embedded tab in a value intact, the same remainder-capture
+  # `_resolve_task_id`'s callers already rely on `read` for elsewhere.
+  local checked="" realid="" covers="" text="" mode="header" line key val body=""
+  while IFS= read -r line; do
+    if [ "$mode" = "header" ]; then
+      if [ "$line" = "BODY" ]; then
+        mode="body"
+        continue
+      fi
+      key="${line%%$'\t'*}"
+      val="${line#*$'\t'}"
+      case "$key" in
+        CHECKED) checked="$val" ;;
+        ID)      realid="$val" ;;
+        COVERS)  covers="$val" ;;
+        TEXT)    text="$val" ;;
+      esac
+    else
+      body="${body}${line}"$'\n'
+    fi
+  done <<EOF
+$rec
+EOF
+
+  # Share the code path: ask `nodes` itself for this packet's row rather than
+  # a second copy of its files: > sidecar > empty precedence. Reads the whole
+  # stream to END rather than an early `exit` on match — an early-closing
+  # consumer on the right of a pipe can SIGPIPE a still-writing producer
+  # under `pipefail`, the exact shape this repo has been bitten by before
+  # (see the `trim-note` flake in CLAUDE.md). `nodes` never emits a row for a
+  # CHECKED task (it is not a backlog node), so a checked task's scope is
+  # always empty here — documented below via NOTE=, not silently
+  # indistinguishable from "an unchecked task with no scope".
+  local files=""
+  if [ "$checked" = "0" ]; then
+    files="$(_nodes_for "$root" "$slug" | WANT="${slug}-${idlc}" awk -F'\t' '
+      $1 == ENVIRON["WANT"] { f = $3 }
+      END { print f }
+    ')"
+  fi
+
+  local prdpp prdrel prdabs
+  prdpp="$(_resolve_prd_path "$slug" "$root")"
+  prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+  prdrel="$(printf '%s' "$prdpp" | cut -f2)"
+  [ -n "$prdrel" ] || prdrel="none"
+
+  local archrel="absent"
+  [ -f "$root/gspec/features/$slug/arch.md" ] && archrel="gspec/features/$slug/arch.md"
+
+  printf 'PACKET=%s-%s\n' "$slug" "$idlc"
+  printf 'FEATURE=%s\n' "$slug"
+  printf 'ID=%s\n' "$realid"
+  printf 'CHECKED=%s\n' "$checked"
+  printf 'TEXT=%s\n' "$text"
+  if [ -n "$body" ]; then
+    printf '%s' "$body" | while IFS= read -r line; do
+      printf '  %s\n' "$line"
+    done
+  fi
+  printf 'FILES=%s\n' "$files"
+  if [ "$checked" = "1" ]; then
+    printf 'NOTE=task is checked; nodes never computes file scope for a checked task (it emits no row for one), so FILES is always empty here regardless of any plan files: line or sidecar entry\n'
+  fi
+
+  local unmatched="" q capout first_line any_quote=0
+  while IFS= read -r q; do
+    [ -n "$q" ] || continue
+    any_quote=1
+    capout="$(_prd_capability "$prdabs" "$q")"
+    first_line="${capout%%$'\n'*}"
+    if [ "$first_line" = "MATCH" ]; then
+      printf 'COVERS=%s\n' "$q"
+      printf '%s\n' "$capout" | tail -n +2 | sed 's/^/  /'
+    else
+      unmatched="${unmatched}${q}"$'\n'
+    fi
+  done < <(_split_covers "$covers")
+
+  [ "$any_quote" = "1" ] || printf 'COVERS=none\n'
+
+  if [ -n "$unmatched" ]; then
+    printf '%s' "$unmatched" | while IFS= read -r q; do
+      [ -n "$q" ] && printf 'UNMATCHED=%s\n' "$q"
+    done
+  fi
+
+  printf 'PRD=%s\n' "$prdrel"
+  printf 'ARCH=%s\n' "$archrel"
+}
+
 cmd_check_task() {
   local task="${1:-}"; [ -n "$task" ] || die "check-task: need a task id"
   local root; root="$(_root "${2:-}")"
@@ -1423,5 +1794,6 @@ case "${1:-}" in
   files-status) shift; cmd_files_status "$@" ;;
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
+  handoff)    shift; cmd_handoff "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>} [root]" ;;
 esac

@@ -1615,6 +1615,333 @@ grep -q 'the stale flat copy' "$R/gspec/tasks/both.md" \
   || bad 'the shadowed flat plan is left untouched' "$(cat "$R/gspec/tasks/both.md")"
 
 # =============================================================================
+printf '\n== handoff: task text, file scope shared with nodes, covers capabilities ==\n'
+# (thin-loop-driver T2 / ADR 0020 D2 amendment)
+R="$TMPROOT/handoff"; mkdir -p "$R/gspec/features/hoff"
+cat > "$R/gspec/features/hoff/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: hoff
+
+## Capabilities
+
+- [ ] **P0**: First capability text
+  - first criterion, one line
+  - second criterion wraps
+    onto a second physical
+    line, verbatim
+- [ ] **P1**: Second capability text
+  - only criterion here
+
+## Dependencies
+
+- none
+EOF
+mk_plan_v2 "$R" hoff <<'EOF'
+- [ ] **T1** **P0** do the first thing
+  - deps: —
+  - covers: First capability text · Second capability text
+  - files: [src/a.ts, src/b.ts]
+- [x] **T2** **P1** already done thing
+  - deps: T1
+  - covers: A quote nothing matches
+  - files: [should/not/appear.ts]
+EOF
+
+out="$("$ADAPTER" handoff hoff-t1 "$R")"
+check 'handoff prints the task text'                'TEXT=do the first thing' "$out"
+check 'handoff resolves file scope via nodes (plan files: wins)' 'FILES=src/a.ts|src/b.ts' "$out"
+check 'handoff prints the first covers capability'  'COVERS=First capability text' "$out"
+check 'a multi-capability covers is split on the middle dot' 'COVERS=Second capability text' "$out"
+check 'a single-line criterion prints verbatim'     'first criterion, one line' "$out"
+check 'a multi-line wrapped criterion stays whole (line 1)' 'second criterion wraps' "$out"
+check 'a multi-line wrapped criterion stays whole (line 2)' 'onto a second physical'  "$out"
+check 'a multi-line wrapped criterion stays whole (line 3)' 'line, verbatim'          "$out"
+check 'handoff prints the PRD path'                 'PRD=gspec/features/hoff/prd.md' "$out"
+check 'ARCH= is printed even when arch.md is absent' 'ARCH=absent'                    "$out"
+
+# The capability-block boundary: this is exactly what removing `if (found)
+# exit` in `_prd_capability` would break (`found` is sticky, so without that
+# `exit`, `inblock` would stay set across the non-matching "Second capability
+# text" header and its own criterion would bleed into the first block).
+block1="$(printf '%s\n' "$out" | awk '/^COVERS=First capability text$/{f=1; next} /^COVERS=Second capability text$/{exit} f')"
+refute 'the first COVERS block does not leak the second capability'"'"'s criterion' \
+  'only criterion here' "$block1"
+
+out="$("$ADAPTER" handoff 'hoff#T1' "$R")"
+check 'the canonical <feature>#T<n> form resolves identically' 'PACKET=hoff-t1' "$out"
+
+touch "$R/gspec/features/hoff/arch.md"
+out="$("$ADAPTER" handoff hoff-t1 "$R")"
+check 'ARCH= carries the real path once arch.md exists' 'ARCH=gspec/features/hoff/arch.md' "$out"
+
+printf '\n== handoff: a checked task still prints, and a bad covers quote is reported ==\n'
+out="$("$ADAPTER" handoff hoff-t2 "$R")"
+check 'a checked task still prints (handoff is a read)'   'CHECKED=1' "$out"
+check 'and its task text too'                             'TEXT=already done thing' "$out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+# T2 DOES declare a files: line (should/not/appear.ts) -- this is the point:
+# a checked task's FILES is forced empty regardless, never merely "empty
+# because nothing was configured" (which the earlier fixture, with no files:
+# line at all on T2, could not tell apart from this).
+[ "$filesline" = 'FILES=' ] && ok 'a checked task always carries empty FILES even when the plan has a files: line for it' \
+  || bad 'checked task FILES should be empty' "got: $filesline"
+refute 'the checked task'"'"'s own files: line never leaks into FILES=' 'should/not/appear.ts' "$out"
+check 'and says why, so empty does not read as "forgot to scope it"' 'NOTE=' "$out"
+check 'a covers quote matching no capability is reported, never guessed' \
+  'UNMATCHED=A quote nothing matches' "$out"
+refute 'an unmatched quote never becomes a COVERS= block' 'COVERS=A quote nothing matches' "$out"
+
+printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
+# The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
+# wrapped continuation line, a blank separator and a trailing paragraph, with
+# deps:/covers:/arch:/files: metadata lines that must NOT appear as body text.
+R5="$TMPROOT/handoff-multiline"; mkdir -p "$R5/gspec/features/multi"
+cat > "$R5/gspec/features/multi/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: multi
+
+## Capabilities
+
+- [ ] **P0**: Multi-line tasks keep their whole body
+  - the body survives
+
+## Dependencies
+EOF
+mk_plan_v2 "$R5" multi <<'EOF'
+- [ ] **T1** **P0** Add two writers, first line only:
+  - first nested bullet wraps
+    onto a second physical line as continuation
+  - second nested bullet, one line
+
+  A trailing paragraph after a blank separator, at the same indent as the bullets.
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+  - arch: —
+  - files: src/a.ts, src/b.ts
+EOF
+out="$("$ADAPTER" handoff multi-t1 "$R5")"
+check 'TEXT= carries only the header'"'"'s own inline text'          'TEXT=Add two writers, first line only:' "$out"
+check 'a nested bullet is captured'                             'first nested bullet wraps'                "$out"
+check 'its wrapped continuation line is captured too'           'onto a second physical line as continuation' "$out"
+check 'a second nested bullet is captured'                      'second nested bullet, one line'             "$out"
+check 'a trailing paragraph after a blank line is captured'     'A trailing paragraph after a blank separator' "$out"
+refute 'the deps: metadata line never leaks into the body'      '- deps:'    "$out"
+refute 'the covers: metadata line never leaks into the body'    '- covers:'  "$out"
+refute 'the arch: metadata line never leaks into the body'      '- arch:'    "$out"
+refute 'the files: metadata line never leaks into the body'     '- files:'   "$out"
+check 'the files: line is still consumed for FILES='            'FILES=src/a.ts|src/b.ts' "$out"
+
+printf '\n== handoff: a markdown heading ends a task body (phase sections, trailing notes) ==\n'
+R5h="$TMPROOT/handoff-headings"; mkdir -p "$R5h/gspec/features/multi"
+cp "$R5/gspec/features/multi/prd.md" "$R5h/gspec/features/multi/prd.md"
+mk_plan_v2 "$R5h" multi <<'EOF'
+- [ ] **T1** **P0** First phase task
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+
+## Phase 2
+
+Phase two prose that belongs to no task.
+
+- [ ] **T2** **P0** Second phase task
+  body line of the second task
+  - deps: T1
+  - covers: Multi-line tasks keep their whole body
+
+## Notes
+
+Trailing notes prose after the last task.
+EOF
+out="$("$ADAPTER" handoff multi-t1 "$R5h")"
+check  'a task before a heading still resolves'                 'TEXT=First phase task'   "$out"
+refute 'the heading after a task is not captured as its body'   'Phase 2'                  "$out"
+refute 'prose under that heading is not captured either'        'Phase two prose'          "$out"
+out="$("$ADAPTER" handoff multi-t2 "$R5h")"
+check  'a task after a heading still resolves'                  'TEXT=Second phase task'   "$out"
+check  'its own body line is kept'                              'body line of the second task' "$out"
+refute 'a trailing notes section is not captured as the last task body' 'Trailing notes prose' "$out"
+
+printf '\n== handoff: a literal backslash in a covers quote is not corrupted (awk ENVIRON, not -v) ==\n'
+R6="$TMPROOT/handoff-backslash"; mkdir -p "$R6/gspec/features/bs"
+cat > "$R6/gspec/features/bs/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bs
+
+## Capabilities
+
+- [ ] **P0**: Match \d literally, not a digit class
+  - one criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R6" bs <<'EOF'
+- [ ] **T1** **P0** backslash task
+  - deps: —
+  - covers: Match \d literally, not a digit class
+EOF
+out="$("$ADAPTER" handoff bs-t1 "$R6")"
+check 'a literal backslash-d in a covers quote still matches verbatim' \
+  'COVERS=Match \d literally, not a digit class' "$out"
+refute 'and is never reported as unmatched' 'UNMATCHED=Match \d' "$out"
+check 'its criterion still prints' 'one criterion' "$out"
+
+printf '\n== handoff: a tab embedded in free text never shifts a field (no cut on a joined row) ==\n'
+R7="$TMPROOT/handoff-tab"; mkdir -p "$R7/gspec/features/tabby"
+{
+  printf -- '---\nspec-version: v2\n---\n\n# Feature: tabby\n\n## Capabilities\n\n'
+  printf -- '- [ ] **P0**: Cap\twith an embedded tab\n  - one criterion\n\n## Dependencies\n'
+} > "$R7/gspec/features/tabby/prd.md"
+{
+  printf -- '---\nspec-version: v2\nfeature: tabby\n---\n\n# Plan: tabby\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** task text with a\ttab inside it\n'
+  printf -- '  - deps: -\n'
+  printf -- '  - covers: Cap\twith an embedded tab\n'
+} > "$R7/gspec/features/tabby/tasks.md"
+out="$("$ADAPTER" handoff tabby-t1 "$R7")"
+expect_text="$(printf 'TEXT=task text with a\ttab inside it')"
+expect_covers="$(printf 'COVERS=Cap\twith an embedded tab')"
+check 'a tab inside the task text is preserved, not truncated' "$expect_text" "$out"
+check 'a tab inside a covers quote still matches its capability' "$expect_covers" "$out"
+check 'the criterion after the tabbed capability still prints' 'one criterion' "$out"
+
+printf '\n== handoff: a task with no covers: prints COVERS=none, never silence ==\n'
+cat > "$R5/gspec/features/multi/tasks.md" <<'EOF'
+---
+spec-version: v2
+feature: multi
+---
+
+# Plan: multi
+
+## Plan
+
+- [ ] **T1** **P0** Add two writers, first line only:
+  - first nested bullet wraps
+    onto a second physical line as continuation
+  - second nested bullet, one line
+
+  A trailing paragraph after a blank separator, at the same indent as the bullets.
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+  - arch: —
+  - files: src/a.ts, src/b.ts
+- [ ] **T2** **P1** a task that declares no covers at all
+  - deps: —
+EOF
+out="$("$ADAPTER" handoff multi-t2 "$R5")"
+check 'a task with no covers: prints COVERS=none' 'COVERS=none' "$out"
+refute 'and never a bare UNMATCHED= with nothing to unmatch' 'UNMATCHED=' "$out"
+
+printf '\n== handoff: a blank line inside a capability block does not end it early, and a stray top-level bullet is never absorbed ==\n'
+cat > "$R5/gspec/features/multi/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: multi
+
+## Capabilities
+
+- [ ] **P0**: Multi-line tasks keep their whole body
+  - the body survives
+
+- [ ] **P1**: Cap with an interior blank line
+  - first bullet
+
+  - second bullet, after a blank line, still part of this capability
+
+- [ ] **P2**: Cap with trailing garbage after it
+  - only real bullet
+
+- a stray top-level bullet that must never be absorbed
+## Dependencies
+EOF
+cat >> "$R5/gspec/features/multi/tasks.md" <<'EOF'
+- [ ] **T3** **P1** blank-line-continuation task
+  - deps: —
+  - covers: Cap with an interior blank line
+- [ ] **T4** **P2** trailing-garbage task
+  - deps: —
+  - covers: Cap with trailing garbage after it
+EOF
+out="$("$ADAPTER" handoff multi-t3 "$R5")"
+check 'a bullet before an interior blank line prints'  'first bullet' "$out"
+check 'a bullet after an interior blank line still prints (blank does not end the block when more indented content follows)' \
+  'second bullet, after a blank line, still part of this capability' "$out"
+
+out="$("$ADAPTER" handoff multi-t4 "$R5")"
+check 'the real bullet of a trailing-garbage capability prints' 'only real bullet' "$out"
+refute 'a stray top-level bullet after the block is never pulled in' \
+  'a stray top-level bullet that must never be absorbed' "$out"
+
+printf '\n== handoff: the 2.x and pre-2.0 plan layouts ==\n'
+# (3.x is covered above; this rounds out AC5's "all three layouts".)
+R2="$TMPROOT/handoff-2x"; mkdir -p "$R2"
+mk_prd "$R2" htwo 0 1              # generates "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R2" htwo <<'EOF'
+- [ ] **T1** **P0** a 2.x task
+  - deps: —
+  - covers: open capability 1
+EOF
+out="$("$ADAPTER" handoff htwo-t1 "$R2")"
+check '2.x layout: handoff resolves the flat PRD' 'PRD=gspec/features/htwo.md' "$out"
+check '2.x layout: covers matches the capability'  'COVERS=open capability 1'   "$out"
+check '2.x layout: its criterion prints'           'criterion'                 "$out"
+
+R3="$TMPROOT/handoff-pre20"; mkdir -p "$R3/gspec/features"
+mk_prd "$R3" hpre 0 1
+cat > "$R3/gspec/features/hpre.plan.md" <<'EOF'
+---
+spec-version: v1
+feature: hpre
+---
+
+# Plan: hpre
+
+## Plan
+
+- [ ] **T1** **P0** a pre-2.0 task
+  - deps: —
+  - covers: open capability 1
+EOF
+out="$("$ADAPTER" handoff hpre-t1 "$R3")"
+check 'pre-2.0 layout: handoff resolves the flat PRD' 'PRD=gspec/features/hpre.md'   "$out"
+check 'pre-2.0 layout: handoff reads the .plan.md file' 'COVERS=open capability 1'   "$out"
+
+printf '\n== handoff: a non-gspec id prints unknown and never crashes ==\n'
+R4="$TMPROOT/handoff-none"; mkdir -p "$R4"
+out="$("$ADAPTER" handoff not-a-real-packet-t9 "$R4" 2>&1)"; rc=$?
+check 'no gspec/ at all reads HANDOFF=unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 (mirrors task-status, gspec is optional)' \
+  || bad 'exit 0 with no gspec/' "rc=$rc"
+
+out="$("$ADAPTER" handoff zzz-t1 "$R" 2>&1)"; rc=$?
+check 'an id matching no feature slug also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and also exits 0' || bad 'exit 0 on an unresolved id' "rc=$rc"
+
+out="$("$ADAPTER" handoff hoff-t99 "$R" 2>&1)"; rc=$?
+check 'a resolvable feature with no such task also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 too' || bad 'exit 0 on no-such-task' "rc=$rc"
+
+out="$("$ADAPTER" handoff 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a missing packet id is a genuine usage error (non-zero)' \
+  || bad 'missing packet id should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" handoff 'a/b#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug with a path separator is refused, matching check-task/task-status' \
+  || bad 'path separator refused' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

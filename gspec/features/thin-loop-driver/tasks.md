@@ -56,7 +56,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · Long runs compact, and can pause on a schedule
   - arch: —
   - files: docs/adr/0028-loop-driver-mode.md
-- [ ] **T2** [P] **P0** Add `gspec-backlog.sh handoff <packet-id>`, which prints the task text, its file scope resolved exactly as `nodes` resolves it, each `covers:` capability with its PRD acceptance-criteria bullets verbatim, and the PRD and `arch.md` paths, and amend ADR 0020 to add acceptance-criteria bullets to the consumed contract. A `covers:` quote that matches no capability is reported, never guessed, and a non-gspec id prints `unknown`. `test-gspec-backlog.sh` cases cover all three plan layouts, a multi-bullet criterion, a ` · `-separated multi-capability `covers:`, an unmatched quote and a checked task.
+- [x] **T2** [P] **P0** Add `gspec-backlog.sh handoff <packet-id>`, which prints the task text, its file scope resolved exactly as `nodes` resolves it, each `covers:` capability with its PRD acceptance-criteria bullets verbatim, and the PRD and `arch.md` paths, and amend ADR 0020 to add acceptance-criteria bullets to the consumed contract. A `covers:` quote that matches no capability is reported, never guessed, and a non-gspec id prints `unknown`. `test-gspec-backlog.sh` cases cover all three plan layouts, a multi-bullet criterion, a ` · `-separated multi-capability `covers:`, an unmatched quote and a checked task.
   - deps: —
   - covers: Agents take a handoff file and return one status line
   - arch: —

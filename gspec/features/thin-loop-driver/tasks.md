@@ -45,7 +45,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Probe in a real session, with a scratch hook that logs payloads, and record the results in a new ADR, `docs/adr/0028-loop-driver-mode.md`, before anything relies on them:
+- [x] **T1** [P] **P0** Probe in a real session, with a scratch hook that logs payloads, and record the results in a new ADR, `docs/adr/0028-loop-driver-mode.md`, before anything relies on them:
   - whether a main-thread PreToolUse payload carries `session_id` and no `agent_id`, both in a plain session and in one launched with `claude --agent` on a throwaway agent, and whether a subagent's payload carries `agent_id`;
   - whether `session_id` survives compaction, `/clear` and `claude --resume`, and which SessionStart `source` each one fires;
   - whether `autoCompactWindow` or `CLAUDE_CODE_AUTO_COMPACT_WINDOW` exists, its unit, which settings scopes read it, whether a plugin can supply a default without overriding a repo or operator value, and whether a running session can read the value in effect;

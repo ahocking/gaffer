@@ -91,12 +91,53 @@ warn() { printf 'metrics.sh: %s\n' "$*" >&2; }
 # callers' `|| echo <default>` fallbacks still fire on a jq error.
 jqr() { jq -r "$@" | tr -d '\r'; }
 
-# --- portable ISO-8601(Z) -> epoch seconds -----------------------------------
+# --- shared jq fragment: parse a T1-shaped timestamp into a COMPARABLE ms key --
+# runstate.sh's record-start/record-outcome/sweep-open (loop-measurement T1/T3)
+# stamp sub-second UTC times ("...:08.311Z"), which do NOT sort correctly as
+# strings against a whole-second stamp in the same second ("...:08.311Z" sorts
+# BELOW "...:08Z" because "." (0x2E) sorts before "Z" (0x5A)). A live site did
+# exactly this raw string compare (the outcomes-window filter below, pre-T4) and
+# silently dropped same-second records. Every join over the outcomes log must
+# compare PARSED times instead — this is the one definition, spliced (via bash
+# concatenation) into every jq program below that needs it, so it cannot drift
+# out of step with runstate.sh's own `_rs_ts_key`/`_rs_frac_ms` (same algorithm:
+# epoch seconds * 1000 + the first 3 fractional digits, zero-padded). No fraction
+# present (a pre-T1 whole-second record) reads as ms=0, matching `_rs_frac_ms`.
+JQ_TS_MS='def ts_ms:
+  . as $t
+  | (($t | index("."))) as $dot
+  | (if $dot == null then {bare: $t, frac: "0"}
+     else {bare: ($t[0:$dot] + "Z"), frac: $t[$dot+1:-1]} end) as $p
+  # RESILIENT, not throwing (M1): fromdateiso8601 throws on one unparseable
+  # value, and this def runs unconditionally over EVERY record in a slurped
+  # array before any window filter narrows it -- one malformed ts anywhere in
+  # the outcomes log would abort the whole jq program, and the caller-side
+  # `2>/dev/null || echo [] `/`{}` fallback then silently zeroes every
+  # packet outcome for the run, not just the bad record. `?` degrades a
+  # malformed bare-seconds value to epoch 0 instead, which sorts before any
+  # real window and so drops out on its own rather than taking the run with it.
+  | ($p.bare | fromdateiso8601? // 0) as $secs
+  | (($p.frac + "000")[0:3] | tonumber) as $ms
+  | $secs * 1000 + $ms;
+'
+
+# --- portable ISO-8601(Z) [+ optional .fff] -> epoch seconds -----------------
+# STRIPS an optional fractional-seconds component before handing the timestamp to
+# `date` (loop-measurement T4 finding): GNU `date -u -d` accepts the fraction fine,
+# but the BSD/macOS `-j -f "%Y-%m-%dT%H:%M:%SZ"` arm REJECTS it outright and this
+# function's un-fixed form returned 0 for any sub-second stamp on macOS while
+# working on a GNU runner — a silent, platform-dependent wrong answer, since 0 is a
+# valid-looking epoch. `runstate.sh record-start`/`record-outcome` (T1/T3) now stamp
+# sub-second UTC times (`_rs_now_ts`), so any caller handing this function one of
+# those records' `ts` fields would otherwise hit exactly this. Mirrors
+# `runstate.sh`'s own `_rs_epoch_secs` (same fix, deliberately a separate copy — see
+# that function's comment for why it is not a shared call).
 epoch() {
-  local t="${1:-}"; [ -n "$t" ] || { echo 0; return; }
+  local t="${1:-}" bare; [ -n "$t" ] || { echo 0; return; }
+  bare="$(printf '%s' "$t" | sed -E 's/\.[0-9]+Z$/Z/')"
   # GNU date first, then BSD/macOS.
-  date -u -d "$t" +%s 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$t" +%s 2>/dev/null \
+  date -u -d "$bare" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$bare" +%s 2>/dev/null \
     || echo 0
 }
 
@@ -429,6 +470,10 @@ cmd_collect() {
   # RULE: any future `jq -r … > file` that a `read` loop consumes must be piped
   # through `tr -d '\r'` the same way.
   jq -r '[.[].session_id]|unique|.[]' "$tmp/events.json" 2>/dev/null | tr -d '\r' > "$tmp/sids.txt" || true
+  # JSON form of the same selected-session set, for the record joins below (T4):
+  # they need it as a jq array, not a line list a `while read` loop consumes, so the
+  # CRLF hazard documented above does not apply to this particular read.
+  jq -R -s 'split("\n")|map(select(length>0))' "$tmp/sids.txt" > "$tmp/sids.json" 2>/dev/null || echo '[]' > "$tmp/sids.json"
 
   # finalize the deferred "adhoc" run_id, disambiguated so two different sessions
   # never collide on .agents/metrics/adhoc/run-metrics.json. Prefer the (first)
@@ -583,47 +628,135 @@ cmd_collect() {
     > "$tmp/waves.json" 2>/dev/null || echo '{}' > "$tmp/waves.json"
   fi
 
-  # --- 3b. ATTESTED packet outcomes (ADR 0019 v3.4) --------------------------
-  # Optional, append-only, written by the loop via `runstate.sh record-outcome` at each
-  # packet boundary — including the boundaries that do NOT produce a commit, which is
-  # the entire point. The collector cannot observe outcome: it reconstructs packets from
-  # green-commit trailers, so a rolled-back packet leaves no trace to find.
+  # --- 3b. ATTESTED packet boundaries + outcomes (ADR 0019 v3.4, loop-measurement T4) -
+  # Optional, append-only, written by the loop via `runstate.sh record-start` /
+  # `record-outcome` / `sweep-open` at each packet boundary — including boundaries
+  # that do NOT produce a commit, which is the entire point. The collector cannot
+  # observe outcome from git alone: it reconstructs packets from green-commit
+  # trailers, so a rolled-back or never-committed packet leaves no trace there.
   #
   # Deliberately NOT run-state: run-state has a single writer (the driver) and this must
   # be writable from a lane without contending for it — the same reasoning that kept
   # packet boundaries on commit trailers rather than migrating run-state's schema.
   #
-  # LAST record per packet id wins: a packet that failed, was fixed and then landed
-  # green is green now. Absent file or absent id -> null, never an assumed "green".
+  # A packet has STARTED in this run when the run's window holds a start record, a
+  # continuation record, a commit trailer for it, OR an outcome record attributed to
+  # the run (loop-measurement T4). Its outcome is the LAST record attributed to the
+  # run at-or-after its latest start/continuation (falling back to the last outcome
+  # record overall when no boundary record is attributed — the pre-T1 shape, where a
+  # trailer-only packet's outcome came from whatever outcome log existed for it).
   #
-  # SCOPED TWO WAYS, exactly like every other join here — by SESSION and by the run
-  # WINDOW. `record-outcome` names its log after the same session id that names the
-  # event log, so the selected sessions in sids.txt pick the right files; the ts filter
-  # then bounds them to [win_start, we_bound]. Unscoped, this globbed every outcome ever
-  # written and took a global last-wins, so re-collecting an old run inherited a later
-  # run's verdict for a same-named packet — the identical cross-run bleed v3/v3.2 spent
-  # two revisions eliminating for commit trailers. Same bug, same fix, same bounds.
+  # ATTRIBUTION, not FILE SELECTION (the bug this section exists to avoid). An
+  # `interrupted`/`abandoned` record is written by a LATER session's `sweep-open`, into
+  # THAT session's own log file — but its `ts`/`session` fields are copied VERBATIM from
+  # the start/continuation it closes. So this run's records can legitimately live in a
+  # log file this run never wrote to, and the old file-name-based selection (loop over
+  # sids.txt, `cat "$ocdir/$_sid.jsonl"`) would silently miss them. Every outcomes log in
+  # the repo is now read (mirroring `runstate.sh sweep-open`'s own directory scan), and
+  # each record's EFFECTIVE session is `.session` when present, else the log FILE's own
+  # name (`_file_sid`) — which is exactly how a pre-T1 record (no `session` field, because
+  # `record-outcome` always wrote into its own session's file before T1) still scopes
+  # correctly. A record is attributed to this run when its effective session is one of
+  # the selected sessions (or, with no event spine at all — the structural fallback below
+  # — every file, since there is no session to select) AND its `ts` falls in
+  # [win_start, we_bound] — same two-way scoping as every other join here, so a foreign
+  # session's or an out-of-window record still cannot bleed into this run's verdict
+  # (v3/v3.2 fixed the identical cross-run bleed for commit trailers).
+  #
+  # TIMES ARE PARSED, NEVER STRING-COMPARED (loop-measurement T4 finding): boundary and
+  # outcome records carry a SUB-SECOND stamp (`runstate.sh _rs_now_ts`), and
+  # "...:08.311Z" sorts BELOW "...:08Z" as a raw string ("." is 0x2E, "Z" is 0x5A) —
+  # inverting same-second ordering. `$JQ_TS_MS` (defined above) is spliced into every
+  # program below instead.
   echo '{}' > "$tmp/outcomes.json"
   local ocdir="${agents}/metrics/outcomes"
+  : > "$tmp/records_raw.ndjson"
   if [ -d "$ocdir" ]; then
-    : > "$tmp/outcomes.ndjson"
-    if [ -s "$tmp/sids.txt" ]; then
-      while IFS= read -r _sid; do
-        [ -n "$_sid" ] && [ -e "$ocdir/$_sid.jsonl" ] && cat "$ocdir/$_sid.jsonl" >> "$tmp/outcomes.ndjson"
-      done < "$tmp/sids.txt"
-    else
-      # No event spine at all (structural fallback): there is no session to select and
-      # no window to filter by, so take everything rather than silently reporting none.
-      cat "$ocdir"/*.jsonl >> "$tmp/outcomes.ndjson" 2>/dev/null || true
-    fi
-    jq -s --arg ws "$win_start" --arg we "$we_bound" \
-      'map(select(.packet != null and .outcome != null))
-       | map(select(($ws == "" or (.ts // "") >= $ws) and ($we == "" or (.ts // "") <= $we)))
-       | group_by(.packet)
-       | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
-       | from_entries' \
-      "$tmp/outcomes.ndjson" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+    local _of _ofsid
+    for _of in "$ocdir"/*.jsonl; do
+      [ -e "$_of" ] || continue
+      _ofsid="$(basename "$_of" .jsonl)"
+      # jq (no -s) streams one filtered value per input value, so this appends one
+      # annotated line per record without slurping the whole repo's outcomes history
+      # into memory at once.
+      jq -c --arg fsid "$_ofsid" '. + {_file_sid: $fsid}' "$_of" 2>/dev/null >> "$tmp/records_raw.ndjson" || true
+    done
   fi
+
+  # attributed.json: every record (boundary or terminal), from every log, scoped to
+  # THIS run by (effective session, parsed ts) as described above.
+  jq -s "${JQ_TS_MS}"'
+    ($sids[0] // []) as $sset
+    | (if $ws == "" then null else ($ws|ts_ms) end) as $wsm
+    | (if $we == "" then null else ($we|ts_ms) end) as $wem
+    | map(select(.packet != null and .ts != null))
+    | map(. + {_esess: (.session // ._file_sid // ""), _ms: (.ts|ts_ms)})
+    | map(select(($sset|length) == 0 or (._esess as $es | ($sset | index($es)) != null)))
+    | map(select($wsm == null or ._ms >= $wsm))
+    | map(select($wem == null or ._ms <= $wem))
+  ' --slurpfile sids "$tmp/sids.json" --arg ws "$win_start" --arg we "$we_bound" \
+    "$tmp/records_raw.ndjson" > "$tmp/attributed.json" 2>/dev/null || echo '[]' > "$tmp/attributed.json"
+
+  # recordjoin.json: {outcomes: {id:outcome}, started_ids: [id...], record_end: {id:ts},
+  # swept_ids: [id...], has_start: bool}. Split from the attributed stream by field
+  # shape (`kind` marks a boundary record, `outcome` marks a terminal one — same rule
+  # runstate.sh's own `_rs_open_packets` uses), never by which log file a record
+  # happened to land in.
+  jq '
+    (map(select(.kind != null))) as $boundary
+    | (map(select(.outcome != null))) as $terminal
+    | ($boundary | group_by(.packet)
+       | map({key: .[0].packet, value: ((sort_by(._ms))[-1])}) | from_entries) as $latest_boundary
+    | ($terminal | group_by(.packet) | map(
+        . as $trecs
+        | $trecs[0].packet as $pid
+        | ($latest_boundary[$pid]._ms) as $lb
+        | (if $lb != null then ($trecs | map(select(._ms >= $lb))) else $trecs end) as $eligible
+        | if ($eligible | length) > 0
+          then {key: $pid, value: (($eligible | sort_by(._ms))[-1])}
+          else empty end
+      ) | from_entries) as $winning_terminal
+    | ($winning_terminal | map_values(.outcome)) as $outcomes
+    | ((($boundary | map(.packet)) + ($terminal | map(.packet))) | unique) as $started
+    | (($boundary + $terminal) | group_by(.packet)
+       | map({key: .[0].packet, value: ((sort_by(._ms))[-1].ts)}) | from_entries) as $record_end
+    # SWEPT (C1): sweep-open closes an open packet by copying the boundary ts
+    # VERBATIM into the terminal record it writes (that verbatim copy is what
+    # makes the close idempotent, see the comment above section 3b). A terminal
+    # record whose _ms is BYTE-IDENTICAL to the latest boundary it closes
+    # therefore carries no information about how long the packet actually ran; a
+    # terminal recorded directly (record-outcome id abandoned, not via sweep)
+    # carries its own real ts and does NOT match. Detected by ts equality, not
+    # by outcome value, since abandoned can come from either path.
+    | ($winning_terminal | to_entries
+       | map(select(.value._ms == ($latest_boundary[.key]._ms)))
+       | map(.key)) as $swept_ids
+    | { outcomes: $outcomes, started_ids: $started, record_end: $record_end,
+        swept_ids: $swept_ids,
+        has_start: (($boundary | map(select(.kind == "start")) | length) > 0) }
+  ' "$tmp/attributed.json" > "$tmp/recordjoin.json" 2>/dev/null \
+    || echo '{"outcomes":{},"started_ids":[],"record_end":{},"swept_ids":[],"has_start":false}' > "$tmp/recordjoin.json"
+
+  jq -c '.outcomes // {}' "$tmp/recordjoin.json" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+
+  # merge record-only packet ids (no trailer — never committed, or a still-open
+  # interruption) into pk_ends.json, ordered by PARSED end time (see above; a
+  # trailer's whole-second end and a record's sub-second end must not be
+  # string-compared). Trailer ids keep their trailer end/tier/impl unchanged.
+  # `swept` (C1) carries forward so section 5 can null the derived metrics rather
+  # than report a lying zero for a packet whose window collapsed to a point.
+  jq -s "${JQ_TS_MS}"'
+    .[0] as $trailer_pk
+    | .[1] as $rj
+    | ($trailer_pk | map(.id)) as $trailer_ids
+    | (($rj.started_ids // []) | map(select(. as $i | ($trailer_ids | index($i)) == null))) as $extra_ids
+    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null,
+                          swept: ((($rj.swept_ids // []) | index(.)) != null)})
+                  | map(select(.end != null))) as $extra_entries
+    | ($trailer_pk + $extra_entries)
+    | sort_by(.end | ts_ms)
+  ' "$tmp/pk_ends.json" "$tmp/recordjoin.json" > "$tmp/pk_ends_merged.json" 2>/dev/null \
+    && mv "$tmp/pk_ends_merged.json" "$tmp/pk_ends.json" || true
 
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------
   # Emit ONE record per assistant turn: {role, ts, model, tok}. Per-turn `ts` lets us
@@ -856,7 +989,7 @@ cmd_collect() {
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
      --arg run_start "$win_start" \
-     '
+     "${JQ_TS_MS}"'
      def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
                      cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
      . as $ends
@@ -876,11 +1009,17 @@ cmd_collect() {
          . as $acc
          | $ends[$i] as $p
          | (if $i==0 then ($run_start // $p.end) else $ends[$i-1].end end) as $start
-         | ($events | map(select(.ts > $start and .ts <= $p.end))) as $win
+         # PARSED, not string-compared (loop-measurement T4/T8 finding, I1): $start/
+         # $p.end can be sub-second (record-only packet boundaries) while event ts is
+         # always whole-second, and "...:05Z" > "...:05.500Z" as a raw string — the
+         # same inversion $JQ_TS_MS exists to fix everywhere else in this file.
+         | ($start | ts_ms) as $start_ms
+         | ($p.end | ts_ms) as $end_ms
+         | ($events | map(select(.ts != null and ((.ts|ts_ms) > $start_ms) and ((.ts|ts_ms) <= $end_ms)))) as $win
          | (($win | map(.ts) | sort | map(fromdateiso8601)) as $wt
             | reduce range(0; ($wt|length)-1) as $k (0;
                 . + (($wt[$k+1]-$wt[$k]) as $d | if $d>$gap then 0 else $d end))) as $active
-         | ($turns | map(select($ts_ok and .ts != null and .ts > $start and .ts <= $p.end))) as $wtok
+         | ($turns | map(select($ts_ok and .ts != null and ((.ts|ts_ms) > $start_ms) and ((.ts|ts_ms) <= $end_ms)))) as $wtok
          # ROUTING AUDIT (ADR 0019): who actually wrote code, and what was dispatched,
          # so the executor self-label (tier/impl) can be cross-checked against reality.
          # Same write surface as guard.sh and hooks/metrics-log.sh — keep all three in
@@ -908,7 +1047,16 @@ cmd_collect() {
               (if ($run_labelled and $p.tier == null) then "unlabelled:no-tier-trailer" else empty end),
               (if ($run_labelled and $p.impl == null) then "unlabelled:no-impl-trailer" else empty end)
             ]) as $flags
-         | $acc + [{
+         # SWEPT (C1, loop-measurement T4/T8 finding). `sweep-open` closes an open
+         # packet by copying its boundary ts VERBATIM (that is what makes the close
+         # idempotent) — so for a swept packet $p.end == the ts it STARTED at, and
+         # $win above collapses to a zero-width window: every derived count below
+         # would read a real, honest 0. A reader cannot tell that from "this packet
+         # genuinely did nothing", which is the opposite of what an interrupted
+         # packet means. Report the derived fields as null (unmeasured), not 0 —
+         # same rule as the pre-instrumentation-run nulls elsewhere in this file.
+         | ($p.swept == true) as $is_swept
+         | {
              id: $p.id,
              wave: ($wavemap[$p.id]),
              # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
@@ -971,14 +1119,43 @@ cmd_collect() {
              audit: { orchestrator_impl_edits: $orch_edits, implementer_dispatched: $impl_dispatched,
                       review_dispatches: $rev, flags: $flags },
              tokens: (if $ts_ok then ($wtok|map(.tok)|sumtok(.)) else null end)
-           }]
+           } as $obj
+         | $acc + [
+             if $is_swept then
+               ($obj + {
+                 swept: true,
+                 end: null,
+                 tool_calls: null,
+                 active_seconds: null,
+                 duration_ms: null,
+                 by_agent: null,
+                 by_tool: null,
+                 edits: null,
+                 by_command_class: null,
+                 failed_tool_calls: null,
+                 human_interactions: null,
+                 impl_edits_by_role: null,
+                 dispatched: null,
+                 tokens: null,
+                 audit: ($obj.audit + {
+                   orchestrator_impl_edits: null,
+                   implementer_dispatched: null,
+                   review_dispatches: null,
+                   flags: ($obj.audit.flags + ["unmeasured:swept-by-later-session"])
+                 })
+               })
+             else ($obj + {swept: false})
+             end
+           ]
        )
      ' "$tmp/pk_ends.json" > "$tmp/packets.json" 2>/dev/null || echo '[]' > "$tmp/packets.json"
 
   # --- 6. unattributed: events in NO packet window (wasted/between-packet calls) --
-  jq --slurpfile pk "$tmp/packets.json" '
+  # PARSED, not string-compared (I1, same reasoning as section 5): a packet's
+  # start/end can be sub-second while event ts is whole-second.
+  jq --slurpfile pk "$tmp/packets.json" "${JQ_TS_MS}"'
     ($pk[0] // []) as $packets
-    | [ .[] | . as $e | select( ($packets | any(.start < $e.ts and $e.ts <= .end)) | not ) ]
+    | [ .[] | . as $e | select($e.ts != null) | select( ($packets | any(.start != null and .end != null and (($e.ts|ts_ms) > (.start|ts_ms)) and (($e.ts|ts_ms) <= (.end|ts_ms)))) | not ) ]
     | { count: length, by_agent: (group_by(.agent_type)|map({key:(.[0].agent_type),value:length})|from_entries) }
   ' "$tmp/events.json" > "$tmp/unattributed.json" 2>/dev/null || echo '{"count":0,"by_agent":{}}' > "$tmp/unattributed.json"
 
@@ -1020,6 +1197,7 @@ cmd_collect() {
     --slurpfile durations "$tmp/durations.json" \
     --slurpfile bylane "$tmp/bylane.json" \
     --slurpfile sids "$tmp/events.json" \
+    --slurpfile recj "$tmp/recordjoin.json" \
     --arg unknown_note "$unknown_note" \
     '
     ($roletokens[0] // {}) as $rt
@@ -1036,6 +1214,7 @@ cmd_collect() {
     # Report the derived counters as null (unmeasured) rather than 0/all — otherwise a
     # legacy run reads as "zero failures, every dispatch unnamed", which is a lie.
     | (($sids[0] // []) | any(has("ok"))) as $instrumented
+    | ($recj[0] // {outcomes:{}, started_ids:[], record_end:{}, has_start:false}) as $rj
     | {
       schema: 2,
       run_id: $run_id,
@@ -1079,7 +1258,26 @@ cmd_collect() {
         context_invalidations: ($ctxinval[0] // {count:0, cache_creation:0, events:[]}),
         cache_hit_ratio: (if $cache_total>0 then (($tot.cache_read / $cache_total)*1000|floor)/1000 else null end),
         failed_tool_calls: (if $instrumented then (($sids[0] // []) | map(select(.ok == false)) | length) else null end),
-        human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length)
+        human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length),
+        # OUTCOME COVERAGE (loop-measurement T5). Every STARTED packet (trailer,
+        # start/continuation record, or attributed outcome record — see the T4 join
+        # above) is counted exactly once here, `interrupted` included alongside the
+        # other four terminal values. `outcome_counts` only tallies packets that HAVE
+        # a terminal record; `started_without_outcome` is the complementary count —
+        # a packet the run began but never closed (a live pause, or a crash the next
+        # sweep for a later session has not yet run). `outcome_coverage` is the run-level read:
+        # "unmeasured" when this run holds NO `record-start` boundary at all (every
+        # run before this feature, or one where the loop never called it) — never
+        # inferred from packet COUNT, since a trailer-only legacy run can have many
+        # packets and zero instrumentation. "incomplete" when at least one started
+        # packet lacks a terminal outcome; "complete" only when every one has one.
+        # `null`/`unmeasured` must never render as clean — see `show` below.
+        outcome_counts: ($packets[0] // [] | map(select(.outcome != null))
+                          | group_by(.outcome) | map({key:.[0].outcome,value:length}) | from_entries),
+        started_without_outcome: ($packets[0] // [] | map(select(.outcome == null)) | length),
+        outcome_coverage: (if ($rj.has_start | not) then "unmeasured"
+                            elif (($packets[0] // [] | map(select(.outcome == null)) | length) > 0) then "incomplete"
+                            else "complete" end)
       },
       by_agent_role: $rt,
       audit: (($packets[0] // []) as $pk
@@ -1136,7 +1334,11 @@ cmd_collect() {
         "Per-packet token split needs per-turn transcript timestamps; packets[].tokens is null when absent.",
         "Token turns are bounded to the run window (ADR 0019 window-bleed fix); ts==null turns are kept unwindowed.",
         "Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).",
-        "Packet boundaries derived from [orch packet:<id>] commit trailers; failed/uncommitted packets do not appear.",
+        "Packet rows come from [orch packet:<id>] commit trailers AND runstate.sh record-start/record-outcome/sweep-open attestations (loop-measurement T4): a packet the loop started now appears even if it never committed (failed, rolled-back) or was interrupted mid-run. totals.outcome_coverage says whether that instrumentation is present for THIS run: `unmeasured` with no record-start boundary at all (pre-feature or a non-loop run — never infer completeness from packet count), `incomplete` when a started packet still lacks a terminal outcome, `complete` otherwise.",
+        (($packets[0] // []) | map(select(.swept == true)) | map(.id)) as $swept_ids
+         | (if ($swept_ids|length) > 0 then
+              "swept: true on \($swept_ids|length) packet(s) (\($swept_ids|join(", "))) — sweep-open closes an open packet by copying its own start ts as the close ts, so tool_calls/active_seconds/duration_ms/edits/by_agent/by_tool/by_command_class/failed_tool_calls/human_interactions/dispatched/tokens/audit counts read null there, not 0. The work happened; this collector cannot reconstruct its window from a verbatim-copied close (loop-measurement C1)."
+            else empty end),
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
         "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
         "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",
@@ -1176,6 +1378,17 @@ cmd_show() {
   jq -r '
     "run: \(.run_id)   mode: \(.mode)   autonomy: \(.autonomy // "?")   token_source: \(.token_source)\(if .self_host == true then "   self-host: yes" elif (has("self_host") | not) or .self_host == null then "   self-host: unknown" else "" end)",
     "window: \(.window.wall_seconds)s wall (active \(.window.active_seconds // "?")s / idle \(.window.idle_seconds // "?")s)   packets: \(.totals.packets)   tool_calls: \(.totals.tool_calls) (+\(.totals.unattributed_tool_calls // 0) unattributed)",
+    # outcome coverage is never allowed to render as "all green" — see the T4/T5
+    # comment on totals.outcome_coverage. Absent (a packet collected before this
+    # field existed) reads the same as "unmeasured", not as clean.
+    (((.totals.outcome_coverage // "unmeasured")) as $cov
+     | if $cov == "unmeasured" then
+         "outcome coverage: unmeasured — no record-start boundary in this run (pre-instrumentation, or the loop never ran record-start)"
+       elif $cov == "incomplete" then
+         "outcome coverage: incomplete — \(.totals.started_without_outcome // "?") started packet(s) with no terminal outcome yet"
+       else
+         "outcome coverage: complete — every started packet has a terminal outcome (not all necessarily green — see \"by outcome\" below)"
+       end),
     "tokens: in=\(.totals.tokens.input) out=\(.totals.tokens.output) cacheR=\(.totals.tokens.cache_read) cacheC=\(.totals.tokens.cache_creation)   cache_hit_ratio: \(.totals.cache_hit_ratio // "n/a")",
     # Surface WHY the token half is missing/low-confidence, rather than leaving a
     # bare `none` that reads identically to "this run had no transcripts".
@@ -1245,12 +1458,23 @@ cmd_show() {
     "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
     "",
-    # `outcome` renders as `?` when null, never as "green". A packet exists here only
-    # because a green-commit trailer was found, so failed and rolled-back work leaves NO
-    # row at all — "42 of 42 green" is survivorship that looks BETTER the more work was
-    # discarded. Only `runstate.sh record-outcome` can attest it; null means unattested.
+    # by outcome: each STARTED packet counted once (loop-measurement T5/T6). A row
+    # here is no longer survivorship over green commits — a failed, rolled-back, or
+    # still-open packet now appears too (T4), so this table can show real failures.
+    (if ((.totals.outcome_counts // {}) | length) > 0 then
+       "", "by outcome:",
+       ((.totals.outcome_counts) | to_entries[] | "  \(.key): \(.value)")
+     else empty end),
+    "",
+    # `outcome` renders as `?` when null, never as "green". Before loop-measurement T4
+    # a packet existed here only because a green-commit trailer was found, so failed and
+    # rolled-back work left NO row at all — that is no longer true once the run carries
+    # record-start/record-outcome attestations (see totals.outcome_coverage above): a
+    # started packet with no commit, or a pause commit that never got a terminal
+    # outcome, now appears with outcome=null (not green). `?` still means unattested,
+    # never "clean" or "green".
     "packets (id | wave | outcome | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
+    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls // "?") calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")\(if .swept == true then "  ⚠ swept by a later session — unmeasured, not zero" else "" end)"),
     # Per-role edit counts alone cannot tell "the orchestrator corrected the implementer"
     # from "they worked on different files". Only same-file overlap can, so print the
     # counts and the contention together or the numbers invite the wrong reading.

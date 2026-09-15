@@ -269,6 +269,38 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
    else `develop`, else `main`/`master`). If `orch/<task-id>` already exists
    (resuming), just `git switch orch/<task-id>`. No worktree, no separate
    directory — all work happens here.
+
+   **Sweep for packets left open, immediately before recording this one** (T3) —
+   **sequential mode only. Under `--parallel` a lane must NEVER call this**
+   (loop-measurement I3): `sweep-open` is global over the shared outcomes log
+   (`_rs_main_checkout_root` — one directory for every lane), not scoped to a
+   single packet the way `record-start`/`record-outcome` are, so a lane running
+   it can close a SIBLING lane's still-live packet as interrupted the moment
+   that sibling's start record is the oldest open one. `parallel.md` does not
+   currently call `sweep-open` anywhere, so under `--parallel` a packet left
+   open by a crashed lane or session goes un-swept until a sequential run
+   closes it — a known coverage gap, not a silent one, and safer than the
+   alternative it replaces:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`; it prints one
+   `OPEN=<id>` line per open packet. If it printed any, comma-join the ids (the
+   `paste -sd,` idiom at :183–186) into one string and resolve them —
+   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` —
+   which prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
+   `FINISHED=<csv>` line; the `gone` set is the ids whose second column reads
+   `gone`. Comma-join THOSE into their own string and pass them to `--gone`
+   (skip both `task-status` and `--gone` when `--list` printed nothing:
+   `task-status` refuses an empty id list). Then sweep for real:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --gone "<id,id,...>"`
+   (omit `--gone` entirely if there were none). Each `SWEPT=<id>` it prints
+   names a packet to report by title in the next check-in or stop report
+   (`templates/report-templates.md` shapes A/B).
+
+   **Attest the start — you, the driver, alone; never inside a subagent
+   dispatch, and never for a retry within the packet.** Beginning this
+   packet — including beginning it again after any recorded outcome —
+   records a fresh start: `runstate.sh record-start <cursor>`. Continuing a
+   packet a pause left mid-work, rather than beginning it anew, records a
+   continuation instead: `runstate.sh record-start <cursor> --continue`.
 2. **Scope.** `Read`
    `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before you fill anything
    in — naming a path is not reading it (ADR 0023's report-format precedent):
@@ -382,8 +414,9 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
 
      Then close the packet out — every time:
 
-     - **Attest the outcome:** `runstate.sh record-outcome <landed> green`. Do this
-       on **every** boundary, not just green ones — see the failure branches below.
+     - **Attest the outcome — the `green` trigger:** `runstate.sh record-outcome
+       <landed> green`. Do this on **every** boundary, not just green ones — see
+       the other four triggers below.
      - **Keep `note:` to the CURRENT packet.** It is one line for the resuming
        session, not a log. Overwrite it; never append to what is there, and never
        add an "earlier history" section — the archive is
@@ -478,8 +511,26 @@ At **`interactive`**, the kickoff is also the approval request: emit it and wait
      ambiguity written as an answerable decision: the two real options and what
      follows from each, not a description of the problem.
 
-     **Attest this outcome too** — `runstate.sh record-outcome <cursor> blocked`
-     (or `rolled-back` / `failed` / `abandoned`, whichever actually happened).
+     **Attest this outcome too** — exactly one of five triggers, each excluding
+     the others; when a stop fits more than one, **blocked wins over
+     rolled-back and failed, and failed wins over rolled-back**. A retry
+     within the packet is neither a start nor an ending, and records nothing:
+     - **blocked** — the loop stops here on a blocking question (to the human,
+       or waiting on another packet), whatever then happens to the packet's
+       work: `runstate.sh record-outcome <cursor> blocked`. This is the case
+       just above.
+     - **rolled-back** — the loop discards the packet's work to the last green
+       checkpoint **without asking**: `runstate.sh record-outcome <cursor>
+       rolled-back`. (A pause that sets scratch aside is not this — see the
+       pause checkpoint below: a pause is never an ending.)
+     - **failed** — verification is still red after honest diagnosis and the
+       loop moves past the packet with **no** blocking question:
+       `runstate.sh record-outcome <cursor> failed`.
+     - **abandoned** — the operator's answer to a blocking question drops the
+       packet: `runstate.sh record-outcome <cursor> abandoned`. (The sweep's
+       own `abandoned` — a started packet whose task no longer exists — is
+       `sweep-open`'s business, not this step's.)
+
      This is the branch that makes the metric honest. A packet only becomes visible
      to the collector by way of its green-commit trailer, so work that failed or was
      rolled back leaves **no trace at all** and the run reads "42 of 42 green" —
@@ -520,6 +571,9 @@ sentinel: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh request-pause .agents/pause
   leave the last green commit untouched. Then hand to **`/gaffer:pause`**,
   which verifies the clean checkpoint, persists `status: paused`, clears the
   sentinel, and emits the check-in. **Stop.** Do not start the next packet.
+  **A pause is never an ending** — it records none of the five outcomes above;
+  the packet's start (if any) stays open until a later session continues it
+  and it ends there.
 
 ## 4. Termination
 

@@ -41,7 +41,11 @@ Inspect the loop's working tree — the single local checkout, currently on the
   commit — the guardrail hook cannot run the suite.** Put the write-ahead trailer
   `[orch packet:<cursor>]` in the commit message (its own line), so that if a
   crash strikes between this commit and the run-state write below, a later resume
-  can *adopt* the commit instead of escalating (ADR 0005).
+  can *adopt* the commit instead of escalating (ADR 0005). **This commits
+  unfinished work, and a pause is never an ending: record no outcome here.**
+  The packet's start stays open — the trailer is not a green outcome, and the
+  sweep must not later read this still-open start as an interruption. A later
+  session continues it (`record-start <cursor> --continue`) and ends it there.
 - **Uncommitted scratch that is NOT a safe checkpoint** (red, incomplete, or
   touches a hard gate) → **set it aside non-destructively**, leaving a clean tree
   at the last green commit. Use `git stash`, which is recoverable (nothing is

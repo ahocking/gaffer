@@ -892,6 +892,10 @@ assert_true "record-outcome rejects 'start' as an outcome" \
   "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p10 start S1 2>/dev/null)"
 assert_true "record-outcome rejects 'continue' as an outcome" \
   "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p10 continue S1 2>/dev/null)"
+# `interrupted` has exactly one writer -- sweep-open (loop-measurement T3) -- and
+# record-outcome enforces that by never accepting it as an outcome value.
+assert_true "record-outcome rejects 'interrupted' as an outcome (only sweep-open may write it)" \
+  "(cd \"$RO\" && ! \"\$RUNSTATE\" record-outcome p11 interrupted S1 2>/dev/null)"
 
 # A whole-second legacy line (as every record-outcome call wrote before this
 # feature) must survive a sub-second append untouched, and the file as a whole
@@ -903,6 +907,112 @@ assert_true "a whole-second legacy record is untouched after a sub-second append
   "grep -qF '$LEGACY_LINE' \"$RO/.agents/metrics/outcomes/S1.jsonl\""
 assert_true "the outcomes log parses as valid JSON end to end (mixed legacy + sub-second lines)" \
   "jq -s -e 'length > 0 and (map(type == \"object\") | all)' \"$RO/.agents/metrics/outcomes/S1.jsonl\" >/dev/null"
+
+echo
+echo "== sweep-open --list: read-only enumeration of packets started but never ended (loop-measurement T3) =="
+SO="$(mktemp -d)"; git -C "$SO" init -q
+git -C "$SO" config user.email t@t; git -C "$SO" config user.name t
+SO_DIR="$SO/.agents/metrics/outcomes"
+mkdir -p "$SO_DIR"
+
+# open-a: started, never ended -- the plain case.
+(cd "$SO" && "$RUNSTATE" record-start open-a S1 >/dev/null)
+# closed-a: started AND ended -- must never read as open.
+(cd "$SO" && "$RUNSTATE" record-start closed-a S1 >/dev/null)
+(cd "$SO" && "$RUNSTATE" record-outcome closed-a green S1 >/dev/null)
+# cursor-a: started, never ended, but IS the paused cursor -- exempt from the sweep.
+(cd "$SO" && "$RUNSTATE" record-start cursor-a S1 >/dev/null)
+
+# same-second-a: a whole-second terminal record (the shape every record-outcome
+# wrote before ADR 0019 v3.4/T1) that lands EARLIER within the same integer
+# second than a sub-second start. A raw STRING compare orders "...:08.500Z"
+# BELOW "...:08Z" ("." is 0x2E, "Z" is 0x5A) and would misread the terminal as
+# happening AFTER the start, wrongly closing it. Parsed-time comparison must not.
+printf '%s\n' '{"ts":"2026-03-01T00:00:08Z","packet":"same-second-a","session":"S1","outcome":"blocked"}' >> "$SO_DIR/S1.jsonl"
+printf '%s\n' '{"ts":"2026-03-01T00:00:08.500Z","packet":"same-second-a","session":"S1","kind":"start"}' >> "$SO_DIR/S1.jsonl"
+
+# multi-b: started in one session, closed by a terminal record in ANOTHER --
+# proves the sweep JOINS across files (not merely scans each file in isolation).
+(cd "$SO" && "$RUNSTATE" record-start multi-b Sold >/dev/null)
+(cd "$SO" && "$RUNSTATE" record-outcome multi-b green Snew >/dev/null)
+# multi-b2: started in an older, untouched-since-creation session file -- proves
+# the sweep reads EVERY outcomes log, not just the most-recently-modified one.
+(cd "$SO" && "$RUNSTATE" record-start multi-b2 Sold2 >/dev/null)
+
+SO_BASELINE="$(cat "$SO_DIR"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+
+SWL_OUT="$(cd "$SO" && "$RUNSTATE" sweep-open --list)"
+assert_true "sweep-open --list reports the never-ended packet as open" \
+  "printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=open-a'"
+assert_true "sweep-open --list does NOT report an already-ended packet as open" \
+  "! printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=closed-a'"
+assert_true "sweep-open --list reports the (not-yet-exempted) cursor packet as open" \
+  "printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=cursor-a'"
+assert_true "sweep-open --list does NOT close a start landing later in the same second as a whole-second terminal (parsed time, not string compare)" \
+  "printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=same-second-a'"
+assert_true "sweep-open --list does NOT report a packet closed via a terminal record in a DIFFERENT session's log" \
+  "! printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=multi-b'"
+assert_true "sweep-open --list finds an open packet whose only record sits in an older, non-newest session log" \
+  "printf '%s\n' \"\$SWL_OUT\" | grep -qx 'OPEN=multi-b2'"
+assert_true "sweep-open --list writes nothing to any outcomes log" \
+  "[ \"\$(cat \"$SO_DIR\"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')\" = \"\$SO_BASELINE\" ]"
+
+SWLC_OUT="$(cd "$SO" && "$RUNSTATE" sweep-open --list --paused-cursor cursor-a)"
+assert_true "sweep-open --list --paused-cursor exempts the cursor packet from the OPEN list" \
+  "! printf '%s\n' \"\$SWLC_OUT\" | grep -qx 'OPEN=cursor-a'"
+assert_true "sweep-open --list --paused-cursor still reports OTHER open packets" \
+  "printf '%s\n' \"\$SWLC_OUT\" | grep -qx 'OPEN=open-a'"
+assert_true "sweep-open --list --paused-cursor still writes nothing" \
+  "[ \"\$(cat \"$SO_DIR\"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')\" = \"\$SO_BASELINE\" ]"
+
+echo
+echo "== sweep-open: closes open packets as interrupted/abandoned (loop-measurement T3) =="
+SO2="$(mktemp -d)"; git -C "$SO2" init -q
+git -C "$SO2" config user.email t@t; git -C "$SO2" config user.name t
+SO2_DIR="$SO2/.agents/metrics/outcomes"
+
+(cd "$SO2" && "$RUNSTATE" record-start wa S1 >/dev/null)   # swept as abandoned (--gone)
+(cd "$SO2" && "$RUNSTATE" record-start wb S1 >/dev/null)   # swept as interrupted
+(cd "$SO2" && "$RUNSTATE" record-start wc S1 >/dev/null)   # already ended -- must be left alone
+(cd "$SO2" && "$RUNSTATE" record-outcome wc rolled-back S1 >/dev/null)
+
+WA_START_LINE="$(grep '"packet":"wa"' "$SO2_DIR/S1.jsonl")"
+WA_START_TS="$(printf '%s' "$WA_START_LINE" | sed -E 's/.*"ts":"([^"]*)".*/\1/')"
+
+# Run the sweep from a DIFFERENT session than the one that started wa/wb/wc, so
+# the closing records necessarily land in a log file that is not S1.jsonl --
+# exactly the "sweep writes into a later session's own file" shape T4 depends on.
+SW_OUT="$(cd "$SO2" && CLAUDE_CODE_SESSION_ID=SWEEP1 "$RUNSTATE" sweep-open --gone wa)"
+assert_true "sweep-open reports one SWEPT= line for the gone packet" \
+  "printf '%s\n' \"\$SW_OUT\" | grep -qx 'SWEPT=wa'"
+assert_true "sweep-open reports one SWEPT= line for the plain open packet" \
+  "printf '%s\n' \"\$SW_OUT\" | grep -qx 'SWEPT=wb'"
+assert_true "sweep-open does NOT report SWEPT for an already-ended packet" \
+  "! printf '%s\n' \"\$SW_OUT\" | grep -qx 'SWEPT=wc'"
+
+WA_CLOSE_LINE="$(grep '"packet":"wa"' "$SO2_DIR/SWEEP1.jsonl")"
+WB_CLOSE_LINE="$(grep '"packet":"wb"' "$SO2_DIR/SWEEP1.jsonl")"
+assert_true "the gone id is recorded abandoned, not interrupted" \
+  "printf '%s' \"\$WA_CLOSE_LINE\" | grep -q '\"outcome\":\"abandoned\"'"
+assert_true "an open packet not named in --gone is recorded interrupted" \
+  "printf '%s' \"\$WB_CLOSE_LINE\" | grep -q '\"outcome\":\"interrupted\"'"
+assert_true "the closing record is written into the SWEEPING session's own log file" \
+  "[ -s \"$SO2_DIR/SWEEP1.jsonl\" ]"
+assert_true "the closing record names the CLOSED start's own session, not the sweeping session" \
+  "printf '%s' \"\$WA_CLOSE_LINE\" | grep -q '\"session\":\"S1\"'"
+assert_true "the closing record names the CLOSED start's own time, not the sweep's write time" \
+  "[ \"\$(printf '%s' \"\$WA_CLOSE_LINE\" | sed -E 's/.*\"ts\":\"([^\"]*)\".*/\\1/')\" = \"\$WA_START_TS\" ]"
+assert_true "an already-ended packet keeps exactly its original terminal record" \
+  "[ \"\$(grep -c '\"packet\":\"wc\".*\"outcome\":' \"$SO2_DIR/S1.jsonl\")\" = 1 ]"
+assert_true "an already-ended packet gets no new record from the sweep" \
+  "! grep -q '\"packet\":\"wc\"' \"$SO2_DIR/SWEEP1.jsonl\" 2>/dev/null"
+
+SO2_COUNT_BEFORE2="$(cat "$SO2_DIR"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+SW_OUT2="$(cd "$SO2" && CLAUDE_CODE_SESSION_ID=SWEEP1 "$RUNSTATE" sweep-open)"
+assert_true "a second sweep-open appends nothing (idempotent)" \
+  "[ -z \"\$SW_OUT2\" ]"
+assert_true "a second sweep-open leaves the log line counts unchanged" \
+  "[ \"\$(cat \"$SO2_DIR\"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')\" = \"\$SO2_COUNT_BEFORE2\" ]"
 
 echo
 echo "== findings: index hot, body cold (ADR 0022) =="

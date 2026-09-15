@@ -1051,6 +1051,237 @@ check "hook: MultiEdit on write surface" "1" \
   "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
 
 echo
+echo "== loop-measurement T4: packet rows come from records too, not just trailers =="
+# Two packets in ONE run: "never-committed" started and failed with no commit at all
+# (the collector must build a row for it from record-start/record-outcome alone), and
+# "paused-one" started AND got a commit trailer (a pause committing unfinished work)
+# but no terminal outcome — proving a trailer never implies green, and that a started
+# record-only packet and a trailer-carrying one can coexist and order correctly.
+# Fresh directory/session names (FC* = "failed, never-committed"): this repo's own
+# fixture directories are reused by earlier sections under NREPO/NOUT/IREPO/IOUT, and
+# reusing those paths here would additively pile these commits onto their git history.
+FCREPO="$ROOT/fc-repo"; mkdir -p "$FCREPO/.agents/metrics/events" "$FCREPO/.agents/metrics/outcomes"
+git -C "$FCREPO" init -q; git -C "$FCREPO" config user.email t@t; git -C "$FCREPO" config user.name t
+echo a > "$FCREPO/f.txt"; git -C "$FCREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$FCREPO" commit -q -m "pause: unfinished work
+
+[orch packet:paused-one]"
+cat > "$FCREPO/.agents/metrics/events/FC1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"FC1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"FC1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$FCREPO/.agents/metrics/outcomes/FC1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:02.000Z","packet":"never-committed","session":"FC1","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"never-committed","session":"FC1","outcome":"failed"}
+{"ts":"2026-07-21T10:00:04.000Z","packet":"paused-one","session":"FC1","kind":"start"}
+JSON
+FCOUT="$ROOT/fc-run.json"
+"$METRICS" collect --main-root "$FCREPO" --projects-dir "$ROOT/none" --out "$FCOUT" >/dev/null 2>&1
+check "T4: never-committed packet appears"   "1"      "$(jq -r '[.packets[]|select(.id=="never-committed")]|length' "$FCOUT")"
+check "T4: never-committed outcome=failed"   "failed" "$(jq -r '.packets[]|select(.id=="never-committed")|.outcome' "$FCOUT")"
+check "T4: paused-one packet appears (trailer)" "1"   "$(jq -r '[.packets[]|select(.id=="paused-one")]|length' "$FCOUT")"
+# the whole point: a pause commit's trailer must NOT read as green — it stays null,
+# same as any unattested packet.
+check "T4: paused commit trailer is not green" "null" "$(jq -r '.packets[]|select(.id=="paused-one")|.outcome' "$FCOUT")"
+check "T4: totals.packets counts both"       "2"      "$(jq -r '.totals.packets' "$FCOUT")"
+
+echo "== loop-measurement T4: an interruption swept by a LATER session is still joined =="
+# sweep-open writes the closing record into the SWEEPING session's own log file, but
+# copies ts/session VERBATIM from the start it closes. A collector that selects files
+# by NAME (the pre-T4 shape) would miss this, because the closing record physically
+# lives in a session (SW-B) this run never selects. Attribution must be by the
+# record's OWN session/ts fields, not by which file it is sitting in.
+SWREPO="$ROOT/sw-repo"; mkdir -p "$SWREPO/.agents/metrics/events" "$SWREPO/.agents/metrics/outcomes"
+git -C "$SWREPO" init -q; git -C "$SWREPO" config user.email t@t; git -C "$SWREPO" config user.name t
+cat > "$SWREPO/.agents/metrics/events/SW-A.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"SW-A","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"SW-A","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+# session SW-A's own start record...
+cat > "$SWREPO/.agents/metrics/outcomes/SW-A.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"int-one","session":"SW-A","kind":"start"}
+JSON
+# ...closed by a LATER session SW-B's sweep-open, into SW-B's OWN file, naming SW-A's start.
+cat > "$SWREPO/.agents/metrics/outcomes/SW-B.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"int-one","session":"SW-A","outcome":"interrupted"}
+JSON
+SWOUT="$ROOT/sw-run.json"
+"$METRICS" collect --main-root "$SWREPO" --projects-dir "$ROOT/none" --out "$SWOUT" >/dev/null 2>&1
+check "T4: interrupted record joined despite living in a foreign file" "interrupted" \
+  "$(jq -r '.packets[]|select(.id=="int-one")|.outcome' "$SWOUT")"
+check "T4: interrupted packet counted once"  "1" "$(jq -r '.totals.packets' "$SWOUT")"
+
+echo "== loop-measurement C1: a SWEPT packet's derived metrics are null, not a lying zero =="
+# sweep-open closes an open packet by copying the boundary's ts VERBATIM into the
+# terminal record (SW-B above closes int-one with the SAME ts SW-A's start carries:
+# 10:00:01.500Z on both sides). That collapses the packet's window to zero width, so
+# tool_calls/active_seconds/edits/etc must read null (unmeasured), never 0 (which
+# would read as "this packet genuinely did nothing" -- the opposite of true for a
+# packet the loop was mid-way through when its session died).
+check "C1: swept packet is flagged"           "true" "$(jq -r '.packets[]|select(.id=="int-one")|.swept' "$SWOUT")"
+check "C1: swept packet end is null"          "null" "$(jq -r '.packets[]|select(.id=="int-one")|.end' "$SWOUT")"
+check "C1: swept packet tool_calls is null, not 0"    "null" "$(jq -r '.packets[]|select(.id=="int-one")|.tool_calls' "$SWOUT")"
+check "C1: swept packet active_seconds is null, not 0" "null" "$(jq -r '.packets[]|select(.id=="int-one")|.active_seconds' "$SWOUT")"
+check "C1: swept packet edits is null"        "null" "$(jq -r '.packets[]|select(.id=="int-one")|.edits' "$SWOUT")"
+check "C1: swept packet dispatched is null"   "null" "$(jq -r '.packets[]|select(.id=="int-one")|.dispatched' "$SWOUT")"
+check "C1: swept packet tokens is null"       "null" "$(jq -r '.packets[]|select(.id=="int-one")|.tokens' "$SWOUT")"
+check "C1: notes name the swept packet"       "1" \
+  "$(jq -r '[.notes[]|select(test("swept") and test("int-one"))]|length' "$SWOUT")"
+SWSHOW="$("$METRICS" show "$SWOUT" 2>/dev/null)"
+check "C1: show marks the swept packet"       "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'swept by a later session')"
+check "C1: show does not print a bare null for tool_calls" "0" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'int-one .*null calls')"
+
+# NEGATIVE case: a DIRECTLY recorded outcome (record-outcome, not sweep-open) with its
+# own distinct/later ts is NOT swept -- it must keep its real measured fields, proving
+# the detector keys on ts equality (the sweep signature), not on outcome value alone
+# (both "interrupted" and "abandoned" can also be written directly).
+DAREPO="$ROOT/da-repo"; mkdir -p "$DAREPO/.agents/metrics/events" "$DAREPO/.agents/metrics/outcomes"
+git -C "$DAREPO" init -q; git -C "$DAREPO" config user.email t@t; git -C "$DAREPO" config user.name t
+cat > "$DAREPO/.agents/metrics/events/DA1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DA1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DA1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$DAREPO/.agents/metrics/outcomes/DA1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"abandoned-direct","session":"DA1","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"abandoned-direct","session":"DA1","outcome":"abandoned"}
+JSON
+DAOUT="$ROOT/da-run.json"
+"$METRICS" collect --main-root "$DAREPO" --projects-dir "$ROOT/none" --out "$DAOUT" >/dev/null 2>&1
+check "C1: a directly-recorded (non-swept) abandoned is not flagged swept" "false" \
+  "$(jq -r '.packets[]|select(.id=="abandoned-direct")|.swept' "$DAOUT")"
+check "C1: its tool_calls stay measured, not nulled" "1" \
+  "$(jq -r '.packets[]|select(.id=="abandoned-direct")|.tool_calls' "$DAOUT")"
+
+echo "== loop-measurement M1: one malformed ts anywhere does not zero every outcome =="
+# ts_ms runs unconditionally over EVERY record in the outcomes log before any
+# window filter narrows it; fromdateiso8601 THROWS on an unparseable value, and
+# the caller-side `2>/dev/null || echo [] ` fallback used to turn that one bad
+# record into an empty attributed.json for the WHOLE run -- every packet's
+# outcome and record_end disappearing, not just the bad one's.
+M1REPO="$ROOT/m1-repo"; mkdir -p "$M1REPO/.agents/metrics/events" "$M1REPO/.agents/metrics/outcomes"
+git -C "$M1REPO" init -q; git -C "$M1REPO" config user.email t@t; git -C "$M1REPO" config user.name t
+cat > "$M1REPO/.agents/metrics/events/M1S.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"M1S","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$M1REPO/.agents/metrics/outcomes/M1S.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.100Z","packet":"good-one","session":"M1S","kind":"start"}
+{"ts":"2026-07-21T10:00:01.500Z","packet":"good-one","session":"M1S","outcome":"green"}
+{"ts":"garbage","packet":"bad-one","session":"M1S","kind":"start"}
+JSON
+M1OUT="$ROOT/m1-run.json"
+"$METRICS" collect --main-root "$M1REPO" --projects-dir "$ROOT/none" --out "$M1OUT" >/dev/null 2>&1
+check "M1: collect exits 0 despite a malformed ts elsewhere in the log" "0" "$?"
+check "M1: the unrelated packet's outcome survives the bad record" "green" \
+  "$(jq -r '.packets[]|select(.id=="good-one")|.outcome' "$M1OUT")"
+
+echo "== loop-measurement I1: packet windows compare by PARSED time, not string, at the event/turn join =="
+# The bug this pins: a record-only packet's sub-second end ("...:05.500Z") sorts BELOW
+# a whole-second event landing in the SAME second ("...:05Z") as a raw string, because
+# "." (0x2E) < "Z" (0x5A) -- so the old `.ts > $start and .ts <= $p.end` string compare
+# excluded a same-second event from the packet it belongs to and shifted it into the
+# NEXT packet's window instead. p1-record ends sub-second (05.500Z, record-only, no
+# trailer); p2-trailer ends whole-second (08Z, trailer commit). Events land at :01
+# (before either window), :05 (same second as p1-record's end -- belongs to p1-record),
+# :07 (belongs to p2-trailer) and :09 (after p2-trailer's end -- unattributed).
+WIREPO="$ROOT/wi-repo"; mkdir -p "$WIREPO/.agents/metrics/events" "$WIREPO/.agents/metrics/outcomes"
+git -C "$WIREPO" init -q; git -C "$WIREPO" config user.email t@t; git -C "$WIREPO" config user.name t
+echo a > "$WIREPO/f.txt"; git -C "$WIREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:08Z" GIT_COMMITTER_DATE="2026-07-21T10:00:08Z" \
+  git -C "$WIREPO" commit -q -m "packet: p2-trailer
+
+[orch packet:p2-trailer]"
+cat > "$WIREPO/.agents/metrics/events/WI1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:05Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:07Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:09Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$WIREPO/.agents/metrics/outcomes/WI1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.100Z","packet":"p1-record","session":"WI1","kind":"start"}
+{"ts":"2026-07-21T10:00:05.500Z","packet":"p1-record","session":"WI1","outcome":"green"}
+JSON
+WIOUT="$ROOT/wi-run.json"
+"$METRICS" collect --main-root "$WIREPO" --projects-dir "$ROOT/none" --out "$WIOUT" >/dev/null 2>&1
+check "I1: same-second event lands in the record-only packet it belongs to" "1" \
+  "$(jq -r '.packets[]|select(.id=="p1-record")|.tool_calls' "$WIOUT")"
+check "I1: same-second event does NOT also leak into the next packet" "1" \
+  "$(jq -r '.packets[]|select(.id=="p2-trailer")|.tool_calls' "$WIOUT")"
+
+echo "== loop-measurement T4: same-second records compare by PARSED time, not string =="
+# The bug this regression pins directly: "...:01.500Z" (a T1-shaped sub-second stamp)
+# sorts BELOW "...:01Z" (win_start, always whole-second) as a raw string, because "."
+# (0x2E) sorts before "Z" (0x5A) — so a record landing in the SAME wall-clock second
+# as win_start, logically at-or-after it, was silently dropped by a string compare
+# (`(.ts // "") >= $ws`). win_start here is exactly "...:01Z" (the first event's ts)
+# and the boundary/terminal records both land at "...:01.5xxZ"/"...:01.9xxZ" — the
+# same second, sub-second. Under the pre-T4 string compare this run reports outcome
+# `null` (both records dropped); with parsed-time comparison it reports `green`.
+SSREPO="$ROOT/ss-repo"; mkdir -p "$SSREPO/.agents/metrics/events" "$SSREPO/.agents/metrics/outcomes"
+git -C "$SSREPO" init -q; git -C "$SSREPO" config user.email t@t; git -C "$SSREPO" config user.name t
+cat > "$SSREPO/.agents/metrics/events/SS1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"SS1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"SS1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$SSREPO/.agents/metrics/outcomes/SS1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"same-second","session":"SS1","kind":"start"}
+{"ts":"2026-07-21T10:00:01.900Z","packet":"same-second","session":"SS1","outcome":"green"}
+JSON
+SSOUT="$ROOT/ss-run.json"
+"$METRICS" collect --main-root "$SSREPO" --projects-dir "$ROOT/none" --out "$SSOUT" >/dev/null 2>&1
+check "T4: same-second sub-second record is not dropped" "1" \
+  "$(jq -r '[.packets[]|select(.id=="same-second")]|length' "$SSOUT")"
+check "T4: same-second record's outcome is joined" "green" \
+  "$(jq -r '.packets[]|select(.id=="same-second")|.outcome' "$SSOUT")"
+
+echo "== loop-measurement T5: outcome_counts, started_without_outcome, outcome_coverage =="
+# never-committed(failed) + paused-one(no outcome, open): failed tallied once,
+# started_without_outcome=1 (paused-one), coverage=incomplete (NOT unmeasured — this
+# run DOES carry record-start boundaries, it just has one still open).
+check "T5: outcome_counts.failed"          "1"          "$(jq -r '.totals.outcome_counts.failed' "$FCOUT")"
+check "T5: started_without_outcome"        "1"          "$(jq -r '.totals.started_without_outcome' "$FCOUT")"
+check "T5: outcome_coverage=incomplete"    "incomplete" "$(jq -r '.totals.outcome_coverage' "$FCOUT")"
+# int-one has both a start AND a terminal record -> fully covered. "complete" must
+# NOT be read as "all green" — its only outcome is "interrupted".
+check "T5: outcome_coverage=complete when every started packet is closed" "complete" \
+  "$(jq -r '.totals.outcome_coverage' "$SWOUT")"
+check "T5: started_without_outcome=0 when every started packet is closed" "0" \
+  "$(jq -r '.totals.started_without_outcome' "$SWOUT")"
+# a pre-feature run (no record-start boundary anywhere) must read UNMEASURED, never
+# "complete" (which would silently claim 0 open packets) and never "incomplete"
+# (which would silently claim every trailer packet is a known failure).
+check "T5: pre-feature run reads outcome_coverage=unmeasured" "unmeasured" \
+  "$(jq -r '.totals.outcome_coverage' "$OUT")"
+# the replaced notes[] line must no longer claim failed/uncommitted packets are absent
+check "T5: notes no longer claim uncommitted packets are absent" "0" \
+  "$(jq -r '[.notes[]|select(test("failed/uncommitted packets do not appear"))]|length' "$FCOUT")"
+check "T5: notes mention outcome_coverage" "1" \
+  "$(jq -r '[.notes[]|select(test("outcome_coverage"))]|length' "$FCOUT")"
+
+echo "== loop-measurement T6: show labels never render an unmeasured/incomplete run as clean =="
+FCSHOW="$("$METRICS" show "$FCOUT" 2>/dev/null)"
+check "T6: show renders incomplete coverage" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c '^outcome coverage: incomplete')"
+check "T6: show names the open-packet count" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c 'outcome coverage: incomplete — 1 started packet')"
+check "T6: show renders by-outcome breakdown" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c '^  failed: 1')"
+
+SWSHOW="$("$METRICS" show "$SWOUT" 2>/dev/null)"
+check "T6: show renders complete coverage, not as all-green" "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c '^outcome coverage: complete')"
+check "T6: show complete label does not claim green" "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'not all necessarily green')"
+
+LEGSHOW="$("$METRICS" show "$OUT" 2>/dev/null)"
+check "T6: a pre-feature run renders unmeasured, never as clean" "1" \
+  "$(printf '%s\n' "$LEGSHOW" | grep -c '^outcome coverage: unmeasured')"
+check "T6: unmeasured label never says complete or incomplete" "0" \
+  "$(printf '%s\n' "$LEGSHOW" | grep -cE '^outcome coverage: (complete|incomplete)')"
+
+echo
 echo "== self_host: marker present only when driving THIS repo, never touches other fields =="
 # self_host is true only when (a) the script's own git root and the DRIVEN repo's git
 # root are the same directory, worktree-normalised, and (b) that directory carries

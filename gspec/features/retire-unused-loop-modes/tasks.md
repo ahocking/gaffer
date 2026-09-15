@@ -44,7 +44,7 @@ that sweep.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Strip the parallel footprint from `scripts/runstate.sh` — the lane-writing paths, `reconcile-parallel`, the parallel-only packet queries, and the per-lane pause sentinel in `request-pause`/`clear-pause`/`pause-status` — while keeping `schema: 3`, adding no migration, and keeping the read-only `lanes` listing that T4's `resume` stop reads; delete the parallel block and its lane fields from `templates/run-state.yaml` and the lane resolution from `hooks/pause-check.sh`; with cases in `scripts/test-runstate.sh` proving a run-state carrying `mode: parallel` and `lanes:` still parses, is left byte-unchanged, and yields no lane behaviour, and cases removed from `scripts/test-pause.sh` for per-lane pause while every whole-run pause case stays green
+- [x] **T1** [P] **P0** Strip the parallel footprint from `scripts/runstate.sh` — the lane-writing paths, `reconcile-parallel`, the parallel-only packet queries, and the per-lane pause sentinel in `request-pause`/`clear-pause`/`pause-status` — while keeping `schema: 3`, adding no migration, and keeping the read-only `lanes` listing that T4's `resume` stop reads; delete the parallel block and its lane fields from `templates/run-state.yaml` and the lane resolution from `hooks/pause-check.sh`; with cases in `scripts/test-runstate.sh` proving a run-state carrying `mode: parallel` and `lanes:` still parses, is left byte-unchanged, and yields no lane behaviour, and cases removed from `scripts/test-pause.sh` for per-lane pause while every whole-run pause case stays green
   - deps: —
   - covers: Parallel mode is removed · Rate-limit auto-pause is removed
   - arch: —

@@ -525,10 +525,16 @@ assert_true "hook is silent when no run-state" \
   "CLAUDE_PLUGIN_ROOT='$PLUGIN_ROOT' CLAUDE_PROJECT_DIR=\"\$(mktemp -d)\" bash '$HOOK' </dev/null | { ! grep -q additionalContext; }"
 
 # =============================================================================
-# ADR 0016 — parallel mode: packets-by-status / lanes projections + per-lane
-# reconcile. The driver is the single writer; these are read-only projections.
+# ADR 0016 (retired by retire-unused-loop-modes T1) — parallel mode itself is
+# gone: no lane-writing paths, no `packets-by-status`, no `reconcile-parallel`.
+# `lanes` is the ONE thing kept, as a READ-ONLY projection over a run-state a
+# pre-retirement session may still have on disk — `resume`'s stop path reads it
+# to name a legacy run's lane branches/worktrees. These cases prove a run-state
+# still carrying `mode: parallel` / `packets:` / `lanes:` still PARSES, that the
+# lane-writing subcommands are genuinely gone (not just undocumented), and that
+# a mutating subcommand leaves that legacy content byte-for-byte untouched.
 # =============================================================================
-echo "== parallel: packets-by-status + lanes projections (no git needed) =="
+echo "== legacy mode: parallel / lanes: run-state still parses; lanes stays read-only =="
 PRS="$(mktemp)"
 cat > "$PRS" <<'EOF'
 schema: 3
@@ -541,12 +547,6 @@ packets:
   - id: pb
     status: running
     depends_on: [pa]
-  - id: pc
-    status: pending
-    depends_on: [pa]
-  - id: pd
-    status: done
-    depends_on: []
 lanes:
   - id: pb
     worktree: /tmp/wt/pb
@@ -556,91 +556,29 @@ lanes:
     status: running
 note: parallel run
 EOF
-assert_true "packets-by-status done = pa,pd" \
-  "[ \"\$(\"\$RUNSTATE\" packets-by-status '$PRS' done | paste -sd, -)\" = 'pa,pd' ]"
-assert_true "packets-by-status running = pb" \
-  "[ \"\$(\"\$RUNSTATE\" packets-by-status '$PRS' running | paste -sd, -)\" = 'pb' ]"
-assert_true "packets-by-status pending = pc" \
-  "[ \"\$(\"\$RUNSTATE\" packets-by-status '$PRS' pending | paste -sd, -)\" = 'pc' ]"
-assert_true "lanes row parses id+branch+packet" \
+assert_true "lanes row still parses id+branch+packet (the one read-only projection kept)" \
+  "[ \"\$(\"\$RUNSTATE\" lanes '$PRS')\" = \$'pb\torch/pb\t/tmp/wt/pb\tpb\tabc123\trunning' ]"
+assert_true "packets-by-status subcommand is gone (T1 retired the parallel-only packet query)" \
+  "! \"\$RUNSTATE\" packets-by-status '$PRS' done >/dev/null 2>&1"
+assert_true "reconcile-parallel subcommand is gone (T1 retired the per-lane reconcile writer)" \
+  "! \"\$RUNSTATE\" reconcile-parallel '$PRS' '$REPO' >/dev/null 2>&1"
+
+echo "== legacy mode: parallel / lanes: content is left BYTE-UNCHANGED by a mutating subcommand =="
+# `set` on a key this fixture does not yet carry (`status`) appends a new line
+# rather than rewriting any existing one -- so the entire pre-existing byte
+# range (mode:/max_parallel:/packets:/lanes:/note:) must survive as an exact
+# PREFIX of the file, proven by checksum, not by re-reading it.
+ORIG_LINES="$(wc -l < "$PRS" | tr -d ' ')"
+PREFIX_BEFORE="$(head -n "$ORIG_LINES" "$PRS" | cksum)"
+"$RUNSTATE" set "$PRS" status paused >/dev/null
+PREFIX_AFTER="$(head -n "$ORIG_LINES" "$PRS" | cksum)"
+assert_true "a mutating subcommand (set) never rewrites the legacy mode:/packets:/lanes:/note: content" \
+  "[ \"\$PREFIX_BEFORE\" = \"\$PREFIX_AFTER\" ]"
+assert_true "the legacy run-state still parses after the mutation (get mode = parallel)" \
+  "[ \"\$(\"\$RUNSTATE\" get '$PRS' mode)\" = parallel ]"
+assert_true "lanes row still parses after the mutation" \
   "[ \"\$(\"\$RUNSTATE\" lanes '$PRS')\" = \$'pb\torch/pb\t/tmp/wt/pb\tpb\tabc123\trunning' ]"
 rm -f "$PRS"
-
-echo "== parallel: reconcile-parallel applies the decision table per lane =="
-PREPO="$(cd "$(mktemp -d)" && pwd -P)"
-PWT="$(dirname "$PREPO")/$(basename "$PREPO")-lanes"
-trap 'rm -rf "$REPO" "$PREPO" "$PWT"' EXIT
-git -c init.defaultBranch=main init -q "$PREPO"
-git -C "$PREPO" config user.email t@example.com
-git -C "$PREPO" config user.name tester
-printf 'root\n' > "$PREPO/README.md"; git -C "$PREPO" add -A; git -C "$PREPO" commit -qm init
-git -C "$PREPO" branch develop
-mkdir -p "$PWT"
-add_lane() { git -C "$PREPO" worktree add -q -b "orch/$1" "$PWT/$1" develop; }
-
-# lane la: green, HEAD==green, clean  -> clean
-add_lane la; printf 'a\n' > "$PWT/la/a.txt"; git -C "$PWT/la" add -A; git -C "$PWT/la" commit -qm "pa green"
-G_LA="$(git -C "$PWT/la" rev-parse HEAD)"
-# lane lb: green + one packet-tagged orphan on top (torn write) -> adopt
-add_lane lb; printf 'b\n' > "$PWT/lb/b.txt"; git -C "$PWT/lb" add -A; git -C "$PWT/lb" commit -qm "pb green"
-G_LB="$(git -C "$PWT/lb" rev-parse HEAD)"
-printf 'b2\n' >> "$PWT/lb/b.txt"; git -C "$PWT/lb" commit -qam "lb: done
-
-[orch packet:lb]"
-# lane lc: green, HEAD==green, uncommitted scratch -> discard
-add_lane lc; printf 'c\n' > "$PWT/lc/c.txt"; git -C "$PWT/lc" add -A; git -C "$PWT/lc" commit -qm "pc green"
-G_LC="$(git -C "$PWT/lc" rev-parse HEAD)"
-printf 'scratch\n' > "$PWT/lc/scratch.txt"
-# lane ld: dispatched, never committed green -> restart
-add_lane ld
-
-PRS="${PREPO}/.agents/run-state.yaml"; mkdir -p "${PREPO}/.agents"
-cat > "$PRS" <<EOF
-schema: 3
-mode: parallel
-lanes:
-  - id: la
-    worktree: ${PWT}/la
-    branch: orch/la
-    packet: la
-    last_green_commit: ${G_LA}
-    status: green
-  - id: lb
-    worktree: ${PWT}/lb
-    branch: orch/lb
-    packet: lb
-    last_green_commit: ${G_LB}
-    status: running
-  - id: lc
-    worktree: ${PWT}/lc
-    branch: orch/lc
-    packet: lc
-    last_green_commit: ${G_LC}
-    status: running
-  - id: ld
-    worktree: ${PWT}/ld
-    branch: orch/ld
-    packet: ld
-    last_green_commit:
-    status: running
-EOF
-lane_dec() { "$RUNSTATE" reconcile-parallel "$PRS" "$PREPO" | sed -n "s/^LANE=$1 DECISION=\\([a-z]*\\).*/\\1/p"; }
-agg()      { "$RUNSTATE" reconcile-parallel "$PRS" "$PREPO" | sed -n 's/^AGGREGATE=\([a-z]*\).*/\1/p'; }
-assert_true "lane la (HEAD==green, clean) -> clean"        "[ \"\$(lane_dec la)\" = clean ]"
-assert_true "lane lb (packet-tagged orphan) -> adopt"      "[ \"\$(lane_dec lb)\" = adopt ]"
-assert_true "lane lc (scratch on green) -> discard"        "[ \"\$(lane_dec lc)\" = discard ]"
-assert_true "lane ld (no green) -> restart"                "[ \"\$(lane_dec ld)\" = restart ]"
-assert_true "aggregate = action (adopt/discard/restart present)" "[ \"\$(agg)\" = action ]"
-
-echo "== parallel: a vanished lane worktree is reconciled via its branch =="
-git -C "$PREPO" worktree remove --force "$PWT/la" 2>/dev/null || rm -rf "$PWT/la"
-assert_true "lane la still clean when inspected via its branch" "[ \"\$(lane_dec la)\" = clean ]"
-
-echo "== parallel: a diverged lane escalates the aggregate =="
-# rewrite lb's tip so its recorded green is no longer an ancestor -> diverged.
-git -C "$PWT/lb" commit -q --amend -m "lb: rewritten (green orphaned)"
-assert_true "lane lb (diverged) -> escalate"               "[ \"\$(lane_dec lb)\" = escalate ]"
-assert_true "aggregate = escalate when any lane escalates"  "[ \"\$(agg)\" = escalate ]"
 
 echo "== ADR 0020 D5: a driver claim distinguishes crash from a live second session =="
 DRS="$REPO/.agents/driver-state.yaml"

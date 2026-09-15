@@ -50,6 +50,21 @@ features:
     why: "part 1 of the 2026-09-14 loop-cost redesign: removes relay (break-even at 40+ packets, largest run ever 14), --parallel (0 lanes in 151 recorded metric runs) and rate-limit auto-pause (never reliable), and replaces parallel mode's file-disjoint guarantee with guidance plus a same-file overlap count. Supersedes loop-cost-controls (retired) and closes coercive-pause-enforcement unbuilt. Ordered right after loop-measurement, so its effect is measured, and before the other redesign features (thin loop driver, implementer checkpoints, migrate alignment), which edit the same loop instructions this simplifies"
     depends_on: [run-metrics]
 
+  - slug: retire-autonomy-levels
+    order: 21
+    why: "part of the 2026-09-14 loop-cost redesign: every repo on the operator's machine already runs full-autonomy and no lower level was ever used, so the four autonomy levels are removed and every repo is locked to what full-autonomy allows; always-denied git actions, the ASK tier and hard-deny floors are unchanged. Ordered after retire-unused-loop-modes, which removes other level references first, and before thin-loop-driver so the driver carries no level branching"
+    depends_on: [retire-unused-loop-modes]
+
+  - slug: thin-loop-driver
+    order: 22
+    why: "part 3 of the loop-cost redesign: the session running the loop enters driver mode (edits blocked on its main thread, handoff files, one-line status returns, mechanical routing on reviewer verdicts) so its context stays small over 10-20 hour runs; chains-and-charms-v2 main sessions cost $645/week API-equivalent at 150-290 turns each"
+    depends_on: [loop-measurement, retire-unused-loop-modes, retire-autonomy-levels]
+
+  - slug: escalation-decider
+    order: 23
+    why: "part 4 of the loop-cost redesign: judgment calls the driver routes out go to a short-lived decider (the slimmed chief-engineer) that returns one next step, plus a periodic review keeping the findings index under its warning size (34,368 bytes in one repo) and a 160-character summary cap"
+    depends_on: [thin-loop-driver, loop-measurement, retire-unused-loop-modes, retire-autonomy-levels]
+
   - slug: run-state-cleanup
     order: 18
     why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"
@@ -61,7 +76,7 @@ features:
     depends_on: [run-state-cleanup]
 
   - slug: metrics-coverage-gaps
-    order: 20
+    order: 30
     why: "the collector's own notes[] name these as uncaptured, so they are known-missing rather than speculative; highest-value metrics work because it adds sight rather than re-sourcing what Tier 1 already reports"
     depends_on: [run-metrics, loop-measurement]
 

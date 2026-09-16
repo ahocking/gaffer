@@ -128,7 +128,7 @@ else needs a session boundary.
   - covers: The standing instructions describe the loop that actually runs
   - arch: —
   - files: CLAUDE.md
-- [ ] **T9** **P1** Express the end-of-run whole-branch review's scope in `skills/run-loop/SKILL.md` §4 as **this run's integrated work** — a rule the driver applies when it builds the diff, bounded by the packet ids `run-digest` already prints and the `[orch packet:<id>]` trailers they carry, falling back to the integration branch's base only when the run landed nothing traceable — rather than everything the branch has accumulated since its base. Prose only, no sweep case and no new recorded field; checkable on the run that found this defect, where the rule must select 23 files rather than 211.
+- [x] **T9** **P1** Express the end-of-run whole-branch review's scope in `skills/run-loop/SKILL.md` §4 as **this run's integrated work** — a rule the driver applies when it builds the diff, bounded by the packet ids `run-digest` already prints and the `[orch packet:<id>]` trailers they carry, falling back to the integration branch's base only when the run landed nothing traceable — rather than everything the branch has accumulated since its base. Prose only, no sweep case and no new recorded field; checkable on the run that found this defect, where the rule must select 23 files rather than 211.
   - deps: —
   - covers: The standing instructions describe the loop that actually runs
   - arch: —

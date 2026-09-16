@@ -432,13 +432,36 @@ wait.
 ## 4. Termination
 
 - **Backlog complete** → before declaring done, dispatch **one broad
-  whole-branch review** (the `reviewer`, opus) over the integrated diff (`git
-  diff <base>...HEAD`, or the integration branch vs its base at
-  `full-autonomy`). There is no handoff file for this one — hand it the diff
-  directly, plus `.agents/run-state.yaml`'s path and a result path of your
-  choosing under the run directory (any path works; this review is not
-  packet-scoped). It writes its findings through `write-result` to that path
-  and returns one status line as usual.
+  whole-branch review** (the `reviewer`, opus) over **this run's own
+  integrated work — not everything the branch has accumulated since its
+  base.** A long-lived integration branch already carries earlier runs'
+  already-reviewed commits, so a plain branch-vs-base diff re-presents all
+  of them: measured on the run that found this defect, branch-vs-base was
+  211 files and about 30,000 insertions, against 25 files that run actually
+  landed. Bound the diff to the packet ids `runstate.sh run-digest
+  .agents/run-state.yaml` already prints (no `--since` — every packet this
+  run began, landed or not) and the `[orch packet:<id>]` trailers those ids
+  carry: walk the branch's commits oldest-to-newest (`git log <base>..HEAD
+  --reverse`) to the first one whose trailer names an id from that list,
+  and diff from **that commit's own parent** to `HEAD` — `git diff
+  <parent>..HEAD`, or that same parent against the integration branch's
+  `HEAD` at `full-autonomy`. **Fall back to the old branch-vs-base diff —
+  `git diff <base>...HEAD`, or the integration branch vs its base at
+  `full-autonomy` — only when the trailer walk finds nothing to anchor
+  on: no commit on `<base>..HEAD` carries a trailer naming any id from
+  that digest list.** This includes, but is not limited to, a digest that
+  names no packet at all — it also covers a run whose packets all ended
+  failed, rolled-back, blocked or interrupted, which has a non-empty
+  digest and still no such commit. Either way, there is no run-owned
+  trailer to anchor a parent on, so the base comparison is the only diff
+  available — it may re-present already-reviewed work from earlier runs,
+  but a run that landed nothing traceable has no narrower boundary to
+  offer instead.
+  There is no handoff file for this one — hand it the diff directly, plus
+  `.agents/run-state.yaml`'s path and a result path of your choosing under
+  the run directory (any path works; this review is not packet-scoped). It
+  writes its findings through `write-result` to that path and returns one
+  status line as usual.
 
   **You do not open that review file — this would be the one exception to
   "never open a result file", so instead it stays zero: dispatch the

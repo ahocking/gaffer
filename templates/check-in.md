@@ -1,5 +1,20 @@
 # Check-in shapes — what the guided loop PRODUCES (ADR 0004)
 # -----------------------------------------------------------------------------
+#
+# ## The LOOP no longer uses this file (ADR 0028)
+#
+# Every agent `/gaffer:run-loop` and `/gaffer:resume` dispatch returns **one status
+# line**, not a check-in — see `status-line.md` in this directory. The driver reads
+# that line and nothing else; the agent's detail goes to its own result file, which
+# the driver never opens. Nothing in the loop parses the shapes below, and the human-
+# facing loop reports (`report-templates.md`) are assembled from
+# `runstate.sh run-digest`, not from a check-in.
+#
+# What is left for this file is a Chief Engineer dispatched for SELF-CONTAINED work
+# outside a loop packet — no run-state of its own, so it cannot record findings
+# itself and states them here instead (see `Findings:` below). If you are driving a
+# packet backlog, you want `status-line.md`.
+#
 # The plugin produces well-formed check-ins at the right moments; it does NOT
 # deliver them. Delivery is the frontend's job — Claude Desktop on the MacBook
 # (synced to Claude Dispatch on the phone) or direct interaction. Build no
@@ -13,9 +28,11 @@
 # THIS IS THE AGENT-TO-AGENT WIRE FORMAT, not what the human reads. A dispatched
 # Chief Engineer returns this shape to whoever dispatched it, which parses it and
 # records run-state from it — so keep it machine-shaped and keep the keys stable.
-# Whoever holds the main context window renders it into the human-facing shapes in
-# `report-templates.md` before it reaches the human; that rendering is a pure transform
-# of the text below, never a reason to go back to the repo.
+# Whoever holds the main context window renders it into human-facing prose before it
+# reaches the human, obeying `report-conventions.md`; that rendering is a pure
+# transform of the text below, never a reason to go back to the repo. It does NOT
+# render into a loop shape — the loop's shapes are built from
+# `runstate.sh run-digest` (ADR 0028), and this file is not one of their inputs.
 
 # --- Status update (checkpoint) ----------------------------------------------
 # Emitted when a packet lands green, or when the run pauses/completes.

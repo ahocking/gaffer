@@ -208,7 +208,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode · The reviewer verdict routes each packet mechanically
   - arch: —
   - files: skills/resume/SKILL.md, skills/pause/SKILL.md
-- [ ] **T18** [P] **P1** Rework the report shapes in `templates/report-templates.md`, and add an amendment section to ADR 0023 recording the change:
+- [x] **T18** [P] **P1** Rework the report shapes in `templates/report-templates.md`, and add an amendment section to ADR 0023 recording the change:
   - shape A becomes one line per ended packet (id, plain-English title and outcome), plus one line per decider decision since the last report;
   - shapes B and C are assembled only from `runstate.sh run-digest`;
   - shape C states the model, the effort (or unknown) and the compaction threshold (or that it cannot tell), and never asks to change them;

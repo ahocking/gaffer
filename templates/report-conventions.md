@@ -1,21 +1,27 @@
 # Report conventions — the layer EVERY human-facing report owes (ADR 0012)
 # -----------------------------------------------------------------------------
-# There are three report layers in this plugin, and they have different readers:
+# There are four report layers in this plugin, and they have different readers:
 #
-#   `check-in.md`          the AGENT-TO-AGENT wire format. A lane or a dispatched
-#                          Chief Engineer returns it and the scheduler PARSES it, so
-#                          it stays machine-shaped. Not governed by this file.
+#   `status-line.md`       what every LOOP-DISPATCHED agent returns: ONE line, which
+#                          the driver routes on and never expands. Loop agents return
+#                          status lines, NOT check-ins (ADR 0028). Not governed by
+#                          this file.
+#   `check-in.md`          the AGENT-TO-AGENT wire format, for a Chief Engineer
+#                          dispatched for self-contained work OUTSIDE a loop packet.
+#                          Whoever dispatched it PARSES it, so it stays
+#                          machine-shaped. Not governed by this file, and no longer
+#                          an input to any loop report.
 #   THIS FILE              the conventions — glyph vocabulary, indentation contract,
 #                          decision block, header tally. They apply to every report a
 #                          human reads from this plugin, including the ones with no
 #                          shape of their own.
-#   `report-templates.md`  the three SHAPES (A check-in / B stop report / C kickoff)
-#                          the loop emits. It assumes this file.
+#   `report-templates.md`  the three SHAPES (A packet line / B stop report / C
+#                          kickoff) the loop emits. It assumes this file.
 #
 # ## What this governs — and what it does not
 #
 # **It governs REPORTS**: anything this plugin emits to summarize work, state, a plan,
-# a verdict, or a decision. Loop check-ins, stop reports, kickoffs, `review-change`
+# a verdict, or a decision. Loop packet lines, stop reports, kickoffs, `review-change`
 # verdicts, dependency-tree plans, metrics summaries, bootstrap and migration
 # summaries. A skill with no shape of its own still owes every convention here.
 #
@@ -25,11 +31,17 @@
 # a reader to stop trusting the glyphs. If you are not reporting on work, state, or a
 # choice, just answer.
 #
-# Render from what you already know — the check-in text you were handed, the backlog
-# you already resolved. Do not re-open the repo, re-read a diff, re-run tests, or
-# re-derive a fact to write a report. The rendering is free; going back to disk to
-# embellish it is the context refill ADR 0012 forbids, and it is what makes a relayed
-# loop expensive.
+# Render from what you were handed — a status line, the backlog you already resolved.
+# Do not re-open the repo, re-read a diff, re-run tests, or re-derive a fact to write
+# a report. The rendering is free; going back to disk to embellish it is the context
+# refill ADR 0012 forbids.
+#
+# **The loop's own shapes B and C are the exception that proves it**: they are
+# assembled from ONE cheap, fixed-size file read — `runstate.sh run-digest` — rather
+# than from the driver's memory of the run, because after a compaction, or in a
+# session that resumed someone else's run, that memory is gone (ADR 0028). That is
+# still not permission to go reading the repo: the digest is the whole source, and
+# `report-templates.md` names the only three facts a shape may read from elsewhere.
 #
 # ## Four rules every report obeys
 #
@@ -71,6 +83,15 @@
 # call, a retention policy) — that is 🔀. A blocked packet whose blocker IS a question
 # for the human counts once in each tally, and its line takes 🔀, because the action
 # is the human's.
+#
+# **That single-line rule has exactly one exception, and it is the loop's shape A**
+# (ADR 0028). It is written for a report WITH a tally: the packet counts once in each
+# bucket, so one line carrying the human-facing glyph is the honest rendering of it.
+# Shape A has no tally and no sections — it is one line per ended packet plus one line
+# per decider decision — so there is no tally for the packet to count once in, and
+# folding the question into the packet's line would drop the decision line that shape
+# exists to emit. There, and only there, the packet keeps its own ⚠️ line for its
+# outcome and the decision gets its own 🔀 line beneath it, naming the same packet.
 #
 # **Section headings are the same glyphs as the header tally, in the same order.**
 # That is the whole trick: the header doubles as a table of contents, so a reader who
@@ -147,25 +168,41 @@
 #   ADR by title (`.agents/findings/<id>.md`, "ADR 0017 (cooperative pause)"); it does
 #   not inline the background.
 #
-# Where it appears: **B** under `🔀 Decisions` (the usual place) · **A** directly under
-# the lane that raised it, when the run keeps going · **C** when the plan itself has an
-# open choice · `review-change`'s risks · and the Chief Engineer's intake, where "2–3
-# approaches with trade-offs" means exactly one of these, not a design essay.
+# Where it appears: **B** under `🔀 Decisions` (the usual place) · **C** when the plan
+# itself has an open choice · `review-change`'s risks · and the Chief Engineer's
+# intake, where "2–3 approaches with trade-offs" means exactly one of these, not a
+# design essay. **Not in shape A** (ADR 0028) — a packet line is one line, and a
+# question raised mid-run is a 🔀 line there pointing at the decision block that the
+# stop report, or the driver's own next message, carries.
 
 
-# --- THE HEADER TALLY (opens shapes A, B, and C) ------------------------------
-# One line, always first, always the same grammar:
+# --- THE HEADER TALLY (opens shapes B and C — NOT A) --------------------------
+# **Shape A, the loop's per-packet line, carries no tally** (ADR 0028): it is one
+# line per ended packet, and a tally on top of one line is longer than the thing it
+# summarizes. Everywhere a tally does appear it is one line, always first, always the
+# same grammar:
 #
 #   <run-state> · <what this run is> · <tally, in fixed order>
 #
 # Fixed order, omitting any bucket that is zero:
 #   ✅ N shipped · ⛔ N failed · ⚠️ N blocked · 🔀 N decisions · ⬚ N queued
 #
-# **✅ is THIS SESSION, everywhere it appears (ADR 0025 D3)** — what the rendering
-# agent has already landed or shipped in check-ins it produced itself this run, never
-# a run-cumulative or backlog-wide count, and never read from disk (no `backlog.done`,
-# no trailer scan). It is free: the agent already rendered every check-in this session
-# and only has to count them.
+# **The ⚠️ bucket is worded *blocked* in general and *unfinished* in the loop's shape
+# B** (ADR 0028), where it aggregates the digest's `blocked`, `interrupted`,
+# `abandoned`, `open` and `paused` outcomes — "blocked" would be wrong for four of
+# those five, and a bucket word that is wrong four times in five is how a reader
+# learns to stop trusting the tally. Only the word moves: same glyph, same position,
+# same fixed order, and the section heading below it changes with it so the
+# table-of-contents correspondence still holds.
+#
+# **✅ is THE RUN, counted from the digest, in the loop's shape B (ADR 0028)** — one
+# per `packet` line reading `green`, so a stop report rendered after a compaction, or
+# by a session that resumed another session's run, still counts every packet the run
+# began. This SUPERSEDES ADR 0025 D3's "this session" rule for shape B only, and it
+# does so without reopening what D3 forbade: the count still comes from one cheap
+# read of the run's own records, never from `backlog.done` (deleted) and never from a
+# trailer scan. Anywhere else ✅ appears — a report with no digest behind it — it is
+# still what this agent itself landed, never a backlog-wide count.
 #
 # The FORWARD buckets — ⚠️ / 🔀 / ⬚ — must account for the whole backlog (decisions
 # overlap and are the one exception) — a tally that does not add up is obvious rather

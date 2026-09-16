@@ -93,7 +93,7 @@ else needs a session boundary.
   - covers: The digest emits one line per item, whatever a task title contains
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** **P0** State one sweep rule in both loop skills — the cursor packet is excluded exactly when this session is about to continue it — so `skills/run-loop/SKILL.md` §3.2 passes the cursor when it is continuing one and `skills/resume/SKILL.md` stops keying the exclusion on `status: paused`, leaving `sweep-open`'s behaviour and its `--paused-cursor` flag name unchanged and everything else the sweep closes untouched (a crash, or a run whose work is gone, still writes `interrupted` for the cursor); `scripts/test-runstate.sh` gains a continued cursor packet under the run-loop call shape and a resume from a status the rule admits and one it excludes.
+- [x] **T2** **P0** State one sweep rule in both loop skills — the cursor packet is excluded exactly when this session is about to continue it — so `skills/run-loop/SKILL.md` §3.2 passes the cursor when it is continuing one and `skills/resume/SKILL.md` stops keying the exclusion on `status: paused`, leaving `sweep-open`'s behaviour and its `--paused-cursor` flag name unchanged and everything else the sweep closes untouched (a crash, or a run whose work is gone, still writes `interrupted` for the cursor); `scripts/test-runstate.sh` gains a continued cursor packet under the run-loop call shape and a resume from a status the rule admits and one it excludes.
   - deps: —
   - covers: A packet continued in the same run is reported once, with one outcome · A run that stopped on a blocking question resumes like a paused one
   - arch: —

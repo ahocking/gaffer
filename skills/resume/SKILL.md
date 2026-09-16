@@ -184,8 +184,8 @@ backlog), there is genuinely nothing to resume — say so, stop, and run
   torn-write orphan commit that landed green but was never recorded. **Do not
   trust the tree — reconcile it in step 2 before doing anything else.**
 
-**Keep this reading** — step 4's sweep needs to know whether it read `paused`
-**here**, before step 2 overwrites `status` to `running`.
+**Keep this reading** — step 4's sweep needs to know whether it read `paused` or
+`blocked` **here**, before step 2 overwrites `status` to `running`.
 
 ## 2. Re-establish the working tree at the green checkpoint
 
@@ -292,10 +292,18 @@ resumed state matches where they think they left off. If `$ARGUMENTS` carried
 
 **Then sweep before recording the cursor packet** (T3, T8): run
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
-`--paused-cursor <cursor>` **only** if `status` read `paused` in step 1 — the
-cursor packet is the one this session is about to continue, not the one the sweep
-should close. It prints one `OPEN=<id>` line per open packet. If it printed any,
-comma-join the ids (the `paste -sd,` idiom at run-loop/SKILL.md :84–87) into one
+`--paused-cursor <cursor>` exactly when this session is about to continue it
+(cosmetic on the `--list` call, which only lists — it costs one extra id in
+`OPEN=` if omitted; run-loop's own `--list` call below omits it and passes it
+only on the real sweep, which is the call that matters) —
+`status` read `paused` **or** `blocked` in step 1, both of which leave the cursor
+packet's start open for this same session to pick back up; the cursor packet is
+the one this session is about to continue, not the one the sweep should close. A
+crash (`status` read `running`) is not this situation — the cursor packet is not
+excluded there, and it still closes as `interrupted` (or `abandoned`, if it is
+also gone) like any other open packet. It prints one `OPEN=<id>` line per open
+packet. If it printed any, comma-join the ids (the `paste -sd,` idiom at
+run-loop/SKILL.md :84–87) into one
 string and resolve them —
 `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
 prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
@@ -328,10 +336,11 @@ is refused. Only once it is written do you attest the start — capture
 run-loop/SKILL.md §3.3 pairs with this exact step, so the first shape-A report
 after this resume scopes `run-digest --since "$SINCE"` to only this packet's
 own decisions rather than every decision the whole run has ever recorded —
-then `runstate.sh record-start <cursor> --continue` when the same
-paused-on-entry reading held in step 1, else `runstate.sh record-start
-<cursor>` (a fresh start — its prior attempt, if any, already closed with a
-recorded outcome).
+then `runstate.sh record-start <cursor> --continue` when step 1's kept reading
+was `paused` **or** `blocked` — the same condition the sweep above used to
+exclude this packet from closing — else `runstate.sh record-start <cursor>` (a
+fresh start — its prior attempt, if any, already closed with a recorded
+outcome, since a crash is not excluded from the sweep above).
 
 Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,

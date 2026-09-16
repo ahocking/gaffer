@@ -184,6 +184,16 @@ has 'finds the pause-sentinel gap'     'FINDING=gitignore' "$out"
 # it lands as `?? .agents/` and reconcile discards it as scratch on the green
 # checkpoint — the backup destroyed by the recovery path it exists to serve.
 has 'finds the write-backup ignore gap' 'FINDING=writebackup-ignore' "$out"
+# The same pre-2.0 fixture predates thin-loop-driver too: its .gitignore has
+# neither .agents/loop/ nor .agents/driver-mode/, so the driver-mode-ignore
+# finding (T23) fires on it. It has no .claude/settings.json at all, though --
+# the compact-threshold finding (T23) is guarded on that file existing, and a
+# repo carrying no committed settings file is exactly the state the PRD calls
+# supported ("neither the repo nor the operator has set one"), so it must NOT
+# fire here.
+has 'finds the driver-mode/loop ignore gap' 'FINDING=driver-mode-ignore' "$out"
+has 'names both missing patterns'      '.agents/loop/ and .agents/driver-mode/' "$out"
+hasnt 'does not flag the compaction carrier with no .claude/settings.json' 'FINDING=compact-threshold' "$out"
 [ "$rc" = 2 ] && ok 'detect exits 2 when migration is needed' || bad 'detect exit 2' "rc=$rc"
 
 printf '\n== detect: a current repo is left alone ==\n'
@@ -196,7 +206,15 @@ R="$TMP/current"; mkdir -p "$R/gspec/features/a" "$R/.agents"
 printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
 printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
-printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+# The driver-mode/loop ignores (thin-loop-driver T23) are required for this
+# fixture to be "nothing to do" -- omitting them would make this assertion fail
+# the moment that finding exists, which is exactly the regression this fixture
+# guards. Deliberately carries NO .claude/settings.json at all: that is the
+# guard's supported state (compact-threshold fires only when the file exists
+# and lacks the key), and this is the assertion that pins it -- an unguarded
+# compact-threshold would flag this repo and FINDINGS=0 would never be
+# reachable again.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
 has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
@@ -278,6 +296,63 @@ out="$("$MIG" detect "$R" 2>&1)"
 has 'a stranded plan is flagged'       'FINDING=half-moved' "$out"
 has 'and names both halves'            'gspec/tasks/a.md' "$out"
 has 'and says nothing is broken yet'   'nothing breaks' "$out"
+
+# =============================================================================
+printf '\n== detect: a .gitignore missing .agents/loop/ or .agents/driver-mode/ (T23) ==\n'
+# Same shape as the pause/write-backup findings above: reported, fixed by hand,
+# never auto-applied. Round-tripped through a partial fix (one pattern still
+# missing) before the full fix, so the message narrowing is proven, not assumed.
+R="$TMP/driver-mode-ignore"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'flags a .gitignore missing both driver-mode entries' 'FINDING=driver-mode-ignore' "$out"
+has 'names both missing patterns' '.agents/loop/ and .agents/driver-mode/' "$out"
+
+# Fix ONE of the two by hand: the message must narrow to only what remains.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'still flags the remaining gap' 'FINDING=driver-mode-ignore' "$out"
+has 'and names only what is left' '.gitignore does not ignore .agents/driver-mode/' "$out"
+hasnt 'does not re-claim the already-fixed pattern' '.agents/loop/ and .agents/driver-mode/' "$out"
+
+# Fix the rest by hand: a second run finds nothing -- the case that matters
+# most, since a reporter that re-reports an already-fixed item trains the
+# operator to ignore it.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+hasnt 'a second run finds nothing once both are ignored' 'FINDING=driver-mode-ignore' "$out"
+
+# =============================================================================
+printf '\n== detect: a per-repo compaction entry -- T4'"'"'s carrier (T23) ==\n'
+R="$TMP/compact-threshold"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
+
+# No .claude/settings.json at all -- guarded the same as every other check in
+# _findings(): a repo that has never committed a settings file has not opted
+# out of gaffer's default, which the PRD names as a supported state, so this
+# must NOT fire. (An unguarded version fires here forever and gaffer's own
+# detect -- and every fresh consumer repo off templates/spec-driven-base/,
+# which ships no .claude/ -- can never reach FINDINGS=0.)
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+hasnt 'does not flag a repo with no .claude/settings.json at all' 'FINDING=compact-threshold' "$out"
+
+# The file exists but the key is absent -- now it fires.
+mkdir -p "$R/.claude"
+printf '{\n  "otherKey": true\n}\n' > "$R/.claude/settings.json"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'flags a settings.json with no autoCompactWindow key' 'FINDING=compact-threshold' "$out"
+has 'names the carrier'                                   '.claude/settings.json' "$out"
+
+# Fix by hand: a second run finds nothing.
+printf '{\n  "otherKey": true,\n  "autoCompactWindow": 150000\n}\n' > "$R/.claude/settings.json"
+out="$("$MIG" detect "$R" 2>&1)"
+hasnt 'a second run finds nothing once the entry is set' 'FINDING=compact-threshold' "$out"
 
 printf '\n== apply refuses to run on a dirty tree ==\n'
 R="$TMP/dirty"; mk_repo "$R" legacy-a

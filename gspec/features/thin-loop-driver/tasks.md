@@ -246,7 +246,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: scripts/spend.sh, scripts/test-spend.sh
-- [ ] **T23** [P] **P1** Make `migrate.sh` report a consumer `.gitignore` that lacks `.agents/loop/` or `.agents/driver-mode/`, and report any per-repo compaction entry T4's carrier needs, each as a finding to fix by hand in the same form as the existing pause and write-backup findings. `test-migrate.sh` cases cover each finding and a second run finding nothing, and `skills/migrate/SKILL.md` names them.
+- [x] **T23** [P] **P1** Make `migrate.sh` report a consumer `.gitignore` that lacks `.agents/loop/` or `.agents/driver-mode/`, and report any per-repo compaction entry T4's carrier needs, each as a finding to fix by hand in the same form as the existing pause and write-backup findings. `test-migrate.sh` cases cover each finding and a second run finding nothing, and `skills/migrate/SKILL.md` names them.
   - deps: T4, T7
   - covers: Agents take a handoff file and return one status line · A session running the loop is in driver mode · Long runs compact, and can pause on a schedule
   - arch: —

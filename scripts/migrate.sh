@@ -631,6 +631,53 @@ _findings() {
     n=$((n+1))
   fi
 
+  # 6c. Missing .agents/loop/ or .agents/driver-mode/ ignores (thin-loop-driver
+  #     T1/T3/T9, ADR 0028). `.agents/loop/<run_id>/` holds the handoff files and
+  #     the script-written result files a dispatched agent reads and writes;
+  #     `.agents/driver-mode/<session>` is the session-keyed mark that records
+  #     when a session is driving the loop. Neither is ever committed. A
+  #     .gitignore that predates this feature shows both untracked in
+  #     `git status`, and the pause path's `git stash --include-untracked` sweeps
+  #     them while reconcile discards them as scratch on the green checkpoint --
+  #     same failure mode as the pause/write-backup findings above. Reported,
+  #     not auto-fixed: apply never edits a consumer's .gitignore.
+  if [ -f "$root/.gitignore" ]; then
+    local miss_loop=0 miss_dm=0
+    grep -q 'agents/loop/' "$root/.gitignore" 2>/dev/null || miss_loop=1
+    grep -q 'agents/driver-mode/' "$root/.gitignore" 2>/dev/null || miss_dm=1
+    if [ "$miss_loop" = 1 ] || [ "$miss_dm" = 1 ]; then
+      local missing_what
+      if [ "$miss_loop" = 1 ] && [ "$miss_dm" = 1 ]; then
+        missing_what=".agents/loop/ and .agents/driver-mode/"
+      elif [ "$miss_loop" = 1 ]; then
+        missing_what=".agents/loop/"
+      else
+        missing_what=".agents/driver-mode/"
+      fi
+      printf 'FINDING=driver-mode-ignore\t.gitignore does not ignore %s\thandoff/result files under .agents/loop/ and the session-keyed .agents/driver-mode/ mark would show untracked in git status, and the pause path'"'"'s stash/reconcile would sweep or discard them -- add the missing line(s) by hand\n' "$missing_what"
+      n=$((n+1))
+    fi
+  fi
+
+  # 6d. Per-repo compaction entry -- T4's carrier (thin-loop-driver, ADR 0028
+  #     result 3). T4 verified exactly one carrier: a flat `autoCompactWindow`
+  #     (tokens) key in a Claude Code settings JSON file. `runstate.sh
+  #     compact-threshold` never writes one -- whether a plugin default can
+  #     coexist with a repo/operator value without overriding it was left
+  #     unprobed, so it is a pure reader. Guarded on the settings file
+  #     existing, same as every other check in this function: a repo carrying
+  #     no committed .claude/settings.json at all has not opted into a
+  #     committed, team-shared value and gaffer's default is exactly the
+  #     supported state for it (PRD: "a loop session where neither the repo
+  #     nor the operator has set one uses gaffer's default") -- firing here
+  #     would make FINDINGS=0 unreachable for that repo forever. Reported like
+  #     the pause/write-backup findings above: apply never writes a consumer's
+  #     .claude/settings.json.
+  if [ -f "$root/.claude/settings.json" ] && ! grep -qE '"autoCompactWindow"[[:space:]]*:[[:space:]]*[0-9]+' "$root/.claude/settings.json" 2>/dev/null; then
+    printf 'FINDING=compact-threshold\tno per-repo autoCompactWindow entry in .claude/settings.json\tT4'"'"'s carrier for a per-repo compaction threshold; no COMMITTED, team-shared value exists here, so sessions fall back to an operator-scope value (CLAUDE_CODE_AUTO_COMPACT_WINDOW, settings.local.json, or the user-wide settings file) if one is set, else gaffer'"'"'s default -- add "autoCompactWindow": <tokens> by hand if you want the team to share one value (an operator-scope value still takes precedence over it)\n'
+    n=$((n+1))
+  fi
+
   # 7. CLAUDE.md missing the report conventions — why reports come out as free prose.
   if [ -f "$root/CLAUDE.md" ] && ! grep -q 'gaffer:report-conventions' "$root/CLAUDE.md" 2>/dev/null; then
     printf 'FINDING=report-conventions\tCLAUDE.md does not carry the report conventions\twithout them every turn outside a gaffer skill reports in free prose; the skills read the full contract, but nothing else does\n'

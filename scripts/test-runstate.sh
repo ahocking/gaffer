@@ -2344,6 +2344,25 @@ assert_true "  and does NOT also (or instead) read open -- paused wins over the 
 # "paused" is the exact operator-facing lie this capability exists to prevent.
 assert_true "  and a DIFFERENT, already-landed packet (rd-green) still reads its real outcome, not paused, while the run is paused" \
   "rd_digest | grep -qx \$'packet\trd-green\tT1 add the first thing\tgreen'"
+# Review fix (round three, F5/M5): the paused conditional is TWO independent
+# guards -- `status = paused` AND `pkt = cursor`. F4 above closed the mutation
+# that drops the cursor check; a second wrong implementation drops the STATUS
+# check instead (`[ -n "$cursor" ] && [ "$pkt" = "$cursor" ]` alone) and passed
+# every prior case unnoticed, because no fixture ever left a cursor set while
+# status was anything but paused -- the block above sets both together, and
+# the restore below (until now) cleared both together too. `backlog.cursor`
+# names the in-flight packet for the WHOLE of a running loop, so that wrong
+# implementation would report the packet currently being worked on as
+# "paused" in every mid-run digest of a run that is not paused at all. Restore
+# to running WITH the cursor still set first, and assert the cursor packet
+# reports its real outcome (rd-paused has a start record and no terminal
+# record, so its real outcome is `open` -- not vacuous), before clearing the
+# cursor for every later case in this block.
+printf 'schema: 3\nstatus: running\nrun_id: %s\nbacklog:\n  cursor: rd-paused\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
+assert_true "run-digest: a cursor packet in a RUNNING run reads its real outcome, never paused -- the cursor alone is not what makes a packet paused" \
+  "rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\topen'"
+assert_true "  and does not read paused while the run is running" \
+  "! rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\tpaused'"
 printf 'schema: 3\nstatus: running\nrun_id: %s\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
 
 # Review fix (round two): `_rs_digest_outcome`'s same-timestamp comparison is

@@ -2200,6 +2200,165 @@ assert_true "not a git repo -> ENDED=0/EVERY=off/DUE=no, never a die" \
   "[ \"\$(cd \"\$PP_NOTGIT\" && \"\$RUNSTATE\" periodic-pause PPSX)\" = \"\$(printf 'ENDED=0\nEVERY=off\nDUE=no')\" ]"
 
 echo
+echo "== run-digest: assembled from files alone -- handoff files, routing records, the"
+echo "   outcomes log and driver-mode records, nothing from memory (thin-loop-driver T11,"
+echo "   ADR 0028 result 4) =="
+# The LAST packet on this feature (periodic-pause, T10) shipped nine sweep cases
+# that all passed while three plausible wrong implementations survived every one
+# of them -- an inspection-only sweep that never actually discriminated. Every
+# case below was verified by MUTATION, not just inspection: a plausible wrong
+# implementation was applied, the sweep was re-run and confirmed to go red for
+# that specific case, then the implementation was restored and the sweep
+# reconfirmed green. See the implementer's result file for exactly what was
+# mutated for each one.
+RD="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RD" init -q
+git -C "$RD" config user.email t@t; git -C "$RD" config user.name t
+mkdir -p "$RD/.agents" "$RD/.agents/metrics/outcomes" "$RD/.agents/metrics/driver-mode"
+printf 'schema: 3\nstatus: running\n' > "$RD/.agents/run-state.yaml"
+RD_RUN_ID="$(cd "$RD" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+rd_digest() { (cd "$RD" && "$RUNSTATE" run-digest .agents/run-state.yaml "$@"); }
+
+echo "-- a landed packet's id/title/outcome, and an OPEN packet (a start with no terminal record after it) --"
+printf 'T1 add the first thing\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-green --tier integration --agent implementer) >/dev/null
+printf 'T2 add the second thing\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-open --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-01T00:00:01Z","packet":"rd-green","session":"S1","kind":"start"}\n{"ts":"2026-02-01T00:00:02Z","packet":"rd-green","session":"S1","outcome":"green"}\n{"ts":"2026-02-01T00:00:03Z","packet":"rd-open","session":"S1","kind":"start"}\n' \
+  > "$RD/.agents/metrics/outcomes/S1.jsonl"
+assert_true "run-digest: a landed packet's line carries its id, its title from its own handoff header, and its terminal outcome" \
+  "rd_digest | grep -qx \$'packet\trd-green\tT1 add the first thing\tgreen'"
+assert_true "run-digest: a packet with a start but no terminal record after it reads open, never silently green or absent" \
+  "rd_digest | grep -qx \$'packet\trd-open\tT2 add the second thing\topen'"
+
+# Review fix (thin-loop-driver-t11, second round): the outcomes log is a glob
+# across EVERY session's file (*.jsonl), matching the boundary-scan code
+# above it -- but the round-one sweep only ever put a packet's start AND its
+# terminal record in the SAME file (S1.jsonl), so a wrong implementation that
+# restricted the read to one file (e.g. the newest by name/mtime) passed
+# every case unnoticed. This one puts the start in S1's log and the terminal
+# outcome in a DIFFERENT session's log (S2), so only a true whole-directory
+# read can join them.
+echo "-- a packet started in one session and finished in a DIFFERENT one: both logs must be read together --"
+printf 'T6 finish in another session\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-twosess --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-01T00:00:08Z","packet":"rd-twosess","session":"S1","kind":"start"}\n' >> "$RD/.agents/metrics/outcomes/S1.jsonl"
+printf '{"ts":"2026-02-03T00:00:00Z","packet":"rd-twosess","session":"S2","outcome":"blocked"}\n' > "$RD/.agents/metrics/outcomes/S2.jsonl"
+assert_true "run-digest: a packet started in one session's outcomes log and finished in another's reads the cross-session terminal outcome, not open" \
+  "rd_digest | grep -qx \$'packet\trd-twosess\tT6 finish in another session\tblocked'"
+
+# The case above defends the TERMINAL-outcome scan against a wrong
+# implementation that reads only one session's file. It does NOT, by itself,
+# defend the separate BOUNDARY scan (kind=start/continue) against the same
+# mistake, because every start/continue record in every case above lives in
+# S1 -- a hardcoded "read only S1.jsonl" mistake in the boundary scan alone
+# would pass every case above unnoticed. This packet's ENTIRE history (both
+# its start and its terminal outcome) lives only in S2, so it exercises both
+# scans reading the whole directory, not merely the terminal one.
+echo "-- a packet whose entire outcomes history (start AND terminal) lives only in a non-first session's log --"
+printf 'T6b lives only in the second session\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-onlys2 --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-03T00:00:01Z","packet":"rd-onlys2","session":"S2","kind":"start"}\n{"ts":"2026-02-03T00:00:02Z","packet":"rd-onlys2","session":"S2","outcome":"failed"}\n' \
+  >> "$RD/.agents/metrics/outcomes/S2.jsonl"
+assert_true "run-digest: a packet whose entire outcomes history lives in a session other than S1 still reports its real outcome, not open" \
+  "rd_digest | grep -qx \$'packet\trd-onlys2\tT6b lives only in the second session\tfailed'"
+
+# Review fix (round two): the boundary scan accepts kind=start OR kind=continue
+# (matching the PRD's "after its latest start or continuation"), but the
+# round-one sweep never put anything AFTER a continue record, so a wrong
+# implementation that dropped the continue arm entirely passed unnoticed. This
+# scenario puts a (stale) terminal record BETWEEN a start and a later continue
+# -- a wrong implementation that ignores continue as a boundary would let that
+# stale terminal leak through as the packet's outcome instead of correctly
+# reading it as still open.
+echo "-- a continuation record is itself a boundary: a terminal record dated before it must not leak through as the outcome --"
+printf 'T7 continued after a false finish\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-continued --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-01T00:00:09Z","packet":"rd-continued","session":"S1","kind":"start"}\n{"ts":"2026-02-01T00:00:10Z","packet":"rd-continued","session":"S1","outcome":"blocked"}\n{"ts":"2026-02-01T00:00:11Z","packet":"rd-continued","session":"S1","kind":"continue"}\n' \
+  >> "$RD/.agents/metrics/outcomes/S1.jsonl"
+assert_true "run-digest: a continuation after a stale terminal record reads open, not the stale outcome that preceded the continuation" \
+  "rd_digest | grep -qx \$'packet\trd-continued\tT7 continued after a false finish\topen'"
+
+echo "-- a run spanning two sessions: the enter line names the LATEST enter across every session's log, not the first --"
+printf '{"ts":"2026-02-01T00:00:00Z","session":"S1","kind":"enter","model":"sonnet","effort":"low","threshold":"100000"}\n' \
+  > "$RD/.agents/metrics/driver-mode/S1.jsonl"
+printf '{"ts":"2026-02-02T00:00:00Z","session":"S2","kind":"enter","model":"opus","effort":"high","threshold":"200000"}\n' \
+  > "$RD/.agents/metrics/driver-mode/S2.jsonl"
+assert_true "run-digest: the enter line reflects the SECOND session's later enter" \
+  "rd_digest | grep -qx \$'enter\topus\thigh\t200000'"
+assert_true "  and the first (now stale) session's values do not also appear" \
+  "! rd_digest | grep -qx \$'enter\tsonnet\tlow\t100000'"
+
+# Review fix (F2): bash always treats a tab as "IFS whitespace" for splitting
+# purposes regardless of what IFS is set to, so `IFS=<tab> read` on a TSV line
+# with an EMPTY field collapses adjacent tabs and shifts every later field
+# left. `driver-mode enter --model ""` writes an empty model verbatim (the
+# `unknown` default only applies when the flag is ABSENT, not empty), so a
+# real caller can hit this. Asserts the line's four positions stay stable
+# (model empty, effort/threshold in their own columns) rather than effort
+# sliding into the model column.
+echo "-- a LATER enter with an empty --model must not shift effort/threshold left in the enter line --"
+(cd "$RD" && "$RUNSTATE" driver-mode enter --model "" --effort medium --threshold 300000 S2 >/dev/null)
+assert_true "run-digest: an empty driver-mode field stays in its own column -- the enter line reads empty-model, not effort where model belongs" \
+  "rd_digest | grep -qx \$'enter\t\tmedium\t300000'"
+assert_true "  and effort/threshold are not swallowed leftward the way IFS=<tab> read would swallow them" \
+  "! rd_digest | grep -qx \$'enter\tmedium\t300000\t'"
+
+echo "-- a decider decision (scoped by --since) and its hand-off-feature record (the WHOLE run, regardless of --since) --"
+printf 'T3 needs a bigger feature\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-hof --tier integration --agent implementer) >/dev/null
+(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-hof escalate >/dev/null)
+(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-hof hand-off-feature --status "hand-off-feature: rd-hof needs a new feature for bulk import" >/dev/null)
+assert_true "run-digest: a bare reviewer 'escalate' is NOT itself a decider decision (it only routes TO the decider)" \
+  "! rd_digest | grep -qx \$'decision\trd-hof\tescalate'"
+assert_true "run-digest: the decider's own hand-off-feature token IS a decision line" \
+  "rd_digest | grep -qx \$'decision\trd-hof\thand-off-feature'"
+assert_true "run-digest: the hand-off-feature record carries its own routed --status line, JSON-escaping reversed" \
+  "rd_digest | grep -qx \$'handoff-feature\trd-hof\thand-off-feature: rd-hof needs a new feature for bulk import'"
+assert_true "run-digest: a handed-off packet's own packet line still reports (still open -- it was never landed)" \
+  "rd_digest | grep -qx \$'packet\trd-hof\tT3 needs a bigger feature\topen'"
+assert_true "run-digest --since in the far future excludes the decision line" \
+  "! rd_digest --since 2099-01-01T00:00:00Z | grep -qx \$'decision\trd-hof\thand-off-feature'"
+assert_true "  but the hand-off-feature QUESTION still appears -- a stop report must list every open question the run recorded, not only recent ones" \
+  "rd_digest --since 2099-01-01T00:00:00Z | grep -qx \$'handoff-feature\trd-hof\thand-off-feature: rd-hof needs a new feature for bulk import'"
+assert_true "run-digest --since at the epoch still includes the decision line" \
+  "rd_digest --since 1970-01-01T00:00:00Z | grep -qx \$'decision\trd-hof\thand-off-feature'"
+
+echo "-- a paused cursor reads 'paused', overriding what its outcome-log records would otherwise say --"
+printf 'T4 mid-edit when paused\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-paused --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-01T00:00:05Z","packet":"rd-paused","session":"S1","kind":"start"}\n' >> "$RD/.agents/metrics/outcomes/S1.jsonl"
+printf 'schema: 3\nstatus: paused\nrun_id: %s\nbacklog:\n  cursor: rd-paused\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
+assert_true "run-digest: the paused cursor packet reads 'paused'" \
+  "rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\tpaused'"
+assert_true "  and does NOT also (or instead) read open -- paused wins over the boundary-outcome computation" \
+  "! rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\topen'"
+printf 'schema: 3\nstatus: running\nrun_id: %s\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
+
+# Review fix (round two): `_rs_digest_outcome`'s same-timestamp comparison is
+# `-ge`, deliberately, because `sweep-open` copies its terminal record's ts
+# VERBATIM from the start it closes -- the two records can and do carry the
+# exact same timestamp. The round-one sweep never exercised that boundary
+# with the REAL writers (only hand-written JSON with distinct timestamps), so
+# a wrong implementation that narrowed the comparison to `-gt` passed
+# unnoticed while making every interrupted packet read `open` forever. Built
+# with `record-start` + `sweep-open` themselves, not hand-written JSON, so
+# the ts values are guaranteed identical the way the real writers guarantee
+# it, not merely asserted to be.
+echo "-- interrupted, built with the REAL record-start + sweep-open writers: sweep-open's terminal ts equals its own start's ts verbatim, so the boundary comparison must be >=, not > --"
+printf 'T8 gets swept as interrupted\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-interrupted --tier integration --agent implementer) >/dev/null
+(cd "$RD" && "$RUNSTATE" record-start rd-interrupted S1 >/dev/null)
+(cd "$RD" && CLAUDE_CODE_SESSION_ID=S1 "$RUNSTATE" sweep-open >/dev/null)
+assert_true "run-digest: a packet swept as interrupted (terminal ts == its own start's ts) reads interrupted, never open" \
+  "rd_digest | grep -qx \$'packet\trd-interrupted\tT8 gets swept as interrupted\tinterrupted'"
+assert_true "  and does not (also or instead) read open" \
+  "! rd_digest | grep -qx \$'packet\trd-interrupted\tT8 gets swept as interrupted\topen'"
+
+echo "-- a result file's own BODY TEXT never appears in the digest -- asserted against the digest's REAL content, not an empty one --"
+printf 'T5 write a result file\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-body --tier integration --agent implementer) >/dev/null
+RD_RESULT_PATH="$RD/.agents/loop/$RD_RUN_ID/rd-body/implementer.md"
+printf 'RD_SECRET_BODY_TEXT_MUST_NOT_LEAK\n' | (cd "$RD" && "$RUNSTATE" write-result .agents/run-state.yaml "$RD_RESULT_PATH" --status "pass: rd-body landed") >/dev/null
+printf '{"ts":"2026-02-01T00:00:06Z","packet":"rd-body","session":"S1","kind":"start"}\n{"ts":"2026-02-01T00:00:07Z","packet":"rd-body","session":"S1","outcome":"green"}\n' \
+  >> "$RD/.agents/metrics/outcomes/S1.jsonl"
+RD_BODY_OUT="$(rd_digest)"
+assert_true "run-digest: the digest DID produce this packet's real line (so the absence check below is not vacuously true against an empty digest)" \
+  "printf '%s\n' \"\$RD_BODY_OUT\" | grep -qx \$'packet\trd-body\tT5 write a result file\tgreen'"
+assert_true "run-digest: the result file's own body text (never its status line) never appears anywhere in the digest" \
+  "! printf '%s\n' \"\$RD_BODY_OUT\" | grep -q RD_SECRET_BODY_TEXT_MUST_NOT_LEAK"
+
+echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'passed: %s   failed: %s   (no python3+PyYAML on this host — %s parse assertion(s) could not assert; not asserting vacuously)\n' \

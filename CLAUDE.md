@@ -574,7 +574,7 @@ passing sweeps.
   obeys from the other side — it is callable from such a context *because* it
   writes append-only outside run-state.
 - **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
-  session** (ADR 0024 + ADR 0025). Three rules that land together because they are one
+  session outside the stop report** (ADR 0024 + ADR 0025). Three rules that land together because they are one
   correction: run-state was storing what other things already knew.
   **`backlog.done` is deleted with nothing in its place** — no counter, no bounded tail.
   It stored exactly what the PRD capability checkboxes derive, and because
@@ -601,8 +601,9 @@ passing sweeps.
   non-load-bearing (delete it, behaviour identical) and would have expired **zero of
   fifteen** live entries while appearing to work. Capture precedes drop, always: filing a
   backlog task IS the capture; a spent sign-off is not.
-  **The tally's ✅ counts what THIS session landed**, from check-ins already rendered,
-  nothing read from disk. The "buckets account for the whole backlog" rule applies to the
+  **The tally's ✅ counts what THIS session landed**, from status lines already read rather than
+  anything re-read from disk — except in the stop report, where §B of `templates/report-templates.md`
+  defines the tally as every green packet of the run, not only this session's. The "buckets account for the whole backlog" rule applies to the
   **forward** buckets only (⚠️/🔀/⬚) — a growing backlog is not a fixed set to partition,
   and *2 landed, 25 to go* has to read honestly.
 - **A finding discovered after a plan is complete routes by scope in two arms tried in
@@ -757,7 +758,7 @@ passing sweeps.
   decoration, and decoration is what teaches a reader to stop trusting the glyphs.
   What the human reads:
   one shared **decision block** plus three shapes — **C** kickoff (before the first
-  packet, and on resume), **A** check-in (a packet landed), **B** stop
+  packet, and on resume), **A** packet line (a packet ended), **B** stop
   report (the loop stopped, for any reason). **Under driver mode (ADR 0028) the driver
   assembles all three from `runstate.sh run-digest` plus the status lines it already
   read, and nothing else** — it never opens a result file to enrich one. That is the

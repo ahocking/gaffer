@@ -88,7 +88,7 @@ else needs a session boundary.
 
 ## Plan
 
-- [ ] **T1** **P0** Interpolate the handoff's first line into `_rs_digest_title` (`scripts/runstate.sh`) through `awk ENVIRON` rather than `awk -v`, leaving the charset-validated packet id on `-v`, so a title carrying a literal `\n` or a Windows path yields one digest line; `scripts/test-runstate.sh` gains a case with a backslash-bearing title asserting exactly one output line for that packet and no fragment lacking its leading type field.
+- [x] **T1** **P0** Interpolate the handoff's first line into `_rs_digest_title` (`scripts/runstate.sh`) through `awk ENVIRON` rather than `awk -v`, leaving the charset-validated packet id on `-v`, so a title carrying a literal `\n` or a Windows path yields one digest line; `scripts/test-runstate.sh` gains a case with a backslash-bearing title asserting exactly one output line for that packet and no fragment lacking its leading type field.
   - deps: —
   - covers: The digest emits one line per item, whatever a task title contains
   - arch: —

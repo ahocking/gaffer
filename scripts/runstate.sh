@@ -2544,8 +2544,15 @@ _rs_digest_title() {
   local file="${pktdir}/handoff.md"
   [ -f "$file" ] || { printf '%s' "$pkt"; return 0; }
   line1="$(head -1 "$file" 2>/dev/null || true)"
-  awk -v pkt="$pkt" -v line="$line1" '
+  # LINE is interpolated through ENVIRON, never `-v` -- `-v` expands `\n`
+  # (and other backslash escapes) IN THE VALUE, so a title carrying a
+  # literal `\n` or a Windows path would inject a stray newline into the
+  # digest, splitting one packet into two lines (or worse, a fragment
+  # lacking its leading type field). pkt is charset-validated (no
+  # backslash reaches it) and stays on `-v`.
+  LINE="$line1" awk -v pkt="$pkt" '
     BEGIN {
+      line = ENVIRON["LINE"]
       prefix = "# " pkt ": "
       if (index(line, prefix) == 1) print substr(line, length(prefix) + 1)
       else print pkt

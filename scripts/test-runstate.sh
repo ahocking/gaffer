@@ -2396,6 +2396,32 @@ assert_true "run-digest: the digest DID produce this packet's real line (so the 
 assert_true "run-digest: the result file's own body text (never its status line) never appears anywhere in the digest" \
   "! printf '%s\n' \"\$RD_BODY_OUT\" | grep -q RD_SECRET_BODY_TEXT_MUST_NOT_LEAK"
 
+# thin-loop-driver-gaps-t1: `_rs_digest_title` interpolated a handoff's first
+# line into awk via `-v`, which expands C-style backslash escapes IN THE
+# VALUE -- a title carrying a literal `\n` (or, incidentally, a Windows path's
+# `\i`/`\f` sequences) would explode into a real newline inside awk's single
+# `print`, so the run-digest packet line split into two physical lines: the
+# real one (still carrying its leading `packet` type field) and a headless
+# second fragment with no type field at all. Fixed via `ENVIRON`, which does
+# no escape processing on the value; `pkt` stays on `-v` since it is
+# charset-validated with no backslash. Measured by a line-count delta (adding
+# one packet must add exactly one digest line, not two) rather than string
+# content alone, since a split line can still happen to contain the packet id
+# in its first fragment and pass a naive substring check.
+echo "-- a title carrying a literal backslash sequence (\\n, a Windows path) yields exactly ONE digest line, not an exploded newline (thin-loop-driver-gaps-t1) --"
+RD_PRECOUNT="$(rd_digest | wc -l | tr -d ' ')"
+RD_BACKSLASH_TITLE='T9 has a literal \n escape and a Windows path C:\import\file.md'
+printf '%s\nbody\n' "$RD_BACKSLASH_TITLE" | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-backslash --tier integration --agent implementer) >/dev/null
+RD_BACKSLASH_EXPECTED="$(printf 'packet\trd-backslash\t%s\topen' "$RD_BACKSLASH_TITLE")"
+RD_BACKSLASH_OUT="$(rd_digest)"
+RD_POSTCOUNT="$(printf '%s\n' "$RD_BACKSLASH_OUT" | wc -l | tr -d ' ')"
+assert_true "run-digest: a backslash-bearing title is interpolated verbatim into the digest line, not exploded into a raw newline by awk -v" \
+  "printf '%s\n' \"\$RD_BACKSLASH_OUT\" | grep -qFx \"\$RD_BACKSLASH_EXPECTED\""
+assert_true "run-digest: adding this one backslash-bearing packet adds exactly ONE new digest line, not two from an exploded escape" \
+  "[ \"\$RD_POSTCOUNT\" = \"\$((RD_PRECOUNT + 1))\" ]"
+assert_true "run-digest: every line in the digest still starts with a recognized type field (packet/decision/handoff-feature/enter) -- no headless fragment left over" \
+  "! printf '%s\n' \"\$RD_BACKSLASH_OUT\" | awk -F'\t' '\$1!=\"packet\" && \$1!=\"decision\" && \$1!=\"handoff-feature\" && \$1!=\"enter\"' | grep -q ."
+
 echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then

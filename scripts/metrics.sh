@@ -953,6 +953,97 @@ cmd_collect() {
     fi
   fi
 
+  # --- 4c. driver-mode context (thin-loop-driver T21, PRD "Main-session context"
+  # success metric): the largest context of one main-thread turn recorded while a
+  # selected session was in driver mode, reported beside the threshold that run's
+  # KICKOFF stated. A turn's "context" is what the model actually holds for that
+  # turn -- input + cache-write + cache-read tokens, deliberately NOT output
+  # (generated, not loaded) -- counted once per message id via the SAME deduped,
+  # window-bounded $tmp/turns.json section 4 already built (no new dedup key).
+  #
+  # WINDOWS, not one interval: driver mode can be entered/exited more than once
+  # within the sessions this collect run scopes (e.g. the loop stopped and
+  # restarted inside one session), so every enter/exit pair belonging to a
+  # selected session counts and a turn is in scope if it falls inside ANY of
+  # them. An enter with no matching exit yet (still driving) closes at $win_end
+  # instead, so its turns are still measured; a stray exit with no open enter is
+  # a no-op, not an error; a still-open window with no $win_end at all (an
+  # eventless run) is dropped rather than guessed unbounded.
+  #
+  # THRESHOLD is the run's KICKOFF value -- the EARLIEST enter record in scope,
+  # chronologically -- because that is what the kickoff report (run-digest)
+  # already told the operator was in effect; a later re-entry is assumed to be
+  # the same repo/operator setting, not a new one to reconcile against. `null`
+  # (never gaffer's own default) when that record's threshold is missing or
+  # "unknown" -- PRD: "A run lacking usage data or a stated threshold reports
+  # unmeasured", so BOTH fields go null together, never a real max_context
+  # paired against an invented threshold.
+  #
+  # Fails SOFT like every other join here: an unreadable/absent driver-mode log
+  # degrades this to {threshold:null, max_context:null, windows:0,
+  # turns_in_window:0} rather than aborting collect.
+  : > "$tmp/dmrecords.ndjson"
+  local dmf
+  while IFS= read -r sid; do
+    sid="$(printf '%s' "$sid" | tr -d '\r')"
+    [ -n "$sid" ] || continue
+    dmf="${agents}/metrics/driver-mode/${sid}.jsonl"
+    [ -e "$dmf" ] && cat "$dmf" >> "$tmp/dmrecords.ndjson" 2>/dev/null
+  done < "$tmp/sids.txt"
+  jq -s '.' "$tmp/dmrecords.ndjson" > "$tmp/dmrecords.json" 2>/dev/null || echo '[]' > "$tmp/dmrecords.json"
+
+  jq -n --slurpfile dm "$tmp/dmrecords.json" --slurpfile turns "$tmp/turns.json" \
+     --arg we "$win_end" \
+     "${JQ_TS_MS}"'
+    ($dm[0] // []) as $dmr
+    | ($turns[0] // []) as $trns
+    | ($dmr
+       | map(select(.kind=="enter" or .kind=="exit"))
+       | map(. + {_ms: (.ts // "" | if . == "" then null else ts_ms end)})
+       | map(select(._ms != null and .session != null))
+       | sort_by(._ms)) as $recs
+    | (if ($we // "") == "" then null else ($we | ts_ms) end) as $we_ms
+    # per-session open/close walk: an enter with a still-open prior window for
+    # the same session closes that prior window first (defensive -- two enters
+    # with no intervening exit should not silently merge into one window).
+    | (reduce $recs[] as $r ({open:{}, windows:[]};
+         if $r.kind == "enter" then
+           (if (.open[$r.session] // null) != null then
+              (.windows += [ .open[$r.session] + {end_ms: $r._ms, end: $r.ts} ])
+            else . end) as $c
+           | $c.open[$r.session] = {session: $r.session, start_ms: $r._ms, start: $r.ts,
+                                     threshold: ($r.threshold // null)}
+         elif $r.kind == "exit" then
+           if (.open[$r.session] // null) != null then
+             (.windows += [ .open[$r.session] + {end_ms: $r._ms, end: $r.ts} ])
+             | .open[$r.session] = null
+           else . end
+         else . end
+       )) as $st
+    | ($st.open | to_entries | map(.value) | map(select(. != null))
+       | map(select($we_ms != null) | . + {end_ms: $we_ms, end: $we})) as $trailing
+    | ($st.windows + $trailing | sort_by(.start_ms)) as $windows
+    | (if ($windows | length) == 0 then null
+       else ($windows[0].threshold | if (. != null and (. | test("^[0-9]+$"))) then tonumber else null end)
+       end) as $kickoff_threshold
+    | ($trns
+       | map(select(.role == "main" and .ts != null))
+       | map(. + {_ms: (.ts | ts_ms)})
+       | map(select(. as $t | $windows | any(.session as $s
+              | ($t.aid == ("main:" + $s)) and ($t._ms >= .start_ms) and ($t._ms <= .end_ms))))
+      ) as $inscope
+    | (if ($inscope | length) == 0 then null
+       else ($inscope | map(.tok.input + .tok.cache_creation + .tok.cache_read) | max)
+       end) as $max_raw
+    | {
+        threshold: $kickoff_threshold,
+        max_context: (if $kickoff_threshold == null then null else $max_raw end),
+        windows: ($windows | length),
+        turns_in_window: ($inscope | length)
+      }
+   ' > "$tmp/dmctx.json" 2>/dev/null \
+    || echo '{"threshold":null,"max_context":null,"windows":0,"turns_in_window":0}' > "$tmp/dmctx.json"
+
   # --- 5. per-packet windows + event/token rollup ----------------------------
   # Contiguous windows: start = prev end (or run_start), end = trailer commit time;
   # roll up events whose ts falls in (start, end], plus per-packet active_seconds
@@ -1222,6 +1313,7 @@ cmd_collect() {
     --slurpfile overlap "$tmp/overlap.json" \
     --slurpfile sids "$tmp/events.json" \
     --slurpfile recj "$tmp/recordjoin.json" \
+    --slurpfile dmctx "$tmp/dmctx.json" \
     --arg unknown_note "$unknown_note" \
     '
     ($roletokens[0] // {}) as $rt
@@ -1251,6 +1343,7 @@ cmd_collect() {
     # (No apostrophes in here: the whole program is one single-quoted shell word.)
     | (($sids[0] // []) | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))) as $edit_events
     | ($recj[0] // {outcomes:{}, started_ids:[], record_end:{}, has_start:false}) as $rj
+    | ($dmctx[0] // {threshold:null,max_context:null,windows:0,turns_in_window:0}) as $dmc
     | {
       schema: 2,
       run_id: $run_id,
@@ -1314,6 +1407,21 @@ cmd_collect() {
         driver_mode_edit_diagnostics: {
           edit_events: ($edit_events | length),
           edit_events_missing_agents_dir: ($edit_events | map(select(has("agents_dir") | not)) | length)
+        },
+        # MAIN-SESSION CONTEXT success metric (thin-loop-driver T21 / PRD
+        # "Main-session context"): the largest input+cache_creation+cache_read of
+        # one main-thread turn recorded inside this run driver-mode enter/exit
+        # window(s), beside the threshold the run KICKOFF (earliest) enter
+        # record stated. The two fields are null INDEPENDENTLY, not together:
+        # both null when there is no window or the kickoff record threshold is
+        # missing/"unknown"; threshold stated with max_context null when no
+        # main-thread turn falls inside any window -- never max_context alone
+        # when the comparison threshold is unknown (section 4c above; PRD: "a
+        # run lacking usage data or a stated threshold reports unmeasured").
+        driver_mode_context: { threshold: $dmc.threshold, max_context: $dmc.max_context },
+        driver_mode_context_diagnostics: {
+          windows: ($dmc.windows // 0),
+          turns_in_window: ($dmc.turns_in_window // 0)
         },
         # OUTCOME COVERAGE (loop-measurement T5). Every STARTED packet (trailer,
         # start/continuation record, or attributed outcome record — see the T4 join
@@ -1523,6 +1631,21 @@ cmd_show() {
          "main-session edits outside .agents/ in driver mode: unmeasured (\(.totals.driver_mode_edit_diagnostics.edit_events // 0) edit event(s), \(.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir // 0) missing agents_dir)"
        else
          "main-session edits outside .agents/ in driver mode: \($dme)"
+       end),
+    "",
+    # thin-loop-driver success metric (T21): both fields are null together
+    # ("unmeasured") when the kickoff enter never stated a real threshold; a
+    # threshold present but max_context null means the windows had no
+    # main-thread usage data. Never render a bare number without saying which
+    # of the two nulls it is, per the same rule as every other null above.
+    (((.totals.driver_mode_context // {threshold:null,max_context:null})) as $dc
+     | ((.totals.driver_mode_context_diagnostics // {windows:0,turns_in_window:0})) as $dcd
+     | if $dc.threshold == null then
+         "main-session context (driver mode): unmeasured — no stated compaction threshold in scope (\($dcd.windows) window(s), \($dcd.turns_in_window) turn(s))"
+       elif $dc.max_context == null then
+         "main-session context (driver mode): unmeasured — no main-thread usage data in \($dcd.windows) window(s) (threshold \($dc.threshold))"
+       else
+         "main-session context (driver mode): \($dc.max_context) tokens vs threshold \($dc.threshold)\(if $dc.max_context > $dc.threshold then "  ⚠ OVER threshold" else "  under threshold" end)"
        end),
     "",
     # The audit sits ABOVE the packets table on purpose: it is the "something is off"

@@ -236,7 +236,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: hooks/metrics-log.sh, scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T21** **P1** For the main-session context success metric, make `metrics.sh collect` report the largest main-thread turn context inside driver-mode enter/exit windows. A turn's context is its input, cache-write and cache-read tokens, with each message counted once by id. Report it beside the threshold the `enter` record stated, as `null` when usage or a stated threshold is missing. Render it in `show`, describe it in `skills/metrics/SKILL.md`, and add cases for a turn under a threshold, over one, and with none stated. Success-metric instrumentation, not a PRD criterion
+- [x] **T21** **P1** For the main-session context success metric, make `metrics.sh collect` report the largest main-thread turn context inside driver-mode enter/exit windows. A turn's context is its input, cache-write and cache-read tokens, with each message counted once by id. Report it beside the threshold the `enter` record stated, as `null` when usage or a stated threshold is missing. Render it in `show`, describe it in `skills/metrics/SKILL.md`, and add cases for a turn under a threshold, over one, and with none stated. Success-metric instrumentation, not a PRD criterion
   - deps: T20
   - covers: Long runs compact, and can pause on a schedule
   - arch: —

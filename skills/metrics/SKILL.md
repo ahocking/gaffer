@@ -86,6 +86,23 @@ outcome is just as complete as `green` — read `totals.outcome_counts` for the 
 split, and relay it, not a pass/fail summary). Relay whichever applies verbatim
 rather than paraphrasing it into "the run succeeded" or "the run is clean".
 
+**Main-session context is the "Long runs compact" success metric** (thin-loop-driver
+T21). `totals.driver_mode_context` reports the largest context of one main-thread
+turn — its input, cache-write and cache-read tokens, output deliberately excluded,
+each message counted once by id — recorded while a selected session was in driver
+mode, beside `threshold`, the compaction threshold that run's kickoff (its earliest
+driver-mode `enter` record in scope) stated. The two fields are `null`
+**independently, not together**: both are `null` when there is no driver-mode
+window in scope, or the kickoff record's threshold is missing or `"unknown"`;
+`threshold` is stated with `max_context: null` when no main-thread turn
+carrying usage data falls inside any window; both numbers are present only
+when the comparison is real. A real `max_context` is never paired against an
+invented threshold. `totals.driver_mode_context_diagnostics`
+(`windows`, `turns_in_window`) says what was actually seen even when the headline
+reads unmeasured. `show` renders one line: the two numbers and whether the max turn
+came in **under** or **⚠ OVER** the threshold, or the specific reason it is
+unmeasured — relay it verbatim, the same rule as every other null in this packet.
+
 This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
 the tally means "this is a run and here is its state", and there is nothing to count
 here. The rest of the conventions in

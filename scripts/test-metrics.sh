@@ -1601,6 +1601,112 @@ check "collect: event-less run -> null" "null" \
 check "collect: event-less run diagnostics edit_events=0" "0" \
   "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMEMPTYOUT")"
 
+echo "== thin-loop-driver T21: main-session-context success metric (driver-mode enter/exit windows) =="
+# --- shared fixture builder: one session with one enter/exit driver-mode window,
+# one main-thread transcript turn (or two), and matching events so win_start/win_end
+# resolve. `dmc_repo <name> <threshold>` sets up the repo/events/driver-mode log;
+# the caller then drops turns into <name>/proj/<sid>.jsonl before collecting.
+dmc_repo() { # dmc_repo <dirname> <sid> <threshold>
+  local dir="$ROOT/$1" sid="$2" thr="$3"
+  mkdir -p "$dir/.agents/metrics/events" "$dir/.agents/metrics/driver-mode"
+  git -C "$dir" init -q
+  cat > "$dir/.agents/metrics/events/$sid.jsonl" <<EVJSON
+{"ts":"2026-07-22T10:00:00Z","session_id":"$sid","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-22T10:00:10Z","session_id":"$sid","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+EVJSON
+  cat > "$dir/.agents/metrics/driver-mode/$sid.jsonl" <<DMJSON
+{"ts":"2026-07-22T10:00:00Z","session":"$sid","kind":"enter","model":"claude-opus-5","effort":"high","threshold":"$thr"}
+{"ts":"2026-07-22T10:00:10Z","session":"$sid","kind":"exit"}
+DMJSON
+}
+
+# --- case 1: a turn UNDER a stated threshold. Two turns (3000, 4000) discriminate
+# MAX from a plausible SUM bug (7000 != 4000) -- the field is "the LARGEST turn
+# context", not a total, so a wrong implementation that reused this file's own
+# sumtok() pattern would read a different, wrong number here, not merely a
+# differently-labelled one.
+dmc_repo "dmc-under" "DCU1" "10000"
+mkdir -p "$ROOT/dmc-under-proj/proj"
+cat > "$ROOT/dmc-under-proj/proj/DCU1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"u1","model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":1000}}}
+{"type":"assistant","timestamp":"2026-07-22T10:00:04Z","message":{"id":"u2","model":"claude-opus-5","usage":{"input_tokens":1500,"output_tokens":10,"cache_creation_input_tokens":1500,"cache_read_input_tokens":1000}}}
+JSON
+DCUOUT="$ROOT/dmc-under.json"
+"$METRICS" collect --main-root "$ROOT/dmc-under" --projects-dir "$ROOT/dmc-under-proj" --out "$DCUOUT" >/dev/null 2>&1
+check "collect: under threshold -- max_context is the MAX turn (4000), not the sum (7000)" "4000" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCUOUT")"
+check "collect: under threshold -- threshold reported beside it" "10000" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCUOUT")"
+check "collect: under threshold -- diagnostics windows=1" "1" \
+  "$(jq -r '.totals.driver_mode_context_diagnostics.windows' "$DCUOUT")"
+check "collect: under threshold -- diagnostics turns_in_window=2" "2" \
+  "$(jq -r '.totals.driver_mode_context_diagnostics.turns_in_window' "$DCUOUT")"
+check "show: renders under threshold, no OVER flag" "main-session context (driver mode): 4000 tokens vs threshold 10000  under threshold" \
+  "$("$METRICS" show "$DCUOUT" | grep -F 'main-session context')"
+
+# --- case 2: a turn OVER a stated threshold. input=100, cache_creation=200,
+# cache_read=800, output=9999 -- correct context (in+ccC+ccR=1100) is OVER the
+# threshold (500); a plausible bug that forgets cache_read (100+200=300) reads
+# UNDER instead, flipping the very relationship this case exists to prove. output
+# is excluded on purpose (huge here, at 9999) -- a bug that summed output in would
+# also read "over" but at the wrong number, so the exact value is what is checked.
+dmc_repo "dmc-over" "DCO1" "500"
+mkdir -p "$ROOT/dmc-over-proj/proj"
+cat > "$ROOT/dmc-over-proj/proj/DCO1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"o1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":9999,"cache_creation_input_tokens":200,"cache_read_input_tokens":800}}}
+JSON
+DCOOUT="$ROOT/dmc-over.json"
+"$METRICS" collect --main-root "$ROOT/dmc-over" --projects-dir "$ROOT/dmc-over-proj" --out "$DCOOUT" >/dev/null 2>&1
+check "collect: over threshold -- max_context excludes output, includes cache_read (1100)" "1100" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCOOUT")"
+check "collect: over threshold -- threshold reported beside it" "500" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCOOUT")"
+check "show: renders the OVER threshold flag" "main-session context (driver mode): 1100 tokens vs threshold 500  ⚠ OVER threshold" \
+  "$("$METRICS" show "$DCOOUT" | grep -F 'main-session context')"
+
+# --- case 3: NO threshold stated (enter recorded "unknown", the literal default
+# cmd_driver_mode_enter writes when --threshold is omitted). A plausible bug falls
+# back to gaffer's own default compaction threshold (GAFFER_DEFAULT_COMPACT_THRESHOLD,
+# 200000 in runstate.sh) instead of null -- both fields must read null together
+# (PRD: "a run lacking usage data or a stated threshold reports unmeasured"), even
+# though real usage data (a 50000-token turn) exists for this window.
+dmc_repo "dmc-none" "DCN1" "unknown"
+mkdir -p "$ROOT/dmc-none-proj/proj"
+cat > "$ROOT/dmc-none-proj/proj/DCN1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"n1","model":"claude-opus-5","usage":{"input_tokens":10000,"output_tokens":10,"cache_creation_input_tokens":20000,"cache_read_input_tokens":20000}}}
+JSON
+DCNOUT="$ROOT/dmc-none.json"
+"$METRICS" collect --main-root "$ROOT/dmc-none" --projects-dir "$ROOT/dmc-none-proj" --out "$DCNOUT" >/dev/null 2>&1
+check "collect: no threshold stated -- threshold is null, not gaffer's own default" "null" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCNOUT")"
+check "collect: no threshold stated -- max_context is null too, despite real usage data" "null" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCNOUT")"
+check "collect: no threshold stated -- diagnostics still show the window and turn were seen" "1 1" \
+  "$(jq -r '"\(.totals.driver_mode_context_diagnostics.windows) \(.totals.driver_mode_context_diagnostics.turns_in_window)"' "$DCNOUT")"
+check "show: renders unmeasured, not a lying number" \
+  "main-session context (driver mode): unmeasured — no stated compaction threshold in scope (1 window(s), 1 turn(s))" \
+  "$("$METRICS" show "$DCNOUT" | grep -F 'main-session context')"
+
+# --- case 4: a threshold IS stated but no main-thread turn with usage data falls
+# inside the window (no transcript at all here). This is the state the two-fields-
+# null-together phrasing in SKILL.md/metrics.sh wrongly claimed was impossible --
+# threshold and max_context are null INDEPENDENTLY, and a stated threshold must
+# survive on its own when only usage is missing (never fall back to null-both, and
+# never invent a 0 for max_context).
+dmc_repo "dmc-nousage" "DCX1" "10000"
+mkdir -p "$ROOT/dmc-nousage-proj/proj"
+DCXOUT="$ROOT/dmc-nousage.json"
+"$METRICS" collect --main-root "$ROOT/dmc-nousage" --projects-dir "$ROOT/dmc-nousage-proj" --out "$DCXOUT" >/dev/null 2>&1
+check "collect: threshold stated, no usage -- threshold survives on its own" "10000" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCXOUT")"
+check "collect: threshold stated, no usage -- max_context is null, not 0" "null" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCXOUT")"
+check "collect: threshold stated, no usage -- diagnostics show the window, zero turns" "1 0" \
+  "$(jq -r '"\(.totals.driver_mode_context_diagnostics.windows) \(.totals.driver_mode_context_diagnostics.turns_in_window)"' "$DCXOUT")"
+check "show: renders unmeasured for missing usage, names the stated threshold" \
+  "main-session context (driver mode): unmeasured — no main-thread usage data in 1 window(s) (threshold 10000)" \
+  "$("$METRICS" show "$DCXOUT" | grep -F 'main-session context')"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0

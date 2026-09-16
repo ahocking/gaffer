@@ -34,36 +34,36 @@ This feature keeps the main loop session's context small over 10–20 hour runs 
 
 ## Capabilities
 
-- [ ] **P0**: A session running the loop is in driver mode
+- [x] **P0**: A session running the loop is in driver mode
   - a session enters driver mode when `/gaffer:run-loop` or `/gaffer:resume` starts the loop in it, including a session launched with `claude --agent gaffer:loop-driver` (`model: inherit`), and leaves it when the loop renders its stop report, whether it stopped, paused or finished; after that the same session can edit again. Compaction does not end driver mode, and afterwards the session still follows the `loop-driver` instructions
   - in driver mode, the guard refuses Edit, Write, MultiEdit and NotebookEdit calls and the shell write forms it recognises (`sed -i`, `cat >`, `tee`, `cp` and similar) made from that session's main thread, unless the target is under `.agents/`, giving driver mode as the reason and a pause as the way out. Calls from its subagents, and git, gaffer's scripts and other commands without a recognised write form, are not refused
   - driver mode is keyed to one session: it never blocks another session, and a mark left by a session that crashed or closed mid-run blocks no session, that session reopened included
   - the kickoff states the session's model and effort (effort as unknown when it cannot be read) and never asks to change either
 
-- [ ] **P0**: Agents take a handoff file and return one status line
+- [x] **P0**: Agents take a handoff file and return one status line
   - when the loop begins a packet (as `loop-measurement` defines it), a script writes its handoff file holding the task, file hints and acceptance criteria, and each dispatch for that packet passes only that path, plus the review file's path on a fresh implementer attempt
   - every agent the loop dispatches returns exactly one status line (status, what changed, whether its result file needs reading, and that file's path) and writes everything else to its result file
   - the driver never opens a result file, which the escalation decider reads instead, and never polls: it waits for each dispatch to return and runs no repeated check while an agent works
   - handoff and result files are gitignored, so a pause stash and `resume`'s reconcile leave them in place. When `run-loop` or `resume` starts, it keeps the files of the run it drives and of the run before, and removes older ones
 
-- [ ] **P0**: The reviewer verdict routes each packet mechanically
+- [x] **P0**: The reviewer verdict routes each packet mechanically
   - the reviewer returns exactly one verdict, on triggers that exclude each other: `pass`, the acceptance criteria are met and there is no blocking finding; `fix`, a failure its result file (the review file) describes precisely enough for another implementer to correct; `escalate`, anything else. When more than one could apply, or which applies is unclear, `escalate` wins
   - `pass` → the packet lands as a green commit and the loop advances; `fix`, or an escalation decider `retry`, → a fresh implementer attempt, meaning a new agent given the handoff and review files, whose work is reviewed again; `escalate`, or `fix` once the packet's attempts are used → the escalation decider, whose `reorder`, `append-task` or `hand-off-feature` makes the loop discard the packet's work to the last green checkpoint, keeping the decider's changes, and advance (a handed-off packet is not begun again this run), and whose `ask-operator` stops the loop on that question. The attempt count is set in `.agents/project-overrides.yaml` (default 1 when missing, invalid or 0) and counts attempts from either route since the packet's latest start
   - a packet in the design-heavy tier is implemented, and re-attempted on `fix` or `retry`, by a dispatched Opus agent that can edit (the architect or the UX designer, chosen when the packet is scoped), never by the driver
   - outcomes are recorded exactly as `loop-measurement` defines them: a fresh implementer attempt is a retry, and routing to the escalation decider is not an ending
 
-- [ ] **P1**: Reports are thin and built from files
+- [x] **P1**: Reports are thin and built from files
   - when a packet ends, the operator gets one line naming it by id and plain-English title with its outcome, plus one line per escalation decider decision since the last report, in place of ADR 0023's per-packet check-in, and ADR 0023 is amended to match
   - the kickoff, including on resume, and the stop report are assembled, without the driver opening result files, from handoff files, result files and `loop-measurement`'s outcome records, never from the driver's memory of the run
   - a stop report rendered after compaction, or by a session that resumed another session's run, still names every packet the run began with its outcome, or that it is paused, and each `hand-off-feature` question the run recorded
 
-- [ ] **P1**: The operator can ask questions and request edits mid-run
+- [x] **P1**: The operator can ask questions and request edits mid-run
   - the driver answers an operator question from handoff files, status lines and findings first, without reading source
   - a question those cannot answer goes to an agent that writes only its result file, whose status line carries the short answer and whose result file holds the rest; the driver passes the line and the file's path to the operator
   - an edit the operator asks for mid-run is made by a dispatched agent between packets and lands before the next packet begins, so no packet's commit or rollback includes it, and the run continues without a stop report
   - to edit by hand, in that session or outside it, the operator pauses first; once the stop report is rendered, the session edits directly
 
-- [ ] **P1**: Long runs compact, and can pause on a schedule
+- [x] **P1**: Long runs compact, and can pause on a schedule
   - the auto-compaction threshold can be set per repo, and a loop session where neither the repo nor the operator has set one uses gaffer's default, so long runs compact instead of growing. The kickoff states the threshold in effect, or that it cannot tell
   - with a periodic pause of N packets set in `.agents/project-overrides.yaml`, once N packets have ended since the loop last started or resumed, the loop pauses exactly as `/gaffer:pause` does, and the stop report names the setting as the reason
   - the periodic pause is off by default, and off when unset or 0, because it stops an unattended run until someone resumes it

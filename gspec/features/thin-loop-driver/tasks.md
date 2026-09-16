@@ -219,7 +219,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Reports are thin and built from files · A session running the loop is in driver mode · Long runs compact, and can pause on a schedule
   - arch: —
   - files: templates/report-templates.md, templates/check-in.md, templates/report-conventions.md, docs/adr/0023-report-conventions-delivered-not-referenced.md
-- [ ] **T19** **P1** In `skills/run-loop/SKILL.md`, `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
+- [x] **T19** **P1** In `skills/run-loop/SKILL.md`, `skills/resume/SKILL.md` and `skills/pause/SKILL.md`:
   - run `compact-threshold` and pass its value to `driver-mode enter`;
   - render every loop report only from `run-digest` output: the packet-ended line after each outcome, the kickoff (including on resume), and the stop report (including after compaction or in a session that resumed another's run);
   - at each packet boundary run `periodic-pause`, and on `DUE=yes` request a pause whose reason names `pause_every_packets` and hand to `/gaffer:pause`.

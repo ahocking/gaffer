@@ -21,9 +21,11 @@
 #
 #   runstate.sh run-digest <run-state> [--since <ts>]
 #
-# It reads the run's handoff files, the first line of its result files, its routing
-# records, the outcomes log and the driver-mode records, and prints ONLY these,
-# tab-separated, one per line, in no particular order and with no header:
+# It reads the run's handoff files, its routing records (including the routed status
+# recorded for a hand-off, written by that routing call's own --status argument -- an
+# omitted one leaves the hand-off line's status empty), the outcomes log and the driver-
+# mode records, and prints ONLY these, tab-separated, one per line, in no particular
+# order and with no header -- never a result file, which it does not open.
 #
 #   packet\t<id>\t<title>\t<outcome>
 #       one per packet the run BEGAN (a handoff file exists for it). <outcome> is

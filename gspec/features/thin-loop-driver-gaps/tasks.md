@@ -133,7 +133,7 @@ else needs a session boundary.
   - covers: The standing instructions describe the loop that actually runs
   - arch: —
   - files: skills/run-loop/SKILL.md
-- [ ] **T10** **P1** Describe the digest as reading the routed status recorded for a hand-off, never result files it does not open, in both places that describe it — the `run-digest` header comment in `scripts/runstate.sh` and `templates/report-templates.md:24` — restating the parent's constraint unchanged and making the routing call's `--status` argument read as load-bearing, since a routing call omitting it leaves the hand-off line empty and the stop report silently loses the question. Prose only, no sweep case; checkable by reading the two descriptions and `cmd_run_digest`'s inputs together and confirming they name one mechanism.
+- [x] **T10** **P1** Describe the digest as reading the routed status recorded for a hand-off, never result files it does not open, in both places that describe it — the `run-digest` header comment in `scripts/runstate.sh` and `templates/report-templates.md:24` — restating the parent's constraint unchanged and making the routing call's `--status` argument read as load-bearing, since a routing call omitting it leaves the hand-off line empty and the stop report silently loses the question. Prose only, no sweep case; checkable by reading the two descriptions and `cmd_run_digest`'s inputs together and confirming they name one mechanism.
   - deps: —
   - covers: The digest's documented mechanism is the one it uses
   - arch: —

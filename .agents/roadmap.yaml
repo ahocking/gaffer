@@ -83,6 +83,11 @@ features:
     why: "part 4 of the loop-cost redesign: judgment calls the driver routes out go to a short-lived decider (the slimmed chief-engineer) that returns one next step, plus a periodic review keeping the findings index under its warning size (34,368 bytes in one repo) and a 160-character summary cap"
     depends_on: [thin-loop-driver, loop-measurement, retire-unused-loop-modes, retire-autonomy-levels]
 
+  - slug: packet-bundling
+    order: 26
+    why: "the loop groups consecutive unchecked tasks of one feature that share file scope into ONE packet — one implementer dispatch, one review, one verification run, one commit carrying every member's trailer and checkbox. Tasks sharing files cannot run concurrently anyway, so today each pays to re-read the same large files: measured 2026-09-15 in the thin-loop-driver P0 run, the first single-task packet's implementer alone spent ~188k tokens largely loading the one script it then edited, and grouping ran 14 P0 tasks as 4 dispatches. Operator's call on 2026-09-15 (weekly token budget ~40% spent by Tuesday), and deliberately NOT folded into thin-loop-driver: doing so mid-run would have reopened the handoff and router contracts and delayed the P0 those savings depend on. Grouping is automatic — execution is gaffer's half of the ADR 0020 seam, so no plan marker and no per-run operator decision — with a conservative default cap so an upgrade changes nothing until opted into, and design-heavy tasks never bundled. Carries a REQUIRED collector fix as its own P0: metrics.sh emits ONE row per commit today (its trailer awk assigns pk=v per match, ~line 574), so commit 8f236af's five tasks read as one — without it, bundling degrades the measurement it exists to improve. Ordered after escalation-decider, which is part 4 of the redesign and already depended on; this is a cost optimisation on top of a driver loop that must first be complete"
+    depends_on: [thin-loop-driver]
+
   - slug: run-state-cleanup
     order: 18
     why: "ADR 0024 + 0025, which migrate in the same skill pass; ordered before metrics-coverage-gaps because it changes the run-state the loop writes on every packet, so doing it first means the coverage-gaps work is not built on state about to be migrated"

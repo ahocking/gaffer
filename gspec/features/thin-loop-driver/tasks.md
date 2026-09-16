@@ -241,7 +241,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Long runs compact, and can pause on a schedule
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh, skills/metrics/SKILL.md
-- [ ] **T22** [P] **P1** For the cost-per-landed-packet success metric, add `spend.sh --project <folder>` so the agent-role breakdown reads one repo's main-session dollars, with cases. The green-packet denominator comes from `metrics.sh collect` over the same `--since`/`--until` window; if `collect` cannot count green outcomes and coverage across a multi-session window, report that rather than approximating. Success-metric instrumentation, not a PRD criterion
+- [x] **T22** [P] **P1** For the cost-per-landed-packet success metric, add `spend.sh --project <folder>` so the agent-role breakdown reads one repo's main-session dollars, with cases. The green-packet denominator comes from `metrics.sh collect` over the same `--since`/`--until` window; if `collect` cannot count green outcomes and coverage across a multi-session window, report that rather than approximating. Success-metric instrumentation, not a PRD criterion
   - deps: —
   - covers: A session running the loop is in driver mode
   - arch: —

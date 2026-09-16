@@ -77,7 +77,7 @@
 #
 # Usage:
 #   spend.sh [--projects-dir DIR] [--since ISO] [--until ISO] [--days N]
-#            [--price-table FILE]
+#            [--price-table FILE] [--project FOLDER]
 #
 #   --projects-dir DIR  Claude Code transcript root (default:
 #                        $ORCH_METRICS_PROJECTS_DIR or ~/.claude/projects).
@@ -88,6 +88,24 @@
 #                        (default: 7).
 #   --price-table FILE   alternate price table (default: spend-prices.json
 #                        next to this script).
+#   --project FOLDER     scope the ENTIRE scan to one Claude-projects folder
+#                        name (the same dash-encoded name that appears as a
+#                        by_project key), so by_role, by_model, by_effort and
+#                        totals all read as that one repo's numbers rather
+#                        than a machine-wide mix — this is what the
+#                        thin-loop-driver "main-session cost per landed
+#                        packet" success metric needs (that repo's role
+#                        "main" dollars over the same window, divided by the
+#                        green-packet count `metrics.sh collect` reports for
+#                        the same repo/window). Matched by EXACT directory
+#                        name, never a prefix or substring, so "proj1" cannot
+#                        also pull in a sibling folder "proj10". A folder
+#                        that does not exist under projects_dir is not an
+#                        error: it reports `project.status: "absent"` and an
+#                        otherwise-empty (zero) report, the same "empty
+#                        window is legitimate" rule --projects-dir absent
+#                        already follows. Omit it for the prior machine-wide
+#                        behavior, unchanged.
 #
 # Prints one JSON report to stdout. Exit 0 on success (including an empty
 # window — that is a legitimate report, not a failure); exit 1 on a usage or
@@ -141,13 +159,16 @@ usage() {
   cat >&2 <<'USAGE'
 spend.sh — machine-wide API-equivalent spend report (requires jq)
   spend.sh [--projects-dir DIR] [--since ISO] [--until ISO] [--days N]
-           [--price-table FILE]
+           [--price-table FILE] [--project FOLDER]
 Prints one JSON report to stdout, over a window (default: the last 7 days).
+--project FOLDER scopes the whole report to one Claude-projects folder name
+(exact match), so by_role/by_model/by_effort/totals read as that one repo.
 USAGE
 }
 
 projects_dir="${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}"
 since="" until="" days=7 price_table="${HERE}/spend-prices.json"
+project_filter=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --projects-dir) projects_dir="${2:-}"; shift 2 ;;
@@ -155,6 +176,7 @@ while [ $# -gt 0 ]; do
     --until) until="${2:-}"; shift 2 ;;
     --days) days="${2:-}"; shift 2 ;;
     --price-table) price_table="${2:-}"; shift 2 ;;
+    --project) project_filter="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1' (try --help)" ;;
   esac
@@ -266,37 +288,60 @@ newermt_ok=1
 find "$tmp" -maxdepth 0 -newermt "$(to_findmt "1970-01-01T00:00:00Z")" >/dev/null 2>&1 || newermt_ok=0
 mtime_floor="$(to_findmt "$(shift_iso_back_1day "$since")")"
 
+# --project resolves to EXACTLY ONE project directory, matched by exact
+# directory name — never a prefix/substring/glob, so "proj1" cannot also
+# pull in a sibling folder "proj10". Built into a directory LIST rather than
+# branching the scan body in two, so the per-file scanning logic below (the
+# newermt probe, main vs. subagent discovery) is written and maintained once
+# regardless of whether --project narrowed it.
+: > "$tmp/projdirs.txt"
+project_status="not_filtered"
 if [ -d "$projects_dir" ]; then
-  for pf in "$projects_dir"/*/; do
-    [ -d "$pf" ] || continue
-    proj="$(basename "$pf")"
-    if [ "$newermt_ok" = "1" ]; then
-      main_files="$(find "$pf" -maxdepth 1 -name '*.jsonl' -newermt "$mtime_floor" 2>/dev/null)"
+  if [ -n "$project_filter" ]; then
+    if [ -d "$projects_dir/$project_filter" ]; then
+      printf '%s\n' "$projects_dir/$project_filter/" >> "$tmp/projdirs.txt"
+      project_status="present"
     else
-      main_files="$(for mf in "$pf"*.jsonl; do [ -e "$mf" ] && printf '%s\n' "$mf"; done)"
+      project_status="absent"
     fi
-    while IFS= read -r mf; do
-      [ -n "$mf" ] || continue
-      files_scanned=$((files_scanned + 1))
-      sid="$(basename "$mf" .jsonl)"
-      scan_main "$mf" "$proj" "$sid"
-    done <<< "$main_files"
-    if [ "$newermt_ok" = "1" ]; then
-      sub_files="$(find "$pf" -path '*/subagents/agent-*.jsonl' -newermt "$mtime_floor" 2>/dev/null)"
-    else
-      sub_files="$(for sf in "$pf"*/subagents/agent-*.jsonl; do [ -e "$sf" ] && printf '%s\n' "$sf"; done)"
-    fi
-    while IFS= read -r sf; do
-      [ -n "$sf" ] || continue
-      files_scanned=$((files_scanned + 1))
-      base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
-      scan_sub "$sf" "$proj" "$aid"
-    done <<< "$sub_files"
-  done
+  else
+    for pf in "$projects_dir"/*/; do
+      [ -d "$pf" ] || continue
+      printf '%s\n' "$pf" >> "$tmp/projdirs.txt"
+    done
+  fi
   projects_dir_status="present"
 else
   projects_dir_status="absent"
+  [ -n "$project_filter" ] && project_status="absent"
 fi
+
+while IFS= read -r pf; do
+  [ -n "$pf" ] || continue
+  proj="$(basename "$pf")"
+  if [ "$newermt_ok" = "1" ]; then
+    main_files="$(find "$pf" -maxdepth 1 -name '*.jsonl' -newermt "$mtime_floor" 2>/dev/null)"
+  else
+    main_files="$(for mf in "$pf"*.jsonl; do [ -e "$mf" ] && printf '%s\n' "$mf"; done)"
+  fi
+  while IFS= read -r mf; do
+    [ -n "$mf" ] || continue
+    files_scanned=$((files_scanned + 1))
+    sid="$(basename "$mf" .jsonl)"
+    scan_main "$mf" "$proj" "$sid"
+  done <<< "$main_files"
+  if [ "$newermt_ok" = "1" ]; then
+    sub_files="$(find "$pf" -path '*/subagents/agent-*.jsonl' -newermt "$mtime_floor" 2>/dev/null)"
+  else
+    sub_files="$(for sf in "$pf"*/subagents/agent-*.jsonl; do [ -e "$sf" ] && printf '%s\n' "$sf"; done)"
+  fi
+  while IFS= read -r sf; do
+    [ -n "$sf" ] || continue
+    files_scanned=$((files_scanned + 1))
+    base="$(basename "$sf")"; aid="${base#agent-}"; aid="${aid%.jsonl}"
+    scan_sub "$sf" "$proj" "$aid"
+  done <<< "$sub_files"
+done < "$tmp/projdirs.txt"
 
 # =============================================================================
 # JOIN + DEDUP + WINDOW + PRICE + GROUP, in one jq program (single source of
@@ -308,6 +353,8 @@ jq -n \
   --arg table_date "$table_date" \
   --argjson price_table_overridden "$price_table_overridden" \
   --argjson files_scanned "$files_scanned" \
+  --arg project_filter "$project_filter" \
+  --arg project_status "$project_status" \
   --slurpfile pricefile "$price_table" \
   -f /dev/stdin "$tmp/raw.ndjson" <<'JQPROG'
 def r6(n): (n*1000000|round)/1000000;
@@ -396,6 +443,16 @@ def groupreport(rows; keyfn):
     price_table: { date: $table_date, overridden: $price_table_overridden },
     label: "API-equivalent spend estimate from published per-token API prices — not a bill.",
     projects_dir: { status: $projects_dir_status },
+    # `filter` is the SAME folder-name shape as a by_project key (per the note
+    # above, that name is already a dash-encoded path by Claude Code's own
+    # convention — nothing new leaks). `status`: "present" when that exact
+    # folder was found and scanned, "absent" when --project named a folder
+    # that does not exist under projects_dir (an empty, zero-valued report
+    # follows — not an error, same rule as projects_dir being absent),
+    # "not_filtered" when --project was not given at all (prior, unscoped
+    # behavior, unchanged).
+    project: { filter: (if $project_filter == "" then null else $project_filter end),
+               status: $project_status },
     counts: {
       files_scanned: $files_scanned,
       messages_counted: ($priced_rows | length),
@@ -415,7 +472,10 @@ def groupreport(rows; keyfn):
     by_role:    groupreport($priced_rows; .role),
     by_effort:  groupreport($priced_rows; (.effort // "unrecorded")),
     unmeasured: (
-      [ (if sumunsplit($priced_rows) > 0 then
+      [ (if $project_status == "absent" then
+           "--project \"\($project_filter)\" does not match any project folder under projects_dir: no transcripts were scanned, so every figure in this report is zero because nothing matched — not because nothing was spent."
+         else empty end),
+        (if sumunsplit($priced_rows) > 0 then
            "cache-write 5m/1h split unavailable for \(sumunsplit($priced_rows)) token(s): the transcript usage block lacked the cache_creation breakdown object, so those tokens are excluded from dollar totals (never guessed which lifetime)."
          else empty end),
         ($priced_rows | map(select(.role=="unrecorded")) | length) as $urole

@@ -207,6 +207,77 @@ check "malformed price table: non-zero exit" "1" "$( [ "$RC2" -ne 0 ] && echo 1 
 echo "== jq is a stated requirement =="
 check "spend.sh documents jq as required" "1" "$(grep -c 'jq is required' "$SPEND")"
 
+# =============================================================================
+# FIXTURE SET C — --project (loop-measurement / thin-loop-driver T22): one
+# repo's role breakdown. Two projects, "proj-c1" and "proj-c10", chosen so
+# proj-c1's exact name is a PREFIX of proj-c10's — a substring/prefix-match
+# bug would silently merge them in either direction. Each project carries a
+# main-session row ("main" role, no attributionAgent) and a subagent row
+# ("reviewer" role) so the by_role breakdown is provably scoped, not just the
+# totals.
+# =============================================================================
+PROJ_C_ROOT="$ROOT/projects-c"
+mkdir -p "$PROJ_C_ROOT/proj-c1/SC1/subagents" "$PROJ_C_ROOT/proj-c10/SC10/subagents"
+cat > "$PROJ_C_ROOT/proj-c1/SC1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","effort":"high","message":{"id":"msg_c1_main","model":"model-a","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_C_ROOT/proj-c1/SC1/subagents/agent-AC1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-12T10:01:00Z","effort":"high","attributionAgent":"reviewer","message":{"id":"msg_c1_sub","model":"model-a","usage":{"input_tokens":50,"output_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_C_ROOT/proj-c10/SC10.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-12T10:00:00Z","effort":"high","message":{"id":"msg_c10_main","model":"model-a","usage":{"input_tokens":99999,"output_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_C_ROOT/proj-c10/SC10/subagents/agent-AC10.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-12T10:01:00Z","effort":"high","attributionAgent":"reviewer","message":{"id":"msg_c10_sub","model":"model-a","usage":{"input_tokens":77777,"output_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+
+echo "== Fixture Set C: --project scopes the whole report to one repo =="
+
+OUT_C_UNFILTERED="$ROOT/out-c-unfiltered.json"
+"$SPEND" --projects-dir "$PROJ_C_ROOT" --price-table "$PRICES_MIXED" \
+  --since "2026-09-12T00:00:00Z" --until "2026-09-12T23:59:59Z" > "$OUT_C_UNFILTERED"
+check "no --project: totals combine both repos (100+50+99999+77777)" "177926" \
+  "$(jq -r '.totals.tokens.input' "$OUT_C_UNFILTERED")"
+check "no --project: by_role.main combines both repos (100+99999)" "100099" \
+  "$(jq -r '.by_role.main.tokens.input' "$OUT_C_UNFILTERED")"
+check "no --project: project.filter is null" "null" "$(jq -r '.project.filter' "$OUT_C_UNFILTERED")"
+check "no --project: project.status is not_filtered" "not_filtered" \
+  "$(jq -r '.project.status' "$OUT_C_UNFILTERED")"
+
+OUT_C1="$ROOT/out-c1.json"
+"$SPEND" --projects-dir "$PROJ_C_ROOT" --price-table "$PRICES_MIXED" --project proj-c1 \
+  --since "2026-09-12T00:00:00Z" --until "2026-09-12T23:59:59Z" > "$OUT_C1"
+check "--project proj-c1: project.filter echoes the name" "proj-c1" "$(jq -r '.project.filter' "$OUT_C1")"
+check "--project proj-c1: project.status is present" "present" "$(jq -r '.project.status' "$OUT_C1")"
+check "--project proj-c1: totals scoped to proj-c1 only (100+50), NOT proj-c10's 99999+77777" "150" \
+  "$(jq -r '.totals.tokens.input' "$OUT_C1")"
+check "--project proj-c1: by_role.main scoped (100, not 100099)" "100" \
+  "$(jq -r '.by_role.main.tokens.input' "$OUT_C1")"
+check "--project proj-c1: by_role.reviewer scoped (50, not 77827)" "50" \
+  "$(jq -r '.by_role.reviewer.tokens.input' "$OUT_C1")"
+check "--project proj-c1: by_project has ONLY proj-c1 (prefix collision safe)" "true" \
+  "$(jq -r '(.by_project|keys) == ["proj-c1"]' "$OUT_C1")"
+
+OUT_C10="$ROOT/out-c10.json"
+"$SPEND" --projects-dir "$PROJ_C_ROOT" --price-table "$PRICES_MIXED" --project proj-c10 \
+  --since "2026-09-12T00:00:00Z" --until "2026-09-12T23:59:59Z" > "$OUT_C10"
+check "--project proj-c10: totals scoped to proj-c10 only (99999+77777), NOT proj-c1's 100+50" "177776" \
+  "$(jq -r '.totals.tokens.input' "$OUT_C10")"
+check "--project proj-c10: by_role.reviewer scoped (77777, not 77827)" "77777" \
+  "$(jq -r '.by_role.reviewer.tokens.input' "$OUT_C10")"
+
+OUT_C_TYPO="$ROOT/out-c-typo.json"
+"$SPEND" --projects-dir "$PROJ_C_ROOT" --price-table "$PRICES_MIXED" --project proj-c-does-not-exist \
+  --since "2026-09-12T00:00:00Z" --until "2026-09-12T23:59:59Z" > "$OUT_C_TYPO"; RC_C_TYPO=$?
+check "--project unknown folder: exit 0 (not an error)" "0" "$RC_C_TYPO"
+check "--project unknown folder: project.status is absent" "absent" "$(jq -r '.project.status' "$OUT_C_TYPO")"
+check "--project unknown folder: project.filter echoes the requested name" "proj-c-does-not-exist" \
+  "$(jq -r '.project.filter' "$OUT_C_TYPO")"
+check "--project unknown folder: messages_counted is 0" "0" "$(jq -r '.counts.messages_counted' "$OUT_C_TYPO")"
+check "--project unknown folder: totals.dollars is 0" "0" "$(jq -r '.totals.dollars' "$OUT_C_TYPO")"
+check "--project unknown folder: unmeasured names the mismatch (not a silent zero)" "true" \
+  "$(jq -r '(.unmeasured|length) > 0 and ((.unmeasured|join(" ")) | contains("proj-c-does-not-exist"))' "$OUT_C_TYPO")"
+
 echo "== default window (--days, no --since/--until) does not error =="
 NOW_ROOT="$ROOT/projects-now"; mkdir -p "$NOW_ROOT/proj-now"
 NOW_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

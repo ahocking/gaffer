@@ -104,3 +104,74 @@ the contract **reliably present**, not enforced.
 **Known gap.** L2 lands in existing repos only when `/gaffer:migrate` is re-run. Until
 then those repos are on L1 (inside skills) and L3 (everywhere else), which is the
 configuration L3 exists to serve.
+
+## Amendment — the loop's shapes are rebuilt on `run-digest` (2026-09-16, ADR 0028)
+
+- Status: Accepted, amending this record. Nothing above is retracted.
+- Relates to: [ADR 0028](0028-loop-driver-mode.md) (driver mode), [ADR 0025](0025-remove-backlog-done.md)
+  (the "✅ is this session" rule this narrows), `thin-loop-driver` T18.
+
+**What changed and why.** This ADR's three delivery layers (L1 `Read`, L2 the stamped
+card, L3 the SessionStart hook) are unchanged and still correct. What changed is the
+thing being delivered: ADR 0028 made the loop driver thin. Every agent the loop
+dispatches now returns **one status line** (`templates/status-line.md`) and writes its
+detail to a result file the driver never opens, so the driver no longer holds a running
+narrative of the run — and after a compaction, or in a session that resumed another
+session's run, it holds nothing of the run at all. Shape A's multi-section per-packet
+check-in assumed material the driver stopped having.
+
+**Three consequences, recorded here so the shapes are not "fixed" back later:**
+
+**1. Shape A is one line per ended packet, with no tally and no decision block.** It
+carries the packet's id, a plain-English title and its outcome, plus one line per
+escalation-decider decision since the last report. A header tally on top of one or two
+lines is longer than what it summarizes, and the run's state is what shape B is for.
+The header tally therefore opens **B and C only**.
+
+A decision that *ended* its packet — a `hand-off-feature` always does — still takes its
+own 🔀 line beneath the packet's own outcome line, so one packet can occupy two lines
+here. That is the single documented exception to the conventions' rule that such a
+packet takes one line carrying 🔀, and it is recorded in both files: that rule exists so
+the packet counts once in each tally, and shape A has no tally to count in. The
+alternative — folding the decision into the packet's line — would drop the decision line
+this shape exists to emit.
+
+**2. Shapes B and C are assembled from `runstate.sh run-digest`, not from memory.** The
+digest reads the run's handoff files, its result files' first lines, its routing records,
+the outcomes log and the driver-mode records, and prints four line kinds: `packet`,
+`decision`, `handoff-feature` and at most one `enter`. Three facts it does not carry are
+named in `templates/report-templates.md` and are the **only** ones a shape may read from
+elsewhere — the pending count, a periodic pause's setting, and the branch/sha. This is
+not a licence to re-open the repo to enrich a report; it replaces one unreliable source
+(memory) with one cheap, fixed-size file read, and the "do not go back to disk" rule in
+`templates/report-conventions.md` is otherwise intact.
+
+**3. ✅ in shape B now counts the RUN, from the digest — narrowing ADR 0025 D3.** D3's
+rule was that ✅ counts what *this session* landed, read from check-ins the agent itself
+rendered and never from disk. Its purpose was to stop a backlog-wide or `backlog.done`-
+derived count from being reconstructed by scanning trailers. That purpose survives: the
+digest is one read of the run's own records, `backlog.done` stays deleted, and nothing
+scans trailers. But the PRD requires a stop report to name **every packet the run began**
+with its outcome, whoever renders it — which a session-scoped count cannot do across a
+compaction or a hand-over. So ✅ in shape B counts `packet` lines reading `green`.
+Everywhere else, including any report with no digest behind it, D3 stands unchanged.
+
+**What this amendment does NOT change.** The card (`templates/report-conventions-card.md`)
+and its two copies are untouched and stay byte-identical — the change is to the shapes,
+not to the conventions the card distills, which is why L2/L3 need no re-stamp. The glyph
+vocabulary gains nothing: ⏸️ stays header-only, and a paused packet is named in shape B's
+⚠️ **Unfinished** section with the *word* paused. The ⚠️ bucket's *label* does move —
+shape B words it **unfinished**, because there it aggregates `blocked`, `interrupted`,
+`abandoned`, `open` and `paused`, and "blocked" would be wrong for four of those five.
+Glyph, tally position and fixed order are unchanged, the section heading moves with the
+word so the table-of-contents correspondence holds, and `templates/report-conventions.md`
+states the two labels together rather than leaving the shapes file to contradict it. `templates/check-in.md` survives for a
+Chief Engineer dispatched for self-contained work outside a loop packet, and now says so;
+it is no longer an input to any loop report.
+
+**Known gap.** Nothing mechanically checks that a rendered report was actually assembled
+from the digest rather than recalled — the same honest position this ADR already takes
+about format enforcement. `scripts/test-report-conventions.sh` asserts the contract is
+*present and consistent* (the shapes name the digest, the wire format says it is not the
+loop's, this amendment is an appended section rather than a rewrite); the reviewer is
+what catches a report that ignored it.

@@ -239,6 +239,120 @@ case "$blob_ce_crlf" in
       "expected token sequence: $IMPERATIVE" ;;
 esac
 
+printf '\n== the loop shapes are built from run-digest, not from memory (ADR 0028) ==\n'
+# thin-loop-driver T18. The driver returns/receives STATUS LINES and never opens a
+# result file, so shapes B and C have to be assembled from `runstate.sh run-digest`
+# — otherwise a stop report rendered after a compaction, or by a session that resumed
+# another session's run, silently drops packets it was not present for. These
+# assertions pin the contract as WRITTEN; nothing can check that a rendered report
+# actually obeyed it (see the amendment's "Known gap"), which is the reviewer's job.
+SHAPES="$ROOT/templates/report-templates.md"
+CONV="$ROOT/templates/report-conventions.md"
+WIRE="$ROOT/templates/check-in.md"
+ADR23="$ROOT/docs/adr/0023-report-conventions-delivered-not-referenced.md"
+
+shapes_blob="$(cat "$SHAPES")"
+has 'the shapes name run-digest as the source for B and C' \
+  'runstate.sh run-digest' "$shapes_blob"
+has 'the shapes say B is assembled from it with no --since' \
+  'run-digest <run-state>` with no `--since`' "$shapes_blob"
+has "the shapes say C's session facts come from the enter line" \
+  "comes from \`run-digest\`'s \`enter\` line" "$shapes_blob"
+has 'the shapes forbid asking the operator to change model/effort/threshold' \
+  'Never ask the operator to raise the effort' "$shapes_blob"
+has 'shape A is one line per ended packet with no tally' \
+  'No header tally' "$shapes_blob"
+has 'shape B names a periodic pause by its setting' \
+  'pause_every_packets' "$shapes_blob"
+has 'shape B names the paused packet with the word paused' \
+  'paused here; the run stopped on this one' "$shapes_blob"
+
+# Bind the shapes to the digest's OWN outcome enum. If run-digest grows or renames an
+# outcome, a shape with no glyph for it renders nothing at all for that packet — the
+# exact "silently drops a packet" failure this feature exists to remove. Asserted in
+# BOTH files so a rename has to be made in both or fail here.
+#
+# The shapes side is matched against the two blocks that actually ENUMERATE outcomes --
+# shape A's glyph map and shape B's tally sentence -- not the whole file. Against the
+# whole file `open` matches "opens shapes B and C" and "the operator", and `paused`
+# matches the digest-contract prose, so the assertion would pass for those two with no
+# rendering rule existing at all. This repo has twice shipped assertions that passed
+# while checking nothing (test-runstate.sh's PyYAML fallback, the sed-vs-awk CRLF shim),
+# which is why the anchoring is worth the two sed ranges. Both anchors are unique, and a
+# renamed heading breaks the range and fails here rather than silently emptying it --
+# hence the non-empty guard below.
+DIGEST_SRC="$ROOT/scripts/runstate.sh"
+enum_blob="$(sed -n "/Glyph by the digest's/,/blocked · interrupted · abandoned/p" "$SHAPES"
+             sed -n '/The tally counts `packet` lines by outcome/,/rather than guessing a number/p' "$SHAPES")"
+missing=""
+[ -n "$enum_blob" ] || missing="$missing shapes:ENUM-BLOCKS-NOT-FOUND"
+for o in green failed rolled-back blocked abandoned interrupted paused open; do
+  printf '%s' "$enum_blob" | grep -q -- "$o" || missing="$missing shapes:$o"
+  grep -q -- "$o" "$DIGEST_SRC" || missing="$missing runstate:$o"
+done
+[ -z "$missing" ] && ok 'every run-digest outcome has a rendering in the shapes' \
+  || bad 'every run-digest outcome has a rendering in the shapes' "missing:$missing"
+
+printf '\n== the shapes and the conventions agree where they overlap ==\n'
+# The shapes file opens by saying it ASSUMES the conventions file, so the two
+# disagreeing is not a cosmetic nit -- in a change whose only product is the wording of
+# a formatting contract it is the defect itself. Two overlaps exist after ADR 0028's
+# rework, and each is pinned on BOTH sides so drift in either fails here: the ⚠️
+# bucket's shape-B label, and shape A's two-line exception to the one-line 🔀 rule.
+conv_blob="$(cat "$CONV")"
+has 'the conventions define the shape B wording of the warning bucket' \
+  'worded *blocked* in general and *unfinished* in the loop' "$conv_blob"
+has "shape B's tally uses that wording" \
+  '⚠️ **N unfinished**' "$shapes_blob"
+has "shape B's section heading moves with it" \
+  '⚠️ **Unfinished**' "$shapes_blob"
+has 'the conventions carry the shape A exception to the one-line rule' \
+  'exactly one exception, and it is the loop' "$conv_blob"
+has 'the shapes claim the same exception, in the same direction' \
+  'documented exception to `report-conventions.md`' "$shapes_blob"
+has "shape A's decision rule enumerates rather than conditioning on ending a packet" \
+  'including when the decision is what ended the packet it names' "$shapes_blob"
+
+printf '\n== loop agents return status lines, not check-ins ==\n'
+has 'the wire format says the loop no longer uses it' \
+  'The LOOP no longer uses this file' "$(cat "$WIRE")"
+has 'the wire format points at status-line.md' \
+  'status-line.md' "$(cat "$WIRE")"
+has 'the conventions list status-line.md as a layer' \
+  'status-line.md' "$(cat "$CONV")"
+has 'the conventions say loop agents return status lines, not check-ins' \
+  'status lines, NOT check-ins' "$(cat "$CONV")"
+has 'the conventions scope the header tally to B and C' \
+  'THE HEADER TALLY (opens shapes B and C' "$(cat "$CONV")"
+
+printf '\n== ADR 0023 was AMENDED, not rewritten ==\n'
+# Rewriting an accepted ADR is an operator escalation in this repo
+# (.agents/project-overrides.yaml escalate_to_human_on). The amendment must be an
+# APPENDED section: the original decision text has to survive verbatim, and the
+# amendment has to come after it.
+adr_blob="$(cat "$ADR23")"
+has 'the original L2 decision text survives' \
+  'the consumer repo'"'"'s own `CLAUDE.md` carries a distilled card' "$adr_blob"
+has 'the original rejected-validator consequence survives' \
+  'What was rejected: a `Stop`-hook format validator' "$adr_blob"
+has 'the original known gap survives' \
+  'L2 lands in existing repos only when `/gaffer:migrate` is re-run' "$adr_blob"
+has 'an amendment section exists' '## Amendment' "$adr_blob"
+has 'the amendment states it retracts nothing' 'Nothing above is retracted' "$adr_blob"
+# Order: the amendment must come AFTER the original Consequences, never in place of it.
+orig_ln="$(grep -n '^## Consequences' "$ADR23" | head -1 | cut -d: -f1)"
+amend_ln="$(grep -n '^## Amendment' "$ADR23" | head -1 | cut -d: -f1)"
+if [ -n "$orig_ln" ] && [ -n "$amend_ln" ] && [ "$amend_ln" -gt "$orig_ln" ]; then
+  ok 'the amendment is appended after the original decision, not spliced into it'
+else
+  bad 'the amendment is appended after the original decision, not spliced into it' \
+      "Consequences@${orig_ln:-none} Amendment@${amend_ln:-none}"
+fi
+# The card is NOT part of this change: the amendment must say so, and the byte
+# comparison above is what proves it.
+has 'the amendment states the card is untouched' \
+  'stay byte-identical' "$adr_blob"
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -227,7 +227,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Reports are thin and built from files · Long runs compact, and can pause on a schedule
   - arch: —
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md, skills/pause/SKILL.md
-- [ ] **T20** [P] **P1** For the main-session edits success metric:
+- [x] **T20** [P] **P1** For the main-session edits success metric:
   - `hooks/metrics-log.sh` stamps Edit, Write, MultiEdit and NotebookEdit events with `agents_dir` (whether the target is under `.agents/`; the path is still never logged) and `driver_mode` (its session has a mark and the event has no `agent_id`);
   - `metrics.sh collect` reports a run's count of successful main-thread driver-mode edits outside `.agents/`, as `null` when the run has no events or any such event lacks `agents_dir`.
 

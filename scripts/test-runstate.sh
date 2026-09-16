@@ -403,6 +403,75 @@ git -C "$REPO" stash push --include-untracked -m 'orch resume scratch' -- . >/de
 assert_true "clean again after stashing scratch"     "[ \"\$(decision)\" = clean ]"
 git -C "$REPO" stash drop >/dev/null 2>&1 || true
 
+echo "== reconcile separates deliberate output the loop did not create from its own scratch (thin-loop-driver-gaps T3) =="
+# Worked example from the PRD: agent memories awaiting /gspec-memorize review
+# sit as untracked files under .gspec/memory/pending/ -- NOT the loop's own
+# crash-recovery scratch. Following the old `discard` decision literally would
+# stash unreviewed work out of the tree without asking. Thirteen files, to
+# match the PRD's worked example exactly.
+mkdir -p "$REPO/.gspec/memory/pending/some-agent"
+for i in $(seq 1 13); do
+  printf 'memory %s\n' "$i" > "$REPO/.gspec/memory/pending/some-agent/mem-$i.md"
+done
+assert_true "escalate: 13 untracked files under a reviewed-output directory" \
+  "[ \"\$(decision)\" = escalate ]"
+assert_true "  the reason names the reviewed-output path, not a blanket dirt message" \
+  "\"\$RUNSTATE\" reconcile '$RS' '$REPO' | grep -qi 'reviewed-output'"
+rm -rf "$REPO/.gspec"
+assert_true "clean again after removing the reviewed-output files" "[ \"\$(decision)\" = clean ]"
+
+# Mixed tree: reviewed output alongside ordinary scratch must still escalate --
+# a stash sweeps both together, so "mostly scratch" cannot make it safe to discard.
+mkdir -p "$REPO/.gspec/memory/pending/some-agent"
+printf 'memory 1\n' > "$REPO/.gspec/memory/pending/some-agent/mem-1.md"
+printf 'scratch\n' > "$REPO/scratch-mixed.txt"
+assert_true "escalate: reviewed output mixed with ordinary scratch" \
+  "[ \"\$(decision)\" = escalate ]"
+rm -rf "$REPO/.gspec" "$REPO/scratch-mixed.txt"
+assert_true "clean again after removing the mixed tree" "[ \"\$(decision)\" = clean ]"
+
+# Large dirty tree: `grep -q` under `set -euo pipefail` exits on its first match
+# and closes the pipe, so `git status`/`sed` -- still writing -- take SIGPIPE and
+# the whole pipeline reports 141, which the old helper read as "no match" and
+# silently fell back to `discard`. `.gspec/...` sorts to the FRONT of `git status`
+# output, so a small tree could never expose this; 1600 ordinary scratch files
+# (well past the reproduced failure threshold) is what forces the producers to
+# still be writing when the match is found.
+mkdir -p "$REPO/.gspec/memory/pending/some-agent"
+for i in $(seq 1 13); do
+  printf 'memory %s\n' "$i" > "$REPO/.gspec/memory/pending/some-agent/mem-$i.md"
+done
+for i in $(seq 1 1600); do
+  printf 'x' > "$REPO/scratch-large-$i.txt"
+done
+assert_true "escalate: reviewed output survives a large dirty tree (SIGPIPE-under-pipefail)" \
+  "[ \"\$(decision)\" = escalate ]"
+rm -rf "$REPO/.gspec"
+for i in $(seq 1 1600); do rm -f "$REPO/scratch-large-$i.txt"; done
+assert_true "clean again after removing the large dirty tree" "[ \"\$(decision)\" = clean ]"
+
+# A reviewed-output filename containing a space and a non-ASCII byte: `git status
+# --porcelain` (no `-z`) C-quotes such a path, so after stripping the status
+# prefix the field starts with `"` and never matches a pattern anchored on `^`
+# or `/` -- the old helper fell back to `discard` on exactly the kind of
+# filename an agent-written memory is likely to carry.
+mkdir -p "$REPO/.gspec/memory/pending/some agent"
+printf 'memory\n' > "$REPO/.gspec/memory/pending/some agent/naïve memory.md"
+assert_true "escalate: reviewed-output filename with a space and non-ASCII byte" \
+  "[ \"\$(decision)\" = escalate ]"
+rm -rf "$REPO/.gspec"
+assert_true "clean again after removing the quoted-path reviewed-output file" "[ \"\$(decision)\" = clean ]"
+
+# The ordinary case is UNCHANGED: a packet's own uncommitted scratch, with no
+# reviewed-output path involved, is still `discard` -- the escalation must not
+# be written as "escalate on any dirt".
+printf 'scratch again\n' > "$REPO/scratch2.txt"
+assert_true "discard unchanged: ordinary scratch (no reviewed-output path) is still discard" \
+  "[ \"\$(decision)\" = discard ]"
+git -C "$REPO" stash push --include-untracked -m 'orch resume scratch 2' -- . >/dev/null
+assert_true "clean again after stashing ordinary scratch"     "[ \"\$(decision)\" = clean ]"
+git -C "$REPO" stash drop >/dev/null 2>&1 || true
+
 # torn write: packet committed with the cursor trailer, run-state not yet advanced.
 printf 'work\n' > "$REPO/f2.txt"; git -C "$REPO" add -A
 git -C "$REPO" commit -qm "feature-002: done

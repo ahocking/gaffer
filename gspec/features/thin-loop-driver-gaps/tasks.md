@@ -98,7 +98,7 @@ else needs a session boundary.
   - covers: A packet continued in the same run is reported once, with one outcome · A run that stopped on a blocking question resumes like a paused one
   - arch: —
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md, scripts/test-runstate.sh
-- [ ] **T3** **P1** Make `_reconcile_tree` in `scripts/runstate.sh` return `escalate` for a tree holding deliberate output the loop did not create rather than `discard`, leaving a packet's own uncommitted scratch on the green checkpoint decided `discard` as today, and make `skills/resume/SKILL.md`'s `discard` instruction escalate to the operator before stashing anything it did not produce, matching the instinct `skills/pause/SKILL.md` already carries; `scripts/test-runstate.sh` covers both tree shapes, including the thirteen-untracked-files-under-a-reviewed-output-directory case that returned `discard`.
+- [x] **T3** **P1** Make `_reconcile_tree` in `scripts/runstate.sh` return `escalate` for a tree holding deliberate output the loop did not create rather than `discard`, leaving a packet's own uncommitted scratch on the green checkpoint decided `discard` as today, and make `skills/resume/SKILL.md`'s `discard` instruction escalate to the operator before stashing anything it did not produce, matching the instinct `skills/pause/SKILL.md` already carries; `scripts/test-runstate.sh` covers both tree shapes, including the thirteen-untracked-files-under-a-reviewed-output-directory case that returned `discard`.
   - deps: —
   - covers: Reconcile separates the loop's own scratch from deliberate output it did not produce
   - arch: —

@@ -97,7 +97,14 @@ window in scope, or the kickoff record's threshold is missing or `"unknown"`;
 `threshold` is stated with `max_context: null` when no main-thread turn
 carrying usage data falls inside any window; both numbers are present only
 when the comparison is real. A real `max_context` is never paired against an
-invented threshold. `totals.driver_mode_context_diagnostics`
+invented threshold. This fixed, run-KICKOFF baseline is deliberately different
+from `run-digest`'s reading of the same driver-mode logs, which reports the
+MOST RECENT `enter` across every session instead — `run-digest` answers what
+setting is in effect *now* for a run that can span sessions, while this
+measurement judges the run against the number the operator was shown at
+kickoff, so the two are expected to disagree. A later re-entry is ASSUMED, not
+verified, to carry the same repo/operator setting as the kickoff record it is
+compared against. `totals.driver_mode_context_diagnostics`
 (`windows`, `turns_in_window`) says what was actually seen even when the headline
 reads unmeasured. `show` renders one line: the two numbers and whether the max turn
 came in **under** or **⚠ OVER** the threshold, or the specific reason it is

@@ -266,15 +266,25 @@
 
 ▶ **Autonomy** <level> · **Stops at** <branch ready for review | integrated on <branch>>
 
-# - **`▶ Session` states three facts and asks for nothing.** Model, effort and the
-#   auto-compaction threshold in effect, taken verbatim from the digest's `enter`
-#   line. Where a value is `unknown`, say so in words — *effort unknown* — and where
-#   the whole `enter` line is absent, write *`▶ **Session** — can't tell: no
-#   driver-mode record`*. **Never ask the operator to raise the effort, switch model
-#   or change the threshold.** It is their setting; the line exists so a surprising
-#   run cost is explainable afterwards, not to open a negotiation at the top of a
-#   report. A run that would genuinely be better on another model is a thing to say
-#   once, in conversation, never as a line in this shape.
+# - **`▶ Session` states model and effort, and the auto-compaction threshold only
+#   when one is in effect, asking for nothing.** Model and effort are taken
+#   verbatim from the digest's `enter` line. Where effort is `unknown`, say so in
+#   words — *effort unknown* — since effort is always in effect and merely
+#   unrecorded. Where the whole `enter` line is absent, write *`▶ **Session** —
+#   can't tell: no driver-mode record`*. **The threshold element is omitted
+#   entirely whenever the reader's `SOURCE` named no value in effect**
+#   (`gaffer-default` or `unknown` — neither is a value the harness enforces): say
+#   nothing about compaction at all — not a figure, and not the word `unknown` —
+#   for a value that genuinely does not exist, rather than only a number nothing
+#   is actually enforcing. State a real number, and only then show the element at
+#   all, when the repo or the operator set one — the harness enforces those. This
+#   line never carries a `SOURCE` slot of its own; the source is what decided
+#   whether the threshold element appears, not something rendered alongside it.
+#   **Never ask the operator to raise the effort, switch model or change the
+#   threshold.** It is their setting; the line exists so a surprising run cost is
+#   explainable afterwards, not to open a negotiation at the top of a report. A
+#   run that would genuinely be better on another model is a thing to say once,
+#   in conversation, never as a line in this shape.
 # - **Group by phase or theme, not as a numbered list of every packet.** Up to six
 #   packets may be listed individually; past that, three to five themed lines with
 #   their packets inline. A 30-line numbered list is not a plan the human can check,
@@ -314,6 +324,6 @@
 #   > **Won't touch:** the transactions table schema — totals cache alongside it
 #   > rather than adding a column, so no migration.
 #
-#   ▶ **Session** claude-opus-5[1m] · effort unknown · compaction 200000 tokens
+#   ▶ **Session** claude-opus-5[1m] · effort unknown
 #
 #   ▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review

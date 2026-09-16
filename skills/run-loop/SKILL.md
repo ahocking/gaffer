@@ -100,15 +100,20 @@ else here:**
 ```
 runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|gaffer-default|unknown APPLIED=no
 runstate.sh driver-mode enter --model <this session's model, from SessionStart> \
-  --effort unknown --threshold <THRESHOLD just printed>
+  --effort unknown --threshold <unknown, or THRESHOLD per the rule below>
 ```
 
 Pass `--effort unknown` unless the operator has explicitly stated their
 effort level this session — nothing records it automatically yet.
 `compact-threshold` is a pure reader — it never writes a settings file, so
-`APPLIED` is always `no`; pass its `THRESHOLD` straight through regardless of
-`SOURCE`. **Never ask the operator to change either** — state them, and the
-threshold's `SOURCE`, as read, in the kickoff, and move on.
+`APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
+`THRESHOLD` straight through to `driver-mode enter` and state that number in
+the kickoff — the harness genuinely enforces it. When `SOURCE` reads
+`gaffer-default` or `unknown` — the enumerated set naming no value in effect
+— pass `--threshold unknown` instead, regardless of what `THRESHOLD`
+printed, and state no threshold in the kickoff at all: the measurement should
+read unmeasured rather than flag a threshold nothing enforces. **Never ask the
+operator to change either** — state what applies, as read, and move on.
 
 **If `enter` refuses** (no session id available, from neither an argument nor
 `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report saying so. Never

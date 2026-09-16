@@ -123,7 +123,7 @@ else needs a session boundary.
   - covers: The stop report's decision tally matches the sections it indexes
   - arch: —
   - files: templates/report-templates.md
-- [ ] **T8** [P] **P1** Correct two statements in `CLAUDE.md` where the harness reads them as standing instruction: name shape A as covering every **ended** packet — failed, blocked and interrupted included — at `:760`, and give the ✅-counts-this-session rule at `:576`/`:604` the exception that supersedes it for the stop report, naming `templates/report-templates.md` as the authority and dropping its reference to a per-packet check-in the loop no longer produces. Prose only, no sweep case; checkable by reading each corrected sentence against the template section it now cites.
+- [x] **T8** [P] **P1** Correct two statements in `CLAUDE.md` where the harness reads them as standing instruction: name shape A as covering every **ended** packet — failed, blocked and interrupted included — at `:760`, and give the ✅-counts-this-session rule at `:576`/`:604` the exception that supersedes it for the stop report, naming `templates/report-templates.md` as the authority and dropping its reference to a per-packet check-in the loop no longer produces. Prose only, no sweep case; checkable by reading each corrected sentence against the template section it now cites.
   - deps: —
   - covers: The standing instructions describe the loop that actually runs
   - arch: —

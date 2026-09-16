@@ -125,6 +125,22 @@ subtype="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_inpu
 # back to cksum, which is POSIX and therefore always present. Truncated to 12 chars:
 # collision risk is irrelevant when the comparison set is the files touched in one run.
 fh=""
+# `agents_dir` / `driver_mode` (thin-loop-driver T20) — the main-session-edits
+# success metric (ADR 0019 / thin-loop-driver PRD) needs to know whether a driver
+# session edited outside `.agents/`, but the path itself must stay OFF the log
+# (same rule as `fh` above): agents_dir is WHETHER the target sits under `.agents/`,
+# never the path. driver_mode is "this session is marked as the driver AND this
+# call carries no agent_id" — the exact main-thread-in-driver-mode test guard.sh's
+# `driver_mode_active` uses (hooks/guard.sh), so a leak this stamps is the same
+# leak the guard would have refused had the target not been under `.agents/`.
+# Both are stamped for the same four tool types as `fh`, and independently of it:
+# agents_dir needs only the file path (already extracted below as `_fp`);
+# driver_mode needs the session's driver-mode mark, which lives beside the events
+# dir under the MAIN checkout (`$main_root`, resolved above) and is therefore
+# left OMITTED — not falsely "false" — when `$main_root` is unknown (the
+# `ORCH_METRICS_DIR` fast-path some callers use has no main checkout to check).
+agents_dir=""
+driver_mode=""
 case "$tool" in
   # Keep this list identical to guard.sh's registered write surface
   # (Bash|Edit|Write|MultiEdit|NotebookEdit, minus Bash which has no single file_path)
@@ -140,6 +156,18 @@ case "$tool" in
       else _h="$(printf '%s' "$_fp" | cksum 2>/dev/null)"; fi
       # first field of every one of those tools is the digest; keep 12 chars
       fh="$(printf '%s' "${_h%% *}" | cut -c1-12)"
+      # WHETHER only -- `${_fp}` never reaches the event line.
+      case "${_fp//\\//}" in
+        .agents/*|*/.agents/*) agents_dir="true" ;;
+        *)                     agents_dir="false" ;;
+      esac
+    fi
+    if [ -n "$main_root" ]; then
+      if [ -z "$aid" ] && [ -f "${main_root}/.agents/driver-mode/${sid}" ]; then
+        driver_mode="true"
+      else
+        driver_mode="false"
+      fi
     fi
     ;;
 esac
@@ -226,6 +254,7 @@ line="$(jq -cn \
   --arg ts "$ts" --arg sid "$sid" --arg aid "$aid" --arg at "$atype" --arg tool "$tool" \
   --arg dur "$dur" --arg tuid "$tuid" --arg skill "$skill" --arg subtype "$subtype" --arg cc "$cmd_class" \
   --arg lane "$lane" --arg model "$model" --arg ok "$ok" --arg fh "$fh" \
+  --arg ad "$agents_dir" --arg dm "$driver_mode" \
   '{ts:$ts,session_id:$sid,agent_id:$aid,agent_type:$at,tool:$tool}
    + (if $dur!=""     then {duration_ms:($dur|tonumber?)} else {} end)
    + (if $tuid!=""    then {tool_use_id:$tuid}            else {} end)
@@ -235,7 +264,9 @@ line="$(jq -cn \
    + (if $lane!=""    then {lane_id:$lane}                else {} end)
    + (if $model!=""   then {model:$model}                 else {} end)
    + (if $ok!=""      then {ok:($ok=="true")}             else {} end)
-   + (if $fh!=""      then {file_hash:$fh}                else {} end)' 2>/dev/null)" || exit 0
+   + (if $fh!=""      then {file_hash:$fh}                else {} end)
+   + (if $ad!=""      then {agents_dir:($ad=="true")}     else {} end)
+   + (if $dm!=""      then {driver_mode:($dm=="true")}    else {} end)' 2>/dev/null)" || exit 0
 [ -n "$line" ] || exit 0
 
 # Append. Concurrent parallel lanes may be subagents that SHARE the parent session

@@ -1239,6 +1239,17 @@ cmd_collect() {
     # Report the derived counters as null (unmeasured) rather than 0/all — otherwise a
     # legacy run reads as "zero failures, every dispatch unnamed", which is a lie.
     | (($sids[0] // []) | any(has("ok"))) as $instrumented
+    # MAIN-SESSION EDITS success metric (thin-loop-driver T20 / PRD "Main-session
+    # edits"). The universe is every Edit/Write/MultiEdit/NotebookEdit event in the
+    # run (the hook stamps agents_dir/driver_mode on exactly those four); the count
+    # itself is the subset that is driver_mode=true (marked session, no agent_id --
+    # the same main-thread test guard.sh applies via driver_mode_active), ok=true,
+    # and agents_dir=false (outside .agents/). null, never 0, when the run has NO
+    # events at all, or when any edit-type event in it cannot show whether its
+    # target was under .agents/ (missing agents_dir) -- a legacy/pre-instrumentation
+    # edit is indistinguishable from a real leak, so it must not read as measured-clean.
+    # (No apostrophes in here: the whole program is one single-quoted shell word.)
+    | (($sids[0] // []) | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))) as $edit_events
     | ($recj[0] // {outcomes:{}, started_ids:[], record_end:{}, has_start:false}) as $rj
     | {
       schema: 2,
@@ -1294,6 +1305,16 @@ cmd_collect() {
         cache_hit_ratio: (if $cache_total>0 then (($tot.cache_read / $cache_total)*1000|floor)/1000 else null end),
         failed_tool_calls: (if $instrumented then (($sids[0] // []) | map(select(.ok == false)) | length) else null end),
         human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length),
+        driver_mode_edits_outside_agents: (
+          if (($sids[0] // []) | length) == 0 then null
+          elif ($edit_events | any(has("agents_dir") | not)) then null
+          else ($edit_events | map(select(.driver_mode == true and .ok == true and .agents_dir == false)) | length)
+          end
+        ),
+        driver_mode_edit_diagnostics: {
+          edit_events: ($edit_events | length),
+          edit_events_missing_agents_dir: ($edit_events | map(select(has("agents_dir") | not)) | length)
+        },
         # OUTCOME COVERAGE (loop-measurement T5). Every STARTED packet (trailer,
         # start/continuation record, or attributed outcome record — see the T4 join
         # above) is counted exactly once here, `interrupted` included alongside the
@@ -1491,6 +1512,17 @@ cmd_show() {
          "same-file overlaps (main + subagent editing the same file while both active): unmeasured (\(.totals.same_file_overlap_diagnostics.edit_events // 0) edit event(s), \(.totals.same_file_overlap_diagnostics.edit_events_missing_hash // 0) missing a file_hash)"
        else
          "same-file overlaps (main + subagent editing the same file while both active): \($sfo)"
+       end),
+    "",
+    # thin-loop-driver success metric: 0 is a real, checkable claim only once every
+    # edit-type event in the run carries agents_dir; a legacy/pre-instrumentation edit
+    # or an event-less run must read as unmeasured, never as a clean 0 (same rule as
+    # same_file_overlaps just above).
+    (((.totals.driver_mode_edits_outside_agents)) as $dme
+     | if $dme == null then
+         "main-session edits outside .agents/ in driver mode: unmeasured (\(.totals.driver_mode_edit_diagnostics.edit_events // 0) edit event(s), \(.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir // 0) missing agents_dir)"
+       else
+         "main-session edits outside .agents/ in driver mode: \($dme)"
        end),
     "",
     # The audit sits ABOVE the packets table on purpose: it is the "something is off"

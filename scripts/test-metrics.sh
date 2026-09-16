@@ -1486,6 +1486,121 @@ HSBROKENOUT="$ROOT/hs-broken-submodule.json"
 check "self_host: non-git --main-root under a real plugin root -> false" "false" \
   "$(jq -r '.self_host' "$HSBROKENOUT" 2>/dev/null)"
 
+echo "== thin-loop-driver T20: main-session-edits success metric (agents_dir/driver_mode) =="
+# --- hook: agents_dir/driver_mode are stamped only for Edit/Write/MultiEdit/NotebookEdit,
+# from a REAL main checkout so the driver-mode marker file can be resolved (the
+# ORCH_METRICS_DIR fast-path other hook tests use has no main checkout to check against,
+# so this exercises the hook the way a live session would: cd into the repo, no override).
+DMREPO="$ROOT/dm-hookrepo"; mkdir -p "$DMREPO/.agents/driver-mode" "$DMREPO/.agents/metrics/events"
+git -C "$DMREPO" init -q
+touch "$DMREPO/.agents/driver-mode/DMSESS"
+dmhook() { # dmhook <payload>
+  ( cd "$DMREPO" && printf '%s' "$1" | "$HOOK" >/dev/null 2>&1 )
+}
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/foo.cs"},"tool_response":{"filePath":"src/foo.cs"}}'
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":".agents/run-state.yaml"},"tool_response":{"filePath":".agents/run-state.yaml"}}'
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"i1","agent_type":"implementer","tool_input":{"file_path":"src/bar.cs"},"tool_response":{"filePath":"src/bar.cs"}}'
+DML="$DMREPO/.agents/metrics/events/DMSESS.jsonl"
+check "hook: agents_dir=false outside .agents/" "false" \
+  "$(jq -r 'select(.file_hash=="c3f180a9db6f").agents_dir' "$DML" 2>/dev/null)"
+check "hook: agents_dir=true under .agents/" "true" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][1].agents_dir' "$DML" 2>/dev/null)"
+check "hook: driver_mode=true, marked session + no agent_id" "true" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][0].driver_mode' "$DML" 2>/dev/null)"
+check "hook: driver_mode=false when agent_id is present" "false" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][2].driver_mode' "$DML" 2>/dev/null)"
+# a session with NO mark, but a resolvable main checkout -> driver_mode is a definite
+# `false` (present, not omitted): the mark's absence IS knowable here, so reporting
+# it is a real claim, not an unmeasured gap. `jq -r '.driver_mode // "null"'` would
+# read this the SAME as a genuinely absent key (jq's `//` treats `false` as falsy
+# too) -- caught by mutation-testing this very case -- so the check below asserts
+# presence and value separately instead.
+mkdir -p "$ROOT/dm-unmarked/.agents/metrics/events"; git -C "$ROOT/dm-unmarked" init -q
+( cd "$ROOT/dm-unmarked" && printf '%s' '{"session_id":"NOMARK","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/x.cs"}}' | "$HOOK" >/dev/null 2>&1 )
+NOMARKLINE="$ROOT/dm-unmarked/.agents/metrics/events/NOMARK.jsonl"
+check "hook: driver_mode key present for an unmarked (but resolvable) session" "true" \
+  "$(jq -r 'has("driver_mode")' "$NOMARKLINE" 2>/dev/null)"
+check "hook: driver_mode=false for an unmarked (but resolvable) session" "false" \
+  "$(jq -r '.driver_mode' "$NOMARKLINE" 2>/dev/null)"
+# main_root genuinely UNRESOLVABLE (the ORCH_METRICS_DIR fast-path other hook tests use
+# has no main checkout to check the mark against) -> driver_mode is OMITTED, not a
+# guessed false -- an unknown must never be stamped as a definite non-leak.
+DMNOROOT="$ROOT/dm-noroot-events"; mkdir -p "$DMNOROOT"
+printf '%s' '{"session_id":"NOROOT","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/y.cs"}}' \
+  | ORCH_METRICS_DIR="$DMNOROOT" "$HOOK" >/dev/null 2>&1
+check "hook: driver_mode omitted when main_root cannot be resolved" "false" \
+  "$(jq -r 'has("driver_mode")' "$DMNOROOT/NOROOT.jsonl" 2>/dev/null)"
+check "hook: agents_dir still stamped when main_root cannot be resolved" "false" \
+  "$(jq -r '.agents_dir' "$DMNOROOT/NOROOT.jsonl" 2>/dev/null)"
+
+# --- collect: the count itself, and the four discriminators a wrong implementation
+# would blur (driver_mode, agents_dir, ok, and whether the metric is even scoped to
+# edit-type tools) -- one run carrying all four shapes at once so a filter dropped
+# from ANY of them changes the count, not just one isolated case.
+#  1. leak (Edit):        driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  2. .agents/ edit:      driver_mode=true,  ok=true,  agents_dir=true  -> excluded (agents_dir)
+#  3. subagent edit:      driver_mode=false, ok=true,  agents_dir=false -> excluded (driver_mode)
+#  4. failed leak:        driver_mode=true,  ok=false, agents_dir=false -> excluded (ok)
+#  5. leak (Write):       driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  6. leak (MultiEdit):   driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  7. leak (NotebookEdit):driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+# 5-7 pin the metric to the FULL registered write surface: a filter that quietly
+# narrowed $edit_events to "Edit" only (a plausible one-tool oversight, the same
+# under-count guard.sh's own history warns about for MultiEdit) passes 1-4 unchanged
+# but silently drops these three leaks and their diagnostics contribution.
+DMEREPO="$ROOT/dme-mixed"; mkdir -p "$DMEREPO/.agents/metrics/events"; git -C "$DMEREPO" init -q
+cat > "$DMEREPO/.agents/metrics/events/DME1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":true,"driver_mode":true,"file_hash":"bbbbbbbbbbbb"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"DME1","agent_id":"i1","agent_type":"implementer","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":false,"file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":false,"agents_dir":false,"driver_mode":true,"file_hash":"dddddddddddd"}
+{"ts":"2026-07-21T10:00:05Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Write","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"MultiEdit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"ffffffffffff"}
+{"ts":"2026-07-21T10:00:07Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"NotebookEdit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"111111111111"}
+JSON
+DMEOUT="$ROOT/dme-mixed.json"
+"$METRICS" collect --main-root "$DMEREPO" --projects-dir "$ROOT/none" --out "$DMEOUT" >/dev/null 2>&1
+check "collect: leaks counted across all 4 write tools, others excluded" "4" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMEOUT")"
+check "collect: diagnostics edit_events=7"                            "7" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMEOUT")"
+check "collect: diagnostics edit_events_missing_agents_dir=0 (all tagged)" "0" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir' "$DMEOUT")"
+check "show: renders the measured count" "main-session edits outside .agents/ in driver mode: 4" \
+  "$("$METRICS" show "$DMEOUT" | grep -F 'main-session edits outside .agents/')"
+
+# --- pre-feature event: one edit event predating this feature (no agents_dir/driver_mode
+# at all) taints the WHOLE run to null, even though a second, fully-tagged event in the
+# same run would otherwise have counted a leak. Absence of the field, not absence of a
+# match, is what must force unmeasured.
+DMPREREPO="$ROOT/dme-prefeature"; mkdir -p "$DMPREREPO/.agents/metrics/events"; git -C "$DMPREREPO" init -q
+cat > "$DMPREREPO/.agents/metrics/events/DME2.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DME2","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DME2","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"ffffffffffff"}
+JSON
+DMPREOUT="$ROOT/dme-prefeature.json"
+"$METRICS" collect --main-root "$DMPREREPO" --projects-dir "$ROOT/none" --out "$DMPREOUT" >/dev/null 2>&1
+check "collect: pre-feature edit event forces null (not the 1 it would otherwise read)" "null" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMPREOUT")"
+check "collect: diagnostics edit_events=2 despite null count" "2" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMPREOUT")"
+check "collect: diagnostics names the 1 missing-agents_dir event" "1" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir' "$DMPREOUT")"
+check "show: pre-feature run renders unmeasured, not a lying 0 or 1" \
+  "main-session edits outside .agents/ in driver mode: unmeasured (2 edit event(s), 1 missing agents_dir)" \
+  "$("$METRICS" show "$DMPREOUT" | grep -F 'main-session edits outside .agents/')"
+
+# --- event-less run: no event records at all -> null, distinct from "no edit-type events"
+# (a run with only Bash events and zero edits is measured 0, a real claim -- only the
+# literal absence of ANY event must read as unmeasured).
+DMEMPTYREPO="$ROOT/dme-eventless"; mkdir -p "$DMEMPTYREPO"; git -C "$DMEMPTYREPO" init -q
+DMEMPTYOUT="$ROOT/dme-eventless.json"
+"$METRICS" collect --main-root "$DMEMPTYREPO" --projects-dir "$ROOT/none" --out "$DMEMPTYOUT" >/dev/null 2>&1
+check "collect: event-less run -> null" "null" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMEMPTYOUT")"
+check "collect: event-less run diagnostics edit_events=0" "0" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMEMPTYOUT")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0

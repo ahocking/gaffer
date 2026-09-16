@@ -300,19 +300,24 @@ string and resolve them —
 `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
 prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
 `FINISHED=<csv>` line; the `gone` set is the ids whose second column reads `gone`.
-Comma-join THOSE into `SWEPT="<id,id,...>"` and pass it to `--gone` (skip both
-`task-status` and `--gone` when `--list` printed nothing, and leave `SWEPT`
-empty: `task-status` refuses an empty id list). Then sweep for real, same
-`--paused-cursor`/`--gone`:
-`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor <cursor>
---gone "$SWEPT"`. Each id in `$SWEPT` now reads `interrupted` in
-`run-digest`'s `packet` line for it — **carry `$SWEPT` through to the first
-shape-A report**, exactly as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md`
-§3.6 renders it (that section's own `$SWEPT` capture, from its own §3.2, is a
-separate one for every packet after this first one) — `run-digest`'s `packet`
-lines are never filtered by `--since`, so this sweep's own record of what it
-just closed is the only thing marking it as new. The kickoff above needs
-nothing, since a sweep always runs after it.
+Comma-join THOSE into `GONE="<id,id,...>"` and pass it to `--gone` (skip
+`task-status` and `--gone` entirely when `--list` printed nothing —
+`task-status` refuses an empty id list, and no open packets means nothing
+for the real sweep to close either — and leave `SWEEP` empty). Otherwise
+sweep for real, same `--paused-cursor`/`--gone`, capturing the sweep's own
+output:
+`SWEEP="$(${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor
+<cursor> --gone "$GONE")"`. `$SWEEP` holds one
+`SWEPT=<id>`/`OUTCOME=<interrupted|abandoned>` line pair per packet the sweep
+actually closed — every open packet, not only the gone ones; a gone packet's
+pair reads `abandoned`, every other open packet's reads `interrupted` —
+**carry `$SWEEP` through to the first shape-A report**, exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.6 renders it (that
+section's own `$SWEEP` capture, from its own §3.2, is a separate one for
+every packet after this first one) — `run-digest`'s `packet` lines are never
+filtered by `--since`, so this sweep's own record of what it just closed is
+the only thing marking it as new. The kickoff above needs nothing, since a
+sweep always runs after it.
 
 Write the cursor packet's handoff exactly as
 `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — decide its

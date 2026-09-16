@@ -191,15 +191,20 @@ wait.
    packet. If it printed any, comma-join the ids and resolve them —
    `gspec-backlog.sh task-status "<id,id,...>"` (one `<id>\t<state>\t<reason>`
    line per id, plus `FINISHED=<csv>`); the `gone` set is every id whose state
-   reads `gone`. Comma-join those into `SWEPT="<id,id,...>"` and pass it to
-   `--gone`, then sweep for real: `runstate.sh sweep-open --gone "$SWEPT"`
-   (omit `--gone` and skip `task-status` entirely when `--list` printed
-   nothing, and leave `SWEPT` empty). Each id in `$SWEPT` now reads
-   `interrupted` in `run-digest`'s `packet` line for it — **carry `$SWEPT`
-   through to §3.5/§3.6's report below**, since `run-digest`'s `packet` lines
-   are never filtered by `--since` and this sweep is the only point that knows
-   which of them are newly closed; without it a swept packet's line is never
-   picked out of the digest until the eventual stop report.
+   reads `gone`. Comma-join those into `GONE="<id,id,...>"` and pass it to
+   `--gone`, then sweep for real, capturing the sweep's own output:
+   `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (omit `--gone` and skip
+   `task-status` entirely when `--list` printed nothing — no open packets
+   means nothing for the real sweep to close either — and leave `SWEEP`
+   empty). `$SWEEP` holds one `SWEPT=<id>`/`OUTCOME=<interrupted|abandoned>`
+   line pair per packet the sweep actually closed — every open packet, not
+   only the gone ones; a gone packet's pair reads `abandoned`, every other
+   open packet's reads `interrupted` — **carry `$SWEEP` through to
+   §3.5/§3.6's report below**,
+   since `run-digest`'s `packet` lines are never filtered by `--since` and
+   this sweep is the only point that knows which of them are newly closed;
+   without it a swept packet's line is never picked out of the digest until
+   the eventual stop report.
 3. **Write the handoff, then start.** Decide the packet's `tier`
    (`mechanical`, `integration`, `design-heavy`, or `docs`) and, from it, the
    `--agent`: `implementer` for `mechanical`/`integration`, `architect` or
@@ -284,8 +289,9 @@ wait.
      rolled-back`, advance the cursor, then report it the same way §3.6
      does — shape A rendered from `runstate.sh run-digest
      .agents/run-state.yaml --since "$SINCE"`: `<cursor>`'s own `packet` line,
-     one ⚠️ line per id in `$SWEPT` (§3.2, above) reading *swept as
-     interrupted*, plus one 🔀 per `decision` line other than `retry`.
+     one ⚠️ line per `SWEPT=`/`OUTCOME=` pair in `$SWEEP` (§3.2, above)
+     reading *swept as interrupted* or *swept as abandoned* per that pair's
+     own `OUTCOME`, plus one 🔀 per `decision` line other than `retry`.
      **`reorder`'s mechanism is not built**
      (that is `escalation-decider`'s job): treat it exactly like
      `append-task`/`hand-off-feature` here — discard-advance as above — and
@@ -377,12 +383,13 @@ wait.
      `runstate.sh run-digest .agents/run-state.yaml --since "$SINCE"` (the
      timestamp captured at §3.3): take `<landed>`'s own `packet` line (title,
      outcome — ✅, or 🔁 instead when a `decision` line for this same id reads
-     `retry`), one ⚠️ line per id in `$SWEPT` (§3.2, above) reading *swept as
-     interrupted* — `run-digest`'s `packet` lines are never filtered by
-     `--since`, so this sweep's own record of what it just closed is the only
-     thing marking these as new, not already carried by an earlier report —
-     plus one 🔀 line per `decision` line `<landed>` carries other than
-     `retry` (already the 🔁 above, never reported twice). Never write this
+     `retry`), one ⚠️ line per `SWEPT=`/`OUTCOME=` pair in `$SWEEP` (§3.2,
+     above) reading *swept as interrupted* or *swept as abandoned* per that
+     pair's own `OUTCOME` — `run-digest`'s `packet` lines are never filtered
+     by `--since`, so this sweep's own record of what it just closed is the
+     only thing marking these as new, not already carried by an earlier
+     report — plus one 🔀 line per `decision` line `<landed>` carries other
+     than `retry` (already the 🔁 above, never reported twice). Never write this
      from the dispatched agent's or reviewer's own words — the digest's
      fields are what render, not your memory of their status lines.
 7. **Integrate (only at `full-autonomy`).** After the packet lands green, you

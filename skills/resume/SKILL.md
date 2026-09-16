@@ -78,15 +78,18 @@ Right after the parallel-mode check above returns normal (no `mode: parallel`),
 before reading anything else (ADR 0028):
 
 ```
+runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|gaffer-default|unknown APPLIED=no
 runstate.sh driver-mode enter --model <this session's model> \
-  --effort unknown --threshold unknown
+  --effort unknown --threshold <THRESHOLD just printed>
 ```
 
 Pass `--effort unknown` unless the operator has explicitly stated their
-effort level this session — nothing records it automatically yet. If
-`driver-mode enter` refuses (no session id available, from neither an
-argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report
-saying so; never resume the loop unmarked. `Read`
+effort level this session — nothing records it automatically yet.
+`compact-threshold` is a pure reader — it never writes a settings file, so
+`APPLIED` is always `no`; pass its `THRESHOLD` straight through regardless of
+`SOURCE`. If `driver-mode enter` refuses (no session id available, from
+neither an argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop
+report saying so; never resume the loop unmarked. `Read`
 `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now too — it is your role for
 the rest of this session, same as a fresh `/gaffer:run-loop`.
 
@@ -257,8 +260,12 @@ if it errors or `jq` is absent, ignore it and continue.
 
 If `pending_questions` contains any `blocking` entry for the packet at
 `backlog.cursor`, the loop **cannot** proceed on it — present those questions to
-the human and wait. Present them as the **Decisions for you** block of the stop
-report (`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): each one an
+the human and wait. Assemble the surrounding stop report exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §4 does — `runstate.sh run-digest
+.agents/run-state.yaml` with **no** `--since`, so it names every packet this run
+began with its outcome even when this session did not run all of them — and slot
+these questions in as its **Decisions for you** block
+(`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): each one an
 answerable choice with what follows from each option and your lean, not the raw
 `pending_questions` text. These were written by a session that no longer exists, so
 give the human the plain-English title of the packet they block — they will not
@@ -269,7 +276,12 @@ run `runstate.sh driver-mode exit` right after emitting it.
 ## 4. Continue from the cursor
 
 **First, emit the kickoff** — shape C in
-`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, headed `### Resuming`. State what
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, headed `### Resuming`,
+rendered from `runstate.sh run-digest .agents/run-state.yaml` with **no** `--since`:
+its `packet` lines are what THIS run already did, across however many sessions
+drove it, so render those as one ⚠️ **Picked up** line naming what is unfinished
+rather than a second stop report, and its `enter` line gives the `▶ **Session**`
+line (model/effort/threshold), exactly as a fresh run's kickoff does. State what
 is **left**, not what the original run set out to do: the remaining packets in plain
 words, what is expected to need a decision, and where this session will stop. The
 human may be days removed from the run and remembers none of the ids; the checkpoint
@@ -288,22 +300,33 @@ string and resolve them —
 `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
 prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
 `FINISHED=<csv>` line; the `gone` set is the ids whose second column reads `gone`.
-Comma-join THOSE into their own string and pass them to `--gone` (skip both
-`task-status` and `--gone` when `--list` printed nothing: `task-status` refuses an
-empty id list). Then sweep for real, same `--paused-cursor`/`--gone`:
+Comma-join THOSE into `SWEPT="<id,id,...>"` and pass it to `--gone` (skip both
+`task-status` and `--gone` when `--list` printed nothing, and leave `SWEPT`
+empty: `task-status` refuses an empty id list). Then sweep for real, same
+`--paused-cursor`/`--gone`:
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor <cursor>
---gone "<id,id,...>"`. Each `SWEPT=<id>` it prints names a packet to report by
-title in the next check-in or stop report (`templates/report-templates.md` shapes
-A/B) — the kickoff above needs nothing, since a sweep always runs after it.
+--gone "$SWEPT"`. Each id in `$SWEPT` now reads `interrupted` in
+`run-digest`'s `packet` line for it — **carry `$SWEPT` through to the first
+shape-A report**, exactly as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md`
+§3.6 renders it (that section's own `$SWEPT` capture, from its own §3.2, is a
+separate one for every packet after this first one) — `run-digest`'s `packet`
+lines are never filtered by `--since`, so this sweep's own record of what it
+just closed is the only thing marking it as new. The kickoff above needs
+nothing, since a sweep always runs after it.
 
 Write the cursor packet's handoff exactly as
 `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — decide its
 `tier`/`--agent`, pipe `gspec-backlog.sh handoff` (or its non-gspec task text)
 into `runstate.sh handoff`, and skip the packet with no record if the handoff
-is refused. Only once it is written do you attest the start:
-`runstate.sh record-start <cursor> --continue` when the same paused-on-entry
-reading held in step 1, else `runstate.sh record-start <cursor>` (a fresh
-start — its prior attempt, if any, already closed with a recorded outcome).
+is refused. Only once it is written do you attest the start — capture
+`SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` first, the same capture
+run-loop/SKILL.md §3.3 pairs with this exact step, so the first shape-A report
+after this resume scopes `run-digest --since "$SINCE"` to only this packet's
+own decisions rather than every decision the whole run has ever recorded —
+then `runstate.sh record-start <cursor> --continue` when the same
+paused-on-entry reading held in step 1, else `runstate.sh record-start
+<cursor>` (a fresh start — its prior attempt, if any, already closed with a
+recorded outcome).
 
 Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,

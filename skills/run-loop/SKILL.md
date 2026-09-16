@@ -40,7 +40,7 @@ runs one sequential mode.` line per flag present.
 `Read` `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (the glyph
 vocabulary, the indentation contract, the header tally, the decision block)
 and `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shapes **C**
-kickoff, **A** check-in, **B** stop report) now, once, before the kickoff.
+kickoff, **A** packet line, **B** stop report) now, once, before the kickoff.
 **Naming a path is not reading it** — unread, you render from memory and
 produce free prose, which is the exact failure these files exist to prevent.
 
@@ -98,15 +98,17 @@ stop never has a mark to clear.
 else here:**
 
 ```
+runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|gaffer-default|unknown APPLIED=no
 runstate.sh driver-mode enter --model <this session's model, from SessionStart> \
-  --effort unknown --threshold unknown
+  --effort unknown --threshold <THRESHOLD just printed>
 ```
 
 Pass `--effort unknown` unless the operator has explicitly stated their
 effort level this session — nothing records it automatically yet.
-(`compact-threshold`, a real threshold lookup, is a later addition — pass
-`unknown` for `--threshold` until it exists.) **Never ask the operator to
-change either** — state them as read, in the kickoff, and move on.
+`compact-threshold` is a pure reader — it never writes a settings file, so
+`APPLIED` is always `no`; pass its `THRESHOLD` straight through regardless of
+`SOURCE`. **Never ask the operator to change either** — state them, and the
+threshold's `SOURCE`, as read, in the kickoff, and move on.
 
 **If `enter` refuses** (no session id available, from neither an argument nor
 `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report saying so. Never
@@ -165,13 +167,17 @@ what tells a crashed run apart from *another session driving right now* (ADR
 sentinel here stops a stale request from immediately re-halting this run.
 
 **Then emit the kickoff** — shape C in
-`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`: the packet list in
-plain words, the model/effort/threshold `driver-mode enter` recorded (stated,
-never offered for change), the one assumption most likely to be wrong, which
-packets you expect will need a decision, the hard gates this backlog gets
-near, the autonomy level, and where the run stops. Emit it **here**, after
-preflight and after the backlog resolves. At **`interactive`**, the kickoff is
-also the approval request: emit it and wait.
+`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`. Render its `▶
+**Session**` line from `runstate.sh run-digest .agents/run-state.yaml`'s own
+`enter` line (model/effort/threshold, exactly as `driver-mode enter` just
+recorded it — never restated from memory): a fresh run's digest has no
+`packet` lines yet, so the forward plan is the backlog you just resolved
+above, a file read moments old. State the one assumption most likely to be
+wrong, which packets you expect will need a decision, the hard gates this
+backlog gets near, the autonomy level, and where the run stops. Emit it
+**here**, after preflight and after the backlog resolves. At
+**`interactive`**, the kickoff is also the approval request: emit it and
+wait.
 
 ## 3. Loop — for the packet at `backlog.cursor`
 
@@ -185,10 +191,15 @@ also the approval request: emit it and wait.
    packet. If it printed any, comma-join the ids and resolve them —
    `gspec-backlog.sh task-status "<id,id,...>"` (one `<id>\t<state>\t<reason>`
    line per id, plus `FINISHED=<csv>`); the `gone` set is every id whose state
-   reads `gone`. Comma-join those and pass them to `--gone`, then sweep for
-   real: `runstate.sh sweep-open --gone "<id,id,...>"` (omit `--gone` and skip
-   `task-status` entirely when `--list` printed nothing). Each `SWEPT=<id>`
-   names a packet to report by title in the next report.
+   reads `gone`. Comma-join those into `SWEPT="<id,id,...>"` and pass it to
+   `--gone`, then sweep for real: `runstate.sh sweep-open --gone "$SWEPT"`
+   (omit `--gone` and skip `task-status` entirely when `--list` printed
+   nothing, and leave `SWEPT` empty). Each id in `$SWEPT` now reads
+   `interrupted` in `run-digest`'s `packet` line for it — **carry `$SWEPT`
+   through to §3.5/§3.6's report below**, since `run-digest`'s `packet` lines
+   are never filtered by `--since` and this sweep is the only point that knows
+   which of them are newly closed; without it a swept packet's line is never
+   picked out of the digest until the eventual stop report.
 3. **Write the handoff, then start.** Decide the packet's `tier`
    (`mechanical`, `integration`, `design-heavy`, or `docs`) and, from it, the
    `--agent`: `implementer` for `mechanical`/`integration`, `architect` or
@@ -221,10 +232,13 @@ also the approval request: emit it and wait.
    handoff (`HANDOFF=refused`, e.g. a packet already routed
    `hand-off-feature` this run) skips the packet — advance the cursor and
    report the skip; do not call `record-start`.** Only once `HANDOFF=<path>`
-   prints do you attest the start: `runstate.sh record-start <cursor>` for a
-   fresh beginning, or `runstate.sh record-start <cursor> --continue` when
-   you are picking a pause-interrupted packet back up rather than beginning
-   it anew.
+   prints do you attest the start — capture `SINCE="$(date -u
+   +%Y-%m-%dT%H:%M:%SZ)"` first, so §3.5/§3.6's shape-A report can later scope
+   `run-digest --since "$SINCE"` to only the decisions made during THIS
+   packet's own attempts, never one already reported for an earlier packet —
+   then `runstate.sh record-start <cursor>` for a fresh beginning, or
+   `runstate.sh record-start <cursor> --continue` when you are picking a
+   pause-interrupted packet back up rather than beginning it anew.
 
    **Read back the handoff's header** (`grep '^run-state:\|^result:\|^review:'
    <path>`) — it names the exact `run-state`, `result`, and `review` paths,
@@ -267,7 +281,12 @@ also the approval request: emit it and wait.
      ```
      (never `git reset --hard`/`git clean -fd` — the guard hard-denies both,
      and a stash is recoverable). `runstate.sh record-outcome <cursor>
-     rolled-back`, advance the cursor. **`reorder`'s mechanism is not built**
+     rolled-back`, advance the cursor, then report it the same way §3.6
+     does — shape A rendered from `runstate.sh run-digest
+     .agents/run-state.yaml --since "$SINCE"`: `<cursor>`'s own `packet` line,
+     one ⚠️ line per id in `$SWEPT` (§3.2, above) reading *swept as
+     interrupted*, plus one 🔀 per `decision` line other than `retry`.
+     **`reorder`'s mechanism is not built**
      (that is `escalation-decider`'s job): treat it exactly like
      `append-task`/`hand-off-feature` here — discard-advance as above — and
      surface the decider's proposed new order as a question in the stop
@@ -353,9 +372,19 @@ also the approval request: emit it and wait.
      content** (ADR 0022): `runstate.sh add-finding .agents/run-state.yaml <id>
      "<one line>" --packets <id[,id...]>`, naming a still-pending packet — never
      `<landed>` itself, which the close you just ran already satisfies.
-   - Report the landing — one line naming `<landed>` by plain-English title
-     and outcome, per `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`
-     shape A.
+   - Report the landing — shape A in
+     `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, rendered from
+     `runstate.sh run-digest .agents/run-state.yaml --since "$SINCE"` (the
+     timestamp captured at §3.3): take `<landed>`'s own `packet` line (title,
+     outcome — ✅, or 🔁 instead when a `decision` line for this same id reads
+     `retry`), one ⚠️ line per id in `$SWEPT` (§3.2, above) reading *swept as
+     interrupted* — `run-digest`'s `packet` lines are never filtered by
+     `--since`, so this sweep's own record of what it just closed is the only
+     thing marking these as new, not already carried by an earlier report —
+     plus one 🔀 line per `decision` line `<landed>` carries other than
+     `retry` (already the 🔁 above, never reported twice). Never write this
+     from the dispatched agent's or reviewer's own words — the digest's
+     fields are what render, not your memory of their status lines.
 7. **Integrate (only at `full-autonomy`).** After the packet lands green, you
    may merge the branch into the integration branch, rebase it to keep it
    current, and push feature/integration branches — never targeting `main`; a
@@ -370,6 +399,18 @@ also the approval request: emit it and wait.
    last green commit untouched; then hand to `/gaffer:pause`, which persists
    `status: paused`, clears the sentinel, and stops. A pause records none of
    the outcomes above — the packet's start stays open for a later session.
+
+   **Otherwise, check the periodic pause at the same boundary:** `runstate.sh
+   periodic-pause` prints `ENDED=<n>`, `EVERY=<n|off>`, `DUE=yes|no`. `EVERY=off`
+   (missing/invalid/0 in `.agents/project-overrides.yaml`, and the default) means
+   `DUE` is always `no` — a periodic pause must never fire on its own, since it
+   halts an unattended run until a human resumes it. On `DUE=yes`, capture the
+   setting itself before you interpolate it — `EVERY=$(runstate.sh
+   periodic-pause | grep '^EVERY=' | cut -d= -f2-)` — then request one yourself,
+   naming the setting in the reason so the stop report can state it plainly:
+   `runstate.sh request-pause .agents/pause "pause_every_packets: $EVERY
+   packets ended"`, then hand to `/gaffer:pause` exactly as the `PAUSE=1` case
+   above.
 
 ## 4. Termination
 
@@ -424,12 +465,16 @@ also the approval request: emit it and wait.
   Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then
   snapshot run-metrics (best-effort, non-critical): `metrics.sh collect ||
-  true`. Emit the **stop report** (`report-templates.md` shape B): what
-  shipped in plain words, anything left undone, any decision still open
-  (including any arm-2 question and any un-merged decider-commit branch),
-  the single recommended next action, and `branch <orch/task-id>` ready for
-  review as the state line. **Then `runstate.sh driver-mode exit` —
-  immediately after every stop report, no exceptions.**
+  true`. Emit the **stop report** (`report-templates.md` shape B), assembled
+  from `runstate.sh run-digest .agents/run-state.yaml` with **no** `--since`
+  — its `packet` lines name every packet the run began, with its outcome,
+  whether or not this session was the one that ran it (a compaction or a
+  resumed session reads the same report): what shipped in plain words,
+  anything left undone, any decision still open (its `handoff-feature`
+  lines, including any arm-2 question, plus any un-merged decider-commit
+  branch), the single recommended next action, and `branch <orch/task-id>`
+  ready for review as the state line. **Then `runstate.sh driver-mode exit`
+  — immediately after every stop report, no exceptions.**
 - **Blocked** → the `stop` action (§3.5) already handed this off to
   `/gaffer:pause`, which verified the checkpoint, persisted the blocking
   question, set `status: blocked`, rendered the stop report, and ran

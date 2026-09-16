@@ -174,16 +174,30 @@ into the check-in below.
 
 A pause is a stop, so the human gets the **stop report** — shape B in
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (the plugin produces reports; the
-frontend delivers them — ADR 0004). Fill it from what you already know; do not
-re-open the repo to embellish it:
+frontend delivers them — ADR 0004). Assemble it from `runstate.sh run-digest
+.agents/run-state.yaml` with **no** `--since` — its `packet` lines name every packet
+the run began, with its outcome, whichever session ran each one, so this report reads
+the same right after landing or after a compaction; do not re-open the repo to
+embellish it:
 
 - the opening sentence — why it stopped ("$ARGUMENTS", if given) and whether
-  anything is at risk (after steps 1–3, the answer is normally "nothing"),
-- **Shipped** — what each landed packet made true, in plain words. Not a packet-id
-  list: `wbr-t14` means nothing to the human a week later, **Rate-limit auto-pause**
-  (`wbr-t14`) does.
-- **Not done** — what is left and why, one clause each,
-- **Decisions for you** — every unanswered **blocking** question, rewritten as an
+  anything is at risk (after steps 1–3, the answer is normally "nothing"). **When a
+  periodic pause triggered this** (the caller's reason names `pause_every_packets`,
+  or check yourself: `runstate.sh periodic-pause`), name the setting here —
+  *"Paused after 5 packets — `pause_every_packets: 5` in
+  `.agents/project-overrides.yaml`."* — so it reads as scheduled, never as a
+  failure,
+- **Shipped** — the digest's `green` `packet` lines, one per landed packet, what
+  each made true in plain words. Not a packet-id list: `wbr-t14` means nothing to
+  the human a week later, **Rate-limit auto-pause** (`wbr-t14`) does.
+- **Not done** — the digest's other `packet` lines (`failed`, `rolled-back`,
+  `blocked`, `interrupted`, `abandoned`, `open`, and `paused`), what is left and
+  why, one clause each. **The cursor packet you just paused on reads `paused`
+  in the digest — name it with the word *paused*** (`report-templates.md`
+  shape B: "the paused packet is named with the word *paused*, under
+  ⚠️ Unfinished"), never folded silently into the general "left and why" text,
+- **Decisions for you** — every unanswered **blocking** question (from
+  `pending_questions` and the digest's `handoff-feature` lines), rewritten as an
   answerable choice: the two real options, what follows from each, your lean, and
   what happens by default if they say nothing. A question the human must go reading
   to understand is a question that stalls the run.

@@ -236,7 +236,7 @@
 #                                    own return value, so looping on it could
 #                                    never terminate.
 #   compact-threshold                prints THRESHOLD=<n|unknown>,
-#                                    SOURCE=repo|operator|gaffer-default|unknown
+#                                    SOURCE=repo|operator|unknown
 #                                    and APPLIED=no ALWAYS (thin-loop-driver
 #                                    T4, ADR 0028 result 3). Pure reader, no
 #                                    side effect: it never writes a settings
@@ -261,14 +261,12 @@
 #                                    anything relies on it for more than
 #                                    display. When neither repo nor operator
 #                                    has one set, this reports
-#                                    SOURCE=gaffer-default with the value
-#                                    above ADVISORY ONLY — the session still
-#                                    auto-compacts at the harness's own
-#                                    default until something sets a real
-#                                    value, because a write into
-#                                    .claude/settings.local.json IS overriding
-#                                    the (unprobed) operator scope, exactly
-#                                    the thing ADR 0028 flagged as unverified.
+#                                    THRESHOLD=unknown, SOURCE=unknown: ADR
+#                                    0028 result 3 records `1m tokens` as the
+#                                    default on Opus 5 (1M) specifically, a
+#                                    model-conditional reading rather than a
+#                                    harness-wide one, so this reader states
+#                                    no number rather than inventing one.
 #                                    APPLIED therefore never varies here; the
 #                                    field survives so a later carrier (once
 #                                    the ADR's plugin-default probe lands) can
@@ -1835,13 +1833,13 @@ cmd_driver_mode_status() {
   return 0
 }
 
-# --- compact-threshold (thin-loop-driver T4, ADR 0028 result 3) ------------
+# --- compact-threshold (thin-loop-driver T4, ADR 0028 result 3; T6 removed
+# the invented gaffer-default branch) ---------------------------------------
 # The one carrier T1 verified: a flat top-level NUMERIC key, `autoCompactWindow`
 # (tokens), in a Claude Code settings JSON file -- same value, same unit, as
 # the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var. Pure reader: ADR 0028 left
 # "can a plugin default coexist with a repo/operator value without
 # overriding it" unprobed, so this never writes -- see the header comment.
-GAFFER_DEFAULT_COMPACT_THRESHOLD=200000
 
 # Parser-free by design (see test-runstate.sh's no-tools T8 sweep and its
 # comment on this file): a shallow regex scan for one flat top-level numeric
@@ -1903,9 +1901,11 @@ cmd_compact_threshold() {
     return 0
   fi
 
-  # Neither is set -- report gaffer's default, advisory only. No write: see
-  # the header comment on why APPLIED is always "no" here.
-  printf 'THRESHOLD=%s\nSOURCE=gaffer-default\nAPPLIED=no\n' "$GAFFER_DEFAULT_COMPACT_THRESHOLD"
+  # Neither is set -- no threshold is in effect. ADR 0028 result 3 records
+  # `1m tokens` as the default on Opus 5 (1M) specifically, model-conditional
+  # rather than harness-wide, so this reader states no number rather than
+  # inventing one.
+  printf 'THRESHOLD=unknown\nSOURCE=unknown\nAPPLIED=no\n'
   return 0
 }
 

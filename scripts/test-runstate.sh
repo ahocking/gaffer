@@ -2193,7 +2193,7 @@ assert_true "the SAME packet id, hand-off-feature'd only in the PREVIOUS run, is
 assert_true "  and it actually wrote a handoff.md in the NEW run's own directory" \
   "[ -f \"$RT/.agents/loop/\$RT_RUN_ID2/rt-hof/handoff.md\" ]"
 
-echo "== compact-threshold: repo/operator/gaffer-default/unknown, pure reader (thin-loop-driver T4, ADR 0028 result 3) =="
+echo "== compact-threshold: repo/operator/unknown, pure reader (thin-loop-driver T4/T6, ADR 0028 result 3) =="
 # A fake HOME so a real developer machine's own ~/.claude/settings.json can
 # never leak into these assertions (the "user" scope reads from there).
 CT_HOME="$(mktemp -d)"
@@ -2233,8 +2233,8 @@ rm -f "$CT_HOME/.claude/settings.json"
 CT2="$(mktemp -d)"; git -C "$CT2" init -q
 git -C "$CT2" config user.email t@t; git -C "$CT2" config user.name t
 CT2_OUT="$(ct_run "$CT2" env)"
-assert_true "neither repo nor operator set -> gaffer's default is reported, advisory only" \
-  "[ \"\$CT2_OUT\" = \"\$(printf 'THRESHOLD=200000\nSOURCE=gaffer-default\nAPPLIED=no')\" ]"
+assert_true "neither repo nor operator set -> unknown, naming nothing in effect (T6: no invented default)" \
+  "[ \"\$CT2_OUT\" = \"\$(printf 'THRESHOLD=unknown\nSOURCE=unknown\nAPPLIED=no')\" ]"
 assert_true "  and nothing is ever written -- no .claude/settings.local.json appears" \
   "[ ! -e \"$CT2/.claude/settings.local.json\" ]"
 assert_true "  a second call reports the identical thing (no state to have changed)" \
@@ -2397,10 +2397,10 @@ assert_true "run-digest: a continuation after a stale terminal record reads open
 echo "-- a run spanning two sessions: the enter line names the LATEST enter across every session's log, not the first --"
 printf '{"ts":"2026-02-01T00:00:00Z","session":"S1","kind":"enter","model":"sonnet","effort":"low","threshold":"100000"}\n' \
   > "$RD/.agents/metrics/driver-mode/S1.jsonl"
-printf '{"ts":"2026-02-02T00:00:00Z","session":"S2","kind":"enter","model":"opus","effort":"high","threshold":"200000"}\n' \
+printf '{"ts":"2026-02-02T00:00:00Z","session":"S2","kind":"enter","model":"opus","effort":"high","threshold":"unknown"}\n' \
   > "$RD/.agents/metrics/driver-mode/S2.jsonl"
 assert_true "run-digest: the enter line reflects the SECOND session's later enter" \
-  "rd_digest | grep -qx \$'enter\topus\thigh\t200000'"
+  "rd_digest | grep -qx \$'enter\topus\thigh\tunknown'"
 assert_true "  and the first (now stale) session's values do not also appear" \
   "! rd_digest | grep -qx \$'enter\tsonnet\tlow\t100000'"
 

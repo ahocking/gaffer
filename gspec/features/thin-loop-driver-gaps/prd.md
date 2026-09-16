@@ -148,17 +148,22 @@ dependency rule. The parent shipped; this is new scope against it.
     being unverifiable
 
 - [ ] **P1**: The kickoff never states a compaction threshold that is not in effect
-  - when the threshold reader in `scripts/runstate.sh` reports that no value is
-    applied — which it does whenever neither repository nor operator set one, the
-    default state, this repository included — neither consumer states a number:
-    the kickoff and the resume session line carry no threshold line at all, and
-    the driver-mode context measurement in `scripts/metrics.sh` reports null for
-    both of its fields rather than flagging context over a threshold nothing
-    enforces
-  - the tool's own default in `scripts/runstate.sh` is corrected from 200000 to
-    1000000, matching the harness default recorded in ADR 0028 result 3; the two
-    sweep cases pinning the old value move with it (`scripts/test-runstate.sh`,
-    `scripts/test-metrics.sh`)
+  - when the threshold reader in `scripts/runstate.sh` names no value in effect —
+    which it does whenever neither repository nor operator set one, the default
+    state, this repository included — neither consumer states a number: the
+    kickoff and the resume session line carry no threshold line at all, and the
+    driver-mode context measurement in `scripts/metrics.sh` reports null for both
+    of its fields rather than flagging context over a threshold nothing enforces.
+    The condition is the reader's `SOURCE`, never its `APPLIED` field, which reads
+    `no` on every path — including one an operator set and the harness genuinely
+    enforces, which must still be stated
+  - the tool's own invented default in `scripts/runstate.sh` is removed rather
+    than corrected, that branch reporting `unknown` with a source naming nothing
+    in effect: ADR 0028 result 3 records `1m tokens` as the default *on Opus 5
+    (1M)*, a model-conditional reading rather than a harness-wide one, and the
+    ADR's own instruction to this reader is to report `unknown` rather than
+    invent one. The two sweep cases pinning the old 200000 change with it
+    (`scripts/test-runstate.sh`, `scripts/test-metrics.sh`)
   - the kickoff shape gains no source slot and the digest's enter record no fourth
     field
   - both loop skills carry the same instruction for that line, where one asks for
@@ -212,9 +217,10 @@ dependency rule. The parent shipped; this is new scope against it.
 - [ ] **P2**: The measurement's nulls read unambiguously
   - the sentence defining what the two context fields' nulls mean no longer
     contradicts the sentence after it: they are not **always** null together, and
-    one is forced null when the other is (`scripts/metrics.sh` and
-    `skills/metrics/SKILL.md` carry the same wording, so both change together or
-    the contradiction survives in one copy)
+    one is forced null when the other is. The contradiction survives only in
+    `scripts/metrics.sh`, in two comment blocks — `skills/metrics/SKILL.md` has
+    already been corrected to "independently, not together", so the wording is no
+    longer shared and only the additions below are owed to that copy
   - the two consumers that select a different enter record — the digest takes the
     most recent across sessions, the measurement the earliest in scope — carry one
     sentence naming the divergence and why each is right for its own use
@@ -238,8 +244,10 @@ dependency rule. The parent shipped; this is new scope against it.
 
 ## Assumptions & Risks
 
-- Assumption: the harness compaction default recorded in ADR 0028 result 3 is
-  current; correcting the tool's own default is truthful only while that holds.
+- Removing the invented compaction default retires an assumption this feature
+  would otherwise have carried — that ADR 0028 result 3's `1m tokens` is a
+  harness-wide default rather than a reading taken on one model. It is not, which
+  is why the value is removed rather than corrected.
 - Assumption: the two loop skills are the only callers of the open-packet sweep,
   so aligning them breaks nothing that works today.
 - Risk: four of these ten capabilities land entirely on surfaces with no
@@ -281,3 +289,8 @@ This feature PRD is portable and project-agnostic. During implementation, consul
   Deferred until someone probes whether a plugin can supply one without
   overriding a repository's own value — the probe that was deliberately left
   unrun.
+- **Renaming `sweep-open`'s `--paused-cursor` flag.** Once the exclusion rule
+  reads "about to continue it" rather than "paused", the flag name is
+  misleading. Renaming it touches every caller and the sweep cases that pin it
+  for no behaviour change, and widens a diff whose only defect-detector on the
+  prose surfaces is a careful read — so it is left for a standalone tidy.

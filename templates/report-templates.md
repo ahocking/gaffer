@@ -142,10 +142,26 @@
 # session that resumed someone else's run, is the same report.
 #
 # The tally counts `packet` lines by outcome — ✅ green · ⛔ failed and rolled-back ·
-# ⚠️ blocked, interrupted, abandoned, open and paused — plus one 🔀 per
-# `handoff-feature` line and per `decision` line still awaiting the human. ⬚ queued
-# is the `N pending` from `runstate.sh summary`; omit the bucket if you did not read
-# it rather than guessing a number.
+# ⚠️ blocked, interrupted, abandoned, open and paused. ⬚ queued is the `N pending`
+# from `runstate.sh summary`; omit the bucket if you did not read it rather than
+# guessing a number.
+#
+# 🔀 counts one per `handoff-feature` line, plus one per still-awaiting `decision`
+# line EXCEPT one whose id already has a `handoff-feature` line of its own. A packet
+# routed `hand-off-feature` always emits BOTH records for the same question (the
+# digest's two records — left untouched here, see above) so counting both would
+# tally that one question twice; excluding the `decision` line once its
+# `handoff-feature` line is already counted is what makes a handed-off packet
+# contribute exactly the one 🔀 that the body renders exactly one block for. An
+# `ask-operator` decision has no `handoff-feature` line and so is never excluded.
+#
+# The tally is the report's table of contents, not a separate count next to one:
+# every glyph it totals names a section below, and every section the tally counts
+# is headed by that glyph — ✅ Shipped, ⛔ Failed, ⚠️ Unfinished, ⬚ Queued,
+# 🔀 Decisions, in that order. ✅, ⛔ and ⚠️ carry one line per packet counted, and
+# 🔀 Decisions carries exactly as many blocks as the header's 🔀 figure, never
+# more; ⬚ Queued is the one bucket whose count collapses to a single line (see
+# below), and ▶ Next is the one section the tally does not count.
 
 ⏸️ **PAUSED** · <what this run was about> · ✅ **N shipped** · ⛔ **N failed** · ⚠️ **N unfinished** · 🔀 **N decisions** · ⬚ **N queued**
 
@@ -183,11 +199,16 @@
 #   carries this. The digest gives it to you as `<outcome>` = `paused`: that is the
 #   run's cursor, and it is deliberately never swept, so it carries no terminal
 #   record of its own and cannot be inferred any other way.
-# - **Every `handoff-feature` line becomes a decision block**, whatever else is in
-#   the report. The digest carries these for the WHOLE run, not just since the last
-#   report, precisely so a stop report cannot drop an open question the run asked
-#   three hours and one compaction ago. Its `<status>` field is the status line the
-#   decider routed — it holds the question; write the two options and the lean.
+# - **Every `handoff-feature` line becomes exactly one decision block**, whatever
+#   else is in the report, and so does every still-awaiting `decision` line with no
+#   `handoff-feature` line of its own (in practice, `ask-operator` — a
+#   `hand-off-feature` decision line always has one). A hand-off's two digest
+#   records name the same question, so render ONE block for it, matching the
+#   header's 🔀 count above. The digest carries `handoff-feature` lines for the
+#   WHOLE run, not just since the last report, precisely so a stop report cannot
+#   drop an open question the run asked three hours and one compaction ago. Its
+#   `<status>` field is the status line the decider routed — it holds the
+#   question; write the two options and the lean.
 # - **When a periodic pause stopped the run, say the setting.** Read
 #   `runstate.sh periodic-pause` and name it in the one-sentence reason:
 #   *"Paused after 5 packets — `pause_every_packets: 5` in
@@ -199,6 +220,24 @@
 # - **Omit `⛔ Failed` and `⚠️ Unfinished` when the digest has no such lines.** Rule
 #   3 — an empty section is never written as "none".
 
+# Worked example of the dedup rule (one handed-off packet, one operator question):
+#
+#   packet          txn-t4  Add a duplicate-detection pass over…  rolled-back
+#   decision        txn-t4  hand-off-feature
+#   handoff-feature txn-t4  handed off as a question: auto-match or confirm-each
+#   packet          txn-t9  Pick a retry backoff for the bank API  blocked
+#   decision        txn-t9  ask-operator
+#
+#   Tally: ⛔ **1 failed** (txn-t4, rolled-back) · ⚠️ **1 unfinished** (txn-t9,
+#   blocked) · 🔀 **2 decisions** — one `handoff-feature` line (txn-t4) plus one
+#   still-awaiting `decision` line with no `handoff-feature` line of its own
+#   (txn-t9's `ask-operator`). txn-t4's OWN `decision` line (token
+#   `hand-off-feature`) is excluded, since its `handoff-feature` line already
+#   counted that question. The body renders exactly two blocks under
+#   🔀 **Decisions**, one per counted line above — the header's 🔀 figure and the
+#   section's block count match, which is the table-of-contents property this
+#   correction restores.
+#
 # Worked example (from a digest with five packets, one paused, one question):
 #
 #   ⏸️ **PAUSED** · Transaction import · ✅ **4 shipped** · ⚠️ **1 unfinished** · 🔀 **1 decision** · ⬚ **2 queued**

@@ -2301,19 +2301,30 @@ assert_true "  and effort/threshold are not swallowed leftward the way IFS=<tab>
 echo "-- a decider decision (scoped by --since) and its hand-off-feature record (the WHOLE run, regardless of --since) --"
 printf 'T3 needs a bigger feature\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-hof --tier integration --agent implementer) >/dev/null
 (cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-hof escalate >/dev/null)
-(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-hof hand-off-feature --status "hand-off-feature: rd-hof needs a new feature for bulk import" >/dev/null)
+# Review fix (round two, F5): a naive `sed -E 's/.*"status":"([^"]*)".*/\1/'`
+# extraction (in place of the escape-aware field_esc walk) truncates at the
+# first escaped quote and still passes every case here if the fixture is
+# plain ASCII with no middle dot, quote or backslash. This status line is
+# contract-shaped (templates/status-line.md's four ` . ` fields) and carries
+# a real double quote and a real backslash in its free-text clause, so only
+# the escape-aware walk reproduces it verbatim -- grep -F (not -x's BRE) is
+# used to match it so the backslash/quote are compared literally, not as
+# regex metacharacters.
+RD_HOF_STATUS='hand-off-feature · rd-hof needs a "bulk import" feature, spec at C:\import\spec.md · result: needs-reading · .agents/loop/x/rd-hof/decider.md'
+(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-hof hand-off-feature --status "$RD_HOF_STATUS" >/dev/null)
+RD_HOF_EXPECTED="$(printf 'handoff-feature\trd-hof\t%s' "$RD_HOF_STATUS")"
 assert_true "run-digest: a bare reviewer 'escalate' is NOT itself a decider decision (it only routes TO the decider)" \
   "! rd_digest | grep -qx \$'decision\trd-hof\tescalate'"
 assert_true "run-digest: the decider's own hand-off-feature token IS a decision line" \
   "rd_digest | grep -qx \$'decision\trd-hof\thand-off-feature'"
-assert_true "run-digest: the hand-off-feature record carries its own routed --status line, JSON-escaping reversed" \
-  "rd_digest | grep -qx \$'handoff-feature\trd-hof\thand-off-feature: rd-hof needs a new feature for bulk import'"
+assert_true "run-digest: the hand-off-feature record carries its own routed --status line, JSON-escaping reversed VERBATIM (including its literal double quote and backslash)" \
+  "rd_digest | grep -qFx \"\$RD_HOF_EXPECTED\""
 assert_true "run-digest: a handed-off packet's own packet line still reports (still open -- it was never landed)" \
   "rd_digest | grep -qx \$'packet\trd-hof\tT3 needs a bigger feature\topen'"
 assert_true "run-digest --since in the far future excludes the decision line" \
   "! rd_digest --since 2099-01-01T00:00:00Z | grep -qx \$'decision\trd-hof\thand-off-feature'"
-assert_true "  but the hand-off-feature QUESTION still appears -- a stop report must list every open question the run recorded, not only recent ones" \
-  "rd_digest --since 2099-01-01T00:00:00Z | grep -qx \$'handoff-feature\trd-hof\thand-off-feature: rd-hof needs a new feature for bulk import'"
+assert_true "  but the hand-off-feature QUESTION still appears, verbatim -- a stop report must list every open question the run recorded, not only recent ones" \
+  "rd_digest --since 2099-01-01T00:00:00Z | grep -qFx \"\$RD_HOF_EXPECTED\""
 assert_true "run-digest --since at the epoch still includes the decision line" \
   "rd_digest --since 1970-01-01T00:00:00Z | grep -qx \$'decision\trd-hof\thand-off-feature'"
 
@@ -2325,6 +2336,14 @@ assert_true "run-digest: the paused cursor packet reads 'paused'" \
   "rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\tpaused'"
 assert_true "  and does NOT also (or instead) read open -- paused wins over the boundary-outcome computation" \
   "! rd_digest | grep -qx \$'packet\trd-paused\tT4 mid-edit when paused\topen'"
+# Review fix (round two, F4): a wrong implementation that applies `paused` to
+# EVERY packet (dropping the cursor check entirely) reads exactly the same as
+# the correct one on the two assertions above, since rd-paused IS the cursor.
+# This asserts a DIFFERENT, already-landed packet (rd-green) still reports its
+# real outcome while the run sits paused -- reporting a landed packet as
+# "paused" is the exact operator-facing lie this capability exists to prevent.
+assert_true "  and a DIFFERENT, already-landed packet (rd-green) still reads its real outcome, not paused, while the run is paused" \
+  "rd_digest | grep -qx \$'packet\trd-green\tT1 add the first thing\tgreen'"
 printf 'schema: 3\nstatus: running\nrun_id: %s\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
 
 # Review fix (round two): `_rs_digest_outcome`'s same-timestamp comparison is

@@ -235,6 +235,59 @@
 #                                    decider again — `retry` IS the decider's
 #                                    own return value, so looping on it could
 #                                    never terminate.
+#   compact-threshold                prints THRESHOLD=<n|unknown>,
+#                                    SOURCE=repo|operator|gaffer-default|unknown
+#                                    and APPLIED=no ALWAYS (thin-loop-driver
+#                                    T4, ADR 0028 result 3). Pure reader, no
+#                                    side effect: it never writes a settings
+#                                    file. T1 verified exactly ONE carrier —
+#                                    `autoCompactWindow` (a number, tokens) in
+#                                    a Claude Code settings JSON file, same
+#                                    value as the
+#                                    `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var
+#                                    — and explicitly did NOT probe precedence
+#                                    between them, the user
+#                                    (~/.claude/settings.json) and committed-
+#                                    project (.claude/settings.json) scopes
+#                                    specifically, or whether a plugin default
+#                                    can coexist with a repo/operator value
+#                                    without overriding it. "operator" here
+#                                    means, in order: the env var, then
+#                                    .claude/settings.local.json (uncommitted,
+#                                    personal), then ~/.claude/settings.json
+#                                    (user, every repo) — a DOCUMENTED,
+#                                    UNVERIFIED precedence (operator over
+#                                    repo). PROBE THIS FOR REAL before
+#                                    anything relies on it for more than
+#                                    display. When neither repo nor operator
+#                                    has one set, this reports
+#                                    SOURCE=gaffer-default with the value
+#                                    above ADVISORY ONLY — the session still
+#                                    auto-compacts at the harness's own
+#                                    default until something sets a real
+#                                    value, because a write into
+#                                    .claude/settings.local.json IS overriding
+#                                    the (unprobed) operator scope, exactly
+#                                    the thing ADR 0028 flagged as unverified.
+#                                    APPLIED therefore never varies here; the
+#                                    field survives so a later carrier (once
+#                                    the ADR's plugin-default probe lands) can
+#                                    report APPLIED=yes without a format
+#                                    change. NO SESSION BOUNDARY TO CONFIRM:
+#                                    because nothing is ever written, there is
+#                                    no cross-session effect to check for —
+#                                    this command's output is a snapshot of
+#                                    what the harness will read at its OWN
+#                                    next session start (T1's probe launched
+#                                    three FRESH sessions to see each scope;
+#                                    it never re-read a value mid-session),
+#                                    not a report on anything this command
+#                                    changed. Reads are parser-free (a
+#                                    shallow regex scan, matching this file's
+#                                    no-parser-dependency rule below) and can
+#                                    therefore misread a malformed settings
+#                                    file as "not set" rather than erroring —
+#                                    acceptable for a display-only reader.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -1674,6 +1727,80 @@ cmd_driver_mode_status() {
   return 0
 }
 
+# --- compact-threshold (thin-loop-driver T4, ADR 0028 result 3) ------------
+# The one carrier T1 verified: a flat top-level NUMERIC key, `autoCompactWindow`
+# (tokens), in a Claude Code settings JSON file -- same value, same unit, as
+# the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var. Pure reader: ADR 0028 left
+# "can a plugin default coexist with a repo/operator value without
+# overriding it" unprobed, so this never writes -- see the header comment.
+GAFFER_DEFAULT_COMPACT_THRESHOLD=200000
+
+# Parser-free by design (see test-runstate.sh's no-tools T8 sweep and its
+# comment on this file): a shallow regex scan for one flat top-level numeric
+# key, same trade-off guard.sh's own regex JSON fallback makes for its string
+# fields. An absent file or an absent key both read as "not set" -- this is
+# a best-effort scan, not a JSON parser, so it cannot distinguish "not set"
+# from "malformed file". That is an acceptable trade for a display-only
+# reader with no write path to protect.
+_rs_json_num_field() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*[0-9]+" "$file" 2>/dev/null \
+    | head -n1 | grep -oE '[0-9]+$' || true
+  return 0
+}
+
+# Always exits 0 -- a query, same contract as pause-status/driver-mode
+# status. Never writes anything. See the header comment above for the full
+# precedence rationale and why there is no session-boundary effect to
+# confirm.
+cmd_compact_threshold() {
+  local main_root
+  if ! main_root="$(_rs_main_checkout_root)"; then
+    printf 'THRESHOLD=unknown\nSOURCE=unknown\nAPPLIED=no\n'
+    return 0
+  fi
+
+  local repo_file="${main_root}/.claude/settings.json"
+  local local_file="${main_root}/.claude/settings.local.json"
+  local user_file="${HOME:-}/.claude/settings.json"
+
+  local env_val="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}"
+  case "$env_val" in ''|*[!0-9]*) env_val="" ;; esac
+
+  local local_val user_val repo_val
+  local_val="$(_rs_json_num_field "$local_file" autoCompactWindow)"
+  user_val="$(_rs_json_num_field "$user_file" autoCompactWindow)"
+  repo_val="$(_rs_json_num_field "$repo_file" autoCompactWindow)"
+
+  # Operator scope, in order: env var, then the local (uncommitted, personal)
+  # settings file, then the user-wide settings file. UNVERIFIED precedence —
+  # see the header comment.
+  if [ -n "$env_val" ]; then
+    printf 'THRESHOLD=%s\nSOURCE=operator\nAPPLIED=no\n' "$env_val"
+    return 0
+  fi
+  if [ -n "$local_val" ]; then
+    printf 'THRESHOLD=%s\nSOURCE=operator\nAPPLIED=no\n' "$local_val"
+    return 0
+  fi
+  if [ -n "${user_val:-}" ]; then
+    printf 'THRESHOLD=%s\nSOURCE=operator\nAPPLIED=no\n' "$user_val"
+    return 0
+  fi
+
+  # Repo scope: committed, team-shared settings.
+  if [ -n "$repo_val" ]; then
+    printf 'THRESHOLD=%s\nSOURCE=repo\nAPPLIED=no\n' "$repo_val"
+    return 0
+  fi
+
+  # Neither is set -- report gaffer's default, advisory only. No write: see
+  # the header comment on why APPLIED is always "no" here.
+  printf 'THRESHOLD=%s\nSOURCE=gaffer-default\nAPPLIED=no\n' "$GAFFER_DEFAULT_COMPACT_THRESHOLD"
+  return 0
+}
+
 # --- mint a sortable run id: UTC timestamp + a short random suffix so two
 # --- begin-run calls in the same second cannot collide. Charset is
 # --- [A-Za-z0-9-] by construction -- safe as a directory name on every
@@ -2584,6 +2711,7 @@ case "$cmd" in
   handoff)       cmd_handoff       "$@" ;;
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;
-  -h|--help|help|"") sed -n '2,226p' "$0" | sed 's/^# \{0,1\}//' ;;
+  compact-threshold) cmd_compact_threshold "$@" ;;
+  -h|--help|help|"") sed -n '2,293p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

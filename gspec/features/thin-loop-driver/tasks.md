@@ -71,7 +71,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: A session running the loop is in driver mode
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, .gitignore, templates/spec-driven-base/.gitignore
-- [ ] **T4** **P1** Add `runstate.sh compact-threshold`, which prints the auto-compaction threshold in effect and its source (repo, operator or gaffer's default), or `unknown`. Apply gaffer's default to a loop session, through the carrier T1 recorded, only where neither the repo nor the operator set one. Cases cover each source and the unknown case. If T1 found no per-repo setting, still add `compact-threshold` printing `unknown`, skip applying the default, and report the settings carrier as absent.
+- [x] **T4** **P1** Add `runstate.sh compact-threshold`, which prints the auto-compaction threshold in effect and its source (repo, operator or gaffer's default), or `unknown`. Apply gaffer's default to a loop session, through the carrier T1 recorded, only where neither the repo nor the operator set one. Cases cover each source and the unknown case. If T1 found no per-repo setting, still add `compact-threshold` printing `unknown`, skip applying the default, and report the settings carrier as absent.
   - deps: T1, T3
   - covers: Long runs compact, and can pause on a schedule
   - arch: —

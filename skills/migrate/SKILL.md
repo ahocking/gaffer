@@ -318,6 +318,24 @@ work at the chief-engineer or `/gaffer:run-loop`, and testing method at
 
 **e. `.gitignore`.** Ensure `.agents/pause` and `.agents/pause.*` are ignored
 (ADR 0017), plus `.agents/run-state.yaml` and `.agents/metrics/` if missing.
+`detect` also flags `FINDING=driver-mode-ignore` when either `.agents/loop/`
+(handoff and script-written result files) or `.agents/driver-mode/` (the
+session-keyed driver-mode mark) is not ignored — same reason as the pause/
+write-backup findings above: an untracked file there would show up in `git
+status`, and the pause path's stash and `resume`'s reconcile would sweep or
+discard it. Add whichever line(s) the finding names.
+
+Also `FINDING=compact-threshold`, only when `.claude/settings.json` **exists**
+and lacks the key (a repo committing no settings file at all has not opted
+into a committed value, and gaffer's default is the supported state for it —
+this finding never fires there): `autoCompactWindow` entry — the one carrier
+`runstate.sh compact-threshold` reads, T4's per-repo setting (ADR 0028
+result 3) — is missing. No COMMITTED, team-shared value exists, so sessions
+here fall back to an operator-scope value (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+`settings.local.json`, or the user-wide settings file) if one is set, else
+gaffer's own default — never a value the team chose. `apply` never writes
+this file; add `"autoCompactWindow": <tokens>` by hand if you want the team
+to share one (an operator-scope value still takes precedence over it).
 
 **f. The finding index — triage, one entry at a time.**
 `${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh findings-audit <root>` is read-only and

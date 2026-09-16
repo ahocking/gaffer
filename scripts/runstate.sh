@@ -288,6 +288,47 @@
 #                                    therefore misread a malformed settings
 #                                    file as "not set" rather than erroring —
 #                                    acceptable for a display-only reader.
+#   periodic-pause [session-id]      thin-loop-driver T10 (ADR 0028 result 2):
+#                                    prints ENDED=<n>, EVERY=<n|off>,
+#                                    DUE=yes|no. Pure reader, no side effect —
+#                                    the CALLER (run-loop) is what actually
+#                                    invokes request-pause when DUE=yes. EVERY
+#                                    comes from `pause_every_packets` in
+#                                    .agents/project-overrides.yaml: off when
+#                                    the key is missing, invalid, or 0 — off
+#                                    by default and at 0 on purpose, since a
+#                                    periodic pause halts an unattended run
+#                                    until a human resumes it, and neither an
+#                                    absent key nor an explicit 0 should do
+#                                    that silently. ENDED counts TERMINAL
+#                                    outcome records (any record carrying an
+#                                    `outcome` field, in
+#                                    .agents/metrics/outcomes/*.jsonl across
+#                                    every session — the same log
+#                                    record-outcome/sweep-open already write)
+#                                    whose `ts` is at or after the given
+#                                    session's LATEST driver-mode `enter`
+#                                    record (.agents/metrics/driver-mode/
+#                                    <session>.jsonl) — so a restart (a fresh
+#                                    `enter`) resets the count to zero, matching
+#                                    "since the loop last started or resumed"
+#                                    in the PRD. Session defaults to
+#                                    $CLAUDE_CODE_SESSION_ID (adhoc if unset),
+#                                    the same fallback record-outcome/
+#                                    record-start use. Comparison is by
+#                                    PARSED time (_rs_ts_key), never a raw
+#                                    string compare — the same sub-second-vs-
+#                                    whole-second trap sweep-open guards
+#                                    against. A SWEPT interruption/
+#                                    abandonment (sweep-open) carries its
+#                                    ORIGINAL start's ts, not the sweep's own
+#                                    time — so a record swept AFTER entering
+#                                    driver mode but started BEFORE it sorts
+#                                    below the enter and is excluded, with no
+#                                    special-case code beyond that timestamp
+#                                    comparison. No enter record for the
+#                                    session, or not a git repo, reads as
+#                                    ENDED=0/EVERY=off/DUE=no.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -1801,6 +1842,137 @@ cmd_compact_threshold() {
   return 0
 }
 
+# --- periodic-pause (thin-loop-driver T10, ADR 0028 result 2) --------------
+# Same shape as _rs_packet_attempts_limit above: token-scan the remainder
+# after `pause_every_packets:`, skipping non-digit tokens (a trailing
+# comment must not defeat this) and stripping one matching pair of quotes
+# per token before testing digit-ness, so `pause_every_packets: '3'` is
+# honoured rather than silently read as invalid.
+#
+# "off" (a string, not 0) is the return value for missing/invalid/0 -- unlike
+# _rs_packet_attempts_limit, there is no numeric fallback here: a periodic
+# pause is a feature that must default to NOT firing, not to firing on some
+# arbitrary cadence nobody asked for.
+_rs_pause_every_packets() {
+  local main_root="$1" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^pause_every_packets:[[:space:]]*/ {
+        line = $0
+        sub(/^pause_every_packets:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo off ;; *) echo "$v" ;; esac
+}
+
+# --- the given session's LATEST driver-mode `enter` record's ts, or empty ---
+# Same field-extraction idiom as _rs_open_packets/_rs_route_attempts (plain
+# `index`/`substr`, no regex escaping, portable to a POSIX awk). Only `enter`
+# records are considered -- an `exit` carries no information this needs.
+_rs_latest_driver_mode_enter_ts() {
+  local main_root="$1" sess="$2" file
+  file="${main_root}/.agents/metrics/driver-mode/${sess}.jsonl"
+  [ -f "$file" ] || return 0
+  local best_ts="" best_key=-1 ts key
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    if [ "$key" -gt "$best_key" ]; then best_key="$key"; best_ts="$ts"; fi
+  done <<EOF
+$(awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    { k = field($0, "kind"); if (k != "enter") next
+      ts = field($0, "ts"); if (ts != "") print ts }
+  ' "$file" 2>/dev/null)
+EOF
+  printf '%s' "$best_ts"
+}
+
+# --- count TERMINAL outcome records (any record carrying an `outcome`
+# --- field, across EVERY session's log) with a PARSED ts >= $since_ts -------
+# A swept interruption/abandonment (sweep-open) carries its ORIGINAL start's
+# ts, not the sweep's own time -- so a record swept after entering driver
+# mode but started before it naturally sorts below $since_ts and is excluded
+# here, with no special-case code beyond this timestamp comparison (see the
+# header comment above cmd_periodic_pause's dispatch entry for the full
+# reasoning).
+_rs_count_terminal_since() {
+  local main_root="$1" since_ts="$2" dir since_key count=0 ts key
+  dir="${main_root}/.agents/metrics/outcomes"
+  [ -d "$dir" ] || { printf '0'; return 0; }
+  since_key="$(_rs_ts_key "$since_ts")"
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    [ "$key" -ge "$since_key" ] && count=$((count + 1))
+  done <<EOF
+$(awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    { o = field($0, "outcome"); if (o == "") next
+      ts = field($0, "ts"); if (ts != "") print ts }
+  ' "$dir"/*.jsonl 2>/dev/null)
+EOF
+  printf '%s' "$count"
+}
+
+# Always exits 0 -- a query, same contract as compact-threshold/driver-mode
+# status. Never writes anything; the CALLER decides whether to act on
+# DUE=yes (request-pause is a separate, explicit call). See the header
+# comment above for the full field/exclusion reasoning.
+cmd_periodic_pause() {
+  local sess="${1:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  _rs_check_session_id "$sess"
+
+  local main_root
+  if ! main_root="$(_rs_main_checkout_root)"; then
+    printf 'ENDED=0\nEVERY=off\nDUE=no\n'
+    return 0
+  fi
+
+  local every; every="$(_rs_pause_every_packets "$main_root")"
+
+  local enter_ts
+  enter_ts="$(_rs_latest_driver_mode_enter_ts "$main_root" "$sess")"
+
+  local ended=0
+  [ -n "$enter_ts" ] && ended="$(_rs_count_terminal_since "$main_root" "$enter_ts")"
+
+  if [ "$every" = off ]; then
+    printf 'ENDED=%s\nEVERY=off\nDUE=no\n' "$ended"
+    return 0
+  fi
+
+  local due=no
+  [ "$ended" -ge "$every" ] && due=yes
+  printf 'ENDED=%s\nEVERY=%s\nDUE=%s\n' "$ended" "$every" "$due"
+}
+
 # --- mint a sortable run id: UTC timestamp + a short random suffix so two
 # --- begin-run calls in the same second cannot collide. Charset is
 # --- [A-Za-z0-9-] by construction -- safe as a directory name on every
@@ -2712,6 +2884,7 @@ case "$cmd" in
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;
-  -h|--help|help|"") sed -n '2,293p' "$0" | sed 's/^# \{0,1\}//' ;;
+  periodic-pause)    cmd_periodic_pause    "$@" ;;
+  -h|--help|help|"") sed -n '2,334p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

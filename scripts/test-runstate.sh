@@ -2120,6 +2120,86 @@ assert_true "  a second call reports the identical thing (no state to have chang
   "[ \"\$(ct_run \"\$CT2\" env)\" = \"\$CT2_OUT\" ]"
 
 echo
+echo "== periodic-pause: pause_every_packets scheduling, pure reader (thin-loop-driver T10, ADR 0028 result 2) =="
+PP="$(mktemp -d)"; git -C "$PP" init -q
+git -C "$PP" config user.email t@t; git -C "$PP" config user.name t
+mkdir -p "$PP/.agents/metrics/driver-mode" "$PP/.agents/metrics/outcomes"
+pp_run() { (cd "$1" && shift && "$RUNSTATE" periodic-pause "$@"); }
+
+# Fixed timestamps (not real wall-clock calls) so ordering across enter/
+# terminal/swept records is deterministic, same reasoning as the
+# same-second-a fixture above for sweep-open.
+printf '{"ts":"2026-01-01T00:00:10.000Z","session":"PPS1","kind":"enter","model":"m","effort":"e","threshold":"t"}\n' \
+  > "$PP/.agents/metrics/driver-mode/PPS1.jsonl"
+printf '{"ts":"2026-01-01T00:00:11.000Z","packet":"p1","session":"PPS1","outcome":"green"}\n' \
+  > "$PP/.agents/metrics/outcomes/PPS1.jsonl"
+
+echo "-- off by default (no project-overrides.yaml at all) --"
+assert_true "no project-overrides.yaml -> EVERY=off, DUE=no" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=1\nEVERY=off\nDUE=no')\" ]"
+
+echo "-- off at 0 --"
+printf 'pause_every_packets: 0\n' > "$PP/.agents/project-overrides.yaml"
+assert_true "pause_every_packets: 0 -> EVERY=off, DUE=no" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=1\nEVERY=off\nDUE=no')\" ]"
+
+printf 'pause_every_packets: bogus\n' > "$PP/.agents/project-overrides.yaml"
+assert_true "an invalid (non-numeric) pause_every_packets -> EVERY=off, DUE=no" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=1\nEVERY=off\nDUE=no')\" ]"
+
+echo "-- due at N --"
+printf 'pause_every_packets: 2\n' > "$PP/.agents/project-overrides.yaml"
+assert_true "one ended packet against a limit of 2 is not yet due" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=1\nEVERY=2\nDUE=no')\" ]"
+printf '{"ts":"2026-01-01T00:00:12.000Z","packet":"p2","session":"PPS1","outcome":"green"}\n' \
+  >> "$PP/.agents/metrics/outcomes/PPS1.jsonl"
+assert_true "two ended packets against a limit of 2 is due" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=2\nEVERY=2\nDUE=yes')\" ]"
+
+echo "-- a restart after a new enter resets the count --"
+printf '{"ts":"2026-01-01T00:00:20.000Z","session":"PPS1","kind":"enter","model":"m","effort":"e","threshold":"t"}\n' \
+  >> "$PP/.agents/metrics/driver-mode/PPS1.jsonl"
+assert_true "a later enter record resets ENDED to 0, even though EVERY is still configured" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=0\nEVERY=2\nDUE=no')\" ]"
+
+echo "-- a non-green terminal record after the new enter still counts (not just outcome:green) --"
+printf '{"ts":"2026-01-01T00:00:21.000Z","packet":"f1","session":"PPS1","outcome":"failed"}\n' \
+  >> "$PP/.agents/metrics/outcomes/PPS1.jsonl"
+assert_true "a failed (non-green) terminal record after enter counts toward ENDED" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=1\nEVERY=2\nDUE=no')\" ]"
+
+echo "-- a swept interruption whose START ts is AT OR AFTER the current enter DOES count --"
+printf '{"ts":"2026-01-01T00:00:22.000Z","packet":"swept-b","session":"PPS1","outcome":"interrupted"}\n' \
+  >> "$PP/.agents/metrics/outcomes/PPS1.jsonl"
+assert_true "a swept interruption started at/after enter counts, reaching DUE=yes (same outcome value as the excluded case below, opposite side of the boundary)" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=2\nEVERY=2\nDUE=yes')\" ]"
+
+echo "-- an excluded swept record: its ts is the ORIGINAL start's time, before the current enter --"
+printf '{"ts":"2026-01-01T00:00:05.000Z","packet":"swept-a","session":"PPS1","outcome":"interrupted"}\n' \
+  >> "$PP/.agents/metrics/outcomes/PPS1.jsonl"
+assert_true "a swept interruption carrying an older start ts does not count toward ENDED (asserted against the non-zero ENDED=2 baseline above, not a zero baseline the filter would pass vacuously)" \
+  "[ \"\$(pp_run \"$PP\" PPS1)\" = \"\$(printf 'ENDED=2\nEVERY=2\nDUE=yes')\" ]"
+
+echo "-- parsed comparison, not raw string comparison, of timestamps --"
+PP2="$(mktemp -d)"; git -C "$PP2" init -q
+git -C "$PP2" config user.email t@t; git -C "$PP2" config user.name t
+mkdir -p "$PP2/.agents/metrics/driver-mode" "$PP2/.agents/metrics/outcomes"
+printf '{"ts":"2026-01-01T00:00:30Z","session":"PPS2","kind":"enter","model":"m","effort":"e","threshold":"t"}\n' \
+  > "$PP2/.agents/metrics/driver-mode/PPS2.jsonl"
+printf '{"ts":"2026-01-01T00:00:30.500Z","packet":"p3","session":"PPS2","outcome":"green"}\n' \
+  > "$PP2/.agents/metrics/outcomes/PPS2.jsonl"
+printf 'pause_every_packets: 1\n' > "$PP2/.agents/project-overrides.yaml"
+assert_true "a sub-second outcome ts in the same second as a whole-second enter still counts (parsed key, not a raw string compare -- '.' sorts below 'Z' and would wrongly exclude it)" \
+  "[ \"\$(pp_run \"$PP2\" PPS2)\" = \"\$(printf 'ENDED=1\nEVERY=1\nDUE=yes')\" ]"
+
+echo "-- edges: no enter record for the session, and not a git repo at all --"
+assert_true "a session with no enter record at all reads as ENDED=0" \
+  "[ \"\$(pp_run \"$PP\" PPS-NONE)\" = \"\$(printf 'ENDED=0\nEVERY=2\nDUE=no')\" ]"
+PP_NOTGIT="$(mktemp -d)"
+assert_true "not a git repo -> ENDED=0/EVERY=off/DUE=no, never a die" \
+  "[ \"\$(cd \"\$PP_NOTGIT\" && \"\$RUNSTATE\" periodic-pause PPSX)\" = \"\$(printf 'ENDED=0\nEVERY=off\nDUE=no')\" ]"
+
+echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'passed: %s   failed: %s   (no python3+PyYAML on this host — %s parse assertion(s) could not assert; not asserting vacuously)\n' \

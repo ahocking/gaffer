@@ -125,7 +125,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: The reviewer verdict routes each packet mechanically
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, .agents/project-overrides.yaml, templates/spec-driven-base/.agents/project-overrides.yaml
-- [ ] **T10** **P1** Add `runstate.sh periodic-pause`, which prints `ENDED=`, `EVERY=` and `DUE=yes|no`. It counts terminal outcome records timestamped at or after the session's latest driver-mode `enter` record, so a swept interruption, which carries its start's time, does not count. `pause_every_packets` in `.agents/project-overrides.yaml` is off when missing, invalid or 0. Add the commented key to both overrides files. Cases cover off by default, off at 0, due at N, a restart after a new `enter`, and an excluded swept record.
+- [x] **T10** **P1** Add `runstate.sh periodic-pause`, which prints `ENDED=`, `EVERY=` and `DUE=yes|no`. It counts terminal outcome records timestamped at or after the session's latest driver-mode `enter` record, so a swept interruption, which carries its start's time, does not count. `pause_every_packets` in `.agents/project-overrides.yaml` is off when missing, invalid or 0. Add the commented key to both overrides files. Cases cover off by default, off at 0, due at N, a restart after a new `enter`, and an excluded swept record.
   - deps: T3, T9
   - covers: Long runs compact, and can pause on a schedule
   - arch: —

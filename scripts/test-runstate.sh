@@ -2072,6 +2072,53 @@ assert_true "the SAME packet id, hand-off-feature'd only in the PREVIOUS run, is
 assert_true "  and it actually wrote a handoff.md in the NEW run's own directory" \
   "[ -f \"$RT/.agents/loop/\$RT_RUN_ID2/rt-hof/handoff.md\" ]"
 
+echo "== compact-threshold: repo/operator/gaffer-default/unknown, pure reader (thin-loop-driver T4, ADR 0028 result 3) =="
+# A fake HOME so a real developer machine's own ~/.claude/settings.json can
+# never leak into these assertions (the "user" scope reads from there).
+CT_HOME="$(mktemp -d)"
+ct_run() { (cd "$1" && shift && HOME="$CT_HOME" "$@" "$RUNSTATE" compact-threshold); }
+
+CT_NOTGIT="$(mktemp -d)"
+assert_true "not a git repo -> unknown, nothing applied" \
+  "[ \"\$(ct_run \"\$CT_NOTGIT\" env)\" = \"\$(printf 'THRESHOLD=unknown\nSOURCE=unknown\nAPPLIED=no')\" ]"
+
+CT1="$(mktemp -d)"; git -C "$CT1" init -q
+git -C "$CT1" config user.email t@t; git -C "$CT1" config user.name t
+mkdir -p "$CT1/.claude"
+printf '{\n  "autoCompactWindow": 500000\n}\n' > "$CT1/.claude/settings.json"
+assert_true "repo scope (.claude/settings.json) is read when nothing else is set" \
+  "[ \"\$(ct_run \"\$CT1\" env)\" = \"\$(printf 'THRESHOLD=500000\nSOURCE=repo\nAPPLIED=no')\" ]"
+
+assert_true "operator env var wins over a repo setting (unverified precedence, documented in the header)" \
+  "[ \"\$(ct_run \"\$CT1\" env CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000)\" = \"\$(printf 'THRESHOLD=100000\nSOURCE=operator\nAPPLIED=no')\" ]"
+
+assert_true "a non-numeric env var is ignored, falling through to repo" \
+  "[ \"\$(ct_run \"\$CT1\" env CLAUDE_CODE_AUTO_COMPACT_WINDOW=abc)\" = \"\$(printf 'THRESHOLD=500000\nSOURCE=repo\nAPPLIED=no')\" ]"
+
+printf '{\n  "autoCompactWindow": 321000\n}\n' > "$CT1/.claude/settings.local.json"
+assert_true "operator local settings.local.json wins over repo" \
+  "[ \"\$(ct_run \"\$CT1\" env)\" = \"\$(printf 'THRESHOLD=321000\nSOURCE=operator\nAPPLIED=no')\" ]"
+
+assert_true "two sources set at once: env wins over local settings.local.json, named correctly (closes the F7 gap — a marker-only interaction was the sole case previously covered)" \
+  "[ \"\$(ct_run \"\$CT1\" env CLAUDE_CODE_AUTO_COMPACT_WINDOW=654000)\" = \"\$(printf 'THRESHOLD=654000\nSOURCE=operator\nAPPLIED=no')\" ]"
+rm -f "$CT1/.claude/settings.local.json"
+
+mkdir -p "$CT_HOME/.claude"
+printf '{\n  "autoCompactWindow": 777000\n}\n' > "$CT_HOME/.claude/settings.json"
+assert_true "operator user-wide ~/.claude/settings.json is read when nothing more local is set" \
+  "[ \"\$(ct_run \"\$CT1\" env)\" = \"\$(printf 'THRESHOLD=777000\nSOURCE=operator\nAPPLIED=no')\" ]"
+rm -f "$CT_HOME/.claude/settings.json"
+
+CT2="$(mktemp -d)"; git -C "$CT2" init -q
+git -C "$CT2" config user.email t@t; git -C "$CT2" config user.name t
+CT2_OUT="$(ct_run "$CT2" env)"
+assert_true "neither repo nor operator set -> gaffer's default is reported, advisory only" \
+  "[ \"\$CT2_OUT\" = \"\$(printf 'THRESHOLD=200000\nSOURCE=gaffer-default\nAPPLIED=no')\" ]"
+assert_true "  and nothing is ever written -- no .claude/settings.local.json appears" \
+  "[ ! -e \"$CT2/.claude/settings.local.json\" ]"
+assert_true "  a second call reports the identical thing (no state to have changed)" \
+  "[ \"\$(ct_run \"\$CT2\" env)\" = \"\$CT2_OUT\" ]"
+
 echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then

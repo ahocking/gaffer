@@ -251,7 +251,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Agents take a handoff file and return one status line · A session running the loop is in driver mode · Long runs compact, and can pause on a schedule
   - arch: —
   - files: scripts/migrate.sh, scripts/test-migrate.sh, skills/migrate/SKILL.md
-- [ ] **T24** **P1** Record in `CLAUDE.md`, `README.md` and the ADR T1 created, as one deliberate change to the repo's most contended file:
+- [x] **T24** **P1** Record in `CLAUDE.md`, `README.md` and the ADR T1 created, as one deliberate change to the repo's most contended file:
   - the driver-mode mark and its guard rule;
   - run directories and their cleanup;
   - the routing log;

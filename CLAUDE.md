@@ -630,10 +630,93 @@ passing sweeps.
   `covers:`. The arm-1 scope test is prompt-enforced — nothing mechanically checks fit; the
   detector is a task whose `covers:` does not match, and the boundary is the packet's PR
   review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
+- **The session running the loop is in DRIVER MODE: it passes paths, reads one status
+  line, and is refused its own main-thread edits** (ADR 0028 + ADR 0020 D2 amendment).
+  The reason is cost, and it is the only reason: a long run's most expensive context is
+  the session *driving* it, not the agents it dispatches, so every byte the driver reads
+  is re-cached on every later turn for the rest of the run. **Driver mode is a file** —
+  `.agents/driver-mode/<session-id>`, written and removed only by `runstate.sh
+  driver-mode <enter|exit|status>`, **content irrelevant, existence is the whole signal**
+  — and `hooks/guard.sh` refuses `Edit`/`Write`/`MultiEdit`/`NotebookEdit` and the shell
+  write forms it recognises when **all three** hold: that session has a mark, the payload
+  has **no `agent_id`**, and the target is outside `.agents/`. Everything else runs
+  untouched — its **subagents**, `git` (so the loop's own checkpoint commits, merges and
+  pushes on `orch/*`/`develop` are unaffected at `full-autonomy`), gaffer's own scripts,
+  and any command with no recognised write form. **Never branch on `agent_type`** — ADR 0028's probe found a `claude --agent` MAIN thread carries
+  `agent_type` with no `agent_id`, so `agent_type` is not a main-thread test, and the
+  same trap is live in `metrics-log.sh`'s role attribution. Four more things are
+  load-bearing and each was got right for a reason: the session id is **validated before
+  it is used as a path component** (anything outside `[A-Za-z0-9._-]` reads as no mark
+  and the call is judged as it is today — the guard never stats an arbitrary path); the
+  check sits **after the secret floor and before the ask tier** and denies via `deny()`,
+  so **`bypass-ask-tier: true` does not skip it** and a secret path is still refused *as
+  a secret*; an **unjudgeable** shell target (an unexpanded `$VAR`, a path it cannot
+  resolve) is **refused**, because wrong-and-refused costs a pause and wrong-and-allowed
+  is the leak the feature exists to stop; and the refusal **names driver mode and
+  `/gaffer:pause`**, since a hard deny with no stated exit is how an agent starts
+  improvising around the guard. A mark from a crashed session is **inert** (keyed to an
+  id nothing will reuse; `session-start.sh` clears it on `startup|resume`), compaction
+  keeps it (`driver-mode-compact.sh` fires on `compact` only and re-points the session at
+  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit four
+  mechanisms worth knowing before you touch any of them:
+  **(a) Run directories.** `begin-run` mints `run_id` into run-state **only when absent**
+  — so a resume keeps it and a run spans sessions — creates `.agents/loop/<run_id>/`, and
+  prunes to the current run plus the **single newest other**, deleting only directories
+  matching the minted shape (anything else there is operator scratch it does not own).
+  **Both `.gitignore` files must ignore `.agents/loop/` and `.agents/driver-mode/`** —
+  untracked is not enough, it is the `run-state-prev.yaml` trap again: the pause path's
+  `git stash --include-untracked` sweeps them and `reconcile` discards them as scratch on
+  the green checkpoint, so the run destroys its own records.
+  **(b) Two NEW logs, and they are new on purpose.** Driver-mode enter/exit records go to
+  `.agents/metrics/driver-mode/<session>.jsonl` and routing records to
+  `.agents/loop/<run_id>/routing.jsonl`, **not** the outcomes log, because
+  `_rs_open_packets` reads any record carrying `kind` as a packet **start** and would
+  reopen packets that never existed. `record-start`/`record-outcome` keep their shapes: a
+  fresh implementer attempt records no start, routing to the decider records nothing,
+  `discard-advance` records `rolled-back`, a stop records `blocked`.
+  **(c) Routing is mechanical, and the retry limit is enforced by the ROUTER.** `route`
+  maps `pass`→`land`; `fix`→`attempt` while attempts remain, else `decider`;
+  `retry`→`attempt` while attempts remain, and **past the limit it is refused as `stop`
+  with a blocking question naming the over-limit retry, never looped**;
+  `escalate`→`decider`; `reorder`/`append-task`/`hand-off-feature`→`discard-advance`;
+  `ask-operator`→`stop`. Attempts count `fix` **and** `retry` since the packet's latest
+  `start` — a *continuation* deliberately does not reset — against `packet_attempts`
+  (1 when missing, invalid or 0). Records are written even for `stop`/`decider`, which is
+  what lets `run-digest` see every decision and lets `handoff` refuse a packet already
+  routed `hand-off-feature`.
+  **(d) Result files are written THROUGH A SCRIPT, which is how read-only agents stayed
+  read-only.** `write-result` refuses any path outside the current run directory
+  (lexically, before touching disk) and writes the status line as the file's **first**
+  line — so the reviewer, researcher and chief-engineer gained **no** `Edit` or `Write`
+  tool, and the driver can assemble a report from first lines without opening a body.
+  The one-line contract itself is `templates/status-line.md`; nothing mechanically
+  refuses a multi-line reply, the **reviewer** catches it as a `fix`.
+  **The escalation decider does not exist yet, and `chief-engineer` is an INTERIM
+  stand-in for it.** It decides with its existing judgment — *not* the decider's
+  exclusive triggers or their precedence, which `thin-loop-driver` deliberately did not
+  build — and returns one of `retry`, `reorder`, `append-task`, `hand-off-feature`,
+  `ask-operator`. An `append-task` (ADR 0026 arm 1) is written by an architect it
+  dispatches and **committed on its own paths with an `[orch decider:<packet-id>]`
+  trailer before the token returns**, so the `discard-advance` that follows keeps it;
+  a `hand-off-feature` is recorded as a question for the main context, never run as
+  `/gspec-feature` from a dispatched context (no `Skill` tool there). When
+  `escalation-decider` ships it replaces **that section of `agents/chief-engineer.md`
+  and the one dispatch line in `skills/run-loop/SKILL.md`**, and it must keep its own
+  decision records **outside `.agents/loop/`**, which `begin-run`'s cleanup removes.
+  **Reflexivity, because this repo self-hosts:** `runstate.sh` and hook bodies take
+  effect mid-run, but a **mark** is only written by a loop that already entered driver
+  mode, so a run that lands a driver-mode change is itself running the old contract —
+  the first run under a change is the next `/gaffer:run-loop`.
 - **There are THREE report files, and the split is by reader and by need** (ADR 0023).
-  `templates/check-in.md` is the **wire** format — a dispatched Chief Engineer
-  returns it and whoever dispatched it *parses* it, so its keys are stable and it
-  stays machine-shaped. `templates/report-conventions.md` holds the **conventions**
+  `templates/check-in.md` **is no longer what the loop returns** (ADR 0028): every
+  loop-dispatched agent returns one **status line** (`templates/status-line.md`) and
+  writes its detail to a result file the driver never opens, and the human-facing loop
+  reports are assembled from `runstate.sh run-digest`. What check-in.md is still the
+  **wire** format for is a Chief Engineer dispatched for **self-contained work outside a
+  loop packet** — it has no run-state of its own, so it cannot record findings itself and
+  states them in `Findings:` lines instead; its keys stay stable and machine-shaped
+  because whoever dispatched it *parses* them.
+  `templates/report-conventions.md` holds the **conventions**
   every human-facing report owes (glyph vocabulary, indentation contract, decision
   block, header tally, the four rules). `templates/report-templates.md` holds only the
   loop's three **shapes** and assumes the conventions file. Skills with no shape of
@@ -675,13 +758,15 @@ passing sweeps.
   What the human reads:
   one shared **decision block** plus three shapes — **C** kickoff (before the first
   packet, and on resume), **A** check-in (a packet landed), **B** stop
-  report (the loop stopped, for any reason). The main-context agent renders them from
-  the wire text and the already-resolved backlog, **and nothing else** — ADR 0012 step
-  3 (now historical; ADR 0012 is superseded) was amended from "relay verbatim" to
-  "render" for exactly this, because the rule it was protecting is *don't go back
-  to disk*, not *don't reword*. A bounded text transform costs a few hundred tokens
-  once per packet and does not grow with the backlog; re-opening the repo to
-  enrich a check-in is what refills a dispatched agent's context.
+  report (the loop stopped, for any reason). **Under driver mode (ADR 0028) the driver
+  assembles all three from `runstate.sh run-digest` plus the status lines it already
+  read, and nothing else** — it never opens a result file to enrich one. That is the
+  same rule in a cheaper form: ADR 0012 step 3 (now historical; ADR 0012 is superseded)
+  was amended from "relay verbatim" to "render" because the rule it was protecting is
+  *don't go back to disk*, not *don't reword*, and `run-digest` is now the one bounded
+  read that satisfies it. A bounded text transform costs a few hundred tokens once per
+  packet and does not grow with the backlog; re-opening the repo to enrich a check-in is
+  what refills the driver's context.
   Two conventions are the whole point and the first thing to drift: **no bare ids**
   (`wbr-t14` and "ADR 0017" mean nothing to a reader who is not holding the numbering
   — every id gets a plain-English title on first appearance), and **every ask goes
@@ -782,6 +867,11 @@ passing sweeps.
   while every hard-deny floor and the git soft gates still enforce. Default false;
   resolved restrictively (every discovered config root must opt in, mirroring the
   autonomy vote), so a nested/foreign `.agents/` can only keep the prompts on.
+  **Driver mode (ADR 0028) adds a THIRD write tier, between those two**: it is checked
+  after the secret floor and before the ask tier, and it is a `deny()`, so
+  `bypass-ask-tier` does **not** skip it. It is the only tier keyed to *who is calling*
+  rather than *what is being touched*. The full rule, and the reason each half of it is
+  shaped the way it is, are in the driver-mode bullet above.
 
 - **gspec is a pinned, optional dependency behind ONE adapter** (ADR 0020). The seam:
   **gspec owns *what to build and in what order*; this plugin owns *how a unit of work
@@ -790,8 +880,18 @@ passing sweeps.
   anywhere else**, or a format change breaks seven files again (it did — gspec 2.x
   moved `features/<slug>.plan.md` to `tasks/<slug>.md` and nothing checked). The
   consumed contract is exactly: the feature's **plan** (task lines + `deps:`), its
-  **PRD** (capability checkboxes), `.agents/roadmap.yaml`, and — fail-soft, outside
+  **PRD** (capability checkboxes **and, since the D2 amendment, a capability's indented
+  acceptance-criteria sub-bullets**), `.agents/roadmap.yaml`, and — fail-soft, outside
   the pinned contract — `.gspec/build/status.json` for the two-drivers interlock.
+  **The sub-bullets were added for exactly one reader, `gspec-backlog.sh handoff`**
+  (ADR 0028's handoff file has to say what "done" means for the task, and at a
+  capability-level PRD that lives one level below the checkbox). **Completion is still
+  derived from the checkbox alone** — never from a criterion's text or count — and the
+  `covers:` quote is matched **verbatim**, with an unmatched one reported as
+  `UNMATCHED=` rather than guessed, which is what stops the widened contract from
+  becoming a second, softer place completion could be inferred from. `runstate.sh`
+  still never reads `gspec/` at all: the handoff file is this adapter's *output*, piped
+  in by the loop.
   **Where those two files LIVE is layout-dependent and resolved in exactly one place
   each** (`_resolve_plan_path` / `_resolve_prd_path`, enumerated by `_plan_paths` /
   `_prd_paths`), because gspec has now moved them twice:

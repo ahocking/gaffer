@@ -59,31 +59,34 @@ but is retired; see `retire-unused-loop-modes`.)
 | Path | What it is |
 | --- | --- |
 | `.claude-plugin/plugin.json` | Plugin manifest (name, version, author). |
-| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits above `interactive`. |
+| `agents/loop-driver.md` | **inherit** — the role the session *driving* the loop takes (ADR 0028). Passes paths, reads one status line per agent, never opens a result file, routes every verdict through `runstate.sh route`. Declares no `tools:` restriction, so `claude --agent gaffer:loop-driver` keeps `Task`/`Bash`/`Read` for the run and `Edit`/`Write` for after the stop report. |
+| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits above `interactive`. Also the **interim stand-in escalation decider** the loop dispatches on `ACTION=decider`, until `escalation-decider` ships. |
 | `agents/architect.md` | **opus** read-mostly design authority and spec author; writes design/spec prose under `docs/**`, `adr/**`, and any doc/spec paths the repo declares in `.agents/project-overrides.yaml` (`allowed_paths.docs`/`.specs`, e.g. `gspec/**`) — never code; flags security/auth/financial concerns. |
 | `agents/ux-designer.md` | **opus** visual/UX design specialist; iterates against the rendered UI via a **context-adaptive** preview loop — a web DOM preview or a live Unity Editor (via the Unity MCP), selected by `ux.preview_mode` in `.agents/project-overrides.yaml` (auto-detected, **web** default; ADR 0010) — and researches comparable products; writes presentation only under `allowed_paths.frontend` + `.agents/ux-references.md` + `.claude/launch.json` (web). Opt-in for repos with a user-facing surface. |
-| `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. |
+| `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. Returns one of three verdicts on exclusive triggers — `pass` / `fix` / `escalate` — which is what the loop routes on. |
 | `agents/implementer.md` | **sonnet** scoped code writer; escalates on auth/schema/secrets and any domain risk the repo declares in `.agents/domain-rules.md`. |
 | `agents/researcher.md` | **sonnet** read-only investigator; researches libraries/APIs, compares options, sweeps in-repo context, and returns a compact cited brief — offloads retrieval so the opus reasoners' context stays clean. Never edits. |
 | `agents/doc-writer.md` | **haiku** documentation/summarization agent; writes README/setup/usage docs and changelog-style summaries from established fact under `allowed_paths.docs`. Never touches code, tests, ADRs, or design decisions. |
 | `skills/new-project/SKILL.md` | Chain: bootstrap a spec-driven repo — generic overlay + **version-pinned** gspec + a seeded `.agents/roadmap.yaml` — stops before the initial commit. |
 | `skills/review-change/SKILL.md` | Chain: review uncommitted changes → ready/issues/risks/next-step. |
-| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). One sequential mode; backlog size no longer switches execution modes (ADR 0012, superseded). |
+| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). One sequential mode; backlog size no longer switches execution modes (ADR 0012, superseded). The session running it is in **driver mode** (ADR 0028) — it dispatches rather than edits, and no packet is implemented inline. |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
 | `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session, from wherever it left off. |
 | `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
 | `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), clean up the retired parallel-mode/rate-limit-pause footprint, then **verify the backlog actually parses**. |
 | `skills/metrics/SKILL.md` | Assemble / show / analyze a run-metrics packet (ADR 0019): where a run's compute went, per packet, agent, model, tool, and skill. |
 | `scripts/migrate.sh` | Deterministic half of `/gaffer:migrate`: detect / plan / apply / verify. Refuses a dirty tree, never deletes, never overwrites, and ends by counting packets. |
-| `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, and the fingerprint-guarded file-scope sidecar. Nothing else may parse `gspec/`. |
+| `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, the fingerprint-guarded file-scope sidecar, and `handoff` — a packet's whole brief, including the acceptance criteria its `covers:` names. Nothing else may parse `gspec/`. |
 | `templates/task-packet.yaml` | Fillable contract handed to a specialist agent (includes the packet `autonomy` level). |
 | `templates/run-state.yaml` | Schema for the durable `.agents/run-state.yaml` checkpoint file. |
-| `templates/check-in.md` | The two check-in shapes the loop emits: status update, severity-tagged blocking question. |
+| `templates/status-line.md` | The one line every loop-dispatched agent returns (ADR 0028): status · what changed · whether the result file needs reading · its path. The same line opens the result file. |
+| `templates/check-in.md` | The two check-in shapes — status update, severity-tagged blocking question. **The loop no longer uses them** (ADR 0028); they are for a Chief Engineer dispatched for self-contained work outside a loop packet. |
 | `templates/spec-driven-base/` | The stack-agnostic overlay `new-project` copies into a fresh repo. |
-| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; autonomy-aware soft gates for `git commit` (≥ supervised) and `git merge`/`rebase`/`push` onto non-`main` (full-autonomy). |
-| `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005). |
+| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; refuses a driver-mode session's own main-thread writes outside `.agents/` (ADR 0028); autonomy-aware soft gates for `git commit` (≥ supervised) and `git merge`/`rebase`/`push` onto non-`main` (full-autonomy). |
+| `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005), and clears the reopened session's own driver-mode mark. |
+| `hooks/driver-mode-compact.sh` | SessionStart hook on `compact` only: if the compacted session still holds a driver-mode mark, points it back at `agents/loop-driver.md` so it keeps driving (ADR 0028). Silent otherwise. |
 | `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
-| `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. |
+| `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. Also the driver-mode core (ADR 0028): `driver-mode`, `begin-run`, `handoff`, `write-result`, `route`, `run-digest`, `periodic-pause`, `compact-threshold`. |
 | `.mcp.json` | Stubbed git / github / filesystem MCP servers (tokens via env vars only). |
 
 ### Model routing intent
@@ -91,6 +94,8 @@ but is retired; see `retire-unused-loop-modes`.)
 - **opus** — reasoning, architecture, security, review (`chief-engineer`, `architect`, `ux-designer`, `reviewer`).
 - **sonnet** — narrow implementation (`implementer`) and retrieval-heavy research (`researcher`).
 - **haiku** — summarization / documentation (`doc-writer`).
+- **inherit** — `loop-driver`, which is not dispatched but *adopted* by the session
+  already running the loop, so it runs on whatever model that session runs on.
 
 ### The guardrail
 
@@ -124,6 +129,16 @@ unattended loop still stops at the prompt.
   the generic defaults; a repo adds its own domain paths (e.g. money/banking for a
   financial app) via `.agents/guard-extra-paths` (appended to the hard-deny tier)
   without editing the plugin.
+
+**Driver-mode writes — the one rule keyed to *who* is calling (ADR 0028).** While a
+session is driving the loop, the guard refuses that session's **own main-thread**
+`Edit`/`Write`/`MultiEdit`/`NotebookEdit` and the shell write forms it recognises,
+unless the target is under `.agents/`. The refusal names driver mode as the reason and
+`/gaffer:pause` as the way out. Its subagents are unaffected, and so are `git`, gaffer's
+own scripts, and any command with no recognised write form. It is checked **after** the
+secret floor and **before** the ask tier, and it is a hard deny — `bypass-ask-tier` does
+not skip it. See ["Driver mode"](#driver-mode-the-loop-session-stops-editing-adr-0028)
+below for what it is for.
 
 **Soft gates — autonomy-aware git (ADR 0004 / 0006).** `git commit` is allowed when
 **all** hold: the resolved level is ≥ `supervised`, the branch is not `main`/`master`,
@@ -251,9 +266,74 @@ no worktrees), cut from the integration branch (`.agents/project-overrides.yaml`
 and sets any scratch aside with `git stash`, and even a crash mid-loop is
 recovered — the SessionStart hook surfaces the in-flight run when you reopen
 Claude, and `runstate.sh reconcile` adopts or discards whatever the crash left
-behind (ADR 0005). Check-ins are **produced** by the plugin and **delivered** by
+behind (ADR 0005). Loop reports are **produced** by the plugin and **delivered** by
 the frontend (Claude Desktop / Dispatch) — there is no notification transport
 here.
+
+### Driver mode: the loop session stops editing (ADR 0028)
+
+The most expensive context in a long run is the session **driving** it, not the agents
+it dispatches — everything the driver reads is re-cached on every later turn for the
+rest of the run. So while `/gaffer:run-loop` or `/gaffer:resume` is running, that
+session takes the `loop-driver` role: it passes **paths**, reads **one status line** per
+agent, and never opens a result file.
+
+**The mark and the refusal.** Entering driver mode writes a file —
+`.agents/driver-mode/<session-id>`, managed only by `runstate.sh driver-mode`. Its
+existence is the whole signal. While it is there, the guard refuses that session's own
+main-thread writes outside `.agents/` (above). It is keyed to **one session**: it never
+blocks another, a subagent's writes are never refused, and a mark left behind by a
+session that crashed blocks nothing — it names an id nothing will reuse, and reopening
+that session clears it. Compaction keeps it, and a compacted session is pointed back at
+its driver instructions. The way out is a **pause**: `/gaffer:pause` ends the run at a
+green checkpoint and hands the keyboard back.
+
+**What the driver reads instead of the repo.** Each packet gets a **handoff file** under
+`.agents/loop/<run_id>/<packet-id>/` — its task text, its file scope, and the acceptance
+criteria its `covers:` names, assembled by `gspec-backlog.sh handoff`. Every dispatched
+agent takes that path as its whole brief, writes its detail to a **result file** through
+`runstate.sh write-result` (which refuses any path outside the run directory), and
+returns a single line: `<status> · <what changed> · result: <needs-reading|no> ·
+<path>`. Because the result files are written by a *script*, the read-only agents stayed
+read-only — the reviewer, researcher and chief-engineer gained no `Edit` or `Write` tool.
+
+**Routing is mechanical.** The reviewer returns `pass`, `fix` or `escalate` on exclusive
+triggers, and `runstate.sh route` — not a judgment call — turns that into an action,
+logging every decision to `.agents/loop/<run_id>/routing.jsonl`:
+
+| Verdict / decision | Action |
+| --- | --- |
+| `pass` | **land** — commit the packet green |
+| `fix` | **attempt** a fresh agent while attempts remain, else **decider** |
+| `retry` | **attempt** while attempts remain; past the limit it is refused as a **stop**, never looped |
+| `escalate` | **decider** |
+| `reorder`, `append-task`, `hand-off-feature` | **discard-advance** — roll back to the last green checkpoint and move on |
+| `ask-operator` | **stop** |
+
+Attempts count `fix` and `retry` together since the packet's latest start, against
+`packet_attempts` in `.agents/project-overrides.yaml` (default **1**). **There is no
+escalation decider agent yet:** on `decider` the driver dispatches the `chief-engineer`
+as an **interim stand-in**, which decides with its existing judgment and returns one of
+the five decisions above. A planned `escalation-decider` feature replaces that section
+of `agents/chief-engineer.md` and the single dispatch line in the loop skill.
+
+**Run directories are per run and pruned.** `runstate.sh begin-run` mints a `run_id`
+into run-state once — a resume keeps it, so a run spans sessions — and keeps the current
+run's directory plus the newest previous one, removing older ones. Human-facing reports
+are assembled from `runstate.sh run-digest` over those files, so a stop report is
+correct even in a session that resumed someone else's run or has compacted since it
+started.
+
+**Two lines your repo needs.** Add both to the consumer repo's `.gitignore`:
+
+```
+.agents/driver-mode/
+.agents/loop/
+```
+
+Unignored, a pause's `git stash --include-untracked` sweeps the run's own files and
+`reconcile` reads them as scratch to discard. `/gaffer:migrate` reports a repo missing
+either entry.
 
 ### Auto-pause before a usage limit (ADR 0018, superseded)
 

@@ -130,7 +130,7 @@ Packet work is committed only when it lands or at a pause checkpoint, so `discar
   - covers: Long runs compact, and can pause on a schedule
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, .agents/project-overrides.yaml, templates/spec-driven-base/.agents/project-overrides.yaml
-- [ ] **T11** **P1** Add `runstate.sh run-digest <run-state> [--since <ts>]`. It assembles its output from the run's handoff files, the first line of its result files, its routing records, the outcomes log and the driver-mode records, and prints nothing else:
+- [x] **T11** **P1** Add `runstate.sh run-digest <run-state> [--since <ts>]`. It assembles its output from the run's handoff files, the first line of its result files, its routing records, the outcomes log and the driver-mode records, and prints nothing else:
   - one line per packet begun in the run, with its title and its latest outcome after its latest start or continuation, `paused` for a paused cursor, or `open`;
   - one line per decider decision since `--since`;
   - one line per `hand-off-feature` record, carrying its status line;

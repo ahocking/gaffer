@@ -329,6 +329,73 @@
 #                                    comparison. No enter record for the
 #                                    session, or not a git repo, reads as
 #                                    ENDED=0/EVERY=off/DUE=no.
+#   run-digest <run-state> [--since <ts>]
+#                                    thin-loop-driver T11 (ADR 0028 result 4):
+#                                    assembles a report from FILES ALONE --
+#                                    the run's handoff files, result files'
+#                                    first line, routing.jsonl, the outcomes
+#                                    log and the driver-mode logs -- never
+#                                    from the driver's memory of the run.
+#                                    Prints ONLY these, one line per item,
+#                                    tab-separated, and nothing else:
+#                                      packet\t<id>\t<title>\t<outcome>
+#                                        one per packet with a handoff.md in
+#                                        THIS run (the run's own definition
+#                                        of "begun"). <title> is parsed from
+#                                        the handoff's own header line.
+#                                        <outcome> is the terminal outcome
+#                                        (green/failed/rolled-back/blocked/
+#                                        abandoned/interrupted) recorded at
+#                                        or after the packet's LATEST start
+#                                        or continuation record (same
+#                                        boundary rule as
+#                                        _rs_open_packets/sweep-open --
+#                                        both kinds count); `paused` when
+#                                        run-state's status is `paused` and
+#                                        its cursor names this packet (a
+#                                        paused cursor is deliberately never
+#                                        swept, so it carries no terminal
+#                                        record of its own); else `open`.
+#                                      decision\t<id>\t<token>
+#                                        one per routing.jsonl record whose
+#                                        token is one the escalation decider
+#                                        (today's chief-engineer stand-in,
+#                                        thin-loop-driver T15) returns --
+#                                        retry/reorder/append-task/hand-off-
+#                                        feature/ask-operator -- never a bare
+#                                        reviewer verdict (pass/fix/escalate
+#                                        are not decider decisions; escalate
+#                                        only ROUTES to the decider) -- with
+#                                        a parsed ts at or after --since (all
+#                                        of them when --since is omitted).
+#                                      handoff-feature\t<id>\t<status>
+#                                        one per hand-off-feature routing
+#                                        record for the WHOLE run, regardless
+#                                        of --since -- a stop report must
+#                                        list every open question the run
+#                                        recorded, not only recent ones --
+#                                        carrying its own routed --status
+#                                        line verbatim (JSON-escaping
+#                                        reversed).
+#                                      enter\t<model>\t<effort>\t<threshold>
+#                                        the model/effort/threshold stated at
+#                                        the MOST RECENT driver-mode `enter`
+#                                        record across EVERY session's log --
+#                                        a run can span sessions, and each
+#                                        one entering driver mode wrote its
+#                                        own record, so this is not the one
+#                                        session periodic-pause is told
+#                                        about. Omitted entirely when no
+#                                        session ever entered driver mode in
+#                                        this checkout.
+#                                    A missing run directory, routing.jsonl or
+#                                    driver-mode log reads as "nothing to
+#                                    report" for that section, never a die --
+#                                    same fail-soft contract as periodic-
+#                                    pause/compact-threshold. Dies only when
+#                                    run-state has no run_id (begin-run has
+#                                    not been called) or this is not a git
+#                                    repo, same as handoff/write-result/route.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -2459,6 +2526,271 @@ cmd_route() {
   printf 'ACTION=%s\nATTEMPTS=%s\nLIMIT=%s\n' "$action" "$attempts" "$limit"
 }
 
+# =============================================================================
+# run-digest (thin-loop-driver T11, ADR 0028 result 4)
+# =============================================================================
+
+# --- run-digest: a packet's title, parsed from its OWN handoff header ------
+# cmd_handoff always writes the first line as exactly `# <pkt>: <title>` --
+# this strips that literal prefix with plain string ops (index/substr), never
+# a regex: a packet id containing `.` (legal and common -- e.g.
+# "self-host-hardening-gaps") is a regex metacharacter, and pkt is not
+# escaped for use as one anywhere in this file. Falls back to the packet id
+# itself when the file is missing, empty, or its first line does not carry
+# that exact prefix -- this reads a file it did not itself write, so it
+# never assumes that file is well-formed.
+_rs_digest_title() {
+  local pktdir="$1" pkt="$2" line1
+  local file="${pktdir}/handoff.md"
+  [ -f "$file" ] || { printf '%s' "$pkt"; return 0; }
+  line1="$(head -1 "$file" 2>/dev/null || true)"
+  awk -v pkt="$pkt" -v line="$line1" '
+    BEGIN {
+      prefix = "# " pkt ": "
+      if (index(line, prefix) == 1) print substr(line, length(prefix) + 1)
+      else print pkt
+    }'
+}
+
+# --- run-digest: the terminal outcome recorded AT OR AFTER a packet's LATEST
+# --- start-or-continuation boundary, or empty for "still open" --------------
+# Same boundary rule as _rs_open_packets (kind=start OR kind=continue both
+# count -- matching the PRD's own "after its latest start or continuation"),
+# but returns the OUTCOME VALUE rather than a closed/open boolean, and scans
+# across EVERY session's outcomes log the same way _rs_route_attempts and
+# _rs_count_terminal_since do (a packet can start in one session and finish
+# in another). Uses field_esc (a walk that honours `\"`/`\\`), not the
+# simpler index-based `field()` used elsewhere in this file, purely so this
+# function stays correct if any of these fields is ever run through
+# _rs_json_escape -- none of ts/packet/kind/outcome are today.
+_rs_digest_outcome() {
+  local pkt="$1" outcomes_dir="$2"
+  [ -d "$outcomes_dir" ] || { printf ''; return 0; }
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+
+  local boundary_key=-1 ts key
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    [ "$key" -gt "$boundary_key" ] && boundary_key="$key"
+  done <<EOF
+$(awk -v pkt="$pkt" "$extract"'
+    { p = field_esc($0, "packet"); if (p != pkt) next
+      k = field_esc($0, "kind");   if (k != "start" && k != "continue") next
+      ts = field_esc($0, "ts");    if (ts != "") print ts }
+  ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  [ "$boundary_key" -ge 0 ] || { printf ''; return 0; }
+
+  local best_key=-1 best_outcome="" outc
+  while IFS="$(printf '\t')" read -r ts outc; do
+    [ -n "$ts" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    [ "$key" -ge "$boundary_key" ] || continue
+    [ "$key" -gt "$best_key" ] || continue
+    best_key="$key"; best_outcome="$outc"
+  done <<EOF
+$(awk -v pkt="$pkt" "$extract"'
+    { p = field_esc($0, "packet"); if (p != pkt) next
+      o = field_esc($0, "outcome"); if (o == "") next
+      ts = field_esc($0, "ts");     if (ts != "") print ts "\t" o }
+  ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  printf '%s' "$best_outcome"
+}
+
+# --- run-digest: model/effort/threshold at the MOST RECENT driver-mode
+# --- `enter`, across EVERY session's log --------------------------------
+# A run spans sessions (begin-run keeps run_id across a resume), and each
+# session that drove it entered driver mode separately -- so "what's in
+# effect" is whichever entered LAST, not one session named up front (unlike
+# periodic-pause, which is deliberately scoped to ONE session because its
+# count resets per restart). Prints ts\tmodel\teffort\tthreshold for the
+# winning record, or nothing at all when no session has ever entered driver
+# mode in this checkout.
+_rs_digest_latest_enter() {
+  local main_root="$1"
+  local dir="${main_root}/.agents/metrics/driver-mode"
+  [ -d "$dir" ] || return 0
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+  local best_key=-1 best_line="" line ts key
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ts="${line%%$(printf '\t')*}"
+    key="$(_rs_ts_key "$ts")"
+    if [ "$key" -gt "$best_key" ]; then best_key="$key"; best_line="$line"; fi
+  done <<EOF
+$(awk "$extract"'
+    { k = field_esc($0, "kind"); if (k != "enter") next
+      ts = field_esc($0, "ts");  if (ts == "") next
+      m = field_esc($0, "model"); e = field_esc($0, "effort"); t = field_esc($0, "threshold")
+      print ts "\t" m "\t" e "\t" t }
+  ' "$dir"/*.jsonl 2>/dev/null)
+EOF
+  printf '%s' "$best_line"
+}
+
+# --- run-digest: assemble the run's report from files alone, nothing from
+# --- memory (thin-loop-driver T11) ------------------------------------------
+# See the header comment above for the exact line shapes this prints -- one
+# line per packet/decision/hand-off-feature record, plus at most one `enter`
+# line, tab-separated, and NOTHING else: no headers, no blank lines, no
+# summary counts -- a caller renders those from what it counts here.
+cmd_run_digest() {
+  local f="" since="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since)   since="${2:-}"; shift 2 ;;
+      --since=*) since="${1#--since=}"; shift ;;
+      --*) die "usage: run-digest <run-state> [--since <ts>] (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          *) die "usage: run-digest <run-state> [--since <ts>] (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] || die "usage: run-digest <run-state> [--since <ts>]"
+  need_file "$f"
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "run-digest: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" run-digest)"
+  local main_root
+  main_root="$(_rs_main_checkout_root)" || die "run-digest: not a git repo"
+  local outcomes_dir="${main_root}/.agents/metrics/outcomes"
+  local routing_file="${rundir}/routing.jsonl"
+
+  local status cursor
+  status="$(cmd_get "$f" status)"
+  cursor="$(cmd_cursor "$f")"
+
+  # --- one line per packet begun in the run (a handoff.md exists) -----------
+  if [ -d "$rundir" ]; then
+    local d pkt title outcome
+    for d in "$rundir"/*/; do
+      [ -d "$d" ] || continue
+      d="${d%/}"; pkt="$(basename "$d")"
+      [ -f "$d/handoff.md" ] || continue
+      title="$(_rs_digest_title "$d" "$pkt")"
+      if [ "$status" = paused ] && [ -n "$cursor" ] && [ "$pkt" = "$cursor" ]; then
+        outcome=paused
+      else
+        outcome="$(_rs_digest_outcome "$pkt" "$outcomes_dir")"
+        [ -n "$outcome" ] || outcome=open
+      fi
+      printf 'packet\t%s\t%s\t%s\n' "$pkt" "$title" "$outcome"
+    done
+  fi
+
+  if [ -f "$routing_file" ]; then
+    local since_key=-1
+    [ -n "$since" ] && since_key="$(_rs_ts_key "$since")"
+
+    # --- one line per decider decision since --since (all of them when
+    # --- --since is omitted) --------------------------------------------
+    local line rline_ts rline_token rline_pkt rline_key
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      rline_token="$(printf '%s' "$line" | sed -E 's/.*"token":"([^"]*)".*/\1/')"
+      case "$rline_token" in
+        retry|reorder|append-task|hand-off-feature|ask-operator) ;;
+        *) continue ;;
+      esac
+      if [ -n "$since" ]; then
+        rline_ts="$(printf '%s' "$line" | sed -E 's/.*"ts":"([^"]*)".*/\1/')"
+        rline_key="$(_rs_ts_key "$rline_ts")"
+        [ "$rline_key" -ge "$since_key" ] || continue
+      fi
+      rline_pkt="$(printf '%s' "$line" | sed -E 's/.*"packet":"([^"]*)".*/\1/')"
+      printf 'decision\t%s\t%s\n' "$rline_pkt" "$rline_token"
+    done < "$routing_file"
+
+    # --- one line per hand-off-feature record, for the WHOLE run -- never
+    # --- scoped to --since: a stop report must list every open question
+    # --- the run recorded, not only recent ones -------------------------
+    local hstatus
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in
+        *'"token":"hand-off-feature"'*) ;;
+        *) continue ;;
+      esac
+      rline_pkt="$(printf '%s' "$line" | sed -E 's/.*"packet":"([^"]*)".*/\1/')"
+      hstatus="$(printf '%s' "$line" | awk '
+        function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+          pat = "\"" name "\":\""
+          pos = index(line, pat)
+          if (pos == 0) return ""
+          i = pos + length(pat); n = length(line); out = ""; esc = 0
+          while (i <= n) {
+            c = substr(line, i, 1)
+            if (esc) { out = out c; esc = 0 }
+            else if (c == "\\") { esc = 1 }
+            else if (c == "\"") { return out }
+            else { out = out c }
+            i++
+          }
+          return out
+        }
+        { print field_esc($0, "status") }')"
+      printf 'handoff-feature\t%s\t%s\n' "$rline_pkt" "$hstatus"
+    done < "$routing_file"
+  fi
+
+  # --- model/effort/threshold at the latest driver-mode enter, any session --
+  # Fields are pulled with `cut -f`, NOT `IFS=<tab> read`: bash always treats
+  # tab as "IFS whitespace" for splitting purposes regardless of what IFS is
+  # set to, so adjacent tabs collapse and an empty field (e.g. `--model ""`,
+  # which the enter command writes verbatim rather than defaulting -- the
+  # default only applies when the flag is ABSENT) silently shifts every later
+  # field left. `cut` has no such collapsing behaviour, so a field that is
+  # empty stays a positionally-stable empty field rather than eating its
+  # neighbour. Same trap already documented and fixed the same way at
+  # _rs_open_packets above.
+  local enter_line
+  enter_line="$(_rs_digest_latest_enter "$main_root")"
+  if [ -n "$enter_line" ]; then
+    local e_model e_effort e_threshold
+    e_model="$(printf '%s' "$enter_line" | cut -f2)"
+    e_effort="$(printf '%s' "$enter_line" | cut -f3)"
+    e_threshold="$(printf '%s' "$enter_line" | cut -f4)"
+    printf 'enter\t%s\t%s\t%s\n' "$e_model" "$e_effort" "$e_threshold"
+  fi
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -2885,6 +3217,7 @@ case "$cmd" in
   route)         cmd_route         "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
-  -h|--help|help|"") sed -n '2,334p' "$0" | sed 's/^# \{0,1\}//' ;;
+  run-digest)        cmd_run_digest        "$@" ;;
+  -h|--help|help|"") sed -n '2,401p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

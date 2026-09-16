@@ -196,8 +196,8 @@ dependency rule. The parent shipped; this is new scope against it.
     run's integrated work** rather than everything the integration branch has
     accumulated since its base; worked example, on the run that found these
     defects the branch-versus-base scope was 211 files and about 30,000
-    insertions of already-reviewed earlier work, against 23 files for the run
-    itself, and the corrected rule selects the 23. All three surfaces here are
+    insertions of already-reviewed earlier work, against 25 files for the run
+    itself, and the corrected rule selects the 25. All three surfaces here are
     prose only — no sweep case
 
 - [ ] **P1**: The digest's documented mechanism is the one it uses

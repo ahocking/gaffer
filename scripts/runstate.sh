@@ -330,10 +330,15 @@
 #   run-digest <run-state> [--since <ts>]
 #                                    thin-loop-driver T11 (ADR 0028 result 4):
 #                                    assembles a report from FILES ALONE --
-#                                    the run's handoff files, result files'
-#                                    first line, routing.jsonl, the outcomes
-#                                    log and the driver-mode logs -- never
-#                                    from the driver's memory of the run.
+#                                    the run's handoff files, routing.jsonl
+#                                    (including the routed status recorded for
+#                                    a hand-off, written by that routing
+#                                    call's own --status argument -- an
+#                                    omitted one leaves the hand-off line's
+#                                    status empty), the outcomes log and the
+#                                    driver-mode logs -- never from the
+#                                    driver's memory of the run, and never a
+#                                    result file, which it does not open.
 #                                    Prints ONLY these, one line per item,
 #                                    tab-separated, and nothing else:
 #                                      packet\t<id>\t<title>\t<outcome>

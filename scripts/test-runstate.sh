@@ -953,6 +953,58 @@ assert_true "a second sweep-open leaves the log line counts unchanged" \
   "[ \"\$(cat \"$SO2_DIR\"/*.jsonl 2>/dev/null | wc -l | tr -d ' ')\" = \"\$SO2_COUNT_BEFORE2\" ]"
 
 echo
+echo "== sweep-open: caller-supplied --paused-cursor, both loop-skill call shapes (thin-loop-driver-gaps T2) =="
+# sweep-open's own mechanics and its --paused-cursor flag are unchanged -- these pin
+# the two REAL (non---list) call shapes the loop skills now use, so a packet the
+# session is about to continue never gets a permanent `interrupted` record.
+
+# -- run-loop's own shape: §3.2 now passes --paused-cursor alongside --gone, in the
+# SAME real-sweep call, for a cursor packet §3.3 is about to continue. --
+SOC="$(mktemp -d)"; git -C "$SOC" init -q
+git -C "$SOC" config user.email t@t; git -C "$SOC" config user.name t
+SOC_DIR="$SOC/.agents/metrics/outcomes"
+
+(cd "$SOC" && "$RUNSTATE" record-start cont-a S1 >/dev/null)   # about to be continued -- must not close
+(cd "$SOC" && "$RUNSTATE" record-start open-b S1 >/dev/null)   # plain open -- still swept
+(cd "$SOC" && "$RUNSTATE" record-start gone-c S1 >/dev/null)   # gone -- still swept, as abandoned
+
+SOC_OUT="$(cd "$SOC" && CLAUDE_CODE_SESSION_ID=SWEEP2 "$RUNSTATE" sweep-open --gone gone-c --paused-cursor cont-a)"
+assert_true "run-loop shape: --paused-cursor excludes the continuing cursor packet from SWEPT=" \
+  "! printf '%s\n' \"\$SOC_OUT\" | grep -qx 'SWEPT=cont-a'"
+assert_true "run-loop shape: a plain open packet still sweeps as interrupted, alongside the exclusion" \
+  "printf '%s\n' \"\$SOC_OUT\" | grep -qx 'SWEPT=open-b'"
+assert_true "run-loop shape: a gone packet still sweeps as abandoned, alongside the exclusion" \
+  "printf '%s\n' \"\$SOC_OUT\" | grep -qx 'SWEPT=gone-c'"
+assert_true "run-loop shape: the excluded cursor packet gets no terminal record at all" \
+  "! grep -q '\"packet\":\"cont-a\"' \"$SOC_DIR\"/SWEEP2.jsonl 2>/dev/null"
+
+# -- resume's shape, a status the rule ADMITS (blocked -- stopped on a blocking
+# question, the cursor's start left open): resuming passes --paused-cursor for it
+# exactly as it would for a paused run. --
+SORB="$(mktemp -d)"; git -C "$SORB" init -q
+git -C "$SORB" config user.email t@t; git -C "$SORB" config user.name t
+SORB_DIR="$SORB/.agents/metrics/outcomes"
+(cd "$SORB" && "$RUNSTATE" record-start blocked-cursor S1 >/dev/null)
+(cd "$SORB" && "$RUNSTATE" record-start blocked-open S1 >/dev/null)   # positive control -- still swept
+SORB_OUT="$(cd "$SORB" && CLAUDE_CODE_SESSION_ID=SWEEP3 "$RUNSTATE" sweep-open --paused-cursor blocked-cursor)"
+assert_true "resume shape, status blocked (rule admits continuing it): the cursor packet is excluded from the sweep" \
+  "! printf '%s\n' \"\$SORB_OUT\" | grep -qx 'SWEPT=blocked-cursor'"
+assert_true "resume shape, status blocked: a plain open packet still sweeps as interrupted, alongside the exclusion (positive control)" \
+  "printf '%s\n' \"\$SORB_OUT\" | grep -qx 'SWEPT=blocked-open'"
+assert_true "resume shape, status blocked: the excluded cursor packet gets no terminal record at all" \
+  "! grep -q '\"packet\":\"blocked-cursor\"' \"$SORB_DIR\"/SWEEP3.jsonl 2>/dev/null"
+
+# -- resume's shape, a status the rule EXCLUDES (running -- a crash): the cursor is
+# not passed, and it closes as interrupted like any other open packet, unchanged
+# from before this task. --
+SORC="$(mktemp -d)"; git -C "$SORC" init -q
+git -C "$SORC" config user.email t@t; git -C "$SORC" config user.name t
+(cd "$SORC" && "$RUNSTATE" record-start crashed-cursor S1 >/dev/null)
+SORC_OUT="$(cd "$SORC" && CLAUDE_CODE_SESSION_ID=SWEEP4 "$RUNSTATE" sweep-open)"
+assert_true "resume shape, status running/crash (rule excludes continuing it): the cursor packet still sweeps as interrupted" \
+  "printf '%s\n' \"\$SORC_OUT\" | grep -qx 'SWEPT=crashed-cursor'"
+
+echo
 echo "== findings: index hot, body cold (ADR 0022) =="
 # The fixture puts run-state at a REAL `.agents/run-state.yaml`, because the index's
 # `file:` value is derived from where the file actually sits. The previous fixture used

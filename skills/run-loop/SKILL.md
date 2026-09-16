@@ -192,8 +192,13 @@ wait.
    `gspec-backlog.sh task-status "<id,id,...>"` (one `<id>\t<state>\t<reason>`
    line per id, plus `FINISHED=<csv>`); the `gone` set is every id whose state
    reads `gone`. Comma-join those into `GONE="<id,id,...>"` and pass it to
-   `--gone`, then sweep for real, capturing the sweep's own output:
-   `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (omit `--gone` and skip
+   `--gone`, then sweep for real — passing `--paused-cursor <cursor>` exactly
+   when this session is about to continue it (§3.3 below is about to call
+   `record-start <cursor> --continue` rather than beginning it fresh); the
+   cursor packet is the one this session is about to continue, not the one
+   the sweep should close — capturing the sweep's own output:
+   `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (add `--paused-cursor
+   <cursor>` per that rule when it applies; omit `--gone` and skip
    `task-status` entirely when `--list` printed nothing — no open packets
    means nothing for the real sweep to close either — and leave `SWEEP`
    empty). `$SWEEP` holds one `SWEPT=<id>`/`OUTCOME=<interrupted|abandoned>`

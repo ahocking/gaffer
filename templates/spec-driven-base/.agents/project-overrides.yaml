@@ -101,3 +101,10 @@ integration_branch: develop
 # routing to the escalation decider (plugin thin-loop-driver T9). 1 when
 # missing, invalid, or 0.
 # packet_attempts: 1
+
+# Pause the loop, exactly as /gaffer:pause does, once this many packets have
+# ended since the loop last started or resumed (plugin thin-loop-driver T10,
+# ADR 0028 result 2). Off when missing, invalid, or 0 -- a periodic pause
+# stops an unattended run until someone resumes it, so it must never fire
+# unasked.
+# pause_every_packets: 10

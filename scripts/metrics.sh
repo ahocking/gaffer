@@ -971,13 +971,21 @@ cmd_collect() {
   # eventless run) is dropped rather than guessed unbounded.
   #
   # THRESHOLD is the run's KICKOFF value -- the EARLIEST enter record in scope,
-  # chronologically -- because that is what the kickoff report (run-digest)
-  # already told the operator was in effect; a later re-entry is assumed to be
-  # the same repo/operator setting, not a new one to reconcile against. `null`
-  # (never gaffer's own default) when that record's threshold is missing or
-  # "unknown" -- PRD: "A run lacking usage data or a stated threshold reports
-  # unmeasured", so BOTH fields go null together, never a real max_context
-  # paired against an invented threshold.
+  # chronologically -- because that is the setting the kickoff report (run-digest)
+  # already told the operator was in effect, and this measurement judges the run
+  # against the number the operator was shown, not whatever is current when
+  # collect happens to run. `run-digest` itself reads the SAME driver-mode logs
+  # for the MOST RECENT `enter` across every session instead, because it answers
+  # "what's in effect now" for a run that can span sessions and be re-entered in
+  # each one -- a different question from this fixed baseline, so the two are
+  # expected to disagree. A later re-entry is ASSUMED, not verified, to carry the
+  # same repo/operator setting as the kickoff record, not a new one to reconcile
+  # against. `null` (never gaffer's own default) when that record's threshold is
+  # missing or "unknown" -- PRD: "A run lacking usage data or a stated threshold
+  # reports unmeasured". The two fields are null INDEPENDENTLY, not together: a
+  # null threshold forces max_context null too (never a real max_context paired
+  # against an invented threshold), but a stated threshold can still pair with a
+  # null max_context when no in-window turn carried usage data.
   #
   # Fails SOFT like every other join here: an unreadable/absent driver-mode log
   # degrades this to {threshold:null, max_context:null, windows:0,
@@ -1633,11 +1641,12 @@ cmd_show() {
          "main-session edits outside .agents/ in driver mode: \($dme)"
        end),
     "",
-    # thin-loop-driver success metric (T21): both fields are null together
-    # ("unmeasured") when the kickoff enter never stated a real threshold; a
-    # threshold present but max_context null means the windows had no
-    # main-thread usage data. Never render a bare number without saying which
-    # of the two nulls it is, per the same rule as every other null above.
+    # thin-loop-driver success metric (T21): the two fields are null
+    # INDEPENDENTLY, not together -- both read unmeasured only when the
+    # kickoff enter never stated a real threshold; a threshold present but
+    # max_context null means the windows had no main-thread usage data. Never
+    # render a bare number without saying which of the two nulls it is, per
+    # the same rule as every other null above.
     (((.totals.driver_mode_context // {threshold:null,max_context:null})) as $dc
      | ((.totals.driver_mode_context_diagnostics // {windows:0,turns_in_window:0})) as $dcd
      | if $dc.threshold == null then

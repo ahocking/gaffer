@@ -118,7 +118,7 @@ else needs a session boundary.
   - covers: The kickoff never states a compaction threshold that is not in effect
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, scripts/test-metrics.sh
-- [ ] **T7** **P1** Correct the stop report's counting rule in `templates/report-templates.md` so a handed-off packet contributes exactly one 🔀 — counting `handoff-feature` lines and only those `decision` lines with no `handoff-feature` line of their own — leaving the digest's two records untouched, and restate the tally as a table of contents: every glyph counted has a section beneath it and every section a glyph above it. Prose only, no sweep case; checkable against a run with one handed-off packet and one operator question, whose header must read two decisions above a body holding two decision blocks.
+- [x] **T7** **P1** Correct the stop report's counting rule in `templates/report-templates.md` so a handed-off packet contributes exactly one 🔀 — counting `handoff-feature` lines and only those `decision` lines with no `handoff-feature` line of their own — leaving the digest's two records untouched, and restate the tally as a table of contents: every glyph counted has a section beneath it and every section a glyph above it. Prose only, no sweep case; checkable against a run with one handed-off packet and one operator question, whose header must read two decisions above a body holding two decision blocks.
   - deps: —
   - covers: The stop report's decision tally matches the sections it indexes
   - arch: —

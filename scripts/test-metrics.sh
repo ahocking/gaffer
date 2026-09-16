@@ -1665,11 +1665,14 @@ check "show: renders the OVER threshold flag" "main-session context (driver mode
   "$("$METRICS" show "$DCOOUT" | grep -F 'main-session context')"
 
 # --- case 3: NO threshold stated (enter recorded "unknown", the literal default
-# cmd_driver_mode_enter writes when --threshold is omitted). A plausible bug falls
-# back to gaffer's own default compaction threshold (GAFFER_DEFAULT_COMPACT_THRESHOLD,
-# 200000 in runstate.sh) instead of null -- both fields must read null together
-# (PRD: "a run lacking usage data or a stated threshold reports unmeasured"), even
-# though real usage data (a 50000-token turn) exists for this window.
+# `compact-threshold`/cmd_driver_mode_enter write when neither repo nor operator
+# has one set -- thin-loop-driver T6 removed the invented gaffer-default constant
+# that used to fill this gap). A plausible bug invents a number here instead of
+# null -- both fields must read null together (PRD: "a run lacking usage data or
+# a stated threshold reports unmeasured"), even though real usage data (a
+# 50000-token turn) exists for this window. scripts/metrics.sh needed no edit for
+# T6 -- it already nulls a non-numeric threshold and forces max_context null with
+# it -- so this case pins that third consumer's behaviour rather than assuming it.
 dmc_repo "dmc-none" "DCN1" "unknown"
 mkdir -p "$ROOT/dmc-none-proj/proj"
 cat > "$ROOT/dmc-none-proj/proj/DCN1.jsonl" <<'JSON'
@@ -1677,7 +1680,7 @@ cat > "$ROOT/dmc-none-proj/proj/DCN1.jsonl" <<'JSON'
 JSON
 DCNOUT="$ROOT/dmc-none.json"
 "$METRICS" collect --main-root "$ROOT/dmc-none" --projects-dir "$ROOT/dmc-none-proj" --out "$DCNOUT" >/dev/null 2>&1
-check "collect: no threshold stated -- threshold is null, not gaffer's own default" "null" \
+check "collect: no threshold stated -- threshold is null, no invented number" "null" \
   "$(jq -r '.totals.driver_mode_context.threshold' "$DCNOUT")"
 check "collect: no threshold stated -- max_context is null too, despite real usage data" "null" \
   "$(jq -r '.totals.driver_mode_context.max_context' "$DCNOUT")"

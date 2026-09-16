@@ -126,3 +126,105 @@ fallback, not the norm.
   and a non-overriding plugin default first, and report `unknown` rather than invent one.
 - **T20/T21:** main-thread means no `agent_id`. A `--agent` main thread must not be counted
   as a subagent role.
+
+## Amendment (2026-09-16) — the mechanism these results produced
+
+`thin-loop-driver` T3–T23 have landed, so the decisions this probe fed now exist as
+code. This section records their **shape**, so the mechanism is readable from the ADR
+that justified it rather than only from the plan file that scheduled it. Nothing above
+is revised — the probe results stand as recorded, including the misses.
+
+### The mark, and the guard rule it feeds
+
+Driver mode is a **file**: `.agents/driver-mode/<session-id>` in a discovered config
+root, written and removed only by `runstate.sh driver-mode <enter|exit|status>`. Its
+**content is irrelevant** — existence alone means "this session is the loop driver."
+That is deliberate: the guard checks it on every mutating tool call, and a file test is
+both cheap and impossible to get subtly wrong. `enter` also appends an enter record
+(model, effort, threshold) to `.agents/metrics/driver-mode/<session>.jsonl` and `exit`
+an exit record. **Those records live outside the outcomes log on purpose:**
+`_rs_open_packets` treats any record carrying `kind` as a packet start, so writing them
+there would reopen packets that never existed.
+
+The guard refuses a write only when **all three** hold: the payload's `session_id` has a
+mark, the payload carries **no `agent_id`**, and the target is outside `.agents/`.
+Result 1 above is the whole reason the second test is `agent_id` and never `agent_type`
+— a `claude --agent gaffer:loop-driver` main thread carries `agent_type` with no
+`agent_id`, and must still be refused. Four details are load-bearing:
+
+- The `session_id` becomes a **path component**, so it is validated first (`[A-Za-z0-9._-]`,
+  and never `.` or `..`); anything else is treated as **no mark** and the call is judged
+  exactly as it is today. The guard never stats an attacker-chosen path.
+- The check sits **after the secret floor and before the ask tier**, and it refuses via
+  `deny()` — so `bypass-ask-tier: true` does not skip it, and a secret path is still
+  refused *as a secret* rather than as a driver-mode write.
+- For shell writes it is **conservative by construction**: a command it cannot judge
+  safely (a target it cannot resolve, an unexpanded `$VAR`) is refused rather than
+  allowed. Wrong-and-refused costs a pause; wrong-and-allowed is the leak the feature
+  exists to stop.
+- The refusal **names driver mode as the reason and `/gaffer:pause` as the way out**. A
+  hard deny with no stated exit is how an agent starts improvising around the guard.
+
+`hooks/session-start.sh` clears a session's own mark on `startup|resume`;
+`hooks/driver-mode-compact.sh` fires on `compact` only (Result 2) and reminds the
+compacted session to re-`Read` `agents/loop-driver.md`. A mark left by a session that
+crashed is **inert** — it is keyed to an id nothing will use again, and reopening that
+session clears it.
+
+### Run directories, the routing log, and script-written result files
+
+`runstate.sh begin-run` mints a sortable `run_id` into run-state **only when absent**, so
+a resume keeps it and a run spans sessions, and creates `.agents/loop/<run_id>/`.
+Cleanup keeps the current run's directory and the **single newest other one**, and only
+removes directories matching the minted `YYYYMMDDTHHMMSS-<hex>` shape — anything else
+under `.agents/loop/` is operator scratch this command does not own. Both `.gitignore`
+files ignore `.agents/loop/` and `.agents/driver-mode/`: untracked is **not** enough,
+because `git stash --include-untracked` (the pause path) would sweep the run's own files
+and `reconcile` would read them on the green checkpoint as scratch to discard.
+
+`runstate.sh route` appends one record per verdict to
+`.agents/loop/<run_id>/routing.jsonl` — again a **new** log rather than the outcomes
+one, for the `kind` reason above — and prints one action: `pass` → `land`; `fix` →
+`attempt` while attempts remain, else `decider`; `retry` → `attempt` while attempts
+remain, and **past the limit it is refused as `stop`** carrying a blocking question that
+names the over-limit `retry`, never looped; `escalate` → `decider`; `reorder`,
+`append-task` and `hand-off-feature` → `discard-advance`; `ask-operator` → `stop`.
+Attempts count `fix` and `retry` since the packet's latest `start` record — a
+*continuation* deliberately does not reset the count — against `packet_attempts` in
+`.agents/project-overrides.yaml`, which is 1 when missing, invalid or 0. A record is
+written even for `stop` and `decider`, which is what lets `run-digest` see every decision
+and lets `handoff` refuse a packet already routed `hand-off-feature` in this run.
+
+`runstate.sh write-result` is **the one write a read-only-tooled agent gets**. It refuses
+any path resolving outside the current run directory (lexically, before touching disk)
+and writes the status line as the file's first line, followed by stdin. That is what let
+the reviewer, researcher and chief-engineer take on result files while gaining **no**
+`Edit` or `Write` tool — read-only still means read-only — and what lets the driver
+assemble a report from first lines without ever opening a result body.
+
+### The interim decider, and what `escalation-decider` replaces
+
+There is no escalation decider yet, so `agents/chief-engineer.md` carries an interim
+stand-in section and `route` maps `escalate` and an exhausted `fix` to `ACTION=decider`.
+The stand-in decides with its existing judgment — **not** the decider's exclusive
+triggers or their precedence, which this feature deliberately did not build — and
+returns one of `retry`, `reorder`, `append-task`, `hand-off-feature` or `ask-operator` as
+its status, which the driver passes straight back to `route`. It returns `retry` only
+while an attempt remains; `route` refuses one past the limit rather than trusting that.
+An `append-task` line (ADR 0026 arm 1) is written by an architect it dispatches and
+committed on its own paths with an `[orch decider:<packet-id>]` trailer *before* the
+token returns, so the `discard-advance` that follows keeps it.
+
+When `escalation-decider` ships it replaces **that section of
+`agents/chief-engineer.md` and the one dispatch line in `skills/run-loop/SKILL.md`** —
+and it must keep its own decision records **outside `.agents/loop/`**, which
+`begin-run`'s cleanup removes.
+
+### One contract widened elsewhere
+
+A handoff file has to say what "done" means for its task, which for a capability-level
+PRD lives one level below the checkbox. ADR 0020's consumed contract therefore widens by
+exactly one thing — a capability's indented acceptance-criteria sub-bullets — read only
+by `gspec-backlog.sh handoff`. That decision, and why completion is still derived from
+the checkbox alone, is recorded where it belongs, in
+[ADR 0020](0020-gspec-boundary-and-version-pin.md) D2's own amendment.

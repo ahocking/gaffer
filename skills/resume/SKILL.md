@@ -214,8 +214,15 @@ Act on the `DECISION=` it prints:
 - **`discard`** — uncommitted scratch sits on top of green. Set it aside
   non-destructively with `git stash --include-untracked` (recoverable — note the
   stash ref), leaving a clean tree at `last_green_commit`, then continue from the
-  cursor. **Record no outcome here** — nothing finished; whether the cursor's open
-  start reads `interrupted` is step 4's sweep to decide.
+  cursor. Because the loop shares this single checkout, that scratch may include
+  work you did not produce — `reconcile` already escalates instead of `discard`
+  when it recognizes a reviewed-output path (e.g. `.gspec/memory/pending/`, agent
+  memories awaiting `/gspec-memorize`), but its pattern list cannot cover
+  everything: **escalate to the human before stashing if there is any doubt it
+  is disposable loop scratch** rather than deliberate output someone else
+  produced, matching the instinct `skills/pause/SKILL.md` carries for the same
+  shared-checkout risk. **Record no outcome here** — nothing finished; whether
+  the cursor's open start reads `interrupted` is step 4's sweep to decide.
 - **`adopt`** — a single clean orphan commit tagged `[orch packet:<cursor>]` is one
   ahead of the recorded green SHA: a **torn write** (the packet committed but the
   crash beat the run-state update). **Re-verify build+tests are green on that
@@ -232,10 +239,12 @@ Act on the `DECISION=` it prints:
   was not recorded: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh record-outcome
   <cursor> green`. Advance `cursor`, and write run-state atomically via
   `runstate.sh write`. The packet is done — do not redo it.
-- **`escalate`** — diverged history, multiple unexplained commits, or an untagged /
-  mismatched orphan. **Stop and ask the human**, then `runstate.sh driver-mode
-  exit` right after that stop report. Do not discard commits you cannot
-  account for.
+- **`escalate`** — diverged history, multiple unexplained commits, an untagged /
+  mismatched orphan, or a dirty tree holding a reviewed-output path (deliberate
+  output the loop did not create, sitting where `discard` would otherwise stash
+  it unseen). **Stop and ask the human**, then `runstate.sh driver-mode
+  exit` right after that stop report. Do not discard commits — or unreviewed
+  output — you cannot account for.
 
 Once reconciled, set `status: running` (`runstate.sh set .agents/run-state.yaml
 status running`) and **claim the driver**

@@ -3011,6 +3011,65 @@ cmd_reconcile() {
   printf 'DECISION=%s\nreason: %s\n' "$RC_DECISION" "$RC_REASON"
 }
 
+# Paths under which untracked files are DELIBERATE OUTPUT some other tool
+# produced for a human to review, not the loop's own crash-recovery scratch
+# (thin-loop-driver-gaps T3). `.gspec/memory/pending/` is the memorizer's queue
+# (`.claude/commands/gspec-memorize.md`) -- agent-recorded memories awaiting
+# `/gspec-memorize` review, one directory per agent, never written by the loop
+# itself. A tree whose dirt includes any of these must ESCALATE rather than
+# `discard`: the non-destructive stash discard performs would still sweep
+# unreviewed work out of the tree without asking. Extend via
+# ORCH_RECONCILE_REVIEWED_OUTPUT_PATTERNS (colon-separated `grep -E` patterns,
+# appended to the built-in list) rather than editing this array for a
+# project-local addition.
+RECONCILE_REVIEWED_OUTPUT_PATTERNS=(
+  '(^|/)\.gspec/memory/pending/'
+)
+
+# True (rc 0) when at least one path in `git status --porcelain` for $1 falls
+# under a reviewed-output root. A rename's "old -> new" form is matched on the
+# new path. Deliberately ANY, not ALL: a tree mixing ordinary scratch with
+# reviewed output must still escalate, since a stash would sweep both together.
+_dirty_has_reviewed_output() {
+  local wt="$1" combined="" pat extra
+  for pat in "${RECONCILE_REVIEWED_OUTPUT_PATTERNS[@]}"; do
+    [ -n "$pat" ] || continue
+    combined="${combined:+$combined|}($pat)"
+  done
+  if [ -n "${ORCH_RECONCILE_REVIEWED_OUTPUT_PATTERNS:-}" ]; then
+    local IFS=':'
+    for extra in $ORCH_RECONCILE_REVIEWED_OUTPUT_PATTERNS; do
+      [ -n "$extra" ] || continue
+      combined="${combined:+$combined|}($extra)"
+    done
+  fi
+  [ -n "$combined" ] || return 1
+  # --untracked-files=all: the default `status --porcelain` collapses a whole
+  # untracked DIRECTORY to one line (`?? .gspec/`), which can never match a
+  # pattern anchored on a file under it -- this must see every leaf path.
+  #
+  # -z (NUL-delimited, never quoted) instead of the default porcelain form,
+  # and NO `-q` on grep (thin-loop-driver-gaps T3 review): under
+  # `set -euo pipefail`, `grep -q` exits the instant it finds a match and
+  # closes the pipe, so `git status`/`sed` -- still writing on a large dirty
+  # tree -- take SIGPIPE and the whole pipeline reports 141, which this
+  # function then read as "no match" and silently fell back to `discard`. This
+  # is the exact SIGPIPE-under-pipefail shape already fixed at three other call
+  # sites in this file (see the `trim-note` history). Draining grep's input
+  # (no `-q`, redirect stdout instead) lets the producers finish writing.
+  # `-z` also sidesteps `git status --porcelain`'s C-quoting of paths with a
+  # space or a non-ASCII byte -- quoted, the leading `"` would never match a
+  # pattern anchored on `^` or `/` -- at the cost of losing the `old -> new`
+  # rename separator, which `-z` never emits anyway (a rename is two separate
+  # NUL-terminated fields, old path then new path; the old path's first three
+  # bytes get stripped by the same `^.{3}` rule, which is harmless since
+  # matching is ANY and the new path is judged correctly).
+  git -C "$wt" status --porcelain --untracked-files=all -z \
+    | tr '\0' '\n' \
+    | sed -E 's/^.{3}//' \
+    | grep -E "$combined" >/dev/null
+}
+
 # The crash-recovery decision table for ONE tree/branch, factored out from
 # cmd_reconcile (ADR 0005) as its own function. It formerly also served
 # cmd_reconcile_parallel, once per lane (ADR 0016); that caller was removed by
@@ -3046,6 +3105,8 @@ _reconcile_tree() {
   if [ "$head" = "$green" ]; then
     if [ "$dirty" = 0 ]; then
       _rc clean "HEAD is the green checkpoint and the tree is clean"
+    elif [ "$check_dirty" = 1 ] && _dirty_has_reviewed_output "$wt"; then
+      _rc escalate "the tree holds deliberate output the loop did not create (a reviewed-output path, e.g. .gspec/memory/pending/) — a human should review it before anything is set aside"
     else
       _rc discard "uncommitted scratch sits on top of the green checkpoint — reset to ${green:0:12}"
     fi

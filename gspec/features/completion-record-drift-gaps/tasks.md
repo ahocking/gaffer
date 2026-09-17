@@ -116,7 +116,7 @@ so no session boundary is owed.
   - covers: The drift test cannot invert into a report of drift it did not find
   - arch: —
   - files: scripts/gspec-backlog.sh
-- [ ] **T2** [P] **P0** Add a case to `scripts/test-gspec-backlog.sh`, in both layouts the sweep already builds (`mk_prd`/`mk_plan` and `mk_prd_v2`/`mk_plan_v2`), over a fixture feature carrying one capability covered by **both** a checked and an unchecked task and a second capability whose covering tasks are all checked, asserting the first absent by name from every `DRIFT=` line **and** the second present in the same run, so the case cannot pass by the detector reporting nothing at all, and asserting the run's `CAPABILITY_DRIFT=` summary counts one drift and no unjudgeable row for either capability.
+- [x] **T2** [P] **P0** Add a case to `scripts/test-gspec-backlog.sh`, in both layouts the sweep already builds (`mk_prd`/`mk_plan` and `mk_prd_v2`/`mk_plan_v2`), over a fixture feature carrying one capability covered by **both** a checked and an unchecked task and a second capability whose covering tasks are all checked, asserting the first absent by name from every `DRIFT=` line **and** the second present in the same run, so the case cannot pass by the detector reporting nothing at all, and asserting the run's `CAPABILITY_DRIFT=` summary counts one drift and no unjudgeable row for either capability.
   - deps: T1
   - covers: The drift test cannot invert into a report of drift it did not find
   - arch: —

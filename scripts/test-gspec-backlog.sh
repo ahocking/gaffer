@@ -2200,6 +2200,64 @@ check 'feature-folder layout: the drift it was given is still reported' \
 after:  $MANIFEST_AFTER"
 
 # =============================================================================
+# completion-record-drift-gaps-t2: this feature's own pin for the corrected
+# all-covering-tasks-checked construct in `_capability_drift_for` (T1,
+# e4f68b2 -- `elif ! grep -qx '0' <<< "$bits"`, replacing a negated
+# `printf | grep -qx` pipeline whose reader could exit before its writer
+# finished under `set -euo pipefail`). Independent of `completion-record-
+# drift`'s own two-capability fixture above: that fixture already carries
+# this exact shape, but the defect it guards is rare enough by construction
+# that a green run of either fixture is weak evidence on its own -- this
+# case is `-gaps`'s own record, not a substitute for reading the construct.
+# Both capabilities sit in the SAME run so the case cannot pass by the
+# detector reporting nothing at all: one capability is covered by both a
+# checked and an unchecked task (mid-flight -- must never read as drift),
+# the other by only checked tasks (must read as drift).
+printf '\n== capability-drift: a mid-flight capability never reads as drift alongside a genuinely finished one (flat layout) ==\n'
+R="$TMPROOT/cd-gaps-t2-flat"; mkdir -p "$R"
+mk_prd "$R" cd-gaps-t2-flat 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" cd-gaps-t2-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'flat layout: the mid-flight capability is absent by name from every DRIFT= (and every other) line' \
+  'open capability 2' "$out"
+check 'flat layout: the genuinely finished capability is named present in a DRIFT= line' \
+  "$(printf 'DRIFT=cd-gaps-t2-flat\topen capability 1')" "$out"
+check 'flat layout: the run summary counts exactly the one drift and no unjudgeable row for either capability' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+printf '\n== capability-drift: a mid-flight capability never reads as drift alongside a genuinely finished one (feature-folder layout) ==\n'
+R="$TMPROOT/cd-gaps-t2-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-gaps-t2-v2 0 2
+mk_plan_v2 "$R" cd-gaps-t2-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'feature-folder layout: the mid-flight capability is absent by name from every DRIFT= (and every other) line' \
+  'open capability 2' "$out"
+check 'feature-folder layout: the genuinely finished capability is named present in a DRIFT= line' \
+  "$(printf 'DRIFT=cd-gaps-t2-v2\topen capability 1')" "$out"
+check 'feature-folder layout: the run summary counts exactly the one drift and no unjudgeable row for either capability' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

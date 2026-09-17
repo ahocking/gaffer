@@ -110,7 +110,7 @@ session boundary is needed and no `session_boundary` declaration is owed.
   - covers: The worked hand-off shows the outcome a hand-off records
   - arch: —
   - files: templates/report-templates.md
-- [ ] **T4** [P] **P1** Remove the run-scope count from `skills/run-loop/SKILL.md` §4 Termination — the clause stating how many files that run actually landed — while keeping the 211-files and ~30,000-insertions branch-vs-base figure, which its sentence already attributes to the moment it was measured, and keeping the branch-versus-base-against-run-scope contrast the sentence exists to make, editing nothing in `gspec/features/thin-loop-driver-gaps/` where the superseded counts sit in a completed record; prose only, no sweep case, checkable by reading the corrected sentence for any count of a run's own integrated work.
+- [x] **T4** [P] **P1** Remove the run-scope count from `skills/run-loop/SKILL.md` §4 Termination — the clause stating how many files that run actually landed — while keeping the 211-files and ~30,000-insertions branch-vs-base figure, which its sentence already attributes to the moment it was measured, and keeping the branch-versus-base-against-run-scope contrast the sentence exists to make, editing nothing in `gspec/features/thin-loop-driver-gaps/` where the superseded counts sit in a completed record; prose only, no sweep case, checkable by reading the corrected sentence for any count of a run's own integrated work.
   - deps: —
   - covers: The worked example states no count that rots
   - arch: —

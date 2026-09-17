@@ -122,11 +122,11 @@
 # Worked example (digest lines, then what they render as):
 #
 #   packet  txn-t3  Cache the category totals so the dashboard…  green
-#   packet  txn-t4  Add a duplicate-detection pass over…         blocked
+#   packet  txn-t4  Add a duplicate-detection pass over…         rolled-back
 #   decision txn-t4 hand-off-feature
 #
 #   > ✅ **Category totals cached** (`txn-t3`) — dashboard 4s → 400ms · `9b21e04`
-#   > ⚠️ **Duplicate detection** (`txn-t4`) — two banks send one transaction twice
+#   > ⛔ **Duplicate detection** (`txn-t4`) — two banks send one transaction twice. Rolled back, nothing lost.
 #   > 🔀 **Duplicate detection** (`txn-t4`) — handed off as a question: auto-match
 #   >   or confirm-each is a product call
 

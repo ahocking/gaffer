@@ -1999,6 +1999,143 @@ check 'the run summary still prints a clean count' 'CAPABILITY_DRIFT=ok drift=0 
 [ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no plan file' "rc=$rc"
 
 # =============================================================================
+# completion-record-drift-t2: the three UNJUDGEABLE classes, plus running T1's
+# two-capability drift fixture in the feature-folder layout too. Every case
+# below asserts BOTH halves -- the expected UNJUDGEABLE= line, with its class
+# and feature name, present, AND that feature absent from every DRIFT= line
+# -- since either half alone would pass for the wrong reason: a detector that
+# never emits UNJUDGEABLE= at all would still pass a check() for the line's
+# absence-of-drift half, and a detector that reports everything unjudgeable
+# would still pass a check() for the UNJUDGEABLE= half alone.
+printf '\n== capability-drift: the two-capability fixture, feature-folder layout (mk_prd_v2/mk_plan_v2) ==\n'
+# Identical to T1's flat-layout fixture above, run again through the v2
+# builders -- a detector that reads only the pre-3.x flat layout would fail
+# here rather than silently passing on the newer layout it never reads.
+R="$TMPROOT/capdrift-main-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" capdrift-main-v2 0 2
+mk_plan_v2 "$R" capdrift-main-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the fully-checked-covered capability is named present' \
+  "$(printf 'DRIFT=capdrift-main-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the mid-flight capability is named absent' \
+  'open capability 2' "$out"
+check 'feature-folder layout: the run summary counts the one drift and nothing unjudgeable' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: unmatched-quote reads unjudgeable, never drift (flat layout) ==\n'
+# A checked task whose covers: quote matches no PRD capability at all. The
+# adapter already refuses to guess at the nearest capability for an unmatched
+# quote elsewhere (cmd_handoff's UNMATCHED=); reading one as drift here would
+# turn that same guess back on.
+R="$TMPROOT/cd-unmatched-flat"; mkdir -p "$R"
+mk_prd "$R" cd-unmatched-flat 0 1
+mk_plan "$R" cd-unmatched-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the unmatched quote is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-unmatched-flat\tdoes not match any capability')" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-unmatched-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+printf '\n== capability-drift: unmatched-quote reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-unmatched-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-unmatched-v2 0 1
+mk_plan_v2 "$R" cd-unmatched-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the unmatched quote is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-unmatched-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-unmatched-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: uncovered-capability reads unjudgeable, never drift (flat layout) ==\n'
+# A resolved plan exists, but no task's covers: references this capability at
+# all -- no covering task means no positive evidence of delivery, and
+# absence of evidence must never be read as drift.
+R="$TMPROOT/cd-uncovered-flat"; mkdir -p "$R"
+mk_prd "$R" cd-uncovered-flat 0 1
+mk_plan "$R" cd-uncovered-flat <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the uncovered capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-uncovered-flat\topen capability 1')" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-uncovered-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: uncovered-capability reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-uncovered-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-uncovered-v2 0 1
+mk_plan_v2 "$R" cd-uncovered-v2 <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the uncovered capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-uncovered-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-uncovered-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: unrecognized-capability reads unjudgeable, never drift (flat layout) ==\n'
+# A legacy **P0 — text** capability line, appended by hand to a
+# builder-written PRD -- the same shape _feature_done still counts toward
+# completion, but _prd_capability's stricter **P<n>**: matcher declines it
+# (it has no reliable verbatim text of its own to reproduce). It must read
+# unjudgeable rather than resolve to either answer.
+R="$TMPROOT/cd-legacy-flat"; mkdir -p "$R"
+mk_prd "$R" cd-legacy-flat 0 0
+cat >> "$R/gspec/features/cd-legacy-flat.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan "$R" cd-legacy-flat <<'EOF'
+- [ ] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the legacy-shape capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unrecognized-capability\t%s\t' "cd-legacy-flat")" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-legacy-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: unrecognized-capability reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-legacy-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-legacy-v2 0 0
+cat >> "$R/gspec/features/cd-legacy-v2/prd.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan_v2 "$R" cd-legacy-v2 <<'EOF'
+- [ ] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the legacy-shape capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unrecognized-capability\t%s\t' "cd-legacy-v2")" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-legacy-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

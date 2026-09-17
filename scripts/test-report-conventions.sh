@@ -213,6 +213,55 @@ has 'the anchor for the negative assertion above still holds (implementer.md sti
   '${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml' \
   "$(cat "$ROOT/agents/implementer.md")"
 
+printf '\n== compact-threshold output blocks name only the values the reader emits (loop-prose-consistency T1) ==\n'
+# cmd_compact_threshold emits SOURCE=repo|operator|unknown, never gaffer-default --
+# there is no settings-derived default branch in the reader. The two loop skills'
+# output-contract comments must say so; the three rule-prose clauses that
+# deliberately still name gaffer-default (the omission rule covers a value the
+# reader could plausibly have emitted, and is not itself an output block) must
+# stay byte-unchanged. Extraction is anchored on the invocation line, not a line
+# number, so a moved or renamed fenced block fails loud rather than silently
+# checking an empty span.
+REPORT_SHAPES="$ROOT/templates/report-templates.md"
+_extract_ct_block() { # file -> the fenced block containing `runstate.sh compact-threshold`
+  sed -n '/runstate\.sh compact-threshold/,/^```$/p' "$1"
+}
+block_runloop="$(_extract_ct_block "$ROOT/skills/run-loop/SKILL.md")"
+block_resume="$(_extract_ct_block "$ROOT/skills/resume/SKILL.md")"
+
+[ -n "$block_runloop" ] && ok 'run-loop compact-threshold block extracted (anchor holds)' \
+  || bad 'run-loop compact-threshold block extracted (anchor holds)' 'empty -- anchor moved or renamed'
+[ -n "$block_resume" ] && ok 'resume compact-threshold block extracted (anchor holds)' \
+  || bad 'resume compact-threshold block extracted (anchor holds)' 'empty -- anchor moved or renamed'
+
+case "$block_runloop" in
+  *gaffer-default*) bad 'run-loop output block names only repo|operator|unknown' 'found gaffer-default inside the output block' ;;
+  *) ok 'run-loop output block names only repo|operator|unknown' ;;
+esac
+case "$block_resume" in
+  *gaffer-default*) bad 'resume output block names only repo|operator|unknown' 'found gaffer-default inside the output block' ;;
+  *) ok 'resume output block names only repo|operator|unknown' ;;
+esac
+
+has 'run-loop output block still names the SOURCE enum the reader actually emits' \
+  'SOURCE=repo|operator|unknown' "$block_runloop"
+has 'resume output block still names the SOURCE enum the reader actually emits' \
+  'SOURCE=repo|operator|unknown' "$block_resume"
+
+# The rule-prose clauses that deliberately keep naming gaffer-default must survive
+# untouched: exactly one occurrence per file, three total across the two skills
+# and the report shapes, and none of them inside a compact-threshold output block
+# (checked immediately above).
+count_runloop="$(grep -c -- 'gaffer-default' "$ROOT/skills/run-loop/SKILL.md")"
+count_resume="$(grep -c -- 'gaffer-default' "$ROOT/skills/resume/SKILL.md")"
+count_shapes="$(grep -c -- 'gaffer-default' "$REPORT_SHAPES")"
+if [ "$count_runloop" = 1 ] && [ "$count_resume" = 1 ] && [ "$count_shapes" = 1 ]; then
+  ok 'gaffer-default appears exactly once per file, in the three rule-prose clauses'
+else
+  bad 'gaffer-default appears exactly once per file, in the three rule-prose clauses' \
+      "run-loop=$count_runloop resume=$count_resume shapes=$count_shapes"
+fi
+
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
 # hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never

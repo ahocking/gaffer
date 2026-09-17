@@ -78,7 +78,7 @@ Right after the parallel-mode check above returns normal (no `mode: parallel`),
 before reading anything else (ADR 0028):
 
 ```
-runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|gaffer-default|unknown APPLIED=no
+runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|unknown APPLIED=no
 runstate.sh driver-mode enter --model <this session's model> \
   --effort unknown --threshold <unknown, or THRESHOLD per the rule below>
 ```

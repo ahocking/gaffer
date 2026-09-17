@@ -98,7 +98,7 @@ stop never has a mark to clear.
 else here:**
 
 ```
-runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|gaffer-default|unknown APPLIED=no
+runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|unknown APPLIED=no
 runstate.sh driver-mode enter --model <this session's model, from SessionStart> \
   --effort unknown --threshold <unknown, or THRESHOLD per the rule below>
 ```

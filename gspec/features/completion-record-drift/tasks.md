@@ -132,7 +132,7 @@ No hook registration changes, so no session boundary is owed.
   - covers: Every judgement has a case in `scripts/test-gspec-backlog.sh`, and none passes vacuously · Anything the test cannot judge is reported as unjudgeable, never as drift
   - arch: —
   - files: scripts/test-gspec-backlog.sh
-- [ ] **T3** **P0** Pin detect-never-flip in `scripts/test-gspec-backlog.sh` with a case that builds a drifted fixture in both layouts, takes a `cksum` manifest of every PRD and plan file under its `gspec/` before running `capability-drift`, and asserts the manifest is byte-identical afterwards, so the constraint is held mechanically rather than by a reviewer reading for intent — and assert alongside it that the run still reported the drift it was given, so the case cannot pass by the detector doing nothing at all.
+- [x] **T3** **P0** Pin detect-never-flip in `scripts/test-gspec-backlog.sh` with a case that builds a drifted fixture in both layouts, takes a `cksum` manifest of every PRD and plan file under its `gspec/` before running `capability-drift`, and asserts the manifest is byte-identical afterwards, so the constraint is held mechanically rather than by a reviewer reading for intent — and assert alongside it that the run still reported the drift it was given, so the case cannot pass by the detector doing nothing at all.
   - deps: T1
   - covers: Every judgement has a case in `scripts/test-gspec-backlog.sh`, and none passes vacuously
   - arch: —

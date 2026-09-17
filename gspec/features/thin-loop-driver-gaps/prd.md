@@ -70,7 +70,7 @@ dependency rule. The parent shipped; this is new scope against it.
 
 ## Capabilities
 
-- [ ] **P0**: The digest emits one line per item, whatever a task title contains
+- [x] **P0**: The digest emits one line per item, whatever a task title contains
   - a packet whose title carries a literal backslash sequence — `\n`, a Windows
     path — yields exactly one digest line for that packet with its leading type
     field intact (`_rs_digest_title` in `scripts/runstate.sh`), honouring the
@@ -83,7 +83,7 @@ dependency rule. The parent shipped; this is new scope against it.
     field; the existing hand-off fixture does not cover this case, its
     backslashes sitting in the status field
 
-- [ ] **P0**: A packet continued in the same run is reported once, with one outcome
+- [x] **P0**: A packet continued in the same run is reported once, with one outcome
   - the loop's open-packet sweep call states the rule as: the cursor packet is
     excluded exactly when this session is about to continue it (the call in
     `skills/run-loop/SKILL.md` omits the cursor argument that
@@ -96,7 +96,7 @@ dependency rule. The parent shipped; this is new scope against it.
   - `scripts/test-runstate.sh` covers a continued cursor packet under the
     run-loop call shape, not only the resume one
 
-- [ ] **P1**: A run that stopped on a blocking question resumes like a paused one
+- [x] **P1**: A run that stopped on a blocking question resumes like a paused one
   - resume's sweep states the rule in the same words: the cursor packet is
     excluded exactly when this session is about to continue it — that situation,
     not one status value as today (`skills/resume/SKILL.md` passes the cursor only
@@ -112,7 +112,7 @@ dependency rule. The parent shipped; this is new scope against it.
     one it excludes; the skill prose selecting between them is prose only — no
     sweep case
 
-- [ ] **P1**: Reconcile separates the loop's own scratch from deliberate output it did not produce
+- [x] **P1**: Reconcile separates the loop's own scratch from deliberate output it did not produce
   - the discard decision, and the instruction that acts on it, distinguish a
     packet's uncommitted work from untracked files the loop did not create; the
     second is escalated to the operator before anything is set aside, matching
@@ -130,7 +130,7 @@ dependency rule. The parent shipped; this is new scope against it.
     covers both tree shapes; where it lands in skill prose it is prose only — no
     sweep case
 
-- [ ] **P1**: Driver mode refuses only writes that could reach a packet
+- [x] **P1**: Driver mode refuses only writes that could reach a packet
   - a write whose target cannot enter any packet's commit — anything outside the
     repository the loop is driving — no longer draws driver mode's refusal; every
     other tier still judges it, the secret/key-material floor first. The permitted
@@ -147,7 +147,7 @@ dependency rule. The parent shipped; this is new scope against it.
     repository-relative target that resolves outside, which stays refused for
     being unverifiable
 
-- [ ] **P1**: The kickoff never states a compaction threshold that is not in effect
+- [x] **P1**: The kickoff never states a compaction threshold that is not in effect
   - when the threshold reader in `scripts/runstate.sh` names no value in effect —
     which it does whenever neither repository nor operator set one, the default
     state, this repository included — neither consumer states a number: the
@@ -169,7 +169,7 @@ dependency rule. The parent shipped; this is new scope against it.
   - both loop skills carry the same instruction for that line, where one asks for
     a source today and the other omits the instruction entirely
 
-- [ ] **P1**: The stop report's decision tally matches the sections it indexes
+- [x] **P1**: The stop report's decision tally matches the sections it indexes
   - one handed-off packet contributes exactly one to the header's decision count,
     matching the single decision block the body renders for it
     (`templates/report-templates.md:146` counts both lines of the routing record;
@@ -183,7 +183,7 @@ dependency rule. The parent shipped; this is new scope against it.
     question renders a header reading two decisions above a body holding two
     decision blocks
 
-- [ ] **P1**: The standing instructions describe the loop that actually runs
+- [x] **P1**: The standing instructions describe the loop that actually runs
   - the per-packet report shape is named correctly where the harness reads it as
     standing instruction: it covers every **ended** packet — failed, blocked and
     interrupted included — not only landed ones (`CLAUDE.md:760`, stale since the
@@ -200,7 +200,7 @@ dependency rule. The parent shipped; this is new scope against it.
     itself, and the corrected rule selects the 25. All three surfaces here are
     prose only — no sweep case
 
-- [ ] **P1**: The digest's documented mechanism is the one it uses
+- [x] **P1**: The digest's documented mechanism is the one it uses
   - the header comment and the template both describe the digest as reading the
     routed status recorded for a hand-off, not as reading result files, which it
     never opens (`scripts/runstate.sh`, the run-digest header;
@@ -214,7 +214,7 @@ dependency rule. The parent shipped; this is new scope against it.
   - the two descriptions and the code name one mechanism, checkable by reading
     the three together — prose only, no sweep case
 
-- [ ] **P2**: The measurement's nulls read unambiguously
+- [x] **P2**: The measurement's nulls read unambiguously
   - the sentence defining what the two context fields' nulls mean no longer
     contradicts the sentence after it: they are not **always** null together, and
     one is forced null when the other is. The contradiction survives only in

@@ -1515,7 +1515,7 @@ _capability_drift_for() {
     bits="$(TXT="$ctext" awk -F'\t' '$1==ENVIRON["TXT"]{print $2}' "$matched")"
     if [ -z "$bits" ]; then
       printf 'UNJUDGEABLE=uncovered-capability\t%s\t%s\n' "$slug" "$ctext"
-    elif ! printf '%s\n' "$bits" | grep -qx '0'; then
+    elif ! grep -qx '0' <<< "$bits"; then
       printf 'DRIFT=%s\t%s\n' "$slug" "$ctext"
     fi
   done < "$caps"

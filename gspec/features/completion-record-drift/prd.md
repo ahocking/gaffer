@@ -80,7 +80,7 @@ the two places it is reported — no new write, no new parsing.
 
 ## Capabilities
 
-- [ ] **P0**: The drift test is per capability, across every feature with a resolvable PRD and plan
+- [x] **P0**: The drift test is per capability, across every feature with a resolvable PRD and plan
   - the reported condition is exactly a capability whose covering tasks are **all
     checked** while its own box is unchecked — the state a feature enters the
     moment its last covering task lands and nothing flips the capability
@@ -98,7 +98,7 @@ the two places it is reported — no new write, no new parsing.
     count alone, so the reader can flip the right box without re-deriving which
     one is short
 
-- [ ] **P0**: Anything the test cannot judge is reported as unjudgeable, never as drift
+- [x] **P0**: Anything the test cannot judge is reported as unjudgeable, never as drift
   - a `covers:` quote matching no capability in the PRD is reported as unmatched,
     and its task counts as evidence for no capability. The adapter already
     reports an unmatched quote rather than guessing at the nearest capability,
@@ -115,7 +115,7 @@ the two places it is reported — no new write, no new parsing.
     drifted* from *nothing could be judged* — a single clean-looking zero across
     both is the failure this whole feature is about
 
-- [ ] **P0**: Preflight reports drift on every run, and blocks none
+- [x] **P0**: Preflight reports drift on every run, and blocks none
   - the scan runs in the run entry point's preflight beside the existing
     trailer-versus-task drift scan, and reads only the record on disk, so it
     fires however the previous run ended — complete, blocked, paused or
@@ -127,7 +127,7 @@ the two places it is reported — no new write, no new parsing.
   - a repo with no gspec directory is a silent no-op, never an error — gspec is
     optional, and the preflight it sits in is already a no-op there
 
-- [ ] **P1**: The run that drifts the record reports it before it stops
+- [x] **P1**: The run that drifts the record reports it before it stops
   - the same scan runs at termination on the backlog-complete path, before the
     stop report is rendered, so a capability whose last covering task landed in
     this run is named by this run rather than by the next one
@@ -136,7 +136,7 @@ the two places it is reported — no new write, no new parsing.
     feature, exactly the second-source-of-truth problem it exists to detect —
     prose only — no sweep case
 
-- [ ] **P0**: Every judgement has a case in `scripts/test-gspec-backlog.sh`, and none passes vacuously
+- [x] **P0**: Every judgement has a case in `scripts/test-gspec-backlog.sh`, and none passes vacuously
   - one fixture feature carries two capabilities — one whose covering tasks are
     all checked, one with an unchecked covering task — and the case asserts the
     first is reported and the second is absent by name. A per-feature test

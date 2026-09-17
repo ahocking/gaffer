@@ -103,7 +103,7 @@ else needs a session boundary.
   - covers: Reconcile separates the loop's own scratch from deliberate output it did not produce
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, skills/resume/SKILL.md
-- [ ] **T4** [P] **P1** Narrow driver mode's write refusal in `hooks/guard.sh` to targets that could reach a packet's commit — admitting a target that resolves outside the driven repository, keeping the check after the secret and key-material floor and before the ask tier, and keeping an unverifiable or repository-relative-but-outside target refused — and rewrite the refusal hint so its stated remedy applies to every write it still refuses; `scripts/test-guard.sh` covers a permitted write outside the repository, an out-of-repository secret path still hard-denied, an unchanged refusal for an in-repository target outside `.agents/`, and a repository-relative target that resolves outside.
+- [x] **T4** [P] **P1** Narrow driver mode's write refusal in `hooks/guard.sh` to targets that could reach a packet's commit — admitting a target that resolves outside the driven repository, keeping the check after the secret and key-material floor and before the ask tier, and keeping an unverifiable or repository-relative-but-outside target refused — and rewrite the refusal hint so its stated remedy applies to every write it still refuses; `scripts/test-guard.sh` covers a permitted write outside the repository, an out-of-repository secret path still hard-denied, an unchanged refusal for an in-repository target outside `.agents/`, and a repository-relative target that resolves outside.
   - deps: —
   - covers: Driver mode refuses only writes that could reach a packet
   - arch: —

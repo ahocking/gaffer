@@ -78,6 +78,26 @@ stop never has a mark to clear.
   set — a genuine **drift**. **Say so in the kickoff (§2); do not flip the
   checkbox and do not block the run** — reconciling a drifted record is the
   human's call.
+- **Drifted capability checkboxes (gspec repos only).** Run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh capability-drift`. Each
+  `DRIFT=<slug>\t<capability text>` line names a feature whose finished plan has
+  outrun its own PRD — every task covering that capability is checked but the
+  capability's own box is not. **Say so in the kickoff (§2): one ⚠️ line per
+  `DRIFT=` line, naming the feature and the capability** — never a count alone.
+  State the trailing `unjudgeable=<n>` count separately, as a figure — never
+  one `UNJUDGEABLE=` line per finding — naming only the classes that actually
+  appear among the command's own `UNJUDGEABLE=<class>\t<slug>\t<detail>`
+  lines (possible classes: `unmatched-quote`, `uncovered-capability`,
+  `unrecognized-capability`; e.g. "34 unjudgeable — all unmatched-quote"),
+  never folded into the drift count. Say nothing when the scan is fully clean
+  (`CAPABILITY_DRIFT=ok drift=0 unjudgeable=0`); state the figure whenever
+  `unjudgeable` is nonzero, even if `drift` is `0`. **Flip nothing, halt
+  nothing, and never treat any exit — including `CAPABILITY_DRIFT=attention`
+  — as a stop**, on the same authority as the scan above: reconciling a
+  drifted record is the human's call. The rule holds
+  wherever a run entry point states a preflight drift scan, not only at this
+  one. A repo with no `gspec/` directory reads `CAPABILITY_DRIFT=none` — a
+  silent no-op, same as the check above.
 - **Autonomy level.** Resolve it (env `ORCH_AUTONOMY` > `.agents/autonomy` >
   `interactive`, clamped by `autonomy_ceiling`). The loop is meant for
   **`supervised`**, **`autonomous`**, or **`full-autonomy`**. At **`interactive`** it

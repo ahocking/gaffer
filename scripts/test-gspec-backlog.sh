@@ -2096,6 +2096,60 @@ refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIF
 check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
 
 # =============================================================================
+# completion-record-drift-gaps-t6: the anchoring divergence between
+# `_CAPABILITY_LINE_RE` (admits leading whitespace) and `_prd_capability`'s
+# `^-`-anchored quote matcher (column 0 only), recorded rather than aligned
+# (see both patterns' comments in gspec-backlog.sh). An indented but
+# otherwise canonical capability line is enumerated by `_prd_capabilities`
+# (which drives this walk) and declined by `_prd_capability` (which every
+# `covers:` quote is checked against): the quote never registers a MATCH, so
+# the capability reads `uncovered-capability` and its covering task's quote
+# reads `unmatched-quote` -- never `DRIFT=`, whichever way the covering task
+# is checked. Two variations of the SAME indented PRD line pin the safe
+# direction both ways: covering task checked (would be DRIFT if the anchors
+# agreed) and unchecked (would be neither drift nor unjudgeable if the
+# anchors agreed) -- both read identically here, because the quote never
+# matches regardless of the task's checked state.
+printf '\n== capability-drift: an indented capability line never drifts -- the anchor divergence stands (covering task checked) ==\n'
+R="$TMPROOT/cd-indented-checked-flat"; mkdir -p "$R/gspec/features"
+{ printf -- '---\nspec-version: v1\n---\n\n# Feature: cd-indented-checked-flat\n\n## Capabilities\n\n'
+  printf -- '  - [ ] **P1**: indented capability\n    - criterion\n'
+} > "$R/gspec/features/cd-indented-checked-flat.md"
+mk_plan "$R" cd-indented-checked-flat <<'EOF'
+- [x] **T1** finish the indented capability
+  - deps: —
+  - covers: indented capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'checked: the indented capability is reported uncovered, never matched' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-indented-checked-flat\tindented capability')" "$out"
+check 'checked: the covering quote is reported unmatched, never matched' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-indented-checked-flat\tindented capability')" "$out"
+refute 'checked: never a DRIFT= line, even though the covering task is checked' \
+  'DRIFT=cd-indented-checked-flat' "$out"
+check 'checked: the run summary counts both unjudgeable rows and no drift' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+printf '\n== capability-drift: an indented capability line never drifts -- the anchor divergence stands (covering task unchecked) ==\n'
+R="$TMPROOT/cd-indented-unchecked-flat"; mkdir -p "$R/gspec/features"
+{ printf -- '---\nspec-version: v1\n---\n\n# Feature: cd-indented-unchecked-flat\n\n## Capabilities\n\n'
+  printf -- '  - [ ] **P1**: indented capability\n    - criterion\n'
+} > "$R/gspec/features/cd-indented-unchecked-flat.md"
+mk_plan "$R" cd-indented-unchecked-flat <<'EOF'
+- [ ] **T1** finish the indented capability
+  - deps: —
+  - covers: indented capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'unchecked: the indented capability is reported uncovered, never matched' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-indented-unchecked-flat\tindented capability')" "$out"
+check 'unchecked: the covering quote is reported unmatched, never matched' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-indented-unchecked-flat\tindented capability')" "$out"
+refute 'unchecked: never a DRIFT= line' 'DRIFT=cd-indented-unchecked-flat' "$out"
+check 'unchecked: the run summary counts both unjudgeable rows and no drift' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+# =============================================================================
 printf '\n== capability-drift: unrecognized-capability reads unjudgeable, never drift (flat layout) ==\n'
 # A legacy **P0 — text** capability line, appended by hand to a
 # builder-written PRD -- the same shape _feature_done still counts toward

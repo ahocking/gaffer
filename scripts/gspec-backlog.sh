@@ -356,6 +356,34 @@ _TASK_LINE_RE="${_TASK_LINE_PREFIX}${_TASK_ID_CLASS}${_TASK_LINE_SUFFIX}"
 # inline before this extraction; only the pattern moved, not its meaning.
 _CAPABILITY_LINE_RE='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+([^0-9]|\*\*)'
 
+# Anchoring divergence from `_prd_capability` below, recorded rather than
+# aligned (completion-record-drift-gaps-t6): this pattern admits leading
+# whitespace (`^[[:space:]]*-`), but `_prd_capability`'s verbatim quote
+# matcher is anchored `^-` -- column 0 only, no leading whitespace at all. An
+# indented but otherwise canonical capability line is therefore enumerated
+# HERE (via `_prd_capabilities`, which drives the capability-drift walk) and
+# declined THERE (via `_prd_capability`, which every `covers:` quote is
+# checked against) -- so such a line is always reported
+# `uncovered-capability` (nothing ever registers a MATCH against it) plus one
+# `unmatched-quote` per task whose `covers:` names it (that quote never
+# matches either), and never a `DRIFT=` line, regardless of whether its
+# covering tasks are all checked. Safe direction: an indented capability line
+# can never be misread as delivered when it is not.
+#
+# Why the divergence stands rather than being aligned: widening
+# `_prd_capability`'s `^-` anchor to admit leading whitespace, to match this
+# pattern, would move the indentation-based block boundary it uses to
+# extract a capability's acceptance-criteria sub-bullets (see its comment
+# below) -- that boundary works only because the capability header is always
+# at column 0, so ANY indented line unambiguously belongs to it as a
+# sub-bullet; once the header itself can sit at some indent N, a sibling line
+# at that same indent N (not a sub-bullet of it at all) would satisfy the
+# identical "is this line indented" test and get swallowed into the block.
+# `_prd_capability`'s match also feeds `cmd_handoff`'s `COVERS=` output --
+# the acceptance criteria a packet is told is "done" -- so a widening here is
+# judged against that caller too, not just this one, and a corrupted
+# criteria block is worse than a declined quote. Neither pattern changes.
+
 # Print a file's YAML frontmatter body (between the first `---` and the next),
 # or nothing when the file has none.
 _frontmatter() {
@@ -1326,6 +1354,24 @@ _task_record() {
 # is sticky (never reset once a match is made), so without that `exit`,
 # `inblock` would stay 1 across a later NON-matching capability line and its
 # body would bleed into this one's block.
+#
+# Anchoring divergence from `_CAPABILITY_LINE_RE` above, recorded rather than
+# aligned (completion-record-drift-gaps-t6): this matcher's opening pattern is
+# anchored `^-` -- column 0 only -- while `_CAPABILITY_LINE_RE`
+# (`_feature_done`'s and `_prd_capabilities`'s pattern) admits leading
+# whitespace. An indented but otherwise canonical capability line is
+# therefore enumerated by `_prd_capabilities` and declined here, so in the
+# capability-drift walk it is always reported `uncovered-capability` plus one
+# `unmatched-quote` per covering task, never `DRIFT=`, whichever way its
+# covering tasks are checked. Widening this anchor to admit leading
+# whitespace, to match `_CAPABILITY_LINE_RE`, would move the
+# indentation-based block boundary above: it assumes the capability header
+# sits at column 0, so any indented line is unambiguously a sub-bullet of it;
+# letting the header itself sit at some indent N breaks that assumption,
+# since a sibling line at that same indent N -- not a sub-bullet at all --
+# would satisfy the same "is this line indented" test and get swallowed into
+# the block, corrupting the criteria `cmd_handoff` reads to tell a packet
+# what done means. Neither pattern changes here.
 _prd_capability() {
   local prd="$1" want="$2"
   if [ ! -f "$prd" ]; then printf 'NOMATCH\n'; return 0; fi

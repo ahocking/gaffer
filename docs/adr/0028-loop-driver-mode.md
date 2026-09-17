@@ -164,6 +164,18 @@ Result 1 above is the whole reason the second test is `agent_id` and never `agen
   exists to stop.
 - The refusal **names driver mode as the reason and `/gaffer:pause` as the way out**. A
   hard deny with no stated exit is how an agent starts improvising around the guard.
+- **"Outside `.agents/`" means where the write PHYSICALLY lands, never what the path is
+  called** (hardened 2026-09-16, `thin-loop-driver-gaps-b1`). The name test is lexical and
+  a symlink is exactly what lies about a name, in three shapes: a symlinked ancestor, an
+  existing symlink *leaf* (`.agents/x -> ../src/util.ts`), and a symlinked *directory*
+  under `.agents/` (`.agents/d -> ../src`). So `_driver_mode_path_ok` resolves first —
+  following a symlink leaf with a bounded plain-`readlink` hop loop, never `readlink -f`,
+  which stock Git Bash does not reliably provide — and judges on the result, in the
+  relative path form as well as the absolute one. The lexical `<root>/.agents/` test
+  survives **only** as the resolution-failure fallback, and not even then for a symlink
+  leaf, which is refused as unverifiable. Do not reintroduce it as a fast path: it is
+  self-reachable escalation, because `ln -s ../src/util.ts .agents/link.txt` is itself a
+  permitted write (at judgement time that path is not yet a link).
 
 `hooks/session-start.sh` clears a session's own mark on `startup|resume`;
 `hooks/driver-mode-compact.sh` fires on `compact` only (Result 2) and reminds the

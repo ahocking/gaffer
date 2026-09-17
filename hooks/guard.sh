@@ -572,11 +572,21 @@ driver_mode_marked() {   # $1 = validated session_id
 # Does the payload cwd RESOLVE to a discovered config root exactly (not merely
 # live somewhere under one)? A relative `.agents/...` target only unambiguously
 # names the repo's real .agents/ directory when cwd IS that root.
+#
+# On success it PUBLISHES the matched root in DRIVER_MODE_CWD_ROOT, which is
+# already physical (both sides of the comparison go through `pwd -P`). That
+# value is load-bearing, not a convenience: a relative target has to be judged
+# on where it really lands, and doing that needs an absolute candidate built
+# from the cwd's PHYSICAL root. Never build one from $SHELL_CWD directly -- the
+# payload cwd may itself be a symlinked path, and assuming otherwise is the
+# asymmetry this whole defect family comes from.
+DRIVER_MODE_CWD_ROOT=""
 _cwd_is_config_root() {
   local resolved r
+  DRIVER_MODE_CWD_ROOT=""
   resolved="$(cd "$SHELL_CWD" 2>/dev/null && pwd -P)" || return 1
   for r in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-    [ "$r" = "$resolved" ] && return 0
+    if [ "$r" = "$resolved" ]; then DRIVER_MODE_CWD_ROOT="$r"; return 0; fi
   done
   return 1
 }
@@ -607,15 +617,69 @@ _driver_mode_in_repo() {   # $1 = normalized path
   return 1
 }
 
+# Resolve a target whose FINAL component is itself an existing symlink, by
+# following it. `_driver_mode_resolve_abs` deliberately leaves the tail
+# unresolved (a write legitimately creates a new file), and a symlink leaf is
+# the one case where that tail names an existing object somewhere else -- so an
+# out-of-repository leaf pointing INTO the repository would otherwise compare as
+# outside and be permitted while the write lands in the checkout.
+#
+# Plain `readlink` ONLY, one hop per iteration: `readlink -f` is not a safe
+# dependency under the stock-Git-Bash constraint this hook is built around, and
+# it is probed by EXECUTION, not `command -v` (a Windows shim can be on PATH and
+# still not work). A relative link target resolves against the LINK's own
+# directory. Every failure -- no usable `readlink`, an empty target, a chain
+# longer than the hop bound, a symlink loop, a tail of `.`/`..` that names no
+# file -- prints nothing and returns 1, i.e. REFUSE. Interior `..` segments in a
+# link target are NOT refused here: the caller re-resolves the result's
+# ancestors through `cd`/`pwd -P`, which resolves them physically.
+#
+# A `\` in a link target is rewritten to `/`, matching how `norm` is normalized
+# in `_driver_mode_path_ok` and right for Windows; on POSIX a backslash is a
+# legal filename character, so a contrived target containing one resolves to a
+# path that is not literally the link's own. It errs toward judging a
+# repository-shaped path, i.e. toward refusing -- the safe direction here.
+_driver_mode_follow_leaf() {   # $1 = absolute path whose final component is a symlink
+  local cur="$1" tgt hops=0
+  while [ -L "$cur" ] && [ "$hops" -lt 16 ]; do
+    tgt="$(readlink "$cur" 2>/dev/null)" || return 1
+    [ -n "$tgt" ] || return 1
+    tgt="${tgt//\\//}"
+    case "$tgt" in
+      /*|[A-Za-z]:/*) cur="$tgt" ;;                 # absolute link target
+      *)              cur="${cur%/*}/${tgt}" ;;     # relative to the link's dir
+    esac
+    hops=$((hops + 1))
+  done
+  if [ -L "$cur" ]; then return 1; fi              # hop bound hit: unverifiable
+  case "$cur" in */*) : ;; *) return 1 ;; esac
+  case "${cur##*/}" in .|..) return 1 ;; esac      # not a file target
+  printf '%s' "$cur"
+}
+
 # PHYSICAL location of an absolute target: the nearest EXISTING ancestor
 # directory resolved with `pwd -P`, plus the not-yet-existing tail (a write
-# legitimately creates the file, and may create directories under it). Without
-# this, a symlinked prefix -- `/var/...` -> `/private/var/...` on macOS, or a
-# symlink pointing into the checkout -- would compare as OUTSIDE the repository
-# and be permitted while writing straight into it. Prints nothing and returns 1
-# when the target cannot be placed, which the caller must treat as REFUSE.
+# legitimately creates the file, and may create directories under it). Two
+# symlink forms would otherwise compare as OUTSIDE the repository and be
+# permitted while writing straight into it, and each is handled by a different
+# half of this function:
+#   - a symlinked ANCESTOR -- `/var/...` -> `/private/var/...` on macOS, or a
+#     link whose target directory is the checkout, INCLUDING one in the middle
+#     of an otherwise `.agents/`-named path (`.agents/d -> ../src`) -- by the
+#     `pwd -P` below;
+#   - an existing symlink LEAF pointing into the checkout -- by following it
+#     first, via `_driver_mode_follow_leaf`, and resolving the result's
+#     ancestors here.
+# Prints nothing and returns 1 when the target cannot be placed, which the
+# caller must treat as REFUSE -- including a symlink leaf that cannot be
+# followed. That direction is the tier's own rule: wrong-and-refused costs a
+# pause, wrong-and-allowed is the leak it exists to stop.
 _driver_mode_resolve_abs() {   # $1 = normalized absolute target
-  local dir tail phys
+  local dir tail phys followed
+  if [ -L "$1" ]; then
+    followed="$(_driver_mode_follow_leaf "$1")" || return 1
+    set -- "$followed"
+  fi
   case "$1" in */*) dir="${1%/*}"; tail="${1##*/}" ;; *) return 1 ;; esac
   [ -n "$dir" ] || dir="/"
   while [ ! -d "$dir" ]; do
@@ -639,45 +703,96 @@ _driver_mode_resolve_abs() {   # $1 = normalized absolute target
 #   - any ".." path segment -> refuse (traversal, and an unverifiable way to
 #     leave the repository: a repository-relative target resolving outside is
 #     refused for being unverifiable, not permitted for being outside);
-#   - an absolute path (POSIX or a Windows drive letter) is OK when it starts
-#     with `<root>/.agents/` for some discovered CONFIG_ROOT, compared
-#     case-insensitively (Windows path/drive-letter casing), AND ALSO when it
-#     physically resolves outside every discovered root -- such a write cannot
-#     enter a packet's commit. Inside a root but outside its `.agents/` ->
-#     refuse; a target whose real location cannot be resolved -> refuse;
-#   - a relative path is OK only when it matches `^(\./)?\.agents/` AND the
-#     payload cwd itself is a discovered config root (see _cwd_is_config_root).
-#     Every other relative target is refused as unverifiable -- the cwd it would
-#     be resolved against is not known to be the repository root.
+#   - an absolute path (POSIX or a Windows drive letter) becomes the candidate
+#     as-is;
+#   - a relative path must match `^(\./)?\.agents/` AND the payload cwd must
+#     itself be a discovered config root (see _cwd_is_config_root); the
+#     candidate is then that root's PHYSICAL path joined to the target. Every
+#     other relative target is refused as unverifiable -- the cwd it would be
+#     resolved against is not known to be the repository root. Naming
+#     `.agents/` is NECESSARY here, not SUFFICIENT: it decides only which
+#     cwd-relative names are judgeable at all, never the outcome.
+#
+# Then ONE judgment, shared by both forms, on where the write PHYSICALLY lands:
+# under some root's `.agents/` -> OK (the driver's own surface); elsewhere
+# inside a discovered root -> refuse (it could reach a packet's commit);
+# outside every root -> OK (it cannot).
+#
+# That order -- name gate, then physical judgment, with NO lexical fast path --
+# is the whole design, because "it is called `.agents/`" is precisely what a
+# symlink can lie about. "Physically" covers ALL THREE ways a name can lie, and
+# each is closed by a different mechanism:
+#   - a symlinked ANCESTOR (`/var/...` -> `/private/var/...`, or a link whose
+#     target directory is the checkout) -- by `pwd -P` in
+#     `_driver_mode_resolve_abs`;
+#   - an existing symlink LEAF (`.agents/x -> ../src/util.ts`) -- by following
+#     it in `_driver_mode_follow_leaf`, and refusing when it cannot be
+#     followed;
+#   - a symlinked DIRECTORY under `.agents/` (`.agents/d -> ../src`, so
+#     `.agents/d/util.ts` writes repository source) -- by that same `pwd -P`,
+#     which now reaches it only because nothing short-circuits on the name
+#     first. This is why the lexical `<root>/.agents/` test could not stay a
+#     fast path even once the leaf form was handled: a leaf test cannot see a
+#     link in the path's MIDDLE.
+#
+# When resolution FAILS the fallback is deliberately asymmetric:
+#   - an existing symlink leaf -> REFUSE. Unverifiable, and this tier's rule is
+#     that wrong-and-refused costs a pause while wrong-and-allowed is the leak.
+#   - anything else lexically under `<root>/.agents/` -> OK. This is the ONLY
+#     surviving use of the lexical test, and it exists so the driver can still
+#     write its own run-state on a layout whose ancestors this hook cannot walk
+#     (a drive-letter root it cannot descend from, an unreadable ancestor).
+#   - anything else -> refuse.
 _driver_mode_path_ok() {   # $1 = raw candidate target
-  local raw="${1:-}" norm phys
+  local raw="${1:-}" norm abs phys
   [ -n "$raw" ] || return 1
   # unresolved variable, or the sanitizer's quoted-region placeholder -> a
   # target we cannot verify at all is refused, never guessed at (N1).
   case "$raw" in *'$'*|*'__Q__'*) return 1 ;; esac
   norm="${raw//\\//}"
   case "/${norm}/" in *'/../'*) return 1 ;; esac  # any ".." segment -> refuse
+  discover_config
+  # (1) NAME gate -> one absolute candidate to judge.
   case "$norm" in
     /*|[A-Za-z]:/*)
-      discover_config
-      # (1) the driven repository's own .agents/ -- the driver's own surface.
-      _driver_mode_in_agents_dir "$norm" && return 0
-      # (2) otherwise decide on where the target REALLY lands. Unresolvable is
-      #     refused, never assumed outside.
-      phys="$(_driver_mode_resolve_abs "$norm")" || return 1
-      _driver_mode_in_agents_dir "$phys" && return 0
-      _driver_mode_in_repo "$phys" && return 1   # in the repo, outside .agents/
-      return 0                                   # outside the driven repository
+      abs="$norm"
       ;;
     *)
-      discover_config
+      # A relative target is anchored only when cwd IS the repository root, and
+      # only `.agents/...` is judgeable from there. The candidate is built from
+      # the root's PHYSICAL path so this arm reaches exactly the same judgment
+      # as the absolute one -- it is the arm where a lexical `.agents/*` permit
+      # used to END the story, which let `.agents/link -> ../src/util.ts` (a
+      # link the driver can create with one permitted `ln -s`) write repository
+      # source under an `.agents/` name, in the path form a driver writes by
+      # default.
       _cwd_is_config_root || return 1
       case "$norm" in
-        .agents/*|./.agents/*) return 0 ;;
+        .agents/*|./.agents/*) : ;;
         *)                     return 1 ;;
       esac
+      # Belt and braces: an empty root would build `/.agents/...`, which
+      # resolves outside every root and would PERMIT. A control must not
+      # fail open on a value it only believes is set.
+      [ -n "$DRIVER_MODE_CWD_ROOT" ] || return 1
+      abs="${DRIVER_MODE_CWD_ROOT%/}/${norm#./}"
       ;;
   esac
+  # (2) judge on where the write REALLY lands.
+  if phys="$(_driver_mode_resolve_abs "$abs")"; then
+    _driver_mode_in_agents_dir "$phys" && return 0
+    _driver_mode_in_repo "$phys" && return 1   # in the repo, outside .agents/
+    return 0                                   # outside the driven repository
+  fi
+  # (3) resolution failed. An existing symlink leaf is unverifiable and must
+  #     NOT fall through to a test on its own name.
+  #     (Written as an `if`, not `[ -L … ] || _in_agents_dir … && return 0`:
+  #     `&&`/`||` are left-associative, so that reads as
+  #     `([ -L ] || _in_agents_dir) && return 0` and would PERMIT every symlink
+  #     leaf -- the exact inverse of this rule.)
+  if [ -L "$abs" ]; then return 1; fi
+  _driver_mode_in_agents_dir "$abs" && return 0
+  return 1
 }
 
 # --- driver mode: sanitizing and target-extraction for Bash writes -----------

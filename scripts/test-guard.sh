@@ -857,6 +857,10 @@ check_deny_category "driver-mode" "T4: absolute in-repo target outside .agents/ 
   "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/src/util.ts\"}" sess-driver)"
 check 2 "T4: in-repo target via the payload's own (possibly symlinked) cwd refused" \
   "$(dm_payload Edit "{\"file_path\":\"${DM}/src/util.ts\"}" sess-driver)"
+# NOTE: this is the symlinked-ANCESTOR form only (a directory symlink in the
+# path's prefix). The symlink-LEAF form -- a final component that is itself a
+# link into the repository -- is a separate mechanism with its own cases in the
+# B1 section immediately below. This case passing says nothing about that one.
 check 2 "T4: in-repo target reached through a symlink refused" \
   "$(dm_payload Edit "{\"file_path\":\"${DM_LINKDIR}/repo/src/util.ts\"}" sess-driver)"
 check 2 "T4: absolute in-repo bash write outside .agents/ refused" \
@@ -875,6 +879,187 @@ check 2 "T4: relative ../outside.txt refused via a shell write too" \
   "$(dm_payload Bash '{"command":"cp tmp ../outside.txt"}' sess-driver)"
 check 2 "T4: an unresolved \$VAR absolute-looking target still refused" \
   "$(dm_payload Bash '{"command":"cp tmp $HOME/notes.md"}' sess-driver)"
+
+echo "== driver mode: B1 -- an existing symlink LEAF is resolved, never left unjudged =="
+# The gap the T4 cases above could not see: `_driver_mode_resolve_abs` resolves
+# only the nearest existing ANCESTOR directory (the tail is deliberately left
+# alone, because a write legitimately creates a new file). A target whose FINAL
+# component is an existing symlink into the driven repository therefore compared
+# as OUTSIDE it and was permitted, while the write followed the link into the
+# checkout. Reproduced by direct invocation at exit 0 before the fix.
+#
+# Every case here is paired by DIRECTION, because this restores a refusal and
+# must not re-broaden the one T4 narrowed:
+#   REFUSE cases pin that a leaf resolving INTO the repository is judged on where
+#   it really lands (and that an unfollowable leaf is refused, not guessed at);
+#   PERMIT cases pin that a leaf genuinely outside the repository, and one
+#   pointing at the driver's own .agents/, are still allowed.
+DM_LEAF="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_LEAF"   # no .agents/ above it
+DM_LEAF_P="$(cd "$DM_LEAF" && pwd -P)"
+mkdir -p "$DM_PHYS/src"; : > "$DM_PHYS/src/util.ts"           # a real in-repo link target
+: > "$DM_PHYS/.agents/run-state.yaml"                         # the driver's own surface
+printf 'plain\n' > "$DM_LEAF_P/plain.txt"
+
+ln -s "$DM_PHYS/src/util.ts"             "$DM_LEAF_P/into-repo.txt"    # leaf -> repo source
+ln -s "into-repo.txt"                    "$DM_LEAF_P/chain.txt"        # 2 hops -> repo source
+ln -s "$DM_PHYS/src/not-yet.ts"          "$DM_LEAF_P/dangling.txt"     # dangling -> repo source
+ln -s "$DM_PHYS/.agents/run-state.yaml"  "$DM_LEAF_P/into-agents.txt"  # -> driver's own surface
+ln -s "plain.txt"                        "$DM_LEAF_P/outside.txt"      # outside -> outside
+ln -s "loop-b.txt"                       "$DM_LEAF_P/loop-a.txt"       # a symlink loop:
+ln -s "loop-a.txt"                       "$DM_LEAF_P/loop-b.txt"       #   unfollowable
+ln -s "../src/util.ts"                   "$DM_PHYS/.agents/leaf-out.txt"  # .agents/ -> repo src
+ln -s "run-state.yaml"                   "$DM_PHYS/.agents/leaf-in.txt"   # .agents/ -> .agents/
+
+# dm_check <expected-exit> <desc> <payload>: `check`, plus a structural assert
+# that the payload's tool_input survived the shell. A MANGLED payload is denied
+# fail-closed (exit 2, ADR 0021), so a refuse-direction case can pass while
+# testing nothing -- which is exactly what happened while these cases were being
+# written. In `check 2 "desc" "$(dm_payload Write "{\"a\":\"1\",\"b\":\"2\"}" …)"`
+# the brace-enclosed comma BRACE-EXPANDS: dm_payload was called twice, each time
+# with one half and no braces, and the case reported `ok (exit 2)` against a
+# payload the guard could not parse. Interpolate a path into a multi-key JSON
+# body with single-quoted segments, as below -- never with `\"` escapes.
+dm_check() {
+  case "$3" in
+    *'"tool_input":{'*) check "$1" "$2" "$3" ;;
+    *) printf 'FAIL (payload mangled before the guard saw it) %s\n' "$2"; fail=$((fail + 1)) ;;
+  esac
+}
+
+# (1) REFUSE: the leaf lands inside the repository, so the write could reach a packet.
+check_deny_category "driver-mode" "B1: out-of-repo leaf symlink INTO the repo refused (Edit)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_check 2 "B1: the same leaf symlink refused via a shell redirect" \
+  "$(dm_payload Bash "{\"command\":\"echo x > ${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_check 2 "B1: a 2-hop symlink chain ending in the repo refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/chain.txt\"}" sess-driver)"
+dm_check 2 "B1: a DANGLING leaf symlink into the repo refused (the write creates it there)" \
+  "$(dm_payload Write '{"file_path":"'"${DM_LEAF_P}"'/dangling.txt","content":"x"}' sess-driver)"
+dm_check 2 "B1: an unfollowable leaf (symlink loop) refused as unverifiable" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/loop-a.txt\"}" sess-driver)"
+# The two check_deny_category cases either side of these need no dm_check: a
+# mangled payload denies with a DIFFERENT category, so they fail loudly by
+# construction. So do the check 0 permits -- a mangled payload denies, and a
+# permit case asserting exit 0 cannot pass on one.
+# The same defect from the other side: the lexical `<root>/.agents/` fast path
+# must not hand a free pass to a link that leaves .agents/ on resolution.
+check_deny_category "driver-mode" "B1: leaf symlink UNDER .agents/ pointing at repo source refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/leaf-out.txt\"}" sess-driver)"
+
+# (2) PERMIT: still outside the repository, or still the driver's own surface.
+check 0 "B1: out-of-repo leaf symlink to an out-of-repo file still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/outside.txt\"}" sess-driver)"
+check 0 "B1: a plain (non-symlink) out-of-repo file in the same directory still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/plain.txt\"}" sess-driver)"
+check 0 "B1: out-of-repo leaf symlink into the repo's OWN .agents/ allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-agents.txt\"}" sess-driver)"
+check 0 "B1: leaf symlink under .agents/ pointing within .agents/ allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/leaf-in.txt\"}" sess-driver)"
+check 0 "B1: an ordinary .agents/ write is unaffected by the leaf check" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/run-state.yaml\"}" sess-driver)"
+
+# (3) no usable `readlink` -- the stock-Git-Bash case this hook is built around.
+#     `readlink` is probed by EXECUTION, not `command -v`, and a leaf that cannot
+#     be followed is REFUSED rather than assumed outside. That costs precision on
+#     such a host (every symlink leaf refuses, wherever it points) and keeps the
+#     direction the tier requires. The permit case is the control: it proves the
+#     stubbed PATH has not simply broken the guard into denying everything.
+DM_NORL="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_NORL"
+printf '#!/bin/sh\nexit 127\n' > "$DM_NORL/readlink"; chmod +x "$DM_NORL/readlink"
+dm_norl_check() {   # <expected-exit> <desc> <payload>
+  local want="$1" desc="$2" payload="$3" got
+  printf '%s' "$payload" | env PATH="$DM_NORL:/usr/bin:/bin" "$GUARD" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want %s, got %s) %s\n' "$want" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+dm_norl_check 2 "B1: no usable readlink -> leaf symlink into the repo still REFUSED" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_norl_check 0 "B1: no usable readlink -> a plain out-of-repo write still allowed (control)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/plain.txt\"}" sess-driver)"
+
+echo "== driver mode: B1b -- the RELATIVE arm and a symlinked DIRECTORY judged the same way =="
+# The half of the same defect the B1 cases above could not see, because they all
+# use ABSOLUTE paths. `<root>/.agents/` was a LEXICAL permit, so two shapes still
+# wrote repository source while wearing an `.agents/` name:
+#   (a) the RELATIVE form of a symlink leaf -- and relative is the form a driver
+#       writes by default. It is self-reachable: `ln`'s write target is its LAST
+#       positional argument, so `ln -s ../src/util.ts .agents/link.txt` is
+#       permitted (at judgement time that path is not yet a link -- pinned as a
+#       permit below), and the write THROUGH the link was permitted too. Two
+#       calls, both inside the driver's own surface, no external setup.
+#   (b) a symlinked DIRECTORY under `.agents/`, in BOTH path forms: a leaf test
+#       cannot see a link in the path's MIDDLE. Contrast the T4 case above where
+#       a symlinked directory OUTSIDE `.agents/` was already refused by `pwd -P`
+#       -- it was specifically the lexical shortcut that defeated it.
+# Both close by judging physically FIRST in both arms, with the lexical test kept
+# only as the resolution-FAILURE fallback. Paired by direction as before: each
+# refusal has a permit beside it, so restoring these refusals cannot be mistaken
+# for re-broadening the one T4 narrowed.
+ln -s "$DM_PHYS/src/util.ts" "$DM_PHYS/.agents/abs-leaf.txt"   # -> repo src, absolute target
+ln -s "$DM_LEAF_P/plain.txt" "$DM_PHYS/.agents/out-leaf.txt"   # -> outside the repository
+ln -s "../src"               "$DM_PHYS/.agents/dirlink"        # symlinked DIR -> repo source
+ln -s "$DM_LEAF_P"           "$DM_PHYS/.agents/dirlink-out"    # symlinked DIR -> outside
+
+# A permit case would pass just as well if `ln -s` had silently failed and the
+# link never existed, because a plain `.agents/` write is permitted anyway. So
+# assert the fixtures really ARE links, and the permits mean what they say.
+dm_require_link() {   # <path>
+  if [ -L "$1" ]; then
+    printf 'ok   (fixture) .agents/%s is a symlink\n' "${1##*/}"; pass=$((pass + 1))
+  else
+    printf 'FAIL (fixture) %s is not a symlink -- cases below would be vacuous\n' "$1"
+    fail=$((fail + 1))
+  fi
+}
+for dm_l in leaf-out.txt leaf-in.txt abs-leaf.txt out-leaf.txt dirlink dirlink-out; do
+  dm_require_link "$DM_PHYS/.agents/$dm_l"
+done
+
+# (1) REFUSE: the relative form of a symlink leaf leaving .agents/ for repo source.
+#     `leaf-out.txt` is the SAME link the absolute case above already refuses --
+#     only the path form differs, which is the whole point.
+check_deny_category "driver-mode" "B1b: RELATIVE .agents/ leaf symlink into repo source refused (Edit)" \
+  "$(dm_payload Edit '{"file_path":".agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: the ./ form of that same relative leaf refused" \
+  "$(dm_payload Edit '{"file_path":"./.agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf whose link target is ABSOLUTE refused" \
+  "$(dm_payload Edit '{"file_path":".agents/abs-leaf.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused for Write too" \
+  "$(dm_payload Write '{"file_path":".agents/leaf-out.txt","content":"x"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused via a shell redirect" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused via sed -i" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ .agents/leaf-out.txt"}' sess-driver)"
+
+# (2) REFUSE: a symlinked DIRECTORY under .agents/, absolute AND relative.
+check_deny_category "driver-mode" "B1b: symlinked dir under .agents/ into repo source refused (absolute)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink/util.ts\"}" sess-driver)"
+dm_check 2 "B1b: ... and for a not-yet-existing file under that symlinked dir" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink/new.ts\"}" sess-driver)"
+dm_check 2 "B1b: symlinked dir under .agents/ refused in the RELATIVE form" \
+  "$(dm_payload Edit '{"file_path":".agents/dirlink/util.ts"}' sess-driver)"
+dm_check 2 "B1b: symlinked dir under .agents/ refused via a shell redirect" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/dirlink/util.ts"}' sess-driver)"
+
+# (3) PERMIT: still the driver's own surface, or still outside the repository.
+#     The last one pins the reachability described above -- creating the link is
+#     permitted, which is exactly why writing THROUGH it must not be.
+check 0 "B1b: relative .agents/ leaf pointing WITHIN .agents/ allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/leaf-in.txt"}' sess-driver)"
+check 0 "B1b: relative .agents/ leaf pointing OUTSIDE the repository allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/out-leaf.txt"}' sess-driver)"
+check 0 "B1b: symlinked dir under .agents/ pointing outside the repository allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink-out/plain.txt\"}" sess-driver)"
+check 0 "B1b: an ordinary relative .agents/ write is unaffected" \
+  "$(dm_payload Edit '{"file_path":".agents/run-state.yaml"}' sess-driver)"
+check 0 "B1b: an ordinary relative .agents/ write via a shell redirect unaffected" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/findings/f-002.md"}' sess-driver)"
+check 0 "B1b: creating the link itself is permitted (that path is not yet a link)" \
+  "$(dm_payload Bash '{"command":"ln -s ../src/util.ts .agents/not-yet-a-link.txt"}' sess-driver)"
 
 echo "== driver mode: unresolved shell variables and dangerous constructs refuse conservatively =="
 check 2 "driver mode: an unresolved \$VAR write target refused" \

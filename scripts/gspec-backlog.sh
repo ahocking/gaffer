@@ -1558,6 +1558,23 @@ cmd_capability_drift() {
     prdabs="$(printf '%s' "$prdpp" | cut -f1)"
     [ -n "$prdabs" ] || prdabs="$prd"
 
+    # A feature that reads as complete under the SAME derivation the rest of
+    # this adapter already applies (`_feature_done`: >=1 recognized capability
+    # line, none unchecked) contributes nothing to the scan: a checked box IS
+    # the reconciled state, so the scan's question — should this box be
+    # checked — is already answered for every capability the feature has. No
+    # `DRIFT=` finding is lost by skipping, since the drift condition
+    # (`ccapchecked = "0"`, gating only the SECOND loop in
+    # `_capability_drift_for`) is reachable only from an unchecked capability.
+    # `UNJUDGEABLE=unmatched-quote` rows from the FIRST loop carry no such
+    # gate and ARE suppressed by this skip — intended, per this capability's
+    # own wording ("no `UNJUDGEABLE=` line of any class"), not an oversight.
+    # This is deliberately the SAME test `cmd_features` uses for completion,
+    # not a second guess or a fourth copy of the capability pattern — the
+    # justification is that property alone, never how many rows this happens
+    # to remove in any one repository.
+    [ "$(_feature_done "$prdabs")" = "1" ] && continue
+
     _capability_drift_for "$root" "$slug" "$prdabs" "$plan" | tee -a "$acc"
   done < <(_prd_paths "$root")
 

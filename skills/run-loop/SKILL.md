@@ -522,6 +522,16 @@ wait.
   commit, one-line summary of what it did) in the stop report instead of
   merging it — the human decides whether to land it.
 
+  **Also before declaring done, re-run the same capability-drift scan §1
+  states** — the same `gspec-backlog.sh capability-drift` invocation, not a
+  second reading of its rule — so a capability whose last covering task
+  landed during this run is named by this run rather than by the next one's
+  preflight. Carry each `DRIFT=<slug>\t<capability text>` line into the stop
+  report's `▶ Next` section below — the one section the tally does not
+  count — naming the feature and the capability. Flip nothing: a drifted
+  record changes no tally figure, no packet count, and never the outcome
+  recorded for `status` — the run's stop reason is unaffected either way.
+
   Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then
   snapshot run-metrics (best-effort, non-critical): `metrics.sh collect ||

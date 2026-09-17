@@ -252,8 +252,8 @@ wait.
    `run-digest --since "$SINCE"` to only the decisions made during THIS
    packet's own attempts, never one already reported for an earlier packet —
    then `runstate.sh record-start <cursor>` for a fresh beginning, or
-   `runstate.sh record-start <cursor> --continue` when you are picking a
-   pause-interrupted packet back up rather than beginning it anew.
+   `runstate.sh record-start <cursor> --continue` when this session is about
+   to continue the cursor packet rather than beginning it anew.
 
    **Read back the handoff's header** (`grep '^run-state:\|^result:\|^review:'
    <path>`) — it names the exact `run-state`, `result`, and `review` paths,

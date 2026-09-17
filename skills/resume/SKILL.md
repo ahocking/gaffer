@@ -352,11 +352,11 @@ is refused. Only once it is written do you attest the start — capture
 run-loop/SKILL.md §3.3 pairs with this exact step, so the first shape-A report
 after this resume scopes `run-digest --since "$SINCE"` to only this packet's
 own decisions rather than every decision the whole run has ever recorded —
-then `runstate.sh record-start <cursor> --continue` when step 1's kept reading
-was `paused` **or** `blocked` — the same condition the sweep above used to
-exclude this packet from closing — else `runstate.sh record-start <cursor>` (a
-fresh start — its prior attempt, if any, already closed with a recorded
-outcome, since a crash is not excluded from the sweep above).
+then `runstate.sh record-start <cursor> --continue` when this session is
+about to continue the cursor packet — the same condition the sweep above
+used to exclude this packet from closing — else `runstate.sh record-start
+<cursor>` (a fresh start — its prior attempt, if any, already closed with a
+recorded outcome, since a crash is not excluded from the sweep above).
 
 Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,

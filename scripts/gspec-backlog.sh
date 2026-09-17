@@ -193,6 +193,37 @@
 #                            sub-bullet lines under a `COVERS=`) so a caller can
 #                            pipe it straight into `runstate.sh handoff`'s
 #                            stdin without reparsing it into another shape.
+#   capability-drift [root]  READ-ONLY (completion-record-drift-t1): walk
+#                            every feature whose PRD AND plan both resolve
+#                            (no plan is out of scope, not unjudgeable) and
+#                            report each unchecked capability whose covering
+#                            `covers:` tasks are ALL checked as
+#                            `DRIFT=<slug>\t<capability text>` — the record a
+#                            feature's own PRD checkbox never caught up to.
+#                            Anything the scan cannot judge prints
+#                            `UNJUDGEABLE=<class>\t<slug>\t<detail>` instead
+#                            of drift, one of three classes: `unmatched-quote`
+#                            (a `covers:` quote matches no PRD capability,
+#                            reported per TASK rather than per capability —
+#                            it is evidence about the task, not about any
+#                            one capability, and is not deduplicated against
+#                            an earlier occurrence), `uncovered-capability`
+#                            (an unchecked capability no task's covers
+#                            references), or `unrecognized-capability` (an
+#                            unchecked capability line the verbatim matcher
+#                            declines). A checked capability is never
+#                            reported, drift or unjudgeable — the box being
+#                            checked already answers "should this be
+#                            checked?". Ends with one
+#                            `CAPABILITY_DRIFT=ok|attention drift=<n>
+#                            unjudgeable=<m>` line (the two counts are
+#                            separate fields on purpose — a single zero could
+#                            mean either "nothing drifted" or "nothing could
+#                            be judged", the exact failure this report
+#                            exists to close), or `CAPABILITY_DRIFT=none`
+#                            plus a `NOTE=` line when there is no gspec/ at
+#                            all (D4). Never writes; exits 0 on every path —
+#                            a report, not a gate.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -315,6 +346,15 @@ _TASK_LINE_PREFIX='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*'
 _TASK_ID_CLASS='[A-Za-z][A-Za-z0-9_-]*[0-9]+'
 _TASK_LINE_SUFFIX='(\*\*|[[:space:]])'
 _TASK_LINE_RE="${_TASK_LINE_PREFIX}${_TASK_ID_CLASS}${_TASK_LINE_SUFFIX}"
+
+# The capability-line shape `_feature_done` tests -- extracted to a shared
+# constant (completion-record-drift-t1) so `capability-drift` below tests the
+# SAME thing `_feature_done` counts, never a second guess at what a
+# capability line looks like. Canonical `**P0**: text`, and the legacy shape
+# `**P0 — text**` where priority and description share one bold span
+# (observed in production repos) -- both match here, exactly as they did
+# inline before this extraction; only the pattern moved, not its meaning.
+_CAPABILITY_LINE_RE='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+([^0-9]|\*\*)'
 
 # Print a file's YAML frontmatter body (between the first `---` and the next),
 # or nothing when the file has none.
@@ -465,13 +505,12 @@ cmd_check() {
 _feature_done() {
   local prd="$1"
   [ -f "$prd" ] || { printf '0'; return 0; }
-  # Canonical `**P0**: text`, and the legacy shape `**P0 — text**` where priority
-  # and description share one bold span (observed in production repos). Getting
-  # this wrong is not cosmetic: an unrecognized capability line means the feature
-  # can NEVER read as done, so every feature depending on it stays blocked forever
-  # and the backlog quietly reports nothing to do.
+  # `_CAPABILITY_LINE_RE` (see its definition above) is the shape this
+  # recognizes; getting it wrong is not cosmetic: an unrecognized capability
+  # line means the feature can NEVER read as done, so every feature depending
+  # on it stays blocked forever and the backlog quietly reports nothing to do.
   awk '
-    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+([^0-9]|\*\*)/ {
+    /'"$_CAPABILITY_LINE_RE"'/ {
       total++
       if ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) checked++
     }
@@ -1338,6 +1377,200 @@ _split_covers() {
   '
 }
 
+# --- capability-drift: has a finished plan outrun its own PRD checkbox? -----
+# (completion-record-drift-t1.) Read-only. A capability is DRIFT when every
+# plan task covering it is checked while the capability's own box is not --
+# the state a feature enters the instant its last covering task lands and
+# nothing flips the capability. Built entirely from the existing seam:
+# `_prd_paths` to enumerate features, `_resolve_prd_path`/`_resolve_plan_path`
+# to locate one feature's PRD/plan pair (a feature with no plan is OUT OF
+# SCOPE, not unjudgeable -- the intended state for undecomposed work),
+# `_CAPABILITY_LINE_RE` (`_feature_done`'s own pattern, so this tests the
+# SAME thing that function counts), `_TASK_LINE_RE`, and `_split_covers` /
+# `_prd_capability` for the plan side -- no new parser, no fourth copy of an
+# existing pattern.
+#
+# Anything the scan cannot judge is UNJUDGEABLE, never drift -- never folded
+# into a clean-looking zero:
+#   unmatched-quote          a `covers:` quote matches no PRD capability at
+#                            all. The adapter already refuses to guess at the
+#                            nearest capability for an unmatched quote
+#                            (`cmd_handoff`'s `UNMATCHED=`); reading one as
+#                            drift would turn that same guess back on.
+#   uncovered-capability     an unchecked capability that no task's covers
+#                            references, in a plan the adapter DID resolve --
+#                            no covering task means no positive evidence of
+#                            delivery, so absence of evidence is not read as
+#                            completion.
+#   unrecognized-capability  an unchecked capability line `_prd_capability`'s
+#                            verbatim matcher declines (the legacy
+#                            `**P0 — text**` shape `_feature_done` still
+#                            counts toward completion but this matcher does
+#                            not, since it has no reliable verbatim text of
+#                            its own to reproduce).
+# A capability with at least one UNCHECKED covering task is reported as
+# NEITHER: a feature legitimately sitting part-ticked mid-flight is the
+# likelier shape, and it is exactly what a per-feature test (no unchecked
+# task lines and no checked capabilities) cannot see.
+
+# _prd_capabilities <prd> — one line per capability line matched by
+# `_CAPABILITY_LINE_RE`: <checked>\t<canonical>\t<text>. <canonical> is 1
+# when the line also matches `_prd_capability`'s stricter `**P<n>**:` shape,
+# and <text> is then that capability's own verbatim text -- the same string
+# a `covers:` quote must equal, verbatim, to MATCH it there. <canonical> is 0
+# for the legacy `**P0 — text**` shape, and <text> is then only a DISPLAY
+# label (there is no verbatim text to match a quote against, which is
+# exactly why `_prd_capability` declines it).
+_prd_capabilities() {
+  local prd="$1"
+  [ -f "$prd" ] || return 0
+  awk '
+    /'"$_CAPABILITY_LINE_RE"'/ {
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+/, "", rest)
+      canonical = 0
+      text = rest
+      if (rest ~ /^\*\*:/) {
+        canonical = 1
+        sub(/^\*\*:[[:space:]]*/, "", text)
+      } else {
+        sub(/^[[:space:]]*/, "", text)
+        sub(/\*\*[[:space:]]*$/, "", text)
+      }
+      sub(/[[:space:]]+$/, "", text)
+      printf "%s\t%s\t%s\n", checked, canonical, text
+    }
+  ' "$prd"
+}
+
+# _plan_task_covers <plan> — one line per task line matched by
+# `_TASK_LINE_RE`: <checked>\t<covers-raw>, unsplit -- `_split_covers` is the
+# one place that separates a multi-capability `covers:` value. The same
+# `- covers:` sub-line shape `_task_record` already extracts, reused rather
+# than re-derived.
+_plan_task_covers() {
+  local plan="$1"
+  [ -f "$plan" ] || return 0
+  awk '
+    function flush() { if (started) printf "%s\t%s\n", checked, covers }
+    /'"$_TASK_LINE_RE"'/ {
+      flush()
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      covers = ""
+      started = 1
+      next
+    }
+    started && /^[[:space:]]+-[[:space:]]*covers[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*covers[[:space:]]*:[[:space:]]*/, "", l); covers = l
+      next
+    }
+    END { flush() }
+  ' "$plan"
+}
+
+# _capability_drift_for <root> <slug> <prd> <plan> — the per-feature scan.
+# Prints only `DRIFT=`/`UNJUDGEABLE=` lines, in the output contract fixed by
+# `gspec/features/completion-record-drift/tasks.md` (binding on all five
+# tasks in that plan):
+#   DRIFT=<slug>\t<capability text>
+#   UNJUDGEABLE=<class>\t<slug>\t<detail>
+# `cmd_capability_drift` counts by grepping its own accumulated output rather
+# than threading counters back through a subshell (this runs inside a pipe
+# to `tee`).
+_capability_drift_for() {
+  local root="$1" slug="$2" prd="$3" plan="$4"
+
+  local caps; caps="$(mktemp)"
+  _prd_capabilities "$prd" > "$caps"
+
+  local matched; matched="$(mktemp)"
+
+  # `unmatched-quote` stays per TASK, deliberately not deduplicated against
+  # earlier quotes in this feature: it is evidence about the task that wrote
+  # a covers: quote matching nothing, not about any one capability, and the
+  # two per-capability classes below already get their natural one-row-per-
+  # capability shape from `_prd_capabilities`'s own enumeration.
+  local tchecked craw q capout first
+  while IFS=$'\t' read -r tchecked craw; do
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      capout="$(_prd_capability "$prd" "$q")"
+      first="${capout%%$'\n'*}"
+      if [ "$first" = "MATCH" ]; then
+        printf '%s\t%s\n' "$q" "$tchecked" >> "$matched"
+      else
+        printf 'UNJUDGEABLE=unmatched-quote\t%s\t%s\n' "$slug" "$q"
+      fi
+    done < <(_split_covers "$craw")
+  done < <(_plan_task_covers "$plan")
+
+  local ccapchecked ccanonical ctext bits
+  while IFS=$'\t' read -r ccapchecked ccanonical ctext; do
+    [ "$ccapchecked" = "0" ] || continue
+    if [ "$ccanonical" != "1" ]; then
+      printf 'UNJUDGEABLE=unrecognized-capability\t%s\t%s\n' "$slug" "$ctext"
+      continue
+    fi
+    bits="$(TXT="$ctext" awk -F'\t' '$1==ENVIRON["TXT"]{print $2}' "$matched")"
+    if [ -z "$bits" ]; then
+      printf 'UNJUDGEABLE=uncovered-capability\t%s\t%s\n' "$slug" "$ctext"
+    elif ! printf '%s\n' "$bits" | grep -qx '0'; then
+      printf 'DRIFT=%s\t%s\n' "$slug" "$ctext"
+    fi
+  done < "$caps"
+
+  rm -f "$caps" "$matched"
+  return 0
+}
+
+# cmd_capability_drift [root] — walk every feature whose PRD AND plan both
+# resolve and report the capability-level drift described above, ending with
+# `CAPABILITY_DRIFT=ok|attention drift=<n> unjudgeable=<m>` (the same
+# `<status> field=value...` shape `files-status`'s `FILES=` line already
+# uses; `attention` whenever either count is nonzero). `CAPABILITY_DRIFT=none`
+# plus a `NOTE=` line only for the no-`gspec/` case (D4: gspec is optional,
+# the same `<KEY>=none`/`NOTE=` shape `files-status` uses) -- every other
+# path, including a clean scan, prints the counted summary. Exits 0 always:
+# this is a report, never a gate.
+cmd_capability_drift() {
+  local root; root="$(_root "${1:-}")"
+  if ! _has_gspec "$root"; then
+    printf 'CAPABILITY_DRIFT=none\n'
+    printf 'NOTE=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    return 0
+  fi
+
+  local acc; acc="$(mktemp)"
+  local prd slug pp plan prdpp prdabs
+  while IFS= read -r prd; do
+    [ -n "$prd" ] && [ -f "$prd" ] || continue
+    case "$prd" in
+      */prd.md) slug="$(basename "$(dirname "$prd")")" ;;
+      *)        slug="$(basename "$prd" .md)" ;;
+    esac
+
+    pp="$(_resolve_plan_path "$slug" "$root")"
+    [ -n "$pp" ] || continue   # no plan: out of scope, not unjudgeable
+    plan="$(printf '%s' "$pp" | cut -f1)"
+
+    prdpp="$(_resolve_prd_path "$slug" "$root")"
+    prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+    [ -n "$prdabs" ] || prdabs="$prd"
+
+    _capability_drift_for "$root" "$slug" "$prdabs" "$plan" | tee -a "$acc"
+  done < <(_prd_paths "$root")
+
+  local drift unjudgeable
+  drift="$(grep -c '^DRIFT=' "$acc" 2>/dev/null || true)"
+  unjudgeable="$(grep -c '^UNJUDGEABLE=' "$acc" 2>/dev/null || true)"
+  rm -f "$acc"
+  drift="${drift:-0}"; unjudgeable="${unjudgeable:-0}"
+  printf 'CAPABILITY_DRIFT=%s drift=%d unjudgeable=%d\n' \
+    "$([ "$drift" -eq 0 ] && [ "$unjudgeable" -eq 0 ] && printf ok || printf attention)" \
+    "$drift" "$unjudgeable"
+}
+
 # cmd_handoff <packet-id> [root] — see the `handoff` entry in the header
 # Subcommands list for the full output-shape and exit-code contract. Output:
 #   PACKET=<feature>-<id>
@@ -1795,5 +2028,6 @@ case "${1:-}" in
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
   handoff)    shift; cmd_handoff "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>} [root]" ;;
+  capability-drift) shift; cmd_capability_drift "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|capability-drift} [root]" ;;
 esac

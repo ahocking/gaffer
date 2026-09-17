@@ -126,7 +126,7 @@ so no session boundary is owed.
   - covers: A feature that reads as complete contributes nothing to the scan
   - arch: —
   - files: scripts/gspec-backlog.sh
-- [ ] **T4** **P1** Add the completion-skip cases to `scripts/test-gspec-backlog.sh` in both layouts the sweep already builds: a fully-checked feature whose plan carries an unmatchable `covers:` quote yields no line of any kind and does not raise the summary's `unjudgeable` count, and the **same** fixture yields that `unmatched-quote` row again in each of two variations — one capability unchecked, and capability lines rewritten into a form the derivation does not recognize at all — so the skip is pinned to the derivation rather than to the shorthand `covers:` labels that motivated it, with each case asserting both the expected row's presence or absence by class and feature name and the summary count that goes with it.
+- [x] **T4** **P1** Add the completion-skip cases to `scripts/test-gspec-backlog.sh` in both layouts the sweep already builds: a fully-checked feature whose plan carries an unmatchable `covers:` quote yields no line of any kind and does not raise the summary's `unjudgeable` count, and the **same** fixture yields that `unmatched-quote` row again in each of two variations — one capability unchecked, and capability lines rewritten into a form the derivation does not recognize at all — so the skip is pinned to the derivation rather than to the shorthand `covers:` labels that motivated it, with each case asserting both the expected row's presence or absence by class and feature name and the summary count that goes with it.
   - deps: T3
   - covers: A feature that reads as complete contributes nothing to the scan
   - arch: —

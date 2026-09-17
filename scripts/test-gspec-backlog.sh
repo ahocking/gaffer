@@ -2258,6 +2258,126 @@ check 'feature-folder layout: the run summary counts exactly the one drift and n
   'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
 
 # =============================================================================
+# completion-record-drift-gaps-t4: pin the completion-skip (T3's `continue` on
+# `_feature_done`) against the SAME fixture in three variations, so the skip
+# is shown to be pinned to the completion DERIVATION `_feature_done` computes
+# rather than to the shorthand `covers:` labels that motivated it. All three
+# share one plan: a single checked task whose `covers:` quote matches no
+# capability at all -- the unmatched-quote shape from earlier in this file --
+# and only the PRD's capability line varies:
+#   done        the capability is checked -> _feature_done=1 -> the feature
+#               is skipped entirely: no DRIFT=, no UNJUDGEABLE= of any class,
+#               and the run's unjudgeable count is NOT raised by it.
+#   unchecked   the capability is unchecked -> _feature_done=0 -> the feature
+#               is scanned, and the unmatched-quote row reappears (alongside
+#               uncovered-capability, since nothing covers the still-open
+#               capability either).
+#   unrecognized  the capability line is written in a shape
+#               `_CAPABILITY_LINE_RE` does not match at all (no `- [ ]`/`- [x]`
+#               checkbox) -> `_prd_capabilities` sees zero capability lines,
+#               `_feature_done` totals 0 and reads NOT done (total>0 required)
+#               -> the feature is scanned, and the unmatched-quote row
+#               reappears with no capability-side row at all, since the
+#               second loop in `_capability_drift_for` has nothing to iterate.
+# If the skip were keyed to the plan's `covers:` labels rather than
+# `_feature_done`'s own derivation, the "unrecognized" case would still be
+# skipped (its plan's shorthand `covers:` label is identical to the "done"
+# case's) -- it is not, because the PRD, not the plan, is what changed.
+printf '\n== capability-drift: the completion-skip is pinned to the completion derivation, not the covers: labels (flat layout) ==\n'
+
+R="$TMPROOT/cd-skip-done-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-done-flat 1 0   # "- [x] **P0**: done capability 1\n  - criterion\n"
+mk_plan "$R" cd-skip-done-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'flat/done: a fully-checked feature never appears in a DRIFT= line' 'DRIFT=cd-skip-done-flat' "$out"
+refute 'flat/done: a fully-checked feature never appears in an UNJUDGEABLE= line' 'cd-skip-done-flat' "$out"
+check 'flat/done: skipped entirely -- the run summary counts nothing at all' \
+  'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+
+R="$TMPROOT/cd-skip-unchecked-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-unchecked-flat 0 1   # "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R" cd-skip-unchecked-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat/unchecked: the SAME plan yields the unmatched-quote row again once the capability is unchecked' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unchecked-flat\tdoes not match any capability')" "$out"
+refute 'flat/unchecked: still never a DRIFT= line' 'DRIFT=cd-skip-unchecked-flat' "$out"
+check 'flat/unchecked: the run summary counts both unjudgeable rows -- the quote and the now-uncovered capability' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+R="$TMPROOT/cd-skip-unrecognized-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-unrecognized-flat 0 0
+cat >> "$R/gspec/features/cd-skip-unrecognized-flat.md" <<'EOF'
+- capability one, written with no checkbox at all
+  - criterion
+EOF
+mk_plan "$R" cd-skip-unrecognized-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat/unrecognized: the SAME unmatched-quote row reappears when the capability line is a shape the derivation never recognizes' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unrecognized-flat\tdoes not match any capability')" "$out"
+refute 'flat/unrecognized: still never a DRIFT= line' 'DRIFT=cd-skip-unrecognized-flat' "$out"
+check 'flat/unrecognized: the run summary counts only the quote -- no capability-side row exists to count' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: the completion-skip is pinned to the completion derivation, not the covers: labels (feature-folder layout) ==\n'
+
+R="$TMPROOT/cd-skip-done-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-done-v2 1 0
+mk_plan_v2 "$R" cd-skip-done-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'feature-folder/done: a fully-checked feature never appears in a DRIFT= line' 'DRIFT=cd-skip-done-v2' "$out"
+refute 'feature-folder/done: a fully-checked feature never appears in an UNJUDGEABLE= line' 'cd-skip-done-v2' "$out"
+check 'feature-folder/done: skipped entirely -- the run summary counts nothing at all' \
+  'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+
+R="$TMPROOT/cd-skip-unchecked-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-unchecked-v2 0 1
+mk_plan_v2 "$R" cd-skip-unchecked-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder/unchecked: the SAME plan yields the unmatched-quote row again once the capability is unchecked' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unchecked-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder/unchecked: still never a DRIFT= line' 'DRIFT=cd-skip-unchecked-v2' "$out"
+check 'feature-folder/unchecked: the run summary counts both unjudgeable rows -- the quote and the now-uncovered capability' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+R="$TMPROOT/cd-skip-unrecognized-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-unrecognized-v2 0 0
+cat >> "$R/gspec/features/cd-skip-unrecognized-v2/prd.md" <<'EOF'
+- capability one, written with no checkbox at all
+  - criterion
+EOF
+mk_plan_v2 "$R" cd-skip-unrecognized-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder/unrecognized: the SAME unmatched-quote row reappears when the capability line is a shape the derivation never recognizes' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unrecognized-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder/unrecognized: still never a DRIFT= line' 'DRIFT=cd-skip-unrecognized-v2' "$out"
+check 'feature-folder/unrecognized: the run summary counts only the quote -- no capability-side row exists to count' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

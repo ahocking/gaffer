@@ -2,6 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-08-10
+- Revision (2026-09-17): **arm 2 always terminates at an operator question — no
+  agent files the feature.** D2's split stands, but the half that let the
+  main-context session author the PRD itself is withdrawn. See
+  [Revision — 2026-09-17](#revision--2026-09-17--arm-2-terminates-at-the-operator-never-at-gspec-feature)
+  below; the accepted text above it is unchanged.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) (its routing table is unchanged;
   this supplies the destination that made the "backlog, not a finding" rule un-followable
@@ -325,3 +330,62 @@ precisely because the cheap answer and the correct answer differ.
   dispatched agent has no `Skill` tool, and hand-writing a PRD around `/gspec-feature`
   would be authoring an unvalidated spec through the exact bypass this repo already
   refuses for the gspec skills.
+
+## Revision — 2026-09-17 — arm 2 terminates at the operator, never at `/gspec-feature`
+
+**Operator decision, this date.** D2 above splits arm 2 across the seam: the loop hands
+the routing decision off, and "the main-context session (or the human) runs
+`/gspec-feature` and adds the roadmap entry." **The parenthetical is withdrawn.** Arm 2
+now always ends at a question in the stop report, and **no agent files the feature** —
+not the architect that routed it, and not the session driving the loop, whether or not
+driver mode has exited. Only the operator decides that a proposal becomes a feature.
+
+### Why
+
+D2 read the constraint as *reachability* — a dispatched context has no `Skill` tool, so
+arm 2 must be handed to something that does. Under ADR 0028 the loop driver **is** the
+main context, so the hand-off found a capable recipient inside the run and completed
+there. The effect is that **finishing a feature files its successor**: a run terminates,
+the whole-branch review finds something outside every open capability, and the same
+session that just landed the work writes the next feature into the backlog with no
+operator in the path. Five of this repo's 28 `.agents/roadmap.yaml` entries name arm 2 as
+their own origin (`loop-prose-consistency`, `loop-prose-consistency-gaps`,
+`loop-entry-routing`, `completion-record-drift-gaps`, `guard-write-target-detection`), and
+several more were spawned by a whole-run review without naming the arm — so the backlog
+was growing at review events, not at operator decisions. ADR 0026's own consequence
+"feature count grows with distinct scopes, not with review events" was being satisfied
+only in the arm-1 direction.
+
+Reachability was never the *only* reason arm 2 stops short of authoring. The
+"Alternatives considered" entry above gives the second, and it does not depend on which
+context is holding the `Skill` tool: an autonomously-authored PRD is a spec nobody
+approved, entering the ordered backlog the loop will later execute unattended. What the
+`Skill`-tool argument concealed is that **the operator gate was the point, and
+reachability was just what was enforcing it**. This revision states the gate directly, so
+it no longer moves when the harness does.
+
+### What is unchanged
+
+- **Arm 1 is untouched.** An unchecked capability that covers the finding still takes an
+  appended task line, committed in-run. The operator gate applies to *creating a
+  destination*, not to using one that already exists and is already approved.
+- **The arm ordering, the arm-1 scope test, and every write bound in D1.**
+- **The carrier.** The routing decision still travels as a `normal`-severity question, and
+  the architect still names the proposed slug, its scope in a sentence, and its parent in
+  its result file and status line. What it feeds is a stop-report question, never a
+  command.
+- **D3 and D4.** Regeneration through `/gspec-plan` and a hook allowance stay rejected for
+  their own reasons.
+
+### Consequences of the revision
+
+- **A run can end with an unfiled proposal, and that is the intended state.** The cost is
+  that a proposal can be lost if the operator does not act on the stop report; the stop
+  report carries `handoff-feature` lines for the whole run precisely so it is visible
+  there. That exposure is accepted as cheaper than a backlog that writes itself.
+- **Arm 2's pay-back is slower.** D2 notes that arm 2 creates the destinations arm 1 later
+  uses; that now waits on an operator turn. Accepted.
+- **Sites that must agree:** `skills/run-loop/SKILL.md` §4 (arm 2), `agents/chief-engineer.md`
+  (`hand-off-feature`), `agents/architect.md`, and this repo's `CLAUDE.md` ADR 0026
+  bullet. `agents/loop-driver.md` and `templates/report-templates.md` already describe
+  hand-off as a stop-report question only, and needed no change.

@@ -278,7 +278,10 @@ triggers or their precedence, which do not exist yet.
   what survives that (it leaves the branch behind rather than deleting it;
   the run's termination step merges or reports it).
 - **`hand-off-feature`** (ADR 0026 arm 2): do not run `/gspec-feature`
-  yourself — record it as a question for the main context to run instead.
+  yourself — record it as a question for the **operator**, who decides whether
+  the proposal becomes a feature. Arm 2 always ends at that question (ADR 0026
+  revision 2026-09-17); no agent in the run files the feature, the driver
+  included.
 - **`reorder`**: this decision's mechanism is not built yet (that is
   `escalation-decider`'s own job) — the driver treats it exactly like
   `append-task`/`hand-off-feature` (discard-advance) and surfaces your stated

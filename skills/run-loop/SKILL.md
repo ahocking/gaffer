@@ -504,12 +504,15 @@ wait.
   - **Arm 2** is everything else, including a fully-checked parent plan: the
     finding becomes a **new feature**. The architect does not run
     `/gspec-feature` itself — it names the proposed slug/scope/parent in its
-    result file and reports this in its status line. **You are the main
-    context now** (whether a plain session or `claude --agent
-    gaffer:loop-driver`, ADR 0028 — there is no separate dispatched
-    coordinator here to lack a `Skill` tool), so once driver mode has exited
-    below you may run `/gspec-feature` yourself; until then, record it as a
-    question in the stop report for the operator.
+    result file and reports this in its status line. **Neither do you, ever**
+    (ADR 0026 revision 2026-09-17): arm 2 **always terminates at a question in
+    the stop report** for the operator to act on. Being the main context —
+    whether a plain session or `claude --agent gaffer:loop-driver`, ADR 0028 —
+    means you *could* run `/gspec-feature`, and that is exactly what is
+    refused, whether or not driver mode has exited below. A completed feature
+    does not file its successor; the operator decides whether the proposal
+    becomes a feature. Record the slug, its scope in a sentence, and its parent
+    as a question in the stop report, and stop there.
 
   The architect returns one status line summarizing what it routed and
   where; relay that, not the review file's contents.

@@ -613,10 +613,19 @@ passing sweeps.
   separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
   task line to `gspec/features/<slug>/tasks.md` as an `Edit` anchored on an unchecked line, carrying
   truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
-  parent plans) becomes a **new feature**: a PRD via `/gspec-feature`, a `.agents/roadmap.yaml`
-  entry (`depends_on:` the parent, `order` after it), and **no plan file** until the work
-  comes up. Loop contexts lack `Skill`, so arm 2 splits: hand off on the `normal`-severity
-  question block in `templates/check-in.md`, and main-context runs `/gspec-feature`.
+  parent plans) **proposes** a **new feature**: a PRD via `/gspec-feature`, a
+  `.agents/roadmap.yaml` entry (`depends_on:` the parent, `order` after it), and **no plan
+  file** until the work comes up. **Arm 2 ALWAYS terminates at a question for the operator
+  and no agent ever files the feature** (ADR 0026 revision 2026-09-17): not the architect
+  that routed it, and **not the session driving the loop even though it is the main context
+  and holds `Skill`** — the withdrawn clause let a completed feature file its successor with
+  no operator in the path, and five of 28 roadmap entries name arm 2 as their origin. The
+  hand-off rides the `normal`-severity question block (`templates/check-in.md` for a
+  dispatched Chief Engineer, the stop report's 🔀 question under driver mode); the operator
+  runs `/gspec-feature`. Reachability (`Skill` in a dispatched context) was never the real
+  reason — the **operator gate** was, and reachability was only what enforced it, which is
+  why the rule is now stated directly and does not move when the harness does. **Arm 1 is
+  unaffected**: an already-approved unchecked capability still takes an appended task in-run.
   **The recorded diagnosis was WRONG, and that is the part to keep**: the immutability
   hook asks only that every checked task's **block** (its line through the next task
   line) survives byte-identically, so additive appends already pass mechanically;
@@ -699,8 +708,9 @@ passing sweeps.
   `ask-operator`. An `append-task` (ADR 0026 arm 1) is written by an architect it
   dispatches and **committed on its own paths with an `[orch decider:<packet-id>]`
   trailer before the token returns**, so the `discard-advance` that follows keeps it;
-  a `hand-off-feature` is recorded as a question for the main context, never run as
-  `/gspec-feature` from a dispatched context (no `Skill` tool there). When
+  a `hand-off-feature` is recorded as a question **for the operator** and `/gspec-feature`
+  is run by nobody in the run — not from a dispatched context (no `Skill` tool there) and
+  not by the driver once driver mode exits (ADR 0026 revision 2026-09-17). When
   `escalation-decider` ships it replaces **that section of `agents/chief-engineer.md`
   and the one dispatch line in `skills/run-loop/SKILL.md`**, and it must keep its own
   decision records **outside `.agents/loop/`**, which `begin-run`'s cleanup removes.

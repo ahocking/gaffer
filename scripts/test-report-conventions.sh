@@ -402,6 +402,72 @@ fi
 has 'the amendment states the card is untouched' \
   'stay byte-identical' "$adr_blob"
 
+printf '\n== shape B section order matches the conventions fixed tally order (loop-prose-consistency T2) ==\n'
+# The order is DERIVED from the conventions' own fixed-tally line, not hardcoded here
+# -- so this case tracks the AUTHORITY, and a future reordering of the tally is what
+# it re-derives from, not a frozen copy of today's order. What it must catch: a shape
+# B internally consistent with itself (its own headings agree with its own tally) but
+# diverged from report-conventions.md's fixed order.
+TALLY_LINE="$(awk '/# Fixed order, omitting any bucket that is zero:/{getline; print; exit}' "$CONV")"
+[ -n "$TALLY_LINE" ] || bad 'the conventions fixed-tally line is found' 'anchor moved or renamed'
+
+_glyph_pos() { # tally-line glyph -> byte offset of its first occurrence, else empty
+  local hay="$1" needle="$2" pre
+  case "$hay" in
+    *"$needle"*) pre="${hay%%"$needle"*}"; printf '%s' "${#pre}" ;;
+  esac
+}
+
+_heading_text() { # glyph -> shape B's own section-heading text for it
+  case "$1" in
+    '✅') printf '✅ **Shipped**' ;;
+    '⛔') printf '⛔ **Failed**' ;;
+    '⚠️') printf '⚠️ **Unfinished**' ;;
+    '🔀') printf '🔀 **Decisions**' ;;
+    '⬚') printf '⬚ **Queued**' ;;
+  esac
+}
+
+CANDIDATE_GLYPHS='✅ ⛔ ⚠️ 🔀 ⬚'
+
+EXPECTED_ORDER=""
+while IFS=$'\t' read -r _ g; do
+  EXPECTED_ORDER="$EXPECTED_ORDER $g"
+done < <(
+  for g in $CANDIDATE_GLYPHS; do
+    pos="$(_glyph_pos "$TALLY_LINE" "$g")"
+    [ -n "$pos" ] && printf '%s\t%s\n' "$pos" "$g"
+  done | sort -n
+)
+EXPECTED_ORDER="${EXPECTED_ORDER# }"
+[ -n "$EXPECTED_ORDER" ] || bad 'a glyph order was derived from the tally line' 'derived nothing -- glyphs not found in the tally line'
+
+# Shape B's own rendered body: from its header tally line to its `▶ Next` line.
+# Anchored on text unique to shape B (shape C opens with `▶ **STARTING**`, not
+# `⏸️ **PAUSED**`), so a moved or renamed anchor fails loud via the empty-block check
+# below rather than silently scanning the wrong text.
+BODY_B="$(sed -n '/^⏸️ \*\*PAUSED\*\*/,/^▶ \*\*Next\*\*/p' "$SHAPES")"
+[ -n "$BODY_B" ] || bad 'shape B rendered-body block extracted (anchor holds)' 'empty -- anchor moved or renamed'
+
+ACTUAL_ORDER=""
+while IFS=$'\t' read -r _ g; do
+  ACTUAL_ORDER="$ACTUAL_ORDER $g"
+done < <(
+  for g in $CANDIDATE_GLYPHS; do
+    heading="$(_heading_text "$g")"
+    ln="$(printf '%s\n' "$BODY_B" | grep -n -F -- "$heading" | head -1 | cut -d: -f1)"
+    [ -n "$ln" ] && printf '%s\t%s\n' "$ln" "$g"
+  done | sort -n
+)
+ACTUAL_ORDER="${ACTUAL_ORDER# }"
+
+if [ -n "$EXPECTED_ORDER" ] && [ "$ACTUAL_ORDER" = "$EXPECTED_ORDER" ]; then
+  ok "shape B's section headings appear in the conventions' fixed tally order ($ACTUAL_ORDER)"
+else
+  bad "shape B's section headings appear in the conventions' fixed tally order" \
+      "expected: $EXPECTED_ORDER -- got: $ACTUAL_ORDER"
+fi
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

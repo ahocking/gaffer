@@ -105,7 +105,7 @@ session boundary is needed and no `session_boundary` declaration is owed.
   - covers: The stop report's section order matches its declared authority
   - arch: —
   - files: templates/report-templates.md, scripts/test-report-conventions.sh
-- [ ] **T3** **P1** Correct shape A's worked hand-off in `templates/report-templates.md` so the handed-off packet carries `rolled-back` — the outcome a `hand-off-feature` actually records, since `runstate.sh route` maps that decision to `discard-advance` and `skills/run-loop/SKILL.md` §3.5 records a discard-advance as `rolled-back` — and therefore renders `⛔` per the shape's own outcome-to-glyph table, agreeing with shape B's dedup example which already reads `rolled-back`, while the glyph table, the two-lines-per-handed-off-packet rule and the routing stay unchanged; prose only, no sweep case, checkable by reading the example's outcome value through the shape's own table.
+- [x] **T3** **P1** Correct shape A's worked hand-off in `templates/report-templates.md` so the handed-off packet carries `rolled-back` — the outcome a `hand-off-feature` actually records, since `runstate.sh route` maps that decision to `discard-advance` and `skills/run-loop/SKILL.md` §3.5 records a discard-advance as `rolled-back` — and therefore renders `⛔` per the shape's own outcome-to-glyph table, agreeing with shape B's dedup example which already reads `rolled-back`, while the glyph table, the two-lines-per-handed-off-packet rule and the routing stay unchanged; prose only, no sweep case, checkable by reading the example's outcome value through the shape's own table.
   - deps: —
   - covers: The worked hand-off shows the outcome a hand-off records
   - arch: —

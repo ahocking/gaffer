@@ -522,7 +522,25 @@ discover_config() {
 #   2) the payload carries NO agent_id (a dispatched subagent always does --
 #      ADR 0028 Result 1. NEVER branch on agent_type: a `claude --agent` main
 #      thread carries agent_type with no agent_id and must still be refused),
-#   3) the target is outside .agents/.
+#   3) the target COULD REACH A PACKET'S COMMIT -- i.e. it is inside the
+#      repository the loop is driving and outside that repository's .agents/,
+#      or its real location cannot be verified at all.
+# On (3): the reason this tier exists is that the driver must not make a
+# packet's edits itself (cost, and the reviewer is the boundary) -- so the
+# permitted class is stated as a CRITERION, not a list of paths. A target that
+# RESOLVES OUTSIDE every discovered config root cannot enter any packet's
+# commit, so driver mode does not refuse it (a driver writing its own
+# agent-memory file, which lives outside the repository entirely, is the worked
+# example); every OTHER tier still judges that call, the secret/key-material
+# floor first. What stays refused is anything the guard cannot place outside the
+# repository: an unresolved $VAR, a `..` segment, a relative path whose cwd is
+# not the repository root, an unrecognised shell write shape. Wrong-and-refused
+# costs a pause; wrong-and-allowed is the leak this tier exists to stop.
+# Known limit, stated rather than guessed at: a SECOND CHECKOUT of the driven
+# repository (a worktree whose own .agents/ is not discovered) reads as outside.
+# Nothing in the loop creates one during a run, and its commits are not this
+# run's packet commits -- but do not read "outside every config root" as a
+# stronger claim than it is.
 # Checked AFTER the secret floor (a secret path is refused as a secret first)
 # and BEFORE the ask tier -- and it refuses even when bypass-ask-tier is true,
 # because this is a hard deny via deny(), not something ask()'s bypass skips.
@@ -563,19 +581,76 @@ _cwd_is_config_root() {
   return 1
 }
 
+# Is `$1` (a normalized path) inside `<root>/.agents/` for some discovered
+# config root? Case-insensitive, for Windows path/drive-letter casing.
+_driver_mode_in_agents_dir() {   # $1 = normalized path
+  local lc root lc_root
+  lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
+    case "$lc" in "${lc_root}/.agents/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Is `$1` (a normalized path) inside -- or exactly -- a discovered config root?
+# That is the "could reach a packet's commit" test: the loop commits from the
+# repository whose `.agents/` was discovered, so a target under it can land in a
+# packet, and a target under none of them cannot.
+_driver_mode_in_repo() {   # $1 = normalized path
+  local lc root lc_root
+  lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
+    case "$lc" in "$lc_root"|"${lc_root}/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# PHYSICAL location of an absolute target: the nearest EXISTING ancestor
+# directory resolved with `pwd -P`, plus the not-yet-existing tail (a write
+# legitimately creates the file, and may create directories under it). Without
+# this, a symlinked prefix -- `/var/...` -> `/private/var/...` on macOS, or a
+# symlink pointing into the checkout -- would compare as OUTSIDE the repository
+# and be permitted while writing straight into it. Prints nothing and returns 1
+# when the target cannot be placed, which the caller must treat as REFUSE.
+_driver_mode_resolve_abs() {   # $1 = normalized absolute target
+  local dir tail phys
+  case "$1" in */*) dir="${1%/*}"; tail="${1##*/}" ;; *) return 1 ;; esac
+  [ -n "$dir" ] || dir="/"
+  while [ ! -d "$dir" ]; do
+    case "$dir" in
+      /) break ;;
+      */?*) tail="${dir##*/}/${tail}"; dir="${dir%/*}"; [ -n "$dir" ] || dir="/" ;;
+      *) return 1 ;;   # a drive-letter root or anything else we cannot walk
+    esac
+  done
+  [ -d "$dir" ] || return 1
+  phys="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$phys" ] || return 1
+  printf '%s/%s' "${phys%/}" "$tail"
+}
+
 # ANCHORED judgment of a single candidate write target -- not a substring
 # test. Used for Edit/Write/MultiEdit/NotebookEdit paths directly, and for
 # every target `_driver_mode_extract_targets` pulls out of a Bash command.
 #   - an unresolved shell variable ($VAR) in the target can never be verified
 #     safe -> refuse;
-#   - any ".." path segment -> refuse (traversal);
-#   - an absolute path (POSIX or a Windows drive letter) is OK only when it
-#     starts with `<root>/.agents/` for some discovered CONFIG_ROOT, compared
-#     case-insensitively (Windows path/drive-letter casing);
+#   - any ".." path segment -> refuse (traversal, and an unverifiable way to
+#     leave the repository: a repository-relative target resolving outside is
+#     refused for being unverifiable, not permitted for being outside);
+#   - an absolute path (POSIX or a Windows drive letter) is OK when it starts
+#     with `<root>/.agents/` for some discovered CONFIG_ROOT, compared
+#     case-insensitively (Windows path/drive-letter casing), AND ALSO when it
+#     physically resolves outside every discovered root -- such a write cannot
+#     enter a packet's commit. Inside a root but outside its `.agents/` ->
+#     refuse; a target whose real location cannot be resolved -> refuse;
 #   - a relative path is OK only when it matches `^(\./)?\.agents/` AND the
 #     payload cwd itself is a discovered config root (see _cwd_is_config_root).
+#     Every other relative target is refused as unverifiable -- the cwd it would
+#     be resolved against is not known to be the repository root.
 _driver_mode_path_ok() {   # $1 = raw candidate target
-  local raw="${1:-}" norm
+  local raw="${1:-}" norm phys
   [ -n "$raw" ] || return 1
   # unresolved variable, or the sanitizer's quoted-region placeholder -> a
   # target we cannot verify at all is refused, never guessed at (N1).
@@ -585,15 +660,14 @@ _driver_mode_path_ok() {   # $1 = raw candidate target
   case "$norm" in
     /*|[A-Za-z]:/*)
       discover_config
-      local lc_norm root lc_root
-      lc_norm="$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]')"
-      for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-        lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
-        case "$lc_norm" in
-          "${lc_root}/.agents/"*) return 0 ;;
-        esac
-      done
-      return 1
+      # (1) the driven repository's own .agents/ -- the driver's own surface.
+      _driver_mode_in_agents_dir "$norm" && return 0
+      # (2) otherwise decide on where the target REALLY lands. Unresolvable is
+      #     refused, never assumed outside.
+      phys="$(_driver_mode_resolve_abs "$norm")" || return 1
+      _driver_mode_in_agents_dir "$phys" && return 0
+      _driver_mode_in_repo "$phys" && return 1   # in the repo, outside .agents/
+      return 0                                   # outside the driven repository
       ;;
     *)
       discover_config
@@ -1123,7 +1197,7 @@ deny() {
     payload-unreadable)
       echo "  hint     : the guardrail could not read this tool call's payload, so it cannot judge it — and a control that cannot read its input must DENY, not allow. Install a working JSON parser on PATH: 'jq' is the reliable one. On Windows/Git Bash, 'python3' is usually the Microsoft Store App Execution Alias, which is on PATH but is NOT a parser. Check with: hooks/guard.sh --selftest" >&2 ;;
     driver-mode|driver-mode-via-bash)
-      echo "  hint     : this session is in driver mode (ADR 0028) — it dispatches agents to make packet edits and must not edit outside .agents/ directly. An unresolved shell variable (\$VAR) in a write target can't be verified safe either — write temp files under .agents/ instead. If you need a hands-on edit, pause the loop first: /gaffer:pause." >&2 ;;
+      echo "  hint     : this session is in driver mode (ADR 0028) — it dispatches agents to make the packet's edits and must not edit the repository it is driving. Two things are refused, each with its own way forward: (a) a target INSIDE this repository and outside .agents/ — dispatch an agent to make that edit, or keep driver-owned scratch under .agents/; (b) a target whose real location can't be verified — an unresolved shell variable (\$VAR), a '..' segment, a path relative to a cwd that isn't the repository root, or a shell write whose target can't be read — re-issue it as a fully resolved absolute path and it will be judged on where it actually lands. A write that resolves OUTSIDE this repository is not refused here (every other tier still judges it). If you need to make this edit by hand yourself, pause the loop first: /gaffer:pause." >&2 ;;
   esac
   echo "If this is intended, approve it explicitly (or run it yourself)." >&2
   exit 2
@@ -1528,9 +1602,10 @@ case "$TOOL" in
         # before it is re-matched and its write targets extracted, so a
         # commit message, heredoc body or quoted arg that merely CONTAINS a
         # write-shaped word never trips this. Every extracted target must
-        # anchor inside .agents/; an unrecognised write shape (no target could
-        # be determined) or a dangerous construct ($( ` eval xargs sh -c)
-        # refuses conservatively rather than guessing.
+        # anchor inside .agents/ or resolve outside the driven repository
+        # altogether (it cannot reach a packet's commit there); an unrecognised
+        # write shape (no target could be determined) or a dangerous construct
+        # ($( ` eval xargs sh -c) refuses conservatively rather than guessing.
         elif driver_mode_active && _driver_mode_bash_refuses "$CMD"; then
           deny "driver-mode-via-bash" "session ${SESSION_ID} is in driver mode (no agent_id)" "$CMD"
         elif cmd_hits_path "$CMD" "${REVIEW_PATH_PATTERNS[@]}"; then
@@ -1575,8 +1650,9 @@ case "$TOOL" in
     done
     # Driver mode (ADR 0028 T5): after the secret floor, before the REVIEW ask.
     # Anchored, not a substring test -- _driver_mode_path_ok rejects a ".."
-    # segment, requires an absolute path to sit under a discovered config
-    # root's .agents/, and requires a relative path's cwd to BE that root.
+    # segment, admits an absolute path either under a discovered config root's
+    # .agents/ or resolving outside every root (it cannot reach a packet's
+    # commit), and requires a relative path's cwd to BE that root.
     if driver_mode_active && ! _driver_mode_path_ok "$PATH_VAL"; then
       deny "driver-mode" "session ${SESSION_ID} is in driver mode (no agent_id)" "$PATH_VAL"
     fi

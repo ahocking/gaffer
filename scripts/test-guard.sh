@@ -804,12 +804,77 @@ check 2 "driver mode: src/.agents/evil (nested, not the real .agents/) refused" 
   "$(dm_payload Edit '{"file_path":"src/.agents/evil"}' sess-driver)"
 check 2 "driver mode: ../.agents/x (traversal into a parent) refused" \
   "$(dm_payload Edit '{"file_path":"../.agents/x"}' sess-driver)"
-check 2 "driver mode: /tmp/other/.agents/x (a foreign absolute root) refused" \
+# T4 narrowing: a foreign absolute root is OUTSIDE the driven repository, so it
+# cannot reach a packet's commit and driver mode no longer refuses it. It used to
+# expect exit 2. Its still-refused siblings sit either side of it: a nested
+# `src/.agents/` INSIDE the repository is not the real one, and `../.agents/x`
+# cannot be placed at all.
+check 0 "driver mode: /tmp/other/.agents/x (outside the driven repo) allowed" \
   "$(dm_payload Edit '{"file_path":"/tmp/other/.agents/x"}' sess-driver)"
 check 2 "driver mode: src/my-.agents/x (.agents/ is not a leading path segment) refused" \
   "$(dm_payload Edit '{"file_path":"src/my-.agents/x"}' sess-driver)"
 check 2 "driver mode: src/foo.agents/x (foo.agents != .agents) refused" \
   "$(dm_payload Edit '{"file_path":"src/foo.agents/x"}' sess-driver)"
+
+echo "== driver mode: T4 -- the permitted class is 'cannot reach a packet's commit' =="
+# The narrowing (gaps T4): driver mode exists so the driver does not make a
+# packet's edits itself, so a write that cannot enter any packet's commit -- one
+# resolving OUTSIDE the repository the loop is driving -- is no longer refused.
+# The worked example is the driver's own agent-memory file, which lives outside
+# the repository entirely. Every case that PERMITS is paired here with one that
+# still refuses, because a narrowing verified only by what it now permits is not
+# verified at all.
+DM_OUT="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_OUT"   # no .agents/ anywhere above it
+DM_PHYS="$(cd "$DM" && pwd -P)"                             # the repo's REAL path
+DM_LINKDIR="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_LINKDIR"
+ln -s "$DM_PHYS" "$DM_LINKDIR/repo"                         # a symlink INTO the repo
+
+# (1) permitted: outside the repository -> cannot reach a packet's commit.
+check 0 "T4: an out-of-repo agent-memory write allowed (the worked example)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/projects/some-repo/memory/MEMORY.md\"}" sess-driver)"
+check 0 "T4: out-of-repo write via a shell redirect allowed" \
+  "$(dm_payload Bash "{\"command\":\"echo note > ${DM_OUT}/scratch.txt\"}" sess-driver)"
+
+# (2) still enforcing: the floors and tiers that judge that same out-of-repo call.
+#     SECRET is the hard floor and runs BEFORE driver mode, so it still denies.
+check_deny_category "secret-path" "T4: out-of-repo .env still hard-denied as a secret" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/.env\"}" sess-driver)"
+check_deny_category "secret-path-via-bash" "T4: out-of-repo key material still hard-denied (bash)" \
+  "$(dm_payload Bash "{\"command\":\"cp tmp ${DM_OUT}/server.pem\"}" sess-driver)"
+#     ORDERING: driver mode sits BEFORE the ask tier. An out-of-repo REVIEW path
+#     must reach that tier and ASK -- if driver mode had drifted below it this
+#     would still be exit 2, and the in-repo case just below would ASK instead of
+#     denying. The two together pin the position, not just the behaviour.
+check_ask "T4: out-of-repo CI config reaches the REVIEW ask tier" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/.github/workflows/ci.yml\"}" sess-driver)"
+check_deny_category "driver-mode" "T4: in-repo CI config refused by driver mode, not asked" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.github/workflows/ci.yml\"}" sess-driver)"
+
+# (3) unchanged: an IN-REPOSITORY target outside .agents/ is still refused, by
+#     absolute path as well as relative -- including one reached through a
+#     symlink, which a lexical prefix test would have read as "outside".
+check_deny_category "driver-mode" "T4: absolute in-repo target outside .agents/ still refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/src/util.ts\"}" sess-driver)"
+check 2 "T4: in-repo target via the payload's own (possibly symlinked) cwd refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM}/src/util.ts\"}" sess-driver)"
+check 2 "T4: in-repo target reached through a symlink refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LINKDIR}/repo/src/util.ts\"}" sess-driver)"
+check 2 "T4: absolute in-repo bash write outside .agents/ refused" \
+  "$(dm_payload Bash "{\"command\":\"echo x > ${DM_PHYS}/src/util.ts\"}" sess-driver)"
+check 0 "T4: absolute path under the repo's own .agents/ still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/run-state.yaml\"}" sess-driver)"
+
+# (4) unchanged: a repository-relative target that resolves OUTSIDE stays
+#     refused -- for being unverifiable, never permitted for being outside.
+#     Wrong-and-refused costs a pause; wrong-and-allowed is the leak.
+check 2 "T4: relative ../outside.txt refused (resolves outside, unverifiable)" \
+  "$(dm_payload Edit '{"file_path":"../outside.txt"}' sess-driver)"
+check 2 "T4: relative ../../elsewhere/x refused (deeper traversal out)" \
+  "$(dm_payload Edit '{"file_path":"../../elsewhere/x"}' sess-driver)"
+check 2 "T4: relative ../outside.txt refused via a shell write too" \
+  "$(dm_payload Bash '{"command":"cp tmp ../outside.txt"}' sess-driver)"
+check 2 "T4: an unresolved \$VAR absolute-looking target still refused" \
+  "$(dm_payload Bash '{"command":"cp tmp $HOME/notes.md"}' sess-driver)"
 
 echo "== driver mode: unresolved shell variables and dangerous constructs refuse conservatively =="
 check 2 "driver mode: an unresolved \$VAR write target refused" \

@@ -531,9 +531,12 @@ wait.
   landed during this run is named by this run rather than by the next one's
   preflight. Carry each `DRIFT=<slug>\t<capability text>` line into the stop
   report's `▶ Next` section below — the one section the tally does not
-  count — naming the feature and the capability. Flip nothing: a drifted
-  record changes no tally figure, no packet count, and never the outcome
-  recorded for `status` — the run's stop reason is unaffected either way.
+  count — as an unglyphed line naming the feature and the capability. This
+  does not reuse ⚠️ (the conventions reserve that glyph for a tally-counted
+  section carrying one line per packet, and a drift finding is not a packet)
+  and introduces no new glyph. Flip nothing: a drifted record changes no
+  tally figure, no packet count, and never the outcome recorded for `status`
+  — the run's stop reason is unaffected either way.
 
   Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then

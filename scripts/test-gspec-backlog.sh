@@ -2136,6 +2136,70 @@ refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIF
 check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
 
 # =============================================================================
+# completion-record-drift-t3: pin detect-never-flip mechanically. A `cksum`
+# manifest of every PRD and plan file under this fixture's gspec/, taken
+# before and compared byte-identical after running capability-drift over a
+# drifted fixture -- so an auto-flip regression (the detector "fixing" the
+# drift it finds) fails a checksum comparison rather than needing a reviewer
+# to notice the write. Paired, in the same case, with the assertion that the
+# run still reported the drift it was given: a no-op scan also leaves the
+# manifest unchanged, so the checksum half alone would pass for a detector
+# that does nothing at all. Both fixtures reuse T1's two-capability
+# drift shape through the sweep's existing builders, run in both layouts it
+# already exercises (T1's flat layout, T2's feature-folder layout) rather
+# than a third builder that could drift from the ones every other case here
+# uses.
+printf '\n== capability-drift: detect-never-flip is pinned by checksum, flat layout ==\n'
+R="$TMPROOT/cd-noflip-flat"; mkdir -p "$R"
+mk_prd "$R" cd-noflip-flat 0 2
+mk_plan "$R" cd-noflip-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flat layout: the drift it was given is still reported' \
+  "$(printf 'DRIFT=cd-noflip-flat\topen capability 1')" "$out"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'flat layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+  || bad 'flat layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+      "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== capability-drift: detect-never-flip is pinned by checksum, feature-folder layout ==\n'
+R="$TMPROOT/cd-noflip-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-noflip-v2 0 2
+mk_plan_v2 "$R" cd-noflip-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'feature-folder layout: the drift it was given is still reported' \
+  "$(printf 'DRIFT=cd-noflip-v2\topen capability 1')" "$out"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'feature-folder layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+  || bad 'feature-folder layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+      "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

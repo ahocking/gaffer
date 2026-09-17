@@ -159,8 +159,8 @@
 #
 # The tally is the report's table of contents, not a separate count next to one:
 # every glyph it totals names a section below, and every section the tally counts
-# is headed by that glyph — ✅ Shipped, ⛔ Failed, ⚠️ Unfinished, ⬚ Queued,
-# 🔀 Decisions, in that order. ✅, ⛔ and ⚠️ carry one line per packet counted, and
+# is headed by that glyph — ✅ Shipped, ⛔ Failed, ⚠️ Unfinished, 🔀 Decisions,
+# ⬚ Queued, in that order. ✅, ⛔ and ⚠️ carry one line per packet counted, and
 # 🔀 Decisions carries exactly as many blocks as the header's 🔀 figure, never
 # more; ⬚ Queued is the one bucket whose count collapses to a single line (see
 # below), and ▶ Next is the one section the tally does not count.
@@ -182,15 +182,15 @@
 > ⚠️ **<Title>** (`<id>`) — paused here; the run stopped on this one
 > ⚠️ **<Title>** (`<id>`) — swept as interrupted
 
-⬚ **Queued**
-
-> ⬚ **<N> more** — <one clause covering them>
-
 🔀 **Decisions** — reply `1A 2B`
 
 > <decision block 1>
 
 > <decision block 2>
+
+⬚ **Queued**
+
+> ⬚ **<N> more** — <one clause covering them>
 
 ▶ **Next** — <the single action that unblocks the most>
 
@@ -211,14 +211,14 @@
 #   drop an open question the run asked three hours and one compaction ago. Its
 #   `<status>` field is the status line the decider routed — it holds the
 #   question; write the two options and the lean.
+# - **`⬚ Queued` collapses to a count and one clause**, never a list of its own
+#   lines — the digest does not carry unbegun packets, so there is nothing to name
+#   there anyway. If everything remaining is unfinished, omit the section.
 # - **When a periodic pause stopped the run, say the setting.** Read
 #   `runstate.sh periodic-pause` and name it in the one-sentence reason:
 #   *"Paused after 5 packets — `pause_every_packets: 5` in
 #   `.agents/project-overrides.yaml`."* Without the setting named, an operator
 #   reads a scheduled pause as a failure, and that is the one thing it is not.
-# - **`⬚ Queued` collapses to a count and one clause**, never a list of its own
-#   lines — the digest does not carry unbegun packets, so there is nothing to name
-#   there anyway. If everything remaining is unfinished, omit the section.
 # - **Omit `⛔ Failed` and `⚠️ Unfinished` when the digest has no such lines.** Rule
 #   3 — an empty section is never written as "none".
 
@@ -258,10 +258,6 @@
 #
 #   > ⚠️ **Duplicate detection** (`txn-t4`) — paused here; the run stopped on this one
 #
-#   ⬚ **Queued**
-#
-#   > ⬚ **2 more** — the date filter and the audit log, neither blocked
-#
 #   🔀 **Decisions** — reply `1A`
 #
 #   > **1 · How do we decide two imports are the same transaction?**
@@ -273,6 +269,10 @@
 #   >
 #   > **→ Pick A** — recoverable, and confirm-flows are the ones users abandon.
 #   > *Silence = A, matches logged.*
+#
+#   ⬚ **Queued**
+#
+#   > ⬚ **2 more** — the date filter and the audit log, neither blocked
 #
 #   ▶ **Next** — answer decision 1, then `/gaffer:resume`.
 #

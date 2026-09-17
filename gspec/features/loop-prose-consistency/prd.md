@@ -82,7 +82,7 @@ shipped.
 
 ## Capabilities
 
-- [ ] **P1**: The output-contract comments reproduce the output the script emits
+- [x] **P1**: The output-contract comments reproduce the output the script emits
   - each code block that presents itself as that reader's output names exactly
     the values the reader now emits — the repository, operator and unknown
     sources — and no value whose branch was removed
@@ -94,7 +94,7 @@ shipped.
     three rule-prose locations and in neither output block; an edit that tidies
     the prose must fail that case
 
-- [ ] **P1**: The worked example states no count that rots
+- [x] **P1**: The worked example states no count that rots
   - the example states the contrast it exists to make — a branch-versus-base
     scope against the run's own scope — with no count on the run side, because a
     count of a run's integrated work measured mid-run cannot still be right when
@@ -107,7 +107,7 @@ shipped.
     that the edit reached a completed record, never a cue to bypass it — prose
     only — no sweep case
 
-- [ ] **P1**: The stop report's section order matches its declared authority
+- [x] **P1**: The stop report's section order matches its declared authority
   - the shape renders its sections in the order its conventions document fixes —
     the decisions section above the queued section — in the shape itself and in
     both of its worked examples, so no example contradicts the shape it
@@ -122,7 +122,7 @@ shipped.
     glyph presence today. A reordering that satisfies the shape and diverges
     from the authority must fail that case
 
-- [ ] **P1**: The worked hand-off shows the outcome a hand-off records
+- [x] **P1**: The worked hand-off shows the outcome a hand-off records
   - the worked hand-off packet carries the outcome a handed-off packet actually
     records, and therefore renders the glyph the shape's own outcome-to-glyph
     table maps that outcome to
@@ -133,7 +133,7 @@ shipped.
     rule, and the routing that produces the outcome are all unchanged — prose
     only — no sweep case
 
-- [ ] **P2**: One continuation rule, worded the same in both entry points
+- [x] **P2**: One continuation rule, worded the same in both entry points
   - the run entry point's narrowed continuation trigger — the one naming only a
     paused packet — is corrected to admit every status the shipped rule does, a
     run stopped on a blocking question included; the resume entry point already

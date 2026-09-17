@@ -72,7 +72,7 @@ The parent shipped; this is new scope against it.
 
 ## Capabilities
 
-- [ ] **P0**: The drift test cannot invert into a report of drift it did not find
+- [x] **P0**: The drift test cannot invert into a report of drift it did not find
   - a capability with at least one **unchecked** covering task emits no `DRIFT=`
     line, on every run, however the shell schedules the processes evaluating that
     test — the test is no longer expressed as a pipeline whose reader may close
@@ -89,7 +89,7 @@ The parent shipped; this is new scope against it.
     from every `DRIFT=` line **and** a genuinely drifted capability present in
     the same run, so it cannot pass by the detector reporting nothing
 
-- [ ] **P1**: A feature that reads as complete contributes nothing to the scan
+- [x] **P1**: A feature that reads as complete contributes nothing to the scan
   - a feature that **reads as complete under the same derivation the adapter
     already applies** — at least one recognized capability line, and every one of
     them checked — emits no `DRIFT=` line and no `UNJUDGEABLE=` line of any class.
@@ -112,7 +112,7 @@ The parent shipped; this is new scope against it.
     unchecked and with its capability lines in a form the derivation does not
     recognize
 
-- [ ] **P1**: The termination reporting site states a line form that does not collide
+- [x] **P1**: The termination reporting site states a line form that does not collide
   - the site that carries each drift line into the stop report states the form
     those lines take there: an unglyphed line under `▶ Next`, the section the
     header tally does not count. It does not reuse ⚠️ — the report conventions
@@ -126,7 +126,7 @@ The parent shipped; this is new scope against it.
   - nothing else at either site changes: no tally figure, packet count or recorded
     outcome moves, and no template gains a slot, glyph or shape for the finding
 
-- [ ] **P2**: The two capability-line patterns' anchoring divergence is resolved or recorded
+- [x] **P2**: The two capability-line patterns' anchoring divergence is resolved or recorded
   - the divergence is either removed, or — where it stands — recorded at **both**
     pattern sites by a comment naming the other pattern, the indented-line
     behaviour and the safe direction: an indented but otherwise canonical

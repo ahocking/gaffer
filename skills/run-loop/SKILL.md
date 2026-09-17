@@ -437,8 +437,8 @@ wait.
   base.** A long-lived integration branch already carries earlier runs'
   already-reviewed commits, so a plain branch-vs-base diff re-presents all
   of them: measured on the run that found this defect, branch-vs-base was
-  211 files and about 30,000 insertions, against 25 files that run actually
-  landed. Bound the diff to the packet ids `runstate.sh run-digest
+  211 files and about 30,000 insertions, against only the files that run
+  actually landed. Bound the diff to the packet ids `runstate.sh run-digest
   .agents/run-state.yaml` already prints (no `--since` — every packet this
   run began, landed or not) and the `[orch packet:<id>]` trailers those ids
   carry: walk the branch's commits oldest-to-newest (`git log <base>..HEAD

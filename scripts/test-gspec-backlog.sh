@@ -1942,6 +1942,63 @@ out="$("$ADAPTER" handoff 'a/b#T1' "$R" 2>&1)"; rc=$?
 check 'and explains why' 'path separator' "$out"
 
 # =============================================================================
+# capability-drift (completion-record-drift-t1). Output contract, fixed by
+# gspec/features/completion-record-drift/tasks.md and binding on all five
+# tasks in that plan:
+#   DRIFT=<slug>\t<capability text>
+#   UNJUDGEABLE=<class>\t<slug>\t<detail>
+#   CAPABILITY_DRIFT=ok|attention drift=<n> unjudgeable=<n>
+# T1's own scope for this file is exactly the two cases below (the
+# two-capability fixture in the flat layout, plus the no-gspec/ exit-0 case)
+# -- the three UNJUDGEABLE classes and the feature-folder layout are T2's,
+# and the byte-identical detect-never-flip pin is T3's; adding those here
+# too would duplicate work those tasks are chartered to do.
+printf '\n== capability-drift: no gspec/ at all exits 0 with CAPABILITY_DRIFT=none ==\n'
+R="$TMPROOT/capdrift-none"; mkdir -p "$R"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"; rc=$?
+check 'reads CAPABILITY_DRIFT=none' 'CAPABILITY_DRIFT=none' "$out"
+check 'and explains why' 'NOTE=' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no gspec/' "rc=$rc"
+
+# =============================================================================
+printf '\n== capability-drift: the two-capability fixture, flat layout (mk_prd/mk_plan) ==\n'
+# One capability whose covering task is fully checked (DRIFT); one with an
+# unchecked covering task (mid-flight, reported as neither drift nor
+# unjudgeable). A per-feature test -- no unchecked task lines and no checked
+# capabilities -- reports neither here, because the feature still has an
+# unchecked task line (T3); this case fails if the detector is widened back
+# to that per-feature shape.
+R="$TMPROOT/capdrift-main"; mkdir -p "$R"
+mk_prd "$R" capdrift-main 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" capdrift-main <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'the fully-checked-covered capability is named present' \
+  "$(printf 'DRIFT=capdrift-main\topen capability 1')" "$out"
+refute 'the mid-flight capability is named absent' \
+  'open capability 2' "$out"
+check 'the run summary counts the one drift and nothing unjudgeable' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: a feature with no plan is out of scope, not unjudgeable ==\n'
+R="$TMPROOT/capdrift-noplan"; mkdir -p "$R"
+mk_prd "$R" capdrift-noplan 0 1
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"; rc=$?
+refute 'no drift for an undecomposed feature' 'capdrift-noplan' "$out"
+check 'the run summary still prints a clean count' 'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no plan file' "rc=$rc"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

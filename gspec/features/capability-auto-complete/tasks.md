@@ -71,7 +71,7 @@ Every regression sweep must pass green after every task.
   - covers: The standing wording says the loop reconciles the record
   - arch: —
   - files: CLAUDE.md, docs/adr/0025-remove-backlog-done.md, gspec/features/completion-record-drift/prd.md
-- [ ] **T6** [P] **P0** Make `complete-capabilities` in `scripts/gspec-backlog.sh` handle a PRD with no trailing newline, and prove it in `scripts/test-gspec-backlog.sh` with a fixture whose final line is a flippable capability line with no trailing newline. The case asserts that the capability is flipped and named, that the file still lacks a final newline, and that reverting the flipped line gives a PRD byte-identical to the original by checksum. Model it on the existing `check-task` no-trailing-newline case. The subcommand already carries a `tail -c1` guard, so fix the subcommand only if the new case fails, and leave `capability-drift`'s output and its checksum case untouched.
+- [x] **T6** [P] **P0** Make `complete-capabilities` in `scripts/gspec-backlog.sh` handle a PRD with no trailing newline, and prove it in `scripts/test-gspec-backlog.sh` with a fixture whose final line is a flippable capability line with no trailing newline. The case asserts that the capability is flipped and named, that the file still lacks a final newline, and that reverting the flipped line gives a PRD byte-identical to the original by checksum. Model it on the existing `check-task` no-trailing-newline case. The subcommand already carries a `tail -c1` guard, so fix the subcommand only if the new case fails, and leave `capability-drift`'s output and its checksum case untouched.
   - deps: —
   - covers: Follow-up correctness fixes from the end-of-run review
   - arch: —

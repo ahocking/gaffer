@@ -1942,6 +1942,328 @@ out="$("$ADAPTER" handoff 'a/b#T1' "$R" 2>&1)"; rc=$?
 check 'and explains why' 'path separator' "$out"
 
 # =============================================================================
+# group (packet-bundling-t4). Every scenario below is run in BOTH layouts:
+# mk_prd_v2/mk_plan_v2 (the 3.x feature-folder layout) first, then
+# mk_prd/mk_plan (the flat 2.x layout) as a second, independent fixture --
+# `group` shares `_nodes_for`'s layout resolution, but a case here is the
+# only thing that actually exercises `group` itself against both.
+
+printf '\n== group: a cap of 1 yields exactly the cursor; cap raised groups whole; cap truncates mid-run; a non-overlapping neighbour ends the group (feature-folder layout) ==\n'
+R="$TMPROOT/group-a-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-a 0 1
+mk_plan_v2 "$R" grp-a <<'EOF'
+- [ ] **T1** **P1** first task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T3** **P1** third task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T4** **P1** fourth task, different scope
+  - deps: —
+  - files: [src/z.ts]
+EOF
+
+out="$("$ADAPTER" group grp-a-t1 "$R")"
+check 'default cap (1) is inert: GROUP names the cursor' 'GROUP=grp-a-t1' "$out"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'default cap: exactly one member' || bad 'default cap: exactly one member' "got $n: $out"
+check 'default cap: the one member is the cursor, with its title'  "$(printf 'MEMBER=grp-a-t1\tfirst task')" "$out"
+check 'default cap: FILES is the cursor'"'"'s own scope'           'FILES=src/a.ts' "$out"
+check 'default cap: STOP=cap — the command arrives inert'          'STOP=cap' "$out"
+
+out="$("$ADAPTER" group grp-a-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "3" ] && ok 'cap raised above the run: the three same-scope tasks group whole' \
+  || bad 'three overlapping tasks should group whole' "got $n members: $out"
+check 'member 1' "$(printf 'MEMBER=grp-a-t1\tfirst task')"  "$out"
+check 'member 2' "$(printf 'MEMBER=grp-a-t2\tsecond task')" "$out"
+check 'member 3' "$(printf 'MEMBER=grp-a-t3\tthird task')"  "$out"
+refute 'the fourth (non-overlapping) task never joins' 'MEMBER=grp-a-t4' "$out"
+check 'FILES is still just the shared file — no duplicate entries from three members' 'FILES=src/a.ts' "$out"
+check 'a non-overlapping neighbour ends the group: STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-a-t1 --cap 2 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'a cap of 2 truncates mid-run at exactly two members' \
+  || bad 'cap should truncate at 2' "got $n members: $out"
+refute 'the third task, which would otherwise still qualify, is excluded by the cap' 'MEMBER=grp-a-t3' "$out"
+check 'a cap truncating mid-run reports STOP=cap, not STOP=scope' 'STOP=cap' "$out"
+
+out2="$("$ADAPTER" group 'grp-a#T1' "$R")"
+check 'the canonical <feature>#T<n> form resolves identically to the packet-id form' \
+  'GROUP=grp-a-t1' "$out2"
+
+printf '\n== group: an empty-scope cursor and an empty-scope neighbour each run alone (feature-folder layout) ==\n'
+R="$TMPROOT/group-b-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-b 0 1
+mk_plan_v2 "$R" grp-b <<'EOF'
+- [ ] **T1** **P1** cursor with scope
+  - deps: —
+  - files: [src/x.ts]
+- [ ] **T2** **P1** empty-scope neighbour
+  - deps: —
+- [ ] **T3** **P1** another task with scope
+  - deps: —
+  - files: [src/x.ts]
+EOF
+
+out="$("$ADAPTER" group grp-b-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'an empty-scope neighbour cannot join: the group stops at just the cursor' \
+  || bad 'empty-scope neighbour should end the group' "got $n members: $out"
+check 'the excluded neighbour never appears as a member' 'MEMBER=grp-b-t1' "$out"
+refute 'and T2 (empty scope) is not silently absorbed' 'MEMBER=grp-b-t2' "$out"
+check 'STOP=scope: an empty scope overlaps nothing' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-b-t2 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'the SAME empty-scope task, run as its own cursor, also groups alone' \
+  || bad 'empty-scope cursor should run alone' "got $n members: $out"
+check 'the lone member is the empty-scope cursor itself' 'MEMBER=grp-b-t2' "$out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+[ "$filesline" = 'FILES=' ] && ok 'FILES is empty — the cursor itself declared no scope' \
+  || bad 'FILES should be empty for an empty-scope cursor' "got: $filesline"
+check 'STOP=scope: the empty union can never admit the next candidate either' 'STOP=scope' "$out"
+
+printf '\n== group: a deps: dependency on an unchecked task outside the group excludes it (feature-folder layout) ==\n'
+R="$TMPROOT/group-c-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-c 0 1
+mk_plan_v2 "$R" grp-c <<'EOF'
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/c.ts]
+- [ ] **T2** **P1** depends on an outside unchecked task
+  - deps: T5
+  - files: [src/c.ts]
+- [ ] **T5** **P1** the outside dependency, still unchecked
+  - deps: —
+  - files: [src/c.ts]
+EOF
+out="$("$ADAPTER" group grp-c-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'T2 is excluded: its dep T5 is neither in the group nor checked' \
+  || bad 'unmet deps should exclude the candidate' "got $n members: $out"
+refute 'T2 never joins' 'MEMBER=grp-c-t2' "$out"
+refute 'T5 (never reached) never joins either' 'MEMBER=grp-c-t5' "$out"
+check 'STOP=deps names the reason' 'STOP=deps' "$out"
+
+printf '\n== group: a checked task between two members does not break consecutiveness (feature-folder layout) ==\n'
+R="$TMPROOT/group-e-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-e 0 1
+mk_plan_v2 "$R" grp-e <<'EOF'
+- [x] **T0** **P1** already done, before the cursor
+  - deps: —
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/e.ts]
+- [x] **T2** **P1** checked task sitting between two members
+  - deps: —
+  - files: [src/should-not-appear.ts]
+- [ ] **T3** **P1** third member, depends on the checked T2 and the earlier T1
+  - deps: T1, T2
+  - files: [src/e.ts]
+EOF
+out="$("$ADAPTER" group grp-e-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'the checked T2 between T1 and T3 does not break the run: both T1 and T3 join' \
+  || bad 'a checked task between two members should not break consecutiveness' "got $n members: $out"
+check 'member 1 is the cursor' 'MEMBER=grp-e-t1' "$out"
+check 'member 2 is the task on the far side of the checked one' 'MEMBER=grp-e-t3' "$out"
+refute 'the checked task itself never appears as a member' 'MEMBER=grp-e-t2' "$out"
+refute 'and its files: line never leaks into the union' 'should-not-appear' "$out"
+check 'FILES is only the shared scope T1 and T3 actually declare' 'FILES=src/e.ts' "$out"
+check 'T3'"'"'s dep on the already-checked T2 is satisfied, and its dep on T1 by T1 being earlier in the group -- STOP=end, ran out of tasks' \
+  'STOP=end' "$out"
+
+printf '\n== group: never crosses into the next feature (feature-folder layout) ==\n'
+R="$TMPROOT/group-f-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-f1 0 1
+mk_plan_v2 "$R" grp-f1 <<'EOF'
+- [ ] **T1** **P1** only task in f1
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+mk_prd_v2 "$R" grp-f2 0 1
+mk_plan_v2 "$R" grp-f2 <<'EOF'
+- [ ] **T1** **P1** only task in f2, deliberately the SAME file scope
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+out="$("$ADAPTER" group grp-f1-t1 --cap 10 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'a high cap and a matching scope in another feature still never pulls it in' \
+  || bad 'group must never cross a feature boundary' "got $n members: $out"
+refute 'the other feature'"'"'s task is never named as a member' 'MEMBER=grp-f2-t1' "$out"
+check 'STOP=end: f1 has no more tasks of its own, cap or not' 'STOP=end' "$out"
+
+printf '\n== group: HANDOFF=unknown refusal shape, and the one genuine usage errors (feature-folder layout) ==\n'
+out="$("$ADAPTER" group not-a-real-packet-t9 "$TMPROOT/group-none" 2>&1)"; rc=$?
+check 'no gspec/ at all reads HANDOFF=unknown, reusing handoff'"'"'s shape' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no gspec/' "rc=$rc"
+
+out="$("$ADAPTER" group zzz-t1 "$R" 2>&1)"; rc=$?
+check 'an id matching no feature slug also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and also exits 0' || bad 'exit 0 on an unresolved id' "rc=$rc"
+
+out="$("$ADAPTER" group grp-e-t0 "$R" 2>&1)"; rc=$?
+check 'an already-checked cursor also reads unknown, never a lone/empty group' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 too' || bad 'exit 0 on a checked cursor' "rc=$rc"
+
+out="$("$ADAPTER" group grp-e-t99 "$R" 2>&1)"; rc=$?
+check 'a resolvable feature with no such task also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 on no-such-task' "rc=$rc"
+
+out="$("$ADAPTER" group 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a missing packet id is a genuine usage error (non-zero)' \
+  || bad 'missing packet id should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" group 'a/b#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug with a path separator is refused, matching handoff/check-task/task-status' \
+  || bad 'path separator refused' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+
+out="$("$ADAPTER" group grp-e-t1 --cap abc "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a non-numeric --cap is a usage error' \
+  || bad 'non-numeric --cap should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" group grp-e-t1 --cap 0 "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a --cap of 0 is a usage error' \
+  || bad '--cap 0 should be non-zero' "rc=$rc, out=$out"
+
+# --- the same eight scenarios, in the flat 2.x layout (mk_prd/mk_plan) -------
+
+printf '\n== group: a cap of 1 yields exactly the cursor; cap raised groups whole; cap truncates mid-run; a non-overlapping neighbour ends the group (flat layout) ==\n'
+R="$TMPROOT/group-a-flat"; mkdir -p "$R"
+mk_prd "$R" grp-a-flat 0 1
+mk_plan "$R" grp-a-flat <<'EOF'
+- [ ] **T1** **P1** first task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T3** **P1** third task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T4** **P1** fourth task, different scope
+  - deps: —
+  - files: [src/z.ts]
+EOF
+
+out="$("$ADAPTER" group grp-a-flat-t1 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: default cap (1) is inert — exactly one member' \
+  || bad 'flat layout: default cap should yield one member' "got $n: $out"
+check 'flat layout: STOP=cap' 'STOP=cap' "$out"
+
+out="$("$ADAPTER" group grp-a-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "3" ] && ok 'flat layout: three overlapping tasks group whole' \
+  || bad 'flat layout: three overlapping tasks should group whole' "got $n members: $out"
+refute 'flat layout: the fourth, non-overlapping task never joins' 'MEMBER=grp-a-flat-t4' "$out"
+check 'flat layout: a non-overlapping neighbour ends the group with STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-a-flat-t1 --cap 2 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'flat layout: a cap of 2 truncates mid-run' \
+  || bad 'flat layout: cap should truncate at 2' "got $n members: $out"
+check 'flat layout: a cap truncating mid-run reports STOP=cap' 'STOP=cap' "$out"
+
+printf '\n== group: an empty-scope cursor and an empty-scope neighbour each run alone (flat layout) ==\n'
+R="$TMPROOT/group-b-flat"; mkdir -p "$R"
+mk_prd "$R" grp-b-flat 0 1
+mk_plan "$R" grp-b-flat <<'EOF'
+- [ ] **T1** **P1** cursor with scope
+  - deps: —
+  - files: [src/x.ts]
+- [ ] **T2** **P1** empty-scope neighbour
+  - deps: —
+- [ ] **T3** **P1** another task with scope
+  - deps: —
+  - files: [src/x.ts]
+EOF
+out="$("$ADAPTER" group grp-b-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: an empty-scope neighbour ends the group' \
+  || bad 'flat layout: empty-scope neighbour should end the group' "got $n members: $out"
+check 'flat layout: STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-b-flat-t2 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: the same empty-scope task, as its own cursor, also runs alone' \
+  || bad 'flat layout: empty-scope cursor should run alone' "got $n members: $out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+[ "$filesline" = 'FILES=' ] && ok 'flat layout: FILES is empty for the empty-scope cursor' \
+  || bad 'flat layout: FILES should be empty' "got: $filesline"
+
+printf '\n== group: a deps: dependency on an unchecked task outside the group excludes it (flat layout) ==\n'
+R="$TMPROOT/group-c-flat"; mkdir -p "$R"
+mk_prd "$R" grp-c-flat 0 1
+mk_plan "$R" grp-c-flat <<'EOF'
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/c.ts]
+- [ ] **T2** **P1** depends on an outside unchecked task
+  - deps: T5
+  - files: [src/c.ts]
+- [ ] **T5** **P1** the outside dependency, still unchecked
+  - deps: —
+  - files: [src/c.ts]
+EOF
+out="$("$ADAPTER" group grp-c-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: an unmet dep excludes the candidate' \
+  || bad 'flat layout: unmet deps should exclude the candidate' "got $n members: $out"
+check 'flat layout: STOP=deps' 'STOP=deps' "$out"
+
+printf '\n== group: a checked task between two members does not break consecutiveness (flat layout) ==\n'
+R="$TMPROOT/group-e-flat"; mkdir -p "$R"
+mk_prd "$R" grp-e-flat 0 1
+mk_plan "$R" grp-e-flat <<'EOF'
+- [x] **T0** **P1** already done, before the cursor
+  - deps: —
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/e.ts]
+- [x] **T2** **P1** checked task sitting between two members
+  - deps: —
+  - files: [src/should-not-appear.ts]
+- [ ] **T3** **P1** third member, depends on the checked T2 and the earlier T1
+  - deps: T1, T2
+  - files: [src/e.ts]
+EOF
+out="$("$ADAPTER" group grp-e-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'flat layout: a checked task between two members does not break the run' \
+  || bad 'flat layout: checked task should not break consecutiveness' "got $n members: $out"
+refute 'flat layout: the checked task itself never appears as a member' 'MEMBER=grp-e-flat-t2' "$out"
+check 'flat layout: STOP=end' 'STOP=end' "$out"
+
+printf '\n== group: never crosses into the next feature (flat layout) ==\n'
+R="$TMPROOT/group-f-flat"; mkdir -p "$R"
+mk_prd "$R" grp-f1-flat 0 1
+mk_plan "$R" grp-f1-flat <<'EOF'
+- [ ] **T1** **P1** only task in f1
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+mk_prd "$R" grp-f2-flat 0 1
+mk_plan "$R" grp-f2-flat <<'EOF'
+- [ ] **T1** **P1** only task in f2, deliberately the SAME file scope
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+out="$("$ADAPTER" group grp-f1-flat-t1 --cap 10 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: a high cap never pulls in the matching-scope task of another feature' \
+  || bad 'flat layout: group must never cross a feature boundary' "got $n members: $out"
+refute 'flat layout: the other feature'"'"'s task is never a member' 'MEMBER=grp-f2-flat-t1' "$out"
+check 'flat layout: STOP=end' 'STOP=end' "$out"
+
+# =============================================================================
 # capability-drift (completion-record-drift-t1). Output contract, fixed by
 # gspec/features/completion-record-drift/tasks.md and binding on all five
 # tasks in that plan:

@@ -1611,6 +1611,140 @@ assert_true "OVER_THRESHOLD flips at a tiny --max-bytes" \
 assert_true "ORCH_FINDINGS_INDEX_MAX_BYTES is honoured" \
   "ORCH_FINDINGS_INDEX_MAX_BYTES=10 \"\$RUNSTATE\" findings \"$FSS/run-state.yaml\" --stale | grep -q '^OVER_THRESHOLD=yes$'"
 
+echo
+echo "== the three here-string sites, over 8 KiB (next-state-reporting-integrity T2) =="
+# WHAT THESE CASES CLAIM, AND WHAT THEY DELIBERATELY DO NOT.
+#
+# They claim NO PRE-FIX FAILURE. The `printf … | grep -q` shape that
+# `_id_in_set` and the two findings duplicate-id checks carried before T2 does
+# not reproduce a wrong answer at today's sizes, and none was observed while
+# writing these — unlike T1's adapter cases, which were run against the unfixed
+# code and seen to fail. Claiming otherwise here would be the mistake this
+# repo already records once: a probe that does not reproduce the phenomenon
+# eliminates nothing, and neither does one that merely passes.
+#
+# What they DO pin is behaviour at a size where the single-write argument no
+# longer holds. That argument is "one `printf` is atomic up to PIPE_BUF, so no
+# reader can close between two writes" — PIPE_BUF is 4096, and
+# ORCH_FINDINGS_INDEX_MAX_BYTES=4096 is already the ceiling `findings --stale`
+# expects the index to reach. Every fixture below is built past 8 KiB, twice
+# that, and asserts the size it actually reached rather than assuming it. A
+# fixture under the threshold would certify the here-string form while
+# exercising nothing at all.
+#
+# Each mutation is followed by the sweep's own yamlok() parse assertion, for the
+# same reason every other mutating case here is: grep is what let a whole class
+# of unparseable run-states through before.
+
+# -- an over-8-KiB findings: block (cmd_add_finding + cmd_drop_finding) --------
+FB="$(mktemp -d)/.agents"; mkdir -p "$FB"
+printf 'schema: 3\nstatus: running\nfindings:\nnote: after-the-block\n' > "$FB/run-state.yaml"
+# ~250 chars of summary x 40 entries carries the block past 8 KiB. The length is
+# the point of the fixture, not padding for its own sake.
+FB_SUMMARY='a summary long enough that forty of these entries carry the findings block past twice PIPE_BUF, which is the size at which the one-atomic-write argument for a piped grep -q stops holding, so the block below is built to the size the index is actually expected to reach'
+FB_I=1
+while [ "$FB_I" -le 40 ]; do
+  "$RUNSTATE" add-finding "$FB/run-state.yaml" "fb-$(printf '%03d' "$FB_I")" \
+    "$FB_SUMMARY" --packets "pkt-fb-${FB_I}" >/dev/null
+  FB_I=$((FB_I + 1))
+done
+# INDEX_BYTES is runstate.sh's OWN measurement of the findings block, so the
+# size asserted here is the size the code under test sees, not a second count
+# from the test that could drift away from it.
+FB_BYTES="$("$RUNSTATE" findings "$FB/run-state.yaml" --stale | sed -n 's/^INDEX_BYTES=//p')"
+echo "   (findings block built to ${FB_BYTES} bytes)"
+assert_true "the findings block fixture really exceeds 8 KiB (${FB_BYTES} bytes)" \
+  "[ \"$FB_BYTES\" -gt 8192 ]"
+assert_true "yamlok after building the 8-KiB+ findings block" "yamlok \"$FB/run-state.yaml\""
+# The block's LAST entry is the FIRST one added: entries insert newest-first
+# immediately after the `findings:` key. That is the interesting id — it is the
+# one the writer can only reach after emitting the whole block, so a reader that
+# closed early on a nearer line would miss exactly this one.
+FB_LAST="$(awk '/^findings:[[:space:]]*$/{f=1;next}
+                /^[A-Za-z_][A-Za-z0-9_]*:/{f=0}
+                f && /^  - id: /{last=$0}
+                END{sub(/^  - id: /,"",last); print last}' "$FB/run-state.yaml")"
+assert_true "the block's last entry is the first one added" "[ \"$FB_LAST\" = fb-001 ]"
+
+FB_BEFORE="$(cat "$FB/run-state.yaml")"
+FB_DUP_OUT="$("$RUNSTATE" add-finding "$FB/run-state.yaml" "$FB_LAST" 'a different summary entirely' --packets pkt-fb-dup)"
+assert_true "add-finding of the block's last id over an 8-KiB+ block reports ADDED=no" \
+  "printf '%s\n' \"\$FB_DUP_OUT\" | grep -qx 'ADDED=no'"
+assert_true "add-finding of the block's last id over an 8-KiB+ block reports REASON=duplicate-id" \
+  "printf '%s\n' \"\$FB_DUP_OUT\" | grep -qx 'REASON=duplicate-id'"
+assert_true "the refused duplicate leaves the 8-KiB+ run-state byte-identical" \
+  "[ \"\$(cat \"$FB/run-state.yaml\")\" = \"\$FB_BEFORE\" ]"
+assert_true "yamlok after the refused duplicate over an 8-KiB+ block" "yamlok \"$FB/run-state.yaml\""
+
+# not-found first, so it too is judged against the still-full block. This is the
+# NEGATED check: a polluted status here turns a found entry into `not-found`.
+FB_NF_OUT="$("$RUNSTATE" drop-finding "$FB/run-state.yaml" fb-no-such-id)"
+assert_true "drop-finding of an absent id over an 8-KiB+ block reports REASON=not-found" \
+  "printf '%s\n' \"\$FB_NF_OUT\" | grep -qx 'REASON=not-found'"
+assert_true "the absent-id drop leaves the 8-KiB+ run-state byte-identical" \
+  "[ \"\$(cat \"$FB/run-state.yaml\")\" = \"\$FB_BEFORE\" ]"
+assert_true "yamlok after the absent-id drop over an 8-KiB+ block" "yamlok \"$FB/run-state.yaml\""
+
+FB_N_BEFORE="$("$RUNSTATE" findings "$FB/run-state.yaml" | wc -l | tr -d ' ')"
+FB_N_AFTER=$((FB_N_BEFORE - 1))
+FB_DROP_OUT="$("$RUNSTATE" drop-finding "$FB/run-state.yaml" "$FB_LAST")"
+assert_true "drop-finding of the block's last id over an 8-KiB+ block reports DROPPED=yes" \
+  "printf '%s\n' \"\$FB_DROP_OUT\" | grep -qx 'DROPPED=yes'"
+assert_true "the dropped entry is gone from the 8-KiB+ block" \
+  "! grep -qx '  - id: $FB_LAST' \"$FB/run-state.yaml\""
+assert_true "EXACTLY one entry was removed ($FB_N_BEFORE -> $FB_N_AFTER)" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$FB/run-state.yaml\" | wc -l | tr -d ' ')\" = $FB_N_AFTER ]"
+assert_true "the neighbouring entries survive the 8-KiB+ drop" \
+  "grep -qx '  - id: fb-002' \"$FB/run-state.yaml\" && grep -qx '  - id: fb-040' \"$FB/run-state.yaml\""
+assert_true "keys before and after the findings block survive the 8-KiB+ drop" \
+  "grep -qx 'status: running' \"$FB/run-state.yaml\" && grep -qx 'note: after-the-block' \"$FB/run-state.yaml\""
+assert_true "yamlok after the drop over an 8-KiB+ block" "yamlok \"$FB/run-state.yaml\""
+
+# -- over-8-KiB --finished and cursor-plus-pending sets (_id_in_set) -----------
+# _id_in_set's two callers are these two sets, and neither has any ceiling at
+# all, which is why its pipe was removed rather than bounded. Each finding below
+# names the LAST member of its set (or none of either), so the membership test
+# must read to the end of an 8-KiB+ value to answer correctly.
+FST="$(mktemp -d)/.agents"; mkdir -p "$FST"
+FST_PAD='0000000000000000000000000'
+FST_CURSOR="pkt-stale-cursor-${FST_PAD}"
+FST_PENDING=""; FST_FINISHED=""; FST_I=1
+while [ "$FST_I" -le 220 ]; do
+  FST_N="$(printf '%03d' "$FST_I")"
+  FST_PENDING="${FST_PENDING}    - pkt-stale-pending-${FST_N}-${FST_PAD}
+"
+  FST_FINISHED="${FST_FINISHED}${FST_FINISHED:+,}pkt-stale-finished-${FST_N}-${FST_PAD}"
+  FST_I=$((FST_I + 1))
+done
+FST_LAST_PEND="pkt-stale-pending-220-${FST_PAD}"
+FST_LAST_FIN="pkt-stale-finished-220-${FST_PAD}"
+{ printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: %s\n  pending:\n' "$FST_CURSOR"
+  printf '%s' "$FST_PENDING"
+  printf 'findings:\nnote: x\n'
+} > "$FST/run-state.yaml"
+"$RUNSTATE" add-finding "$FST/run-state.yaml" st-fin   'names only the last finished packet'   --packets "$FST_LAST_FIN"  >/dev/null
+"$RUNSTATE" add-finding "$FST/run-state.yaml" st-pend  'names only the last pending packet'    --packets "$FST_LAST_PEND" >/dev/null
+"$RUNSTATE" add-finding "$FST/run-state.yaml" st-ghost 'names a packet in neither set'         --packets pkt-stale-ghost  >/dev/null
+assert_true "yamlok after building the 8-KiB+ --stale fixture" "yamlok \"$FST/run-state.yaml\""
+FST_FIN_BYTES="$(printf '%s' "$FST_FINISHED" | wc -c | tr -d ' ')"
+# Mirrors _findings_pending_ids' output exactly: the cursor line, then each
+# pending entry with its `    - ` list marker stripped.
+FST_PEND_BYTES="$( { printf '%s\n' "$FST_CURSOR"; printf '%s' "$FST_PENDING" | sed 's/^    - //'; } | wc -c | tr -d ' ')"
+echo "   (--finished set ${FST_FIN_BYTES} bytes; cursor-plus-pending set ${FST_PEND_BYTES} bytes)"
+assert_true "the --finished set really exceeds 8 KiB (${FST_FIN_BYTES} bytes)" \
+  "[ \"$FST_FIN_BYTES\" -gt 8192 ]"
+assert_true "the cursor-plus-pending set really exceeds 8 KiB (${FST_PEND_BYTES} bytes)" \
+  "[ \"$FST_PEND_BYTES\" -gt 8192 ]"
+FST_OUT="$("$RUNSTATE" findings "$FST/run-state.yaml" --stale --finished "$FST_FINISHED")"
+assert_true "a packet at the END of an 8-KiB+ --finished set reads finished (STALE=yes)" \
+  "printf '%s\n' \"\$FST_OUT\" | grep -qx 'FINDING=st-fin STALE=yes packets=$FST_LAST_FIN'"
+assert_true "a packet at the END of an 8-KiB+ cursor-plus-pending set reads pending" \
+  "printf '%s\n' \"\$FST_OUT\" | grep -qx 'FINDING=st-pend STALE=no blocked_by=$FST_LAST_PEND:pending packets=$FST_LAST_PEND'"
+assert_true "a packet in NEITHER 8-KiB+ set reads unknown and blocks expiry" \
+  "printf '%s\n' \"\$FST_OUT\" | grep -qx 'FINDING=st-ghost STALE=no blocked_by=pkt-stale-ghost:unknown packets=pkt-stale-ghost'"
+assert_true "STALE_COUNT counts only the finished entry over 8-KiB+ sets" \
+  "printf '%s\n' \"\$FST_OUT\" | grep -qx 'STALE_COUNT=1'"
+
 # --- trim-note must survive EVERY note encoding -------------------------------
 # The cut is a byte cut, so the encoding decides whether it is safe: a quoted scalar
 # loses its closing quote and the file stops parsing. trim-note therefore re-emits the

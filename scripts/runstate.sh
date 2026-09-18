@@ -884,7 +884,19 @@ EOF
 }
 
 # Is $1 present (exact match) in the newline-separated set $2?
-_id_in_set() { printf '%s\n' "$2" | grep -qxF "$1"; }
+# NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2): no bound can be
+# written down for this writer, so the pipe is removed rather than recorded.
+# The reading behind that one line: the only caller is `findings --stale`, over
+# the `--finished` set (every finished packet the caller knows of) and the
+# cursor-plus-`pending` set (the remaining backlog) — neither has any ceiling, so
+# there is no maximum output size at which a piped `grep -q` could be argued
+# unable to misreport. Under `pipefail` a `printf … | grep -q` here would return
+# the printf's SIGPIPE (141) instead of grep's successful match, and the wrong
+# answer reaches a caller: `--stale` reads a finished packet as `unknown` and
+# withholds an expiry. A here-string is not a pipeline in the shell's sense —
+# bash finishes supplying the value before grep can act on it — so `pipefail`
+# has no second status to report and grep's answer is the only one.
+_id_in_set() { grep -qxF "$1" <<< "$2"; }
 
 # Restore a set-aside finding body on a failed drop-finding — best-effort, never
 # fails the caller (the caller is already mid-`die`).
@@ -991,7 +1003,17 @@ cmd_add_finding() {
     /^findings:[[:space:]]*$/ { inf=1; next }
     /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
     inf { print }' "$f" 2>/dev/null || true)"
-  if printf '%s\n' "$in_findings" | grep -qxF "  - id: ${id}"; then
+  # NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2): no bound can be
+  # written down for this writer, so the pipe is removed rather than recorded.
+  # The reading behind that one line: the writer emits the ENTIRE `findings:`
+  # block in one go, and `findings --stale` already treats
+  # ORCH_FINDINGS_INDEX_MAX_BYTES=4096 — exactly PIPE_BUF, the size up to which a
+  # single write is atomic — as the index's EXPECTED ceiling, so the block is
+  # designed to reach the size at which the single-write argument stops holding.
+  # Piped under `pipefail`, a `grep -q` that matched early would close the read
+  # end, the writer would take SIGPIPE, and the 141 would be reported instead of
+  # the match — admitting a SECOND entry under an existing id.
+  if grep -qxF "  - id: ${id}" <<< "$in_findings"; then
     printf 'ADDED=no\nREASON=duplicate-id\nID=%s\n' "$id"; return 0
   fi
 
@@ -1099,7 +1121,14 @@ cmd_drop_finding() {
     /^findings:[[:space:]]*$/ { inf=1; next }
     /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
     inf { print }' "$f" 2>/dev/null || true)"
-  if ! printf '%s\n' "$in_findings" | grep -qxF "  - id: ${id}"; then
+  # NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2): no bound can be
+  # written down for this writer, so the pipe is removed rather than recorded.
+  # Same reading as cmd_add_finding's duplicate check above — the writer emits the
+  # whole `findings:` block, whose own expected ceiling (4096 = PIPE_BUF) is the
+  # size at which the single-write argument stops holding. The NEGATION makes the
+  # wrong answer worse here: a SIGPIPE 141 reported instead of grep's match turns
+  # a found entry into `not-found` on an entry that exists.
+  if ! grep -qxF "  - id: ${id}" <<< "$in_findings"; then
     printf 'DROPPED=no\nREASON=not-found\nID=%s\n' "$id"; return 0
   fi
 
@@ -3289,6 +3318,22 @@ _reconcile_tree() {
 # Extract the packet id from the `[orch packet:<id>]` trailer of a commit, if any.
 # Prints empty (never fails) when there is no trailer — under `set -e`/`pipefail`
 # a no-match grep must not abort reconcile before it can decide `escalate`.
+#
+# RECORDED, NOT CLOSED (next-state-reporting-integrity T2). This is the one
+# pipe-fed `grep` in this file that is deliberately left as a pipeline, and the
+# two facts that make that safe are both stated here so a later reader auditing
+# the `printf … | grep -q` shape does not convert a working value-producing
+# pipeline into something else:
+#   1. Its VALUE still reaches standard output correctly. This pipeline is not
+#      condition-shaped — the answer is the text `head -1 | sed` prints, not an
+#      exit status — and `grep -oE` has no `-q`, so nothing here exits before its
+#      writer finishes for the reason the rest of this feature is about.
+#   2. Its EXIT STATUS is already discarded by the trailing `|| true`. So even a
+#      `pipefail`-polluted status (a no-match grep returning 1, or `head -1`
+#      closing early on a multi-trailer body) cannot reach the caller, which is
+#      exactly what the "never fails" contract above depends on.
+# Rewriting it as a here-string would change neither fact and would lose the
+# streaming `head -1`; leave it alone.
 orphan_packet_tag() {
   local wt="$1" ref="$2" body
   body="$(git -C "$wt" log -1 --format=%B "$ref")"

@@ -72,7 +72,7 @@ Every regression sweep must pass green after every task.
   - covers: The template's tally sentence and body rule state the core's definition
   - arch: —
   - files: templates/report-templates.md
-- [ ] **T3** [P] **P1** In `scripts/test-report-conventions.sh`, add a resumed-run fixture: a synthetic run whose `ask-operator` question is answered by a later start record.
+- [x] **T3** [P] **P1** In `scripts/test-report-conventions.sh`, add a resumed-run fixture: a synthetic run whose `ask-operator` question is answered by a later start record.
 
   Write its real `run-digest` output to a file, and assert:
   - the file carries the `decision` line for that question;

@@ -98,7 +98,7 @@ the same test and cannot diverge.
     `DECISIONS=1`
   - the existing hand-off dedup case still yields its current figure
 
-- [ ] **P1**: An honest body on a resumed run lints clean
+- [x] **P1**: An honest body on a resumed run lints clean
   - a `scripts/test-report-conventions.sh` fixture has a resumed run whose
     question was answered. Its report has 0 decision blocks and no 🔀 in the
     header, and it yields no decision-count finding against its digest

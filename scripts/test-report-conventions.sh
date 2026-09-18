@@ -734,6 +734,90 @@ dist="$(printf '%s\n' digest-missing digest-unreadable report-unreadable report-
 [ "$dist" = 4 ] && ok 'the digest and report directions carry distinct reasons' \
   || bad 'the digest and report directions carry distinct reasons' "$dist distinct"
 
+printf '\n== an honest body on a resumed run lints clean (stop-report-decision-liveness T3) ==\n'
+# A synthetic run whose ask-operator question was answered by a later session's
+# start record. The run is built with the real scripts -- begin-run, record-start,
+# route, record-outcome -- and ONE hand-written record: the answering start, which
+# needs a timestamp guaranteed strictly after the real question's. A second real
+# record-start would lean on wall-clock ordering, and a tie does not answer; the
+# fixed far-future stamp cannot tie. It lives in its own session's log (the resume),
+# so the control drops exactly that record by removing that one file.
+#
+# What makes this case worth having: the digest KEEPS the answered `decision` line
+# (its line kinds are frozen and carry no timestamp), so a body with no decision
+# block lints clean only because run-tally applies the liveness rule. The control
+# proves it -- same run minus the answer, same body, same header recipe, and the
+# decision-count finding appears. Every header 🔀 figure is built from the
+# DECISIONS= value run-tally just printed, bucket omitted at 0, never a literal.
+RS="$ROOT/scripts/runstate.sh"
+RR="$TMP/resumed-run"; mkdir -p "$RR/.agents/metrics/outcomes"; git -C "$RR" init -q
+printf 'schema: 3\nstatus: running\n' > "$RR/.agents/run-state.yaml"
+rr_id="$(cd "$RR" && "$RS" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+[ -n "$rr_id" ] && ok 'resumed-run fixture: begin-run minted a run id' \
+  || bad 'resumed-run fixture: begin-run minted a run id' 'no RUN_ID'
+mkdir -p "$RR/.agents/loop/$rr_id/rr-t1"
+printf '# rr-t1: Reconcile imported balances\n' > "$RR/.agents/loop/$rr_id/rr-t1/handoff.md"
+(cd "$RR" && "$RS" record-start rr-t1 RR1 \
+  && "$RS" route .agents/run-state.yaml rr-t1 ask-operator \
+  && "$RS" record-outcome rr-t1 blocked RR1) >/dev/null 2>&1 \
+  && ok 'resumed-run fixture: start, ask-operator question and blocked stop recorded by the real scripts' \
+  || bad 'resumed-run fixture: start, ask-operator question and blocked stop recorded by the real scripts' 'a runstate.sh call failed'
+# The resume: a later session starts the same packet again, answering the question.
+printf '{"ts":"2099-01-01T00:00:00.000Z","packet":"rr-t1","session":"RR2","kind":"start"}\n' \
+  > "$RR/.agents/metrics/outcomes/RR2.jsonl"
+
+# $1 = DECISIONS figure, $2 = UNFINISHED figure, $3 = output file. The body carries
+# no decision blocks; only the header figures vary, and each bucket is omitted at 0.
+_rr_report() {
+  local hdr='⏸️ **PAUSED** · Balance reconciliation'
+  [ "${2:-0}" -gt 0 ] && hdr="$hdr · ⚠️ **$2 unfinished**"
+  if [ "${1:-0}" -gt 0 ]; then
+    if [ "$1" = 1 ]; then hdr="$hdr · 🔀 **1 decision**"; else hdr="$hdr · 🔀 **$1 decisions**"; fi
+  fi
+  {
+    printf '%s\n\n' "$hdr"
+    printf 'Stopped after 1 packet. Nothing at risk, nothing half-written.\n\n'
+    printf '⚠️ **Unfinished**\n\n'
+    printf '> ⚠️ **Reconcile imported balances** (`rr-t1`) — resumed after your answer, not yet landed\n'
+  } > "$3"
+}
+_rr_fig() { printf '%s\n' "$2" | sed -n "s/^$1=//p"; }
+
+(cd "$RR" && "$RS" run-digest .agents/run-state.yaml) > "$TMP/rr-digest" 2>/dev/null
+rr_digest="$(cat "$TMP/rr-digest")"
+has "resumed-run: the digest file carries the answered question's decision line" \
+  "$(printf 'decision\trr-t1\task-operator')" "$rr_digest"
+rr_tally="$(cd "$RR" && "$RS" run-tally .agents/run-state.yaml 2>&1)"
+rr_dec="$(_rr_fig DECISIONS "$rr_tally")"; rr_unf="$(_rr_fig UNFINISHED "$rr_tally")"
+[ "$rr_dec" = 0 ] && ok 'resumed-run: run-tally over the run prints DECISIONS=0' \
+  || bad 'resumed-run: run-tally over the run prints DECISIONS=0' "$rr_tally"
+case "$rr_unf" in ''|*[!0-9]*) rr_unf=0 ;; esac
+case "$rr_dec" in
+  ''|*[!0-9]*) bad 'resumed-run: the honest report lints with no decision-count finding' "no numeric DECISIONS: $rr_tally" ;;
+  *)
+    _rr_report "$rr_dec" "$rr_unf" "$TMP/rr-report.md"
+    not_fires 'resumed-run: a report headed from the printed DECISIONS figure, with no decision blocks, yields no decision-count finding' \
+      decision-count "$(_lint B "$TMP/rr-report.md" "$TMP/rr-digest")"
+    ;;
+esac
+
+# Control: the same run with the answering record dropped.
+rm -f "$RR/.agents/metrics/outcomes/RR2.jsonl"
+(cd "$RR" && "$RS" run-digest .agents/run-state.yaml) > "$TMP/rr-digest-ctl" 2>/dev/null
+ctl_tally="$(cd "$RR" && "$RS" run-tally .agents/run-state.yaml 2>&1)"
+ctl_dec="$(_rr_fig DECISIONS "$ctl_tally")"; ctl_unf="$(_rr_fig UNFINISHED "$ctl_tally")"
+[ "$ctl_dec" = 1 ] && ok 'resumed-run control: with the answering record dropped, run-tally prints DECISIONS=1' \
+  || bad 'resumed-run control: with the answering record dropped, run-tally prints DECISIONS=1' "$ctl_tally"
+case "$ctl_unf" in ''|*[!0-9]*) ctl_unf=0 ;; esac
+case "$ctl_dec" in
+  ''|*[!0-9]*) bad 'resumed-run control: the same body yields a decision-count finding' "no numeric DECISIONS: $ctl_tally" ;;
+  *)
+    _rr_report "$ctl_dec" "$ctl_unf" "$TMP/rr-report-ctl.md"
+    fires 'resumed-run control: the same body under a header built from the printed figure yields a decision-count finding' \
+      decision-count "$(_lint B "$TMP/rr-report-ctl.md" "$TMP/rr-digest-ctl")"
+    ;;
+esac
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

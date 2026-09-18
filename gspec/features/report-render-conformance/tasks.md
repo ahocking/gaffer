@@ -71,7 +71,7 @@ Every regression sweep must pass green after every task.
   - covers: The tally's four digest-derived figures are computed by the deterministic core
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** [P] **P0** Create an executable `scripts/report-lint.sh` with the invocation, output contract and exit rule stated above.
+- [x] **T2** [P] **P0** Create an executable `scripts/report-lint.sh` with the invocation, output contract and exit rule stated above.
 
   Derive both the glyph vocabulary and the section order from `templates/report-conventions.md`: the vocabulary from its glyph table, the order from its fixed-tally line, by the technique of the existing loop-prose-consistency section-order case. Neither is a frozen copy.
 

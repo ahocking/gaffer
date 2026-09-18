@@ -139,7 +139,7 @@ report together with the digest behind it rather than asked to find one.
     yielding no finding and a violating fixture yielding that finding by name, so
     no rule can pass by the check reporting nothing at all
 
-- [ ] **P1**: A finding changes nothing about the run
+- [x] **P1**: A finding changes nothing about the run
   - a report with every rule violated leaves the run's records exactly as a clean
     one does: no outcome recorded, no packet blocked or rolled back, no checkbox
     flipped, no non-zero status reaching the caller that renders reports

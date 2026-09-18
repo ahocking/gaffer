@@ -120,7 +120,18 @@ stop never has a mark to clear.
   flipped** — from each call's own `COMPLETED=<slug>\t<capability text>`
   lines, not the earlier `DRIFT=` listing (a `blocked` call flips nothing),
   **naming the feature and the capability** — the same per-row form this
-  bullet used to report drift in. State the trailing `unjudgeable=<n>` count
+  bullet used to report drift in. **Name every feature a call held back
+  too: one ⚠️ line per slug whose own summary line reads
+  `COMPLETE_CAPABILITIES=blocked`**, in that same per-row form, naming the
+  feature and carrying that call's own `REASON=` text (an unchecked task's
+  `covers:` quote matches no capability, so every flip for that feature is
+  held until it is fixed) — one line per such slug, however many `DRIFT=`
+  rows it covered. **Nothing is flipped, restored or committed for a held
+  feature**: `blocked` is exit 0 with `completed=0`, so it stages no PRD,
+  joins no commit, and leaves nothing to restore. It is **neither a failure
+  nor a flip** — a feature this run cannot complete yet, named so the
+  operator can fix the quote rather than left silent.
+  State the trailing `unjudgeable=<n>` count
   separately, as a figure — never one `UNJUDGEABLE=` line per finding —
   naming only the classes that actually appear among the command's own
   `UNJUDGEABLE=<class>\t<slug>\t<detail>` lines (possible classes:
@@ -537,12 +548,23 @@ wait.
    `<feature>#T<n>` line, fall back to the handoff's own `FEATURE=` line
    (§3.3, still in this session's context — one feature per bundle); that
    still counts as gspec-sourced. Skip the call entirely only when every
-   member returned `CHECKED=none` — the non-gspec case, with no capability
-   to complete.
-   - **exit 0** — whenever a `FILE=` line was printed (a fully-done
-     feature, a held one, and a normal flip all print it; only the
-     gspec-optional skip does not), stage that PRD into this same commit,
-     alongside the plan file(s) staged above.
+   member returned `CHECKED=none` **at exit 0** — nothing gspec-sourced
+   resolved for any member, so there is no capability to complete.
+   `CHECKED=none` on its own does not mean that: an **exit-4** drift member
+   prints the same line (the plan no longer names its task id), and that
+   member *is* gspec-sourced — it takes the `FEATURE=` fallback just above,
+   so the call still runs. One member at exit 4 is enough; the skip needs
+   every member at exit 0.
+   - **exit 0** — stage the `FILE=` PRD into this same commit, alongside
+     the plan file(s) staged above, **only when that call's own summary
+     line reads `completed=<n>` with `n` greater than 0** — equivalently,
+     it printed at least one `COMPLETED=` line. This is the same test §1
+     and §4 already apply. `FILE=` alone does not mean anything flipped:
+     it is printed whenever the feature resolved, including a `blocked`
+     hold and a `completed=0` resolve, so staging on `FILE=` presence
+     would stage a PRD nothing changed on. A held feature
+     (`COMPLETE_CAPABILITIES=blocked`) therefore stages nothing here and
+     the bundle commits as normal — neither a failure nor a flip.
    - **exit 4, exit 1, or anything else** — report it on this packet's own
      landing report below (shape A), naming the feature and the failure,
      but never for this reason: halt the loop, withhold the commit, or
@@ -554,11 +576,25 @@ wait.
      Since no `FILE=` line is ever printed on a failure here, restore the
      PRD with `git checkout -- <path>` — the same path the handoff's own
      `PRD=` line already named for this bundle — so a partial or unexpected
-     write from this call never rides into the commit unstaged.
+     write from this call never rides into the commit unstaged. **Restore
+     from the index, not from `HEAD`**, and that is the whole reason for
+     the form: by the time this call runs, the index already holds the
+     packet's own files and the plan file(s) staged a step above, and the
+     PRD is itself a file a packet may have edited as one of its own — it
+     is what `PRD=` names. `git checkout -- <path>` restores the working
+     tree from the index, so it undoes only what is *unstaged* on that
+     path, which is exactly this failed call's write (nothing staged it —
+     no `FILE=` was printed). `git checkout HEAD -- <path>` would reset the
+     index entry too and discard the packet's own staged PRD edit along
+     with it. §1 and §4 use the `HEAD` form for the mirror of this reason:
+     their scan runs outside any packet and stages the PRD itself, so there
+     the index entry is precisely the thing that has to go.
    A single-task packet that completes no capability (`completed=0`, or the
    call skipped outright) reads exactly as it does today: nothing staged,
-   nothing to report — staging an unchanged PRD via `git add` is a no-op
-   even though `FILE=` is still printed on a `completed=0` resolve.
+   nothing to report — and now because the `completed=<n>` test above holds
+   the staging back, rather than because `git add` on an unchanged path
+   happens to be a no-op; `FILE=` is still printed on a `completed=0`
+   resolve either way.
 
    **Commit on the branch.** Trailers, each on its own line (ADR 0019
    self-label — a factual record, not a grade):
@@ -801,6 +837,18 @@ wait.
   capability. This does not reuse ⚠️ (the conventions reserve that glyph for
   a tally-counted section carrying one line per packet, and a capability
   flip is not a packet) and introduces no new glyph, shape, or tally figure.
+  **Carry every feature a call held back into that same section too** — one
+  unglyphed line per slug whose own summary line reads
+  `COMPLETE_CAPABILITIES=blocked`, naming the feature and carrying that
+  call's own `REASON=` text (an unchecked task's `covers:` quote matches no
+  capability, so every flip for that feature is held until it is fixed) —
+  one line per such slug, however many `DRIFT=` rows it covered, in the same
+  unglyphed form the flips use here. **Nothing is flipped, restored or
+  committed for a held feature**: `blocked` is exit 0 with `completed=0`, so
+  it stages no PRD, joins no commit, and leaves nothing to restore. It is
+  **neither a failure nor a flip** — a feature this run could not complete
+  yet, named so the next run's preflight does not have to be the first to
+  say so.
   State the trailing `unjudgeable=<n>` count the same way §1 does, in the
   same section, naming only the classes that actually appear — these rows
   are never flipped, whatever `complete-capabilities` returns for the rest

@@ -108,3 +108,10 @@ integration_branch: develop
 # stops an unattended run until someone resumes it, so it must never fire
 # unasked.
 # pause_every_packets: 10
+
+# The largest number of tasks a bundle may hold (plugin packet-bundling T2).
+# 1 when missing, invalid, zero or negative -- bundling is off until this
+# repository raises it. A recommended starting value is 4; a larger value
+# costs a larger review diff, and more discarded work when a bundle ends
+# non-green.
+# bundle_max_tasks: 4

@@ -240,6 +240,29 @@ embellish it:
 - **State** — branch, green SHA, tree clean, `/gaffer:resume`. Name the stash ref
   here too if step 1 set scratch aside, so they can recover or drop it.
 
+**Its four digest-derived tally figures come from `runstate.sh run-tally
+.agents/run-state.yaml`, and you compute none of them** — exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §4 takes them: `SHIPPED=`,
+`FAILED=`, `UNFINISHED=` and `DECISIONS=` are ✅, ⛔, ⚠️ and 🔀, counted by the
+core from the same whole-run digest with the 🔀 dedup already applied; render
+each as printed, never recounted from the `packet` or `decision` lines. ⬚ queued
+is not one of them: it stays the `N pending` from `runstate.sh summary`.
+
+**Lint the stop report before you emit it**, once it is fully rendered, exactly
+as run-loop §4 lints its own: write the digest you rendered from to
+`<RUN_DIR>/stop-digest.tsv` (`runstate.sh run-digest .agents/run-state.yaml >
+<RUN_DIR>/stop-digest.tsv`) and the rendered report to
+`<RUN_DIR>/stop-report.md`, with `<RUN_DIR>` the run directory `begin-run`
+printed (`.agents/loop/<run_id>/`) **written out literally**, never a variable —
+then run `${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape B
+<RUN_DIR>/stop-report.md <RUN_DIR>/stop-digest.tsv`. On findings, correct the
+lines they name **at most once**, then emit; never re-lint in a loop. A finding
+records nothing, blocks nothing, rolls back nothing, flips nothing and halts
+nothing — the pause is already persisted above. `REPORT_LINT=clean` means *no
+mechanical rule was broken*, never that the report conforms to the contract, and
+`REPORT_LINT=unjudged` is **not** clean; what the lint cannot judge is stated
+once, in run-loop §4's "How to read the lint's result".
+
 If you are reporting into an automated caller rather than to the human, emit the
 wire check-in from `${CLAUDE_PLUGIN_ROOT}/templates/check-in.md` as well — it is what
 the scheduler parses.

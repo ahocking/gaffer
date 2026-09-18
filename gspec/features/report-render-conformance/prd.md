@@ -103,7 +103,7 @@ report together with the digest behind it rather than asked to find one.
     (asserting the dedup yields two, not three), and a byte comparison of the
     four existing line kinds against their pre-change output
 
-- [ ] **P0**: The stop report consumes the digest-derived figures rather than deriving them
+- [x] **P0**: The stop report consumes the digest-derived figures rather than deriving them
   - the stop report shape states that each digest-derived figure is
     read from the core's counted output, and the arithmetic they currently spell
     out as an instruction to the renderer is stated instead as what the core
@@ -115,7 +115,7 @@ report together with the digest behind it rather than asked to find one.
     sentence to the counted output on both sides, so a figure named in one file
     and not emitted by the other fails rather than drifting
 
-- [ ] **P0**: A rendered report is checked against the digest it was rendered from
+- [x] **P0**: A rendered report is checked against the digest it was rendered from
   - every rule is evaluated against the shape the report was rendered as, and a
     construct that shape itself defines is conformant rather than a finding — the
     tally's own multi-glyph line, the kickoff's phase lines and its `▶` session
@@ -150,7 +150,7 @@ report together with the digest behind it rather than asked to find one.
     against unchanged records, and each fail-soft direction distinguishable in
     the output from a clean result
 
-- [ ] **P1**: What the check cannot see is stated where its result is read
+- [x] **P1**: What the check cannot see is stated where its result is read
   - the site reporting the check's result names the classes it does not judge —
     whether a consequence clause states a consequence rather than an argument,
     whether the assumption a kickoff names is the one most likely to be wrong,

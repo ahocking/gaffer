@@ -417,6 +417,35 @@
 #                                    run-state has no run_id (begin-run has
 #                                    not been called) or this is not a git
 #                                    repo, same as handoff/write-result/route.
+#   run-tally <run-state>            report-render-conformance T1: the four
+#                                    digest-derived stop-report tally figures,
+#                                    counted from cmd_run_digest's OWN lines
+#                                    for the WHOLE run (no --since -- the
+#                                    dedup needs every decision the run
+#                                    recorded). Prints exactly, in the fixed
+#                                    tally order (templates/report-
+#                                    templates.md):
+#                                      SHIPPED=<n>     packet lines reading
+#                                                      green
+#                                      FAILED=<n>      packet lines reading
+#                                                      failed or rolled-back
+#                                      UNFINISHED=<n>  packet lines reading
+#                                                      blocked, interrupted,
+#                                                      abandoned, open or
+#                                                      paused
+#                                      DECISIONS=<n>   one per handoff-feature
+#                                                      line, plus one per
+#                                                      decision line whose
+#                                                      token is ask-operator
+#                                                      or hand-off-feature,
+#                                                      EXCEPT one whose id
+#                                                      already carries a
+#                                                      handoff-feature line
+#                                                      (one question, never
+#                                                      tallied twice)
+#                                    No queued figure: that is the pending
+#                                    count `summary` reports, not a digest
+#                                    fact. Dies exactly where run-digest dies.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -2973,6 +3002,45 @@ cmd_run_digest() {
   fi
 }
 
+# --- run-tally: the four digest-derived tally figures, counted from the
+# --- digest's own lines (report-render-conformance T1) ---------------------
+# A separate subcommand, not a fifth digest line kind: every per-packet
+# `run-digest --since` read would otherwise carry a count it has no use for,
+# and a count beside --since-scoped decision lines would be ambiguous -- the
+# dedup rule needs the WHOLE run's decisions. So this runs cmd_run_digest with
+# no --since and counts in one awk pass. The digest is captured into a
+# variable first (a failed assignment propagates run-digest's own die under
+# `set -e`, so this dies exactly where it dies) and fed to awk by here-string,
+# never a pipe. The 🔀 dedup is resolved in END, after every line is read, so
+# it does not depend on the digest's (deliberately unordered) line order.
+cmd_run_tally() {
+  local f=""
+  case $# in
+    1) f="$1" ;;
+    *) die "usage: run-tally <run-state>" ;;
+  esac
+  case "$f" in
+    -*) die "usage: run-tally <run-state> (takes no options: $f)" ;;
+  esac
+  local digest
+  digest="$(cmd_run_digest "$f")"
+  awk -F'\t' '
+    $1 == "packet" {
+      o = $4
+      if (o == "green") shipped++
+      else if (o == "failed" || o == "rolled-back") failed++
+      else if (o == "blocked" || o == "interrupted" || o == "abandoned" || o == "open" || o == "paused") unfinished++
+      next
+    }
+    $1 == "handoff-feature" { decisions++; hof[$2] = 1; next }
+    $1 == "decision" && ($3 == "ask-operator" || $3 == "hand-off-feature") { dec[++nd] = $2; next }
+    END {
+      for (i = 1; i <= nd; i++) if (!(dec[i] in hof)) decisions++
+      printf "SHIPPED=%d\nFAILED=%d\nUNFINISHED=%d\nDECISIONS=%d\n", shipped, failed, unfinished, decisions
+    }
+  ' <<<"$digest"
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -3477,7 +3545,8 @@ case "$cmd" in
   compact-threshold) cmd_compact_threshold "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;
+  run-tally)         cmd_run_tally         "$@" ;;
   bundle-cap)        cmd_bundle_cap        "$@" ;;
-  -h|--help|help|"") sed -n '2,419p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '2,448p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

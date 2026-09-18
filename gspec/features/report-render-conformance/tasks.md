@@ -57,7 +57,7 @@ Every regression sweep must pass green after every task.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Add `run-tally <run-state>` to `scripts/runstate.sh`, with the output contract and dedup rule stated above, and register it in the header Subcommands list and the dispatch table. Count only from `cmd_run_digest`'s own lines for the whole run:
+- [x] **T1** [P] **P0** Add `run-tally <run-state>` to `scripts/runstate.sh`, with the output contract and dedup rule stated above, and register it in the header Subcommands list and the dispatch table. Count only from `cmd_run_digest`'s own lines for the whole run:
   - ✅ one per `packet` line reading `green`;
   - ⚠️ aggregating `blocked`, `interrupted`, `abandoned`, `open` and `paused`;
   - ⛔ for `failed` and `rolled-back`;

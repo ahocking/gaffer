@@ -563,18 +563,32 @@ cmd_collect() {
         # design-heavy]` and `[orch impl:inline|delegated]` — the factual routing
         # decision recorded by the executor at the green gate. Buffer them per
         # commit and emit together with the packet trailer; absent -> empty.
+        #
+        # PACKET BUNDLING (packet-bundling T1): a commit may carry MORE THAN ONE
+        # `[orch packet:<id>]` trailer (a bundled landing of several tasks in one
+        # commit). Accumulate every id seen in MESSAGE ORDER into ids[]/n rather
+        # than overwriting a single scalar — the old `pk=v` assignment is why a
+        # bundled commit read as one packet row however many trailers it carried.
+        # flush() emits one row per id, all sharing the owning commit date/tier/
+        # impl, plus a 1-based ordinal (`i`) so rows that share one end time (the
+        # commit date) keep message order through the sort/reduction below — ties
+        # on that string are otherwise unspecified. A commit with exactly one
+        # trailer emits exactly one row with ordinal 1, byte-identical to before.
         function flush() {
           # run-window filter: win_start <= d <= we_bound. BOTH bounds are always set
           # when events exist (we_bound = win_end + grace, or --until verbatim).
-          if (pk != "" && d != "" && (ws=="" || d>=ws) && (we=="" || d<=we))
-            print pk "\t" d "\t" tier "\t" impl
-          pk=""; tier=""; impl=""
+          if (d != "" && (ws=="" || d>=ws) && (we=="" || d<=we)) {
+            for (i=1; i<=n; i++)
+              print ids[i] "\t" d "\t" tier "\t" impl "\t" i
+          }
+          n=0; delete ids; tier=""; impl=""
         }
         /^===ORCHCOMMIT===/ { flush(); d=$2; next }
         /^[[:space:]]*\[orch packet:[^]]+\][[:space:]]*$/ {
           if (match($0, /\[orch packet:[^]]+\]/)) {
             v=substr($0, RSTART+13, RLENGTH-14)     # strip "[orch packet:" .. "]"
-            gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); pk=v
+            gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+            if (v != "") { n++; ids[n]=v }
           }
         }
         /^[[:space:]]*\[orch tier:[^]]+\][[:space:]]*$/ {
@@ -590,15 +604,28 @@ cmd_collect() {
         END { flush() }' >> "$tmp/packets_raw.tsv" 2>/dev/null || true
 
   # keep the LATEST commit time per packet id, then order packets ascending.
-  # emit JSON array: [{id, end}] ordered by end.
+  # emit JSON array: [{id, end, tier, impl, seq}] ordered by (end, seq, id) — `seq`
+  # is the within-commit ordinal from flush() above, carried through so bundled
+  # siblings (same `end`) sort by message order rather than by an unspecified
+  # tie-break on the id string, and so section 5 below can tell a bundle's FIRST
+  # row (seq==1) from its siblings (seq>1) without re-deriving it from a
+  # zero-width window, which a genuine same-second coincidence between two
+  # unrelated single-trailer commits could otherwise produce too. `seq` never
+  # reaches the final packet objects section 5 emits — it is an internal
+  # ordering/branching aid only. `id` is appended as a final tie-break because the
+  # `awk 'for (k in last)'` dedup above feeds jq in hash order, not file order, so
+  # without it two unrelated single-trailer commits (both seq==1) landing in the
+  # same second would sort nondeterministically — the byte-identical-for-a-
+  # single-trailer-commit guarantee depends on this being stable.
   if [ -s "$tmp/packets_raw.tsv" ]; then
     sort "$tmp/packets_raw.tsv" \
       | awk -F'\t' '{ last[$1]=$0 } END { for (k in last) print last[k] }' \
-      | sort -t$'\t' -k2,2 \
       | jq -R -s 'split("\n")|map(select(length>0))|map(split("\t"))
                   |map({id:.[0], end:.[1],
                         tier:((.[2]//"")|if .=="" then null else . end),
-                        impl:((.[3]//"")|if .=="" then null else . end)})' \
+                        impl:((.[3]//"")|if .=="" then null else . end),
+                        seq:((.[4]//"1")|tonumber)})
+                  |sort_by([.end, .seq, .id])' \
       > "$tmp/pk_ends.json" 2>/dev/null || echo '[]' > "$tmp/pk_ends.json"
   else
     echo '[]' > "$tmp/pk_ends.json"
@@ -718,19 +745,26 @@ cmd_collect() {
   # merge record-only packet ids (no trailer — never committed, or a still-open
   # interruption) into pk_ends.json, ordered by PARSED end time (see above; a
   # trailer's whole-second end and a record's sub-second end must not be
-  # string-compared). Trailer ids keep their trailer end/tier/impl unchanged.
+  # string-compared). Trailer ids keep their trailer end/tier/impl/seq unchanged.
   # `swept` (C1) carries forward so section 5 can null the derived metrics rather
   # than report a lying zero for a packet whose window collapsed to a point.
+  # `seq: 1` on every record-only entry (never a bundle sibling): the tie-break
+  # below is a NUMERIC re-sort of `end`, so trailer bundle siblings (same end,
+  # ascending seq) keep their message order even after this re-sort re-parses the
+  # timestamp string section 2 already sorted lexically.
   jq -s "${JQ_TS_MS}"'
     .[0] as $trailer_pk
     | .[1] as $rj
     | ($trailer_pk | map(.id)) as $trailer_ids
     | (($rj.started_ids // []) | map(select(. as $i | ($trailer_ids | index($i)) == null))) as $extra_ids
-    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null,
+    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null, seq: 1,
                           swept: ((($rj.swept_ids // []) | index(.)) != null)})
                   | map(select(.end != null))) as $extra_entries
     | ($trailer_pk + $extra_entries)
-    | sort_by(.end | ts_ms)
+    # `.id` is a final tie-break for the same reason section 2 needs one: two
+    # unrelated single-trailer commits landing in the same second (both seq==1)
+    # must not depend on the incoming array order for a deterministic sort.
+    | sort_by([(.end | ts_ms), (.seq // 1), .id])
   ' "$tmp/pk_ends.json" "$tmp/recordjoin.json" > "$tmp/pk_ends_merged.json" 2>/dev/null \
     && mv "$tmp/pk_ends_merged.json" "$tmp/pk_ends.json" || true
 
@@ -1129,6 +1163,15 @@ cmd_collect() {
          # packet means. Report the derived fields as null (unmeasured), not 0 —
          # same rule as the pre-instrumentation-run nulls elsewhere in this file.
          | ($p.swept == true) as $is_swept
+         # BUNDLE SIBLING (packet-bundling T1). `seq` is the within-commit ordinal
+         # the section 2 trailer scan stamped: seq==1 is a commit first (or only)
+         # trailer, seq>1 is a later trailer on the SAME commit. Siblings share one
+         # boundary with the row before them, so $start computed above collapses to
+         # $p.end (zero width) — but that is a CONSEQUENCE of the bundle, not the
+         # detector for it: `seq` is used directly rather than re-deriving
+         # sibling-ness from the zero-width window, which two unrelated
+         # single-trailer commits landing in the same second could also produce.
+         | (($p.seq // 1) > 1) as $is_sibling
          | {
              id: $p.id,
              # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
@@ -1214,6 +1257,44 @@ cmd_collect() {
                    implementer_dispatched: null,
                    review_dispatches: null,
                    flags: ($obj.audit.flags + ["unmeasured:swept-by-later-session"])
+                 })
+               })
+             elif $is_sibling then
+               # Reuses the swept branch exact null-field SHAPE (packet-bundling
+               # T1 — deliberately not a second shape) with one difference: `end`
+               # is NOT nulled, since a sibling still carries its own commit real
+               # author date, only its event-derived fields are unmeasurable (the
+               # window they would have measured belongs to the row before them,
+               # sharing this same boundary).
+               ($obj + {
+                 swept: false,
+                 tool_calls: null,
+                 active_seconds: null,
+                 duration_ms: null,
+                 by_agent: null,
+                 by_tool: null,
+                 edits: null,
+                 by_command_class: null,
+                 failed_tool_calls: null,
+                 human_interactions: null,
+                 impl_edits_by_role: null,
+                 dispatched: null,
+                 tokens: null,
+                 audit: ($obj.audit + {
+                   orchestrator_impl_edits: null,
+                   implementer_dispatched: null,
+                   review_dispatches: null,
+                   # A sibling window is zero-width by construction (it shares its
+                   # boundary with the row before it), so any flag DERIVED from that
+                   # window — label-contradiction/leak/waste, all computed from
+                   # $orch_edits/$impl_dispatched/$rev above — is a measured-looking
+                   # accusation about an interval this row itself declares unmeasured.
+                   # Drop those; keep the label-based `unlabelled:` flags (still valid,
+                   # since $p.tier/$p.impl come from trailers on the commit itself, not
+                   # window-derived) and add the shared-boundary marker.
+                   flags: (($obj.audit.flags | map(select(
+                             (startswith("label-contradiction:") or startswith("leak:") or startswith("waste:")) | not
+                           ))) + ["unmeasured:shared-packet-boundary"])
                  })
                })
              else ($obj + {swept: false})

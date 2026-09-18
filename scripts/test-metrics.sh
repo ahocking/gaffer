@@ -1204,6 +1204,145 @@ check "C1: a directly-recorded (non-swept) abandoned is not flagged swept" "fals
 check "C1: its tool_calls stay measured, not nulled" "1" \
   "$(jq -r '.packets[]|select(.id=="abandoned-direct")|.tool_calls' "$DAOUT")"
 
+echo "== packet-bundling T1: a commit with exactly ONE trailer is byte-identical to today =="
+# Baseline for the bundled case below: a single trailer, plus the tier/impl
+# routing trailers, on its own commit -- must read exactly as it did before the
+# trailer scan learned to accumulate ids[] instead of overwriting a scalar.
+PBSREPO="$ROOT/pbs-repo"; mkdir -p "$PBSREPO/.agents/metrics/events"
+git -C "$PBSREPO" init -q; git -C "$PBSREPO" config user.email t@t; git -C "$PBSREPO" config user.name t
+cat > "$PBSREPO/.agents/metrics/events/S1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"S1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"cmd_class":"git status"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"S1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":20}
+JSON
+echo x >> "$PBSREPO/log.txt"; git -C "$PBSREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:03Z" GIT_COMMITTER_DATE="2026-07-21T10:00:03Z" \
+  git -C "$PBSREPO" commit -q -m "work
+
+[orch packet:solo-001]
+[orch tier:mechanical]
+[orch impl:inline]"
+PBSOUT="$ROOT/pbs-run.json"
+"$METRICS" collect --main-root "$PBSREPO" --projects-dir "$ROOT/none" --out "$PBSOUT" >/dev/null 2>&1
+check "PBS: exactly one packet row"           "1"          "$(jq -r '.packets|length' "$PBSOUT")"
+check "PBS: id"                               "solo-001"   "$(jq -r '.packets[0].id' "$PBSOUT")"
+check "PBS: tier"                             "mechanical" "$(jq -r '.packets[0].tier' "$PBSOUT")"
+check "PBS: impl"                             "inline"     "$(jq -r '.packets[0].impl' "$PBSOUT")"
+check "PBS: end is the commit's own author date" "2026-07-21T10:00:03Z" \
+  "$(jq -r '.packets[0].end' "$PBSOUT")"
+check "PBS: tool_calls stays measured (window (start,end])" "1" \
+  "$(jq -r '.packets[0].tool_calls' "$PBSOUT")"
+check "PBS: not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBSOUT")"
+check "PBS: not flagged swept"                "false" "$(jq -r '.packets[0].swept' "$PBSOUT")"
+
+echo "== packet-bundling T1: a commit with MULTIPLE [orch packet:] trailers emits one row per trailer =="
+# Same events/transcripts as the top-of-file single-trailer fixture (S1,
+# feat-001/feat-002 -- see "collect (full: ...)" above, whose totals are pinned
+# there: totals.tool_calls=5, totals.packets=2, tokens 540/270/300/2800,
+# duration_ms=150, unattributed_tool_calls=1), but landed as ONE commit
+# carrying BOTH trailers plus one shared [orch tier:]/[orch impl:] pair -- a
+# bundled landing of two tasks in one commit. Proves a bundled commit now
+# reads as N packet rows (message order), each labelled, with the derived
+# per-packet fields carried on the first and nulled (not zeroed) on every
+# sibling, while the RUN-LEVEL totals -- which sum over the whole event
+# window, not over packet rows -- are unaffected by how the work was split
+# into commits.
+PBREPO="$ROOT/pb-repo"; mkdir -p "$PBREPO/.agents/metrics/events"
+git -C "$PBREPO" init -q; git -C "$PBREPO" config user.email t@t; git -C "$PBREPO" config user.name t
+cp "$EV" "$PBREPO/.agents/metrics/events/S1.jsonl"
+echo bundled >> "$PBREPO/log.txt"; git -C "$PBREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:06Z" GIT_COMMITTER_DATE="2026-07-21T10:00:06Z" \
+  git -C "$PBREPO" commit -q -m "work
+
+[orch packet:feat-001]
+[orch packet:feat-002]
+[orch tier:integration]
+[orch impl:delegated]"
+PBOUT="$ROOT/pb-run.json"
+"$METRICS" collect --main-root "$PBREPO" --projects-dir "$PROJ" --out "$PBOUT" >/dev/null 2>&1
+check "PB: exactly one row per trailer"      "2" "$(jq -r '.packets|length' "$PBOUT")"
+check "PB: row order is message order"       "feat-001 feat-002" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$PBOUT")"
+check "PB: first row tier labelled"          "integration" "$(jq -r '.packets[0].tier' "$PBOUT")"
+check "PB: first row impl labelled"          "delegated"   "$(jq -r '.packets[0].impl' "$PBOUT")"
+check "PB: sibling row tier ALSO labelled"   "integration" "$(jq -r '.packets[1].tier' "$PBOUT")"
+check "PB: sibling row impl ALSO labelled"   "delegated"   "$(jq -r '.packets[1].impl' "$PBOUT")"
+check "PB: sibling end carries the commit's own author date, not null" \
+  "2026-07-21T10:00:06Z" "$(jq -r '.packets[1].end' "$PBOUT")"
+check "PB: first row's window is measured (real tool_calls)" "4" \
+  "$(jq -r '.packets[0].tool_calls' "$PBOUT")"
+check "PB: sibling tool_calls is null, not 0"     "null" "$(jq -r '.packets[1].tool_calls' "$PBOUT")"
+check "PB: sibling active_seconds is null, not 0" "null" "$(jq -r '.packets[1].active_seconds' "$PBOUT")"
+check "PB: sibling duration_ms is null, not 0"    "null" "$(jq -r '.packets[1].duration_ms' "$PBOUT")"
+check "PB: sibling by_agent is null"              "null" "$(jq -r '.packets[1].by_agent' "$PBOUT")"
+check "PB: sibling by_tool is null"               "null" "$(jq -r '.packets[1].by_tool' "$PBOUT")"
+check "PB: sibling edits is null"                 "null" "$(jq -r '.packets[1].edits' "$PBOUT")"
+check "PB: sibling by_command_class is null"      "null" "$(jq -r '.packets[1].by_command_class' "$PBOUT")"
+check "PB: sibling failed_tool_calls is null"     "null" "$(jq -r '.packets[1].failed_tool_calls' "$PBOUT")"
+check "PB: sibling human_interactions is null"    "null" "$(jq -r '.packets[1].human_interactions' "$PBOUT")"
+check "PB: sibling dispatched is null"            "null" "$(jq -r '.packets[1].dispatched' "$PBOUT")"
+check "PB: sibling tokens is null"                "null" "$(jq -r '.packets[1].tokens' "$PBOUT")"
+check "PB: sibling audit.orchestrator_impl_edits is null too" "null" \
+  "$(jq -r '.packets[1].audit.orchestrator_impl_edits' "$PBOUT")"
+check "PB: sibling carries the shared-boundary audit flag" "1" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBOUT")"
+check "PB: first row does NOT carry the shared-boundary flag" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBOUT")"
+# This fixture carries impl:delegated -- a sibling's window is always zero-width
+# ($impl_dispatched derives from that window, so it reads false), which without
+# the null-scoped flag filter would falsely accuse every delegated sibling of
+# contradicting its own label. The label itself is not window-derived (it is the
+# commit's trailer), so it must not be flagged from an interval this row already
+# declares unmeasured.
+check "PB: sibling does NOT carry a false label-contradiction flag" "0" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(startswith("label-contradiction:"))]|length' "$PBOUT")"
+check "PB: sibling is not also flagged swept (a different unmeasured cause)" "false" \
+  "$(jq -r '.packets[1].swept' "$PBOUT")"
+check "PB: totals.packets matches the single-trailer fixture's"      "2"   "$(jq -r '.totals.packets' "$PBOUT")"
+check "PB: totals.tool_calls matches the single-trailer fixture's"   "5"   "$(jq -r '.totals.tool_calls' "$PBOUT")"
+check "PB: totals.tokens.input matches the single-trailer fixture's" "540" "$(jq -r '.totals.tokens.input' "$PBOUT")"
+check "PB: totals.tokens.output matches the single-trailer fixture's" "270" "$(jq -r '.totals.tokens.output' "$PBOUT")"
+check "PB: totals.tokens.cache_creation matches the single-trailer fixture's" "300" \
+  "$(jq -r '.totals.tokens.cache_creation' "$PBOUT")"
+check "PB: totals.tokens.cache_read matches the single-trailer fixture's" "2800" \
+  "$(jq -r '.totals.tokens.cache_read' "$PBOUT")"
+check "PB: totals.duration_ms matches the single-trailer fixture's"  "150" "$(jq -r '.totals.duration_ms' "$PBOUT")"
+check "PB: totals.unattributed_tool_calls matches the single-trailer fixture's" "1" \
+  "$(jq -r '.totals.unattributed_tool_calls' "$PBOUT")"
+
+echo "== packet-bundling T1: same-second single-trailer commits sort deterministically =="
+# Two UNRELATED single-trailer commits (both seq==1, so they tie on [end, seq])
+# landing in the same author-date second must not depend on the awk dedup's
+# hash-order iteration for their final order -- that is exactly the
+# byte-identical-for-a-single-trailer-commit guarantee this feature promises.
+# Landed id "same-sec-z" BEFORE "same-sec-a" so a hash-order regression would
+# be free to put z first; the .id tie-break must put a first regardless.
+TOREPO="$ROOT/to-repo"; mkdir -p "$TOREPO/.agents/metrics/events"
+git -C "$TOREPO" init -q; git -C "$TOREPO" config user.email t@t; git -C "$TOREPO" config user.name t
+# An events log is required to bound the trailer scan window (win_start/win_end):
+# with no events, collection falls back to `<integration_branch>..HEAD`, which is
+# empty here (this repo has only one branch), so the commits below would never be
+# seen at all.
+cat > "$TOREPO/.agents/metrics/events/S1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:08Z","session_id":"S1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"cmd_class":"git status"}
+JSON
+echo z >> "$TOREPO/log.txt"; git -C "$TOREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$TOREPO" commit -q -m "work z
+
+[orch packet:same-sec-z]"
+echo a >> "$TOREPO/log.txt"; git -C "$TOREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$TOREPO" commit -q -m "work a
+
+[orch packet:same-sec-a]"
+TOOUT="$ROOT/to-run.json"
+"$METRICS" collect --main-root "$TOREPO" --projects-dir "$ROOT/none" --out "$TOOUT" >/dev/null 2>&1
+check "TO: same-second single-trailer commits sort by id, not hash order" "same-sec-a same-sec-z" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$TOOUT")"
+check "TO: neither same-second row is flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[]|.audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$TOOUT")"
+
 echo "== loop-measurement M1: one malformed ts anywhere does not zero every outcome =="
 # ts_ms runs unconditionally over EVERY record in the outcomes log before any
 # window filter narrows it; fromdateiso8601 THROWS on an unparseable value, and

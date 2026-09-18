@@ -131,6 +131,16 @@ right now — stop the same way, with the same exit call; a resume that starts
 driving beside it puts two drivers in one checkout. Both checks are no-ops
 without a gspec project.
 
+**Resume runs no capability-drift scan of its own** — it neither repeats
+`run-loop` §1's drifted-completion-record scan nor its drifted-capability-checkbox
+scan. The `adopt` path in §2 below reconciles the one case a crash can leave —
+an orphan commit that landed a capability's last covering task but never
+recorded it — as part of adopting that commit; any capability finished mid-run
+but not by an adopted commit is left for the resumed run's own `run-loop` §4
+end-of-run scan to reconcile when it terminates. That is the only phrasing of
+the rule this file carries — reconciling judgeable drift is the loop's job,
+never the human's, and this file assigns it nowhere else.
+
 Read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status`,
 `branch`, `last_green_commit`, `backlog.cursor`/`pending`, and
 `pending_questions`.
@@ -282,9 +292,46 @@ Act on the `DECISION=` it prints:
   real usage error §3.6 treats as grounds to stop before committing — here
   the commit is already made, so instead **escalate to the human** naming
   the member, since an already-landed trailer failing `check-task` this way
-  is not expected and should not be guessed past). Commit any flips you had
-  to make as one small commit covering every member that needed one — the
-  orphan commit is already recorded, so amending it would rewrite history.
+  is not expected and should not be guessed past). Note any exit-0
+  `CHECKED=<feature>#T<n>` line as you go — the capability step just below
+  needs it.
+
+  **Complete the feature's capabilities.** Once every member above has been
+  flipped or drifted, run `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh
+  complete-capabilities <slug>` once for the adopted feature — an adopted
+  commit is always one feature, same as a fresh land. Take the slug from any
+  member's own `CHECKED=<feature>#T<n>` line noted above; when none was
+  printed (every member read `CHECKED=already` or `CHECKED=none`), fall back
+  to the cursor's own `FEATURE=` line in `$RUN_DIR/<cursor>/handoff.md`, the
+  same fallback §3.6 uses for a fresh land. Skip the call entirely when every
+  member read `CHECKED=none` — the non-gspec case, with no capability to
+  complete. On exit 0 with a `FILE=` line, stage that PRD. On exit 4, exit 1,
+  or anything else, report it by name — never escalate for this, and never
+  change anything already decided above — then, since no `FILE=` line is ever
+  printed on a failure, restore the PRD with `git checkout HEAD -- <path>`,
+  taking `<path>` from the `PRD=` line in `$RUN_DIR/<cursor>/handoff.md`, the
+  same file the `FEATURE=` fallback above already reads, so a partial write
+  from the failed call never rides into the commit below.
+
+  **Commit the flips.** When the per-member loop above already needed its
+  own follow-up commit, stage this capability flip's PRD into that same
+  commit before making it. When it did not, but this step flipped a
+  capability anyway, make a small commit for the capability flip alone. When
+  neither flipped anything, make no commit here. Either way — task flips and
+  capability flip together when combined, or the capability flip alone —
+  that commit uses the reconciliation form (the same form `run-loop`
+  §1/§4 use for preflight and end-of-run reconciliation) with site `adopt`:
+  `spec: reconcile capability record (adopt)`. It is **never an amend of the
+  orphan commit** — the orphan commit is already recorded, so amending it
+  would rewrite history, the same reason the task-flip commit above is never
+  an amend — and it carries **no `[orch packet:]` trailer**, so run metrics
+  count no packet for it. A failure in the call or in this commit is
+  reported by name as stated above — never escalated, never halting — and
+  never changes the `green` attestation below: the packet already landed
+  regardless of whether its capability could be flipped, so a crash between
+  landing and recording this leaves no capability drift either — the
+  resumed run's own §4 end-of-run scan finds nothing left to reconcile.
+
   **Attest the outcome** — it landed, just was not recorded, for every
   member in one call: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
   record-outcome "$MEMBERS" green`. Set `cursor` to whatever entry remains

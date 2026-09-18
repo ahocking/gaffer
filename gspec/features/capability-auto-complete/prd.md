@@ -98,7 +98,7 @@ something.
     case each for the non-gspec skip, the malformed argument and the
     unresolvable slug.
 
-- [ ] **P0**: A capability completes in the same commit as the task that completes it
+- [x] **P0**: A capability completes in the same commit as the task that completes it
   - When a packet lands, the loop runs the capability flip for the landed
     feature after the per-task flips, and stages the PRD into that one packet
     commit. A bundle is handled the same way, after every member's task flip.

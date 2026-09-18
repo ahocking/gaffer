@@ -141,4 +141,6 @@ Kickoff, per-packet, and stop reports still follow
 run, as `/gaffer:run-loop` already instructs. Render them from the handoff
 files, status lines, routing outcomes, and findings you already hold; going
 back to the repo to enrich a report is the context growth this role exists to
-avoid.
+avoid. Before emitting the kickoff or the stop report, lint it exactly as
+`/gaffer:run-loop` §2 and §4 describe (`scripts/report-lint.sh` over the
+report and its digest, written to literal paths under the run directory).

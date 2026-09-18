@@ -252,6 +252,22 @@ backlog gets near, the autonomy level, and where the run stops. Emit it
 **`interactive`**, the kickoff is also the approval request: emit it and
 wait.
 
+**Lint the kickoff before you emit it.** Write the digest you rendered from
+and the rendered kickoff to two files in the run directory, naming each by
+the `RUN_DIR=` value `begin-run` just printed, **written out literally** —
+never `$RUN_DIR` or any other variable, which driver mode refuses because it
+cannot prove where the write lands: `runstate.sh run-digest
+.agents/run-state.yaml > <RUN_DIR>/kickoff-digest.tsv`, and the kickoff to
+`<RUN_DIR>/kickoff.md`. Then run
+`${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape C <RUN_DIR>/kickoff.md
+<RUN_DIR>/kickoff-digest.tsv` (both paths literal). It prints
+`REPORT_LINT=clean`, `REPORT_LINT=findings n=<k>` followed by one
+`FINDING=<rule>\t<line>\t<detail>` per finding, or `REPORT_LINT=unjudged`
+with a `REASON=`, and exits 0 on every path. On findings, correct the lines
+they name **at most once**, then emit — never re-lint in a loop. A finding
+records nothing, blocks nothing, rolls back nothing, flips nothing and halts
+nothing. Read the result exactly as §4 states it for the stop report.
+
 ## 3. Loop — for the packet at `backlog.cursor`
 
 1. **Branch.** Create (or switch to) the packet's feature branch:
@@ -870,6 +886,14 @@ wait.
   branch), the single recommended next action, and `branch <orch/task-id>`
   ready for review as the state line.
 
+  **Its four digest-derived tally figures come from `runstate.sh run-tally
+  .agents/run-state.yaml`, and you compute none of them.** It prints
+  `SHIPPED=`, `FAILED=`, `UNFINISHED=` and `DECISIONS=` in the fixed tally
+  order — ✅, ⛔, ⚠️ and 🔀 respectively — counted by the core from the same
+  whole-run digest, with the 🔀 dedup already applied; render each as
+  printed, never recounted from the `packet` or `decision` lines. ⬚ queued is
+  not one of them: it stays the `N pending` from `runstate.sh summary`.
+
   **Naming a landed bundle in that report.** `run-digest` still emits
   exactly one `packet` line per packet the run began — a bundle's several
   members share the one directory keyed to its own id, `<cursor>` — so it
@@ -933,6 +957,29 @@ wait.
   `interrupted`, `abandoned` — never committed, so there is no trailer to
   recover its membership from; render it exactly as `run-digest` gives it,
   by its packet id and its own (cursor) title, same as any other packet.
+
+  **Lint the stop report before you emit it**, once it is fully rendered
+  (bundles included), the same way §2 lints the kickoff: write the digest
+  you rendered from to `<RUN_DIR>/stop-digest.tsv` (`runstate.sh run-digest
+  .agents/run-state.yaml > <RUN_DIR>/stop-digest.tsv`) and the rendered
+  report to `<RUN_DIR>/stop-report.md`, with `<RUN_DIR>` the value
+  `begin-run` printed **written out literally**, never a variable — then run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape B
+  <RUN_DIR>/stop-report.md <RUN_DIR>/stop-digest.tsv`. On findings, correct
+  the lines they name **at most once**, then emit; never re-lint in a loop.
+  A finding records nothing, blocks nothing, rolls back nothing, flips
+  nothing and halts nothing — the run's outcome and `status` are already
+  settled above.
+
+  **How to read the lint's result — here and at §2's kickoff.**
+  `REPORT_LINT=clean` means *no mechanical rule was broken*; it never means
+  the report conforms to the contract. `REPORT_LINT=unjudged` is **not**
+  clean: the check could not look, and its `REASON=` says why. The lint does
+  not judge whether a consequence clause states a consequence rather than an
+  argument, whether the kickoff's assumption is the one most likely to be
+  wrong, whether a title is a good plain-English title rather than merely
+  present, or prose quality generally — the reviewer is the gate for all of
+  them.
 
   **Then `runstate.sh driver-mode exit` — immediately after every stop
   report, no exceptions.**

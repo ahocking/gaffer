@@ -3016,6 +3016,309 @@ check 'feature-folder/unrecognized: the run summary counts only the quote -- no 
   'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
 
 # =============================================================================
+# complete-capabilities (capability-auto-complete-t1). WRITE. Output contract:
+#   COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#   COMPLETED=<slug>\t<capability text>   (n lines, PRD order)
+#   FILE=<relprd>
+#   REASON=...                            (blocked / none / unresolved)
+# Flips a capability iff capability-drift would have printed DRIFT= for it;
+# never an uncovered-capability or unrecognized-capability row; never unflips
+# a checked one; an UNCHECKED task with an unmatched covers: quote holds
+# EVERY flip in the feature, while the same quote on an already-CHECKED task
+# holds nothing. `_capability_drift_for`/`cmd_capability_drift` are untouched
+# by this -- verified below by re-running capability-drift over one of these
+# same fixtures and checking its output against what its own sweep above
+# already expects.
+printf '\n== complete-capabilities: no gspec/ at all exits 0 with COMPLETE_CAPABILITIES=none (skip, D4) ==\n'
+R="$TMPROOT/cc-none"; mkdir -p "$R"
+out="$("$ADAPTER" complete-capabilities anything "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+check 'and explains why' 'REASON=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0 with no gspec/' || bad 'exits 0 with no gspec/' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug is a usage error, distinct from the skip (flat layout present) ==\n'
+R="$TMPROOT/cc-malformed-flat"; mkdir -p "$R/gspec/features"
+out="$("$ADAPTER" complete-capabilities '../evil' "$R" 2>&1)"; rc=$?
+check 'refuses with a named reason' 'refusing a feature slug' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1 on a malformed slug' || bad 'exits 1 on a malformed slug' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug is a usage error, distinct from the skip (feature-folder layout present) ==\n'
+R="$TMPROOT/cc-malformed-v2"; mkdir -p "$R/gspec/features"
+out="$("$ADAPTER" complete-capabilities 'foo/bar' "$R" 2>&1)"; rc=$?
+check 'refuses with a named reason' 'refusing a feature slug' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1 on a malformed slug' || bad 'exits 1 on a malformed slug' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug in a NON-gspec repo still reads as the skip, not the usage error ==\n'
+R="$TMPROOT/cc-malformed-nogspec"; mkdir -p "$R"
+out="$("$ADAPTER" complete-capabilities '../evil' "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none, same as any other gspec-optional case' \
+  'COMPLETE_CAPABILITIES=none' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0 -- gspec-optional wins over the slug guard' \
+  || bad 'exits 0 -- gspec-optional wins over the slug guard' "rc=$rc"
+
+printf '\n== complete-capabilities: an unresolvable slug fails distinguishably from the skip (flat layout present) ==\n'
+R="$TMPROOT/cc-unresolvable-flat"; mkdir -p "$R"
+mk_prd "$R" someother-flat 0 1
+out="$("$ADAPTER" complete-capabilities nosuchfeature "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+check 'and explains why' 'REASON=' "$out"
+[ "$rc" -eq 4 ] && ok 'exits 4, distinct from the skip exit 0' \
+  || bad 'exits 4 on an unresolvable slug' "rc=$rc"
+
+printf '\n== complete-capabilities: an unresolvable slug fails distinguishably from the skip (feature-folder layout present) ==\n'
+R="$TMPROOT/cc-unresolvable-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" someother-v2 0 1
+out="$("$ADAPTER" complete-capabilities nosuchfeature "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+[ "$rc" -eq 4 ] && ok 'exits 4, distinct from the skip exit 0' \
+  || bad 'exits 4 on an unresolvable slug' "rc=$rc"
+
+# =============================================================================
+printf '\n== complete-capabilities: the two-capability fixture, flat layout (mk_prd/mk_plan) ==\n'
+# Same shape as capability-drift's own two-capability fixture: the capability
+# whose covering tasks are all checked is flipped and named; the one with an
+# unchecked covering task is untouched and absent.
+R="$TMPROOT/cc-main-flat"; mkdir -p "$R"
+mk_prd "$R" cc-main-flat 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" cc-main-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" complete-capabilities cc-main-flat "$R" 2>&1)"; rc=$?
+check 'the fully-checked-covered capability is flipped and named' \
+  "$(printf 'COMPLETED=cc-main-flat\topen capability 1')" "$out"
+refute 'the mid-flight capability is never named' 'open capability 2' "$out"
+check 'the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+prd_after="$(cat "$R/gspec/features/cc-main-flat.md")"
+check 'the flipped capability now reads checked in the PRD' \
+  '- [x] **P1**: open capability 1' "$prd_after"
+check 'the mid-flight capability is still unchecked in the PRD' \
+  '- [ ] **P1**: open capability 2' "$prd_after"
+
+printf '\n== complete-capabilities: the two-capability fixture, feature-folder layout (mk_prd_v2/mk_plan_v2) ==\n'
+R="$TMPROOT/cc-main-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cc-main-v2 0 2
+mk_plan_v2 "$R" cc-main-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" complete-capabilities cc-main-v2 "$R" 2>&1)"; rc=$?
+check 'feature-folder layout: the fully-checked-covered capability is flipped and named' \
+  "$(printf 'COMPLETED=cc-main-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the mid-flight capability is never named' 'open capability 2' "$out"
+check 'feature-folder layout: the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'feature-folder layout: exits 0' || bad 'feature-folder layout: exits 0' "rc=$rc"
+prd_after="$(cat "$R/gspec/features/cc-main-v2/prd.md")"
+check 'feature-folder layout: the flipped capability now reads checked in the PRD' \
+  '- [x] **P1**: open capability 1' "$prd_after"
+check 'feature-folder layout: the mid-flight capability is still unchecked in the PRD' \
+  '- [ ] **P1**: open capability 2' "$prd_after"
+
+# =============================================================================
+printf '\n== complete-capabilities: an uncovered capability never flips ==\n'
+R="$TMPROOT/cc-uncovered"; mkdir -p "$R"
+mk_prd "$R" cc-uncovered 0 1
+mk_plan "$R" cc-uncovered <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-uncovered "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched' \
+  || bad 'the PRD is untouched' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== complete-capabilities: an unrecognized-capability line never flips ==\n'
+R="$TMPROOT/cc-unrecognized"; mkdir -p "$R"
+mk_prd "$R" cc-unrecognized 0 0
+cat >> "$R/gspec/features/cc-unrecognized.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan "$R" cc-unrecognized <<'EOF'
+- [x] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-unrecognized "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched' \
+  || bad 'the PRD is untouched' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
+printf '\n== complete-capabilities: an UNCHECKED task with an unmatched covers quote holds an otherwise-eligible flip ==\n'
+# Capability A ("open capability 1") is fully covered by a checked task, which
+# alone would flip it -- but a SECOND, unchecked task in the same feature has
+# a covers: quote matching no capability at all. The flip rule holds every
+# flip in the feature until that is fixed.
+R="$TMPROOT/cc-hold"; mkdir -p "$R"
+mk_prd "$R" cc-hold 0 1   # "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R" cc-hold <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** an unchecked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-hold "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing -- holds the whole feature' \
+  'COMPLETE_CAPABILITIES=blocked completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'still exits 0 -- a hold is reported, not a failure' \
+  || bad 'exits 0 when held' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched while the hold is in effect' \
+  || bad 'the PRD is untouched while the hold is in effect' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== complete-capabilities: the SAME unmatched quote on an already-CHECKED task does not hold the flip (converse) ==\n'
+R="$TMPROOT/cc-hold-converse"; mkdir -p "$R"
+mk_prd "$R" cc-hold-converse 0 1
+mk_plan "$R" cc-hold-converse <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** a CHECKED task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" complete-capabilities cc-hold-converse "$R" 2>&1)"; rc=$?
+check 'flips the capability normally -- a checked task with a bad quote holds nothing' \
+  "$(printf 'COMPLETED=cc-hold-converse\topen capability 1')" "$out"
+check 'the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+# =============================================================================
+printf '\n== complete-capabilities: a checked capability with an unchecked covering task stays checked ==\n'
+R="$TMPROOT/cc-stays-checked"; mkdir -p "$R"
+mk_prd "$R" cc-stays-checked 1 0   # "- [x] **P0**: done capability 1\n  - criterion\n"
+mk_plan "$R" cc-stays-checked <<'EOF'
+- [ ] **T1** an unchecked task covering an already-done capability
+  - deps: —
+  - covers: done capability 1
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-stays-checked "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'never unflips it, and never reports it' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched -- the checked box never moves' \
+  || bad 'the PRD is untouched -- the checked box never moves' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
+printf '\n== complete-capabilities: reverting the flipped line yields a PRD byte-identical to the original ==\n'
+R="$TMPROOT/cc-revert"; mkdir -p "$R"
+mk_prd "$R" cc-revert 0 2
+mk_plan "$R" cc-revert <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+ORIGINAL_SUM="$(cksum < "$R/gspec/features/cc-revert.md")"
+out="$("$ADAPTER" complete-capabilities cc-revert "$R" 2>&1)"
+check 'flips the one eligible capability' 'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+sed -i.bak 's/- \[x\] \*\*P1\*\*: open capability 1/- [ ] **P1**: open capability 1/' \
+  "$R/gspec/features/cc-revert.md" && rm -f "$R/gspec/features/cc-revert.md.bak"
+REVERTED_SUM="$(cksum < "$R/gspec/features/cc-revert.md")"
+[ "$ORIGINAL_SUM" = "$REVERTED_SUM" ] \
+  && ok 'reverting the flipped checkbox restores the original file byte-for-byte' \
+  || bad 'reverting the flipped checkbox restores the original file byte-for-byte' \
+      "original: $ORIGINAL_SUM
+reverted: $REVERTED_SUM"
+
+# =============================================================================
+printf '\n== complete-capabilities: a second run names nothing and is byte-identical to the first run result ==\n'
+R="$TMPROOT/cc-noop-second"; mkdir -p "$R"
+mk_prd "$R" cc-noop-second 0 2
+mk_plan "$R" cc-noop-second <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out1="$("$ADAPTER" complete-capabilities cc-noop-second "$R" 2>&1)"
+check 'the first run flips the one eligible capability' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out1"
+FIRST_SUM="$(cksum < "$R/gspec/features/cc-noop-second.md")"
+out2="$("$ADAPTER" complete-capabilities cc-noop-second "$R" 2>&1)"
+SECOND_SUM="$(cksum < "$R/gspec/features/cc-noop-second.md")"
+check 'the second run names nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out2"
+refute 'the second run names no completion' 'COMPLETED=' "$out2"
+[ "$FIRST_SUM" = "$SECOND_SUM" ] \
+  && ok 'the file is byte-identical to the first run result' \
+  || bad 'the file is byte-identical to the first run result' \
+      "after first run:  $FIRST_SUM
+after second run: $SECOND_SUM"
+
+# =============================================================================
+printf '\n== complete-capabilities: capability-drift over the same fixture is unaffected by the write subcommand existing ==\n'
+R="$TMPROOT/cc-drift-unaffected"; mkdir -p "$R"
+mk_prd "$R" cc-drift-unaffected 0 2
+mk_plan "$R" cc-drift-unaffected <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+expected="$(printf 'DRIFT=cc-drift-unaffected\topen capability 1\nCAPABILITY_DRIFT=attention drift=1 unjudgeable=0')"
+[ "$out" = "$expected" ] && ok 'capability-drift output is byte-identical to the pre-subcommand shape' \
+  || bad 'capability-drift output is byte-identical to the pre-subcommand shape' "got:
+$out
+want:
+$expected"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

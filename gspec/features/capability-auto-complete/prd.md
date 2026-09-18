@@ -50,7 +50,7 @@ something.
 - Running that subcommand inside the packet commit, and on the resume path that
   adopts an orphaned landed commit.
 - Reconciling drift at the preflight and end-of-run scans, as a separate commit
-  outside any packet.
+  outside any packet, and naming each feature it holds back.
 - Sweep cases for every flip and no-flip judgement.
 - Updating the standing prose that assigns reconciliation to the human.
 
@@ -144,6 +144,31 @@ something.
     ADR revisions are kept: it is dated and marked as reversed, never deleted.
     Wherever that reasoning is kept, a pointer to this feature records the
     reversal and its justification.
+
+- [ ] **P0**: A feature the loop cannot complete yet is still named
+  - When the capability-completion subcommand holds a feature back, because an
+    unchecked task's `covers:` quote matches no capability, the loop names that
+    feature with the subcommand's reason: once in the kickoff, using the
+    existing per-row alert line form, and once in the stop report's next-steps
+    section on the backlog-complete path, as an unglyphed line. Before this
+    feature the drift scan named these rows; the flip rule's hold-back made
+    them silent.
+  - Neither site flips, restores or commits anything for a held feature.
+  - The `run-loop` prose, the `resume` prose and the ADR 0025 revision each
+    describe a held feature the same way: named, never flipped, with the
+    capability-completion subcommand's reason.
+
+- [ ] **P0**: Follow-up correctness fixes from the end-of-run review
+  - When no task handoff exists for the adopted packet (the file that names the
+    landed feature), the `resume` adopt path skips capability completion, and
+    the end-of-run scan reconciles.
+  - The capability-completion subcommand handles a PRD file with no trailing
+    newline, and a sweep case covers it.
+  - The prose is corrected in three places: the land step (§3.6) and the
+    `resume` adopt path describe staging the PRD in the same terms; the
+    "CHECKED=none" parenthetical no longer says it means only the non-gspec
+    case, since exit-4 drift prints it too; and the §3.6 failure restore states
+    why it restores from the index rather than from HEAD.
 
 ## Dependencies
 

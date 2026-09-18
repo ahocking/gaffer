@@ -7,18 +7,14 @@ feature: capability-auto-complete
 
 **The adapter lands first, alone, and every prose task calls what it shipped.** All capability writing lives in one new `scripts/gspec-backlog.sh` subcommand. That script is the only place this plugin reads or writes `gspec/` (ADR 0020). The three loop sites and the adopt path are then prose that pipes its output. A prose task written before T1 would describe a command that does not exist yet. That is why every other task depends on T1.
 
-**The subcommand is `complete-capabilities <slug> [root]`, and it settles the PRD's deferred naming.** It prints one `COMPLETED=<slug>\t<capability text>` line per box it flips. That is deliberately the same two-field shape as `capability-drift`'s `DRIFT=` line, so the kickoff and the stop report render a flip with the line form they already use for a drift row. When at least one box was flipped it also prints `FILE=<relative prd path>`, which is the only signal a caller uses to stage anything. It ends with one of these summary lines:
-- `CAPABILITIES=flipped n=<k>`
-- `CAPABILITIES=unchanged`
-- `CAPABILITIES=held reason=unmatched-quote`
-- `CAPABILITIES=none` plus a `REASON=` line.
+**The subcommand is `complete-capabilities <slug> [root]`, and it settles the PRD's deferred naming.** It prints one `COMPLETED=<slug>\t<capability text>` line per box it flips. That is deliberately the same two-field shape as `capability-drift`'s `DRIFT=` line, so the kickoff and the stop report render a flip with the line form they already use for a drift row. As shipped (T1), it opens with the summary line `COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>`, prints `FILE=<relative prd path>` whenever the feature resolved (even at `completed=0`), and adds a `REASON=` line for `blocked`, `none` and unresolved slugs. `completed=<n>` with `n` greater than 0 is the signal a caller stages on (T7 aligns §3.6 to it). `blocked` is the feature-wide hold for an unchecked task's unmatched quote.
 
 Exit codes mirror `check-task`:
 - 0 for the non-gspec skip;
 - 1 for a missing or malformed slug;
 - 4 for a slug that resolves to no PRD in any layout. This is the distinguishable failure.
 
-A PRD with no plan file is not a failure. It has no covering task, so the call exits 0 with `CAPABILITIES=unchanged`.
+A PRD with no plan file is not a failure. It has no covering task, so the call exits 0 with `COMPLETE_CAPABILITIES=ok completed=0`.
 
 **The flip rule reuses the drift derivation, and it is narrower than the drift report in one place.** A capability flips only when it is unchecked, canonically shaped, covered by at least one task, and every task covering it is checked. That is exactly `_capability_drift_for`'s `DRIFT=` condition, reused rather than copied. There is one extra hold, and it is feature-wide: any unchecked task whose `covers:` quote matches nothing flips no capability at all. The drift scan reports `unmatched-quote` for checked tasks as well, but a checked task with a bad quote is frozen history and cannot hide evidence against a flip. So only unchecked tasks hold the feature, and the sweep proves that distinction in both directions. Any refactor that exposes the task's checked bit must leave `capability-drift`'s output byte-identical.
 
@@ -40,9 +36,9 @@ A PRD with no plan file is not a failure. It has no covering task, so the call e
 - `skills/resume/SKILL.md` is T4's alone.
 - `CLAUDE.md`, `docs/adr/0025-remove-backlog-done.md` and `gspec/features/completion-record-drift/prd.md` are T5's alone.
 
-T1, T2, T4 and T5 hold file sets disjoint from each other. Every dep points strictly backwards in the plan order.
+T1, T2, T4 and T5 hold file sets disjoint from each other, and so do T6 (the adapter and its sweep, after T1 shipped), T7 (`run-loop`) and T8 (`resume` and the ADR, after T5 shipped). Every dep points strictly backwards in the plan order.
 
-**`gspec-adapter-consistency` must not be in flight against T1.** It refactors this adapter's shared pattern blocks and adds cases to the same sweep. There is no logical dependency either way, but the two edit the same two files. It has no plan today.
+**`gspec-adapter-consistency` must not be in flight against T1 or T6.** It refactors this adapter's shared pattern blocks and adds cases to the same sweep. There is no logical dependency either way, but the two edit the same two files. It has no plan today.
 
 **Reflexivity.** `scripts/*.sh` take effect mid-run, so the moment T1 lands, a later task in the same run can call `complete-capabilities`. `skills/run-loop/SKILL.md` and `skills/resume/SKILL.md` are read when the command is invoked, so the run that lands T2 to T4 is still driving under the old prose. That run's own end-of-run scan will therefore report this feature's capabilities rather than flip them. The next `/gaffer:run-loop` preflight reconciles them: that is the first run under the new contract. No task touches `hooks/hooks.json`, a settings file that registers hooks, or any agent's or skill's FRONTMATTER, so no packet here owes a `session_boundary` declaration.
 
@@ -75,3 +71,18 @@ Every regression sweep must pass green after every task.
   - covers: The standing wording says the loop reconciles the record
   - arch: —
   - files: CLAUDE.md, docs/adr/0025-remove-backlog-done.md, gspec/features/completion-record-drift/prd.md
+- [ ] **T6** [P] **P0** Make `complete-capabilities` in `scripts/gspec-backlog.sh` handle a PRD with no trailing newline, and prove it in `scripts/test-gspec-backlog.sh` with a fixture whose final line is a flippable capability line with no trailing newline. The case asserts that the capability is flipped and named, that the file still lacks a final newline, and that reverting the flipped line gives a PRD byte-identical to the original by checksum. Model it on the existing `check-task` no-trailing-newline case. The subcommand already carries a `tail -c1` guard, so fix the subcommand only if the new case fails, and leave `capability-drift`'s output and its checksum case untouched.
+  - deps: —
+  - covers: Follow-up correctness fixes from the end-of-run review
+  - arch: —
+  - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
+- [ ] **T7** [P] **P0** Amend `skills/run-loop/SKILL.md` in three sites. First, §1's capability-drift bullet: name each slug whose `complete-capabilities` call returns `COMPLETE_CAPABILITIES=blocked` once in the kickoff, using the existing per-row ⚠️ line form, with that call's `REASON=` text. Second, §4's end-of-run rescan: name each such slug once in the stop report's `▶ Next` section on the backlog-complete path, as an unglyphed line with the same reason. At both sites, state that nothing is flipped, restored or committed for a held feature, and that it is neither a failure nor a flip. Third, §3.6's capability step: stage the PRD only when the summary reads `completed=<n>` with `n` greater than 0, which is the same test §1 and §4 already use, instead of whenever `FILE=` is printed. Rewrite the "`CHECKED=none` — the non-gspec case" skip so it skips only when every member returned `CHECKED=none` at exit 0, because an exit-4 drift member also prints `CHECKED=none` and takes the handoff's `FEATURE=` fallback. Give the failure restore's reason for using `git checkout -- <path>`, which restores from the index, rather than `HEAD`: the index holds anything the packet itself staged, and a HEAD restore would discard it — confirm this reasoning against the actual staging order before writing it down. Prose only, no sweep case. A reviewer checks it by reading §1 and §4 for one held-feature line each, with the adapter's reason and no flip, restore or commit, and by reading §3.6 for the `completed=<n>` staging test, the exit-0-only skip and the stated restore reason.
+  - deps: —
+  - covers: A feature the loop cannot complete yet is still named · Follow-up correctness fixes from the end-of-run review
+  - arch: —
+  - files: skills/run-loop/SKILL.md
+- [ ] **T8** [P] **P0** Bring `skills/resume/SKILL.md`'s adopt path and `docs/adr/0025-remove-backlog-done.md`'s `Revision 2026-09-17` into line with T7. In the adopt path, when no member printed a `CHECKED=<feature>#T<n>` line and `$RUN_DIR/<cursor>/handoff.md` does not exist, skip capability completion entirely, with no call, no restore and no commit, and state that the resumed run's `run-loop` §4 end-of-run scan reconciles it. Describe staging the PRD in the same `completed=<n>` terms as §3.6. Apply the same exit-0-only reading to the "`CHECKED=none` — the non-gspec case" skip. Describe a `blocked` result as a held feature: named with the adapter's `REASON=`, never flipped, and with nothing restored or committed. In the ADR revision, add that same held-feature description beside its unjudgeable-rows bullet: named at the kickoff and at the stop report's next steps, never flipped, with the subcommand's reason. Prose only, no sweep case. A reviewer checks it by reading the adopt path against `skills/run-loop/SKILL.md` §3.6 for identical staging and skip wording and a missing-handoff skip, and by reading the three files for one wording of the held-feature rule.
+  - deps: T7
+  - covers: A feature the loop cannot complete yet is still named · Follow-up correctness fixes from the end-of-run review
+  - arch: —
+  - files: skills/resume/SKILL.md, docs/adr/0025-remove-backlog-done.md

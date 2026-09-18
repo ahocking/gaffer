@@ -202,6 +202,9 @@ this point (it either already did, or §1's reconstruct path just wrote it):
 `run_id` (a run spans sessions, and this one is continuing) while pruning old
 run directories down to the current run and the newest previous one. Calling
 it any earlier, before the checkpoint file is confirmed to exist, would die.
+Capture its `RUN_DIR=` line into `$RUN_DIR` — §4 needs it to check for the
+cursor's own existing `handoff.md` before deciding how to re-form its bundle
+membership.
 
 Switch to the packet's feature branch in the local checkout (idempotent —
 `git switch orch/<task-id>`; the branch already exists from the paused run), then
@@ -252,7 +255,12 @@ Act on the `DECISION=` it prints:
   uses (`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` :69-72) — anchored to
   the whole line so prose elsewhere in the commit body that merely *mentions*
   another packet's trailer cannot be read as a member, and deduplicated so a
-  repeated trailer cannot hand `record-outcome` the same id twice. **If the
+  repeated trailer cannot hand `record-outcome` the same id twice. **A commit
+  predating this trailer convention — one whose `[orch packet:...]` trailers
+  sit inline within prose rather than each on its own line — matches nothing
+  here, so `$MEMBERS` comes back empty and the check below escalates instead
+  of adopting.** That is the intended, safe outcome for a shape this anchored
+  read cannot confirm, not a regression to loosen the anchor for. **If the
   first id in `$MEMBERS` is not `<cursor>` itself, escalate to the human
   instead of adopting** — `reconcile`'s own `orphan_packet_tag` match is
   unanchored and only reads the first hit it finds, so an orphan whose real
@@ -348,27 +356,66 @@ say so in one line — whether anything was adopted or set aside, and whether th
 resumed state matches where they think they left off. If `$ARGUMENTS` carried
 `--relay`/`--inline`, add the one `⚠️` line per flag described above.
 
-**Form the cursor's bundle membership before anything else here** (T7). A
-paused or crashed session's cursor may be a multi-task bundle
-(`packet-bundling`), exactly as a fresh packet's cursor can be — `$MEMBERS`
-is driver-held shell state (the same convention `$SINCE`/`$SWEEP` use) that
-does not survive a crash or a pause on its own, so this session must re-form
-it before the sweep below can know every member to exempt. Form it exactly
-as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.2 does: read the cap
-(`runstate.sh bundle-cap` → `CAP=<n>`), form the candidate group at the
-cursor (`gspec-backlog.sh group <cursor> --cap <n>`), then walk its
-`MEMBER=` lines in that printed (plan) order and judge each one's tier from
-its title exactly as §3.2 judges a fresh packet's — the first one is the
-cursor itself: judging it design-heavy ends the group right there
-(`MEMBERS=<cursor>` alone); otherwise keep walking and stop before the first
-member you would judge design-heavy, dropping it and everything after it. A
-leading `HANDOFF=unknown` from `group` (no gspec, a non-gspec packet, or a
-cursor already checked) means this packet does not bundle at all: set
-`MEMBERS=<cursor>` and decide `tier`/`--agent` for it alone, exactly as you
-would today. Otherwise `MEMBERS` is the comma-joined ids that survive the
-walk, cursor first, in plan order, and `tier`/`--agent` are decided for the
-whole of `MEMBERS` the same way §3.2 decides them. Use `$MEMBERS` everywhere
-below in place of `<cursor>` alone.
+**Form the cursor's bundle membership before anything else here** (T7,
+membership rule settled T9). A paused or crashed session's cursor may be a
+multi-task bundle (`packet-bundling`), exactly as a fresh packet's cursor can
+be — `$MEMBERS` is driver-held shell state (the same convention
+`$SINCE`/`$SWEEP` use) that does not survive a crash or a pause on its own,
+so this session must re-establish it before the sweep below can know every
+member to exempt. **Two paths, tried in this order:**
+
+- **The cursor's own `handoff.md` already exists** (`$RUN_DIR/<cursor>/
+  handoff.md`, from §2) — this session is continuing work a prior session
+  (this one or an earlier one, paused or crashed) already started on this
+  exact cursor, and `record-start` was already called against whatever
+  membership that prior session decided. **Recover that same membership
+  rather than re-deriving it** — re-running `group` here could shrink or
+  grow it (T7's bug: the sweep below would then close members the run had
+  started as `interrupted`, or silently start a member no start record
+  covers). Read the file's own header and body:
+  - `tier:` and `agent:` come straight off its header lines (`grep
+    '^tier:\|^agent:'`) — they were decided once, against this same
+    membership, when the handoff was first written (§3.3); do not re-judge
+    them from titles here.
+  - Membership comes off its body's `BUNDLE=` line (`grep -m1 '^BUNDLE='`).
+    **Its absence means a single-member bundle**: set `MEMBERS=<cursor>`
+    alone, so a bundle cap of 1 — which never writes a `BUNDLE=` line in the
+    first place — behaves exactly as it always has, byte-for-byte.
+
+  Then re-run only the **mechanical refusals**, never the scope/deps/cap
+  judgment `group` applies when forming a bundle fresh — this is recovery,
+  not re-formation. Resolve each non-cursor member's state with
+  `gspec-backlog.sh task-status "$MEMBERS"` (the same read the sweep below
+  already uses for `--gone`): a member whose line reads `finished` (its task
+  was checked off while this session was away — by a hand fix, another
+  branch's merge, anything) or `gone` (re-decomposed out of the plan) drops
+  out of `$MEMBERS`; **the cursor itself is never dropped by this rule**,
+  regardless of what its own line reads. The third mechanical refusal —
+  already routed `hand-off-feature` this run — needs no separate check here:
+  it is caught a few steps below, when the (possibly narrowed) `$MEMBERS` is
+  piped into `gspec-backlog.sh handoff` and its `HANDOFF=refused` line is
+  read exactly as it always is.
+
+- **No `handoff.md` exists yet for the cursor** — nothing was ever started on
+  it (a fresh cursor this session is about to begin, or a crash before the
+  handoff was written), so there is nothing to recover and the group is
+  formed exactly as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.2
+  does: read the cap (`runstate.sh bundle-cap` → `CAP=<n>`), form the
+  candidate group at the cursor (`gspec-backlog.sh group <cursor> --cap
+  <n>`), then walk its `MEMBER=` lines in that printed (plan) order and
+  judge each one's tier from its title exactly as §3.2 judges a fresh
+  packet's — the first one is the cursor itself: judging it design-heavy
+  ends the group right there (`MEMBERS=<cursor>` alone); otherwise keep
+  walking and stop before the first member you would judge design-heavy,
+  dropping it and everything after it. A leading `HANDOFF=unknown` from
+  `group` (no gspec, a non-gspec packet, or a cursor already checked) means
+  this packet does not bundle at all: set `MEMBERS=<cursor>` and decide
+  `tier`/`--agent` for it alone, exactly as you would today. Otherwise
+  `MEMBERS` is the comma-joined ids that survive the walk, cursor first, in
+  plan order, and `tier`/`--agent` are decided for the whole of `MEMBERS`
+  the same way §3.2 decides them.
+
+Use `$MEMBERS` everywhere below in place of `<cursor>` alone.
 
 **Then sweep before recording the packet** (T3, T7, T8): run
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
@@ -417,11 +464,22 @@ anything**, the same check §3.3 runs (T7 — a resumed bundle can legitimately
 carry a member routed `hand-off-feature` earlier in the same run, same as a
 freshly-formed one). Run `gspec-backlog.sh handoff "$MEMBERS"` first and read
 its output. A leading `HANDOFF=unknown` line means some id in `$MEMBERS` does
-not resolve in gspec — this can only be `<cursor>` alone when `$MEMBERS` has
-one member, since `group` already confirmed every other candidate resolves;
-when you have run-state's own task text for this packet instead (a non-gspec
-packet, never a bundle), pipe that in its place. Otherwise **skip the packet
-with no record** — advance the cursor and report the skip.
+not resolve in gspec. When `$MEMBERS` came from the no-`handoff.md` path
+above, this can only be `<cursor>` alone (`$MEMBERS` has one member), since
+`group` already confirmed every other candidate resolves. When `$MEMBERS`
+was instead recovered from an existing `handoff.md`'s `BUNDLE=` line, a
+non-cursor member can reach this too: the mechanical refusal check above only
+drops a member `task-status` reads as `finished` or `gone`, and `task-status`
+is deliberately conservative — it reads several genuinely-gone shapes as
+`unknown` rather than guess (see `gspec-backlog.sh`'s own header comment on
+`task-status`), which `handoff`'s fuller per-id resolution then catches here
+instead. Treat that the same as a non-cursor `HANDOFF=refused` below —
+truncate `$MEMBERS` to the members before it and retry — rather than as the
+single-member case. When `<cursor>` itself is the one that does not resolve
+(either path), and you have run-state's own task text for this packet
+instead (a non-gspec packet, never a bundle), pipe that in its place.
+Otherwise **skip the packet with no record** — advance the cursor and report
+the skip.
 
 A leading `HANDOFF=refused` line (`REASON=hand-off-feature`) means some id in
 `$MEMBERS` was already routed `hand-off-feature` this run — its own

@@ -114,7 +114,7 @@ Every regression sweep must pass green after every task.
   - covers: The stop report consumes the digest-derived figures rather than deriving them
   - arch: —
   - files: templates/report-templates.md, scripts/test-report-conventions.sh
-- [ ] **T4** [P] **P0** In `skills/run-loop/SKILL.md`, update §4's stop report and §2's kickoff, and add the one-sentence pointer below to `agents/loop-driver.md`.
+- [x] **T4** [P] **P0** In `skills/run-loop/SKILL.md`, update §4's stop report and §2's kickoff, and add the one-sentence pointer below to `agents/loop-driver.md`.
 
   §4's stop report takes its four figures from `runstate.sh run-tally .agents/run-state.yaml` and computes none of them. Both §4's stop report and §2's kickoff are linted by the step that rendered them, as stated above:
   - write the digest and the report to literal paths under `.agents/loop/<run_id>/`;

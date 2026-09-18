@@ -3267,6 +3267,71 @@ REVERTED_SUM="$(cksum < "$R/gspec/features/cc-revert.md")"
 reverted: $REVERTED_SUM"
 
 # =============================================================================
+# capability-auto-complete-t6: the same no-trailing-newline guard check-task
+# carries (finding 3 above), on the capability write side. A PRD whose FINAL
+# line is the flippable capability is the only shape that can gain a byte:
+# awk's print always terminates the record it writes, so without the guard a
+# one-character flip would silently append a newline to a file that had none —
+# a whole-file diff on the next reader, and a revert that no longer restores
+# the original bytes.
+printf '\n== complete-capabilities: a PRD with no trailing newline gains no byte ==\n'
+R="$TMPROOT/cc-nonl"; mkdir -p "$R/gspec/features"
+# Hand-built rather than mk_prd: that builder ends every capability with a
+# criterion sub-bullet AND a final newline, and this case needs the flippable
+# capability to be the last line with nothing after it.
+printf -- '---\nspec-version: v1\n---\n\n# Feature: cc-nonl\n\n## Capabilities\n\n- [x] **P0**: done capability 1\n  - criterion\n- [ ] **P1**: open capability 1' \
+  > "$R/gspec/features/cc-nonl.md"
+mk_plan "$R" cc-nonl <<'EOF'
+- [x] **T1** finish the capability on the unterminated final line
+  - deps: —
+  - covers: open capability 1
+EOF
+ORIGINAL_SUM="$(cksum < "$R/gspec/features/cc-nonl.md")"
+before_size="$(wc -c < "$R/gspec/features/cc-nonl.md")"
+out="$("$ADAPTER" complete-capabilities cc-nonl "$R" 2>&1)"; rc=$?
+check 'flips the capability on the unterminated final line' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+check 'and names it' "$(printf 'COMPLETED=cc-nonl\topen capability 1')" "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping a PRD with no trailing newline' \
+  || bad 'exit 0 flipping a PRD with no trailing newline' "rc=$rc"
+grep -qF -- '- [x] **P1**: open capability 1' "$R/gspec/features/cc-nonl.md" \
+  && ok 'the flip itself landed on the final line' \
+  || bad 'the flip itself landed on the final line' "$(cat "$R/gspec/features/cc-nonl.md")"
+after_size="$(wc -c < "$R/gspec/features/cc-nonl.md")"
+[ "$before_size" -eq "$after_size" ] \
+  && ok 'the PRD byte count is unchanged apart from the flip' \
+  || bad 'the PRD byte count is unchanged apart from the flip' "before=$before_size after=$after_size"
+if [ -n "$(tail -c1 "$R/gspec/features/cc-nonl.md")" ]; then
+  ok 'the PRD still lacks a trailing newline'
+else
+  bad 'the PRD still lacks a trailing newline' 'a trailing newline was added'
+fi
+# Reverted WITHOUT `sed -i`, unlike the case above: BSD/macOS sed appends a
+# final newline to a file that had none, which would fail the checksum below
+# for a reason that has nothing to do with the subcommand.
+#
+# The revert must change the checkbox character and NOTHING else, which means
+# it has to reproduce whatever trailing state the subcommand actually left —
+# NOT the state the fixture was written in. Measuring it here rather than
+# assuming it is what keeps the checksum load-bearing: written the other way
+# (strip every trailing newline unconditionally) the revert silently undoes a
+# newline the subcommand wrongly added, and the comparison passes against a
+# subcommand with no guard at all. Verified by deleting the guard: this form
+# fails, the stripping form did not. Safe because the fixture has no trailing
+# blank line, so the post-flip file ends in at most one newline.
+had_nl=0; [ -z "$(tail -c1 "$R/gspec/features/cc-nonl.md")" ] && had_nl=1
+reverted="$(sed 's/- \[x\] \*\*P1\*\*: open capability 1/- [ ] **P1**: open capability 1/' \
+  "$R/gspec/features/cc-nonl.md")"
+{ printf '%s' "$reverted"; if [ "$had_nl" -eq 1 ]; then printf '\n'; fi; } \
+  > "$R/gspec/features/cc-nonl.md"
+REVERTED_SUM="$(cksum < "$R/gspec/features/cc-nonl.md")"
+[ "$ORIGINAL_SUM" = "$REVERTED_SUM" ] \
+  && ok 'reverting the flipped checkbox restores the unterminated PRD byte-for-byte' \
+  || bad 'reverting the flipped checkbox restores the unterminated PRD byte-for-byte' \
+      "original: $ORIGINAL_SUM
+reverted: $REVERTED_SUM"
+
+# =============================================================================
 printf '\n== complete-capabilities: a second run names nothing and is byte-identical to the first run result ==\n'
 R="$TMPROOT/cc-noop-second"; mkdir -p "$R"
 mk_prd "$R" cc-noop-second 0 2

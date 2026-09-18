@@ -1359,6 +1359,35 @@ _rs_check_pkt_id() {
   esac
 }
 
+# --- shared: split + validate a comma-joined packet-id list (packet-bundling T3) -
+# `record-start`, `record-outcome` and `sweep-open --paused-cursor` all take
+# `<id[,id...]>` now, because a bundled packet holds several ids for the ONE
+# boundary it writes/exempts. Prints one validated id per line, in the given
+# order, duplicates kept (a caller that wants dedup does that itself -- none of
+# the three do, a bundle's members are already distinct by construction). Dies
+# via `_rs_check_pkt_id` on the FIRST malformed member, before printing
+# anything -- callers that capture this via `x="$(...)"` (not `local x="$(...)"`,
+# which would swallow the exit status) get that die's exit code propagated by
+# `set -e`, so a boundary is never half-recorded. Splits on a bare comma only
+# (no whitespace form, unlike `_split_ids`/ADR 0024's `--packets`) and the three
+# malformed shapes a comma list can take -- empty, a leading/trailing comma, a
+# doubled comma -- are rejected up front, because `read -a` with IFS=','
+# silently drops a genuinely empty trailing field rather than surfacing it as
+# an empty id.
+_rs_split_pkt_ids() {
+  local raw="$1" id
+  case "$raw" in
+    '') die "packet id list must not be empty" ;;
+    ,*|*,|*,,*) die "packet id list must not contain an empty member" ;;
+  esac
+  local -a parts
+  IFS=',' read -r -a parts <<<"$raw"
+  for id in "${parts[@]}"; do
+    _rs_check_pkt_id "$id"
+    printf '%s\n' "$id"
+  done
+}
+
 # --- shared: resolve the MAIN checkout root from any lane worktree -----------
 # --git-common-dir points at the main repo even from a lane worktree, so every
 # lane resolves to the same one log directory. Prints the root and returns 0,
@@ -1432,18 +1461,37 @@ _rs_append_outcomes_line() {
 # filename as a source of the session id. A terminal record written before this
 # change has no `session` field — readers must treat it as absent, not as an
 # error, and must not assume every line in an old log carries it.
+#
+# BUNDLING (packet-bundling T3): <packet-id> is a comma-joined list. Every
+# member of a bundle that ends non-green gets the SAME outcome, so there is
+# exactly one `outcome` argument for the whole call, applied to every id — one
+# JSON record per id, all sharing one timestamp and one session, so the
+# members of one boundary can never be ordered apart from each other by
+# accident. `_rs_split_pkt_ids` validates every id and dies on the first
+# malformed one BEFORE any record is written (`pkts="$(...)"` below, not
+# `local pkts="$(...)"`, so that die's exit propagates under `set -e`) — a
+# boundary is never half-recorded. A single id is the n=1 case and its output
+# is byte-identical to today.
 cmd_record_outcome() {
-  local pkt="${1:-}" outcome="${2:-}" sess="${3:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
-  [ -n "$pkt" ] && [ -n "$outcome" ] || die "usage: record-outcome <packet-id> <green|failed|rolled-back|blocked|abandoned> [session-id]"
-  _rs_check_pkt_id "$pkt"
+  local pkt_list="${1:-}" outcome="${2:-}" sess="${3:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  [ -n "$pkt_list" ] && [ -n "$outcome" ] || die "usage: record-outcome <packet-id[,id...]> <green|failed|rolled-back|blocked|abandoned> [session-id]"
+  local pkts
+  pkts="$(_rs_split_pkt_ids "$pkt_list")"
   case "$outcome" in
     green|failed|rolled-back|blocked|abandoned) ;;
     *) die "outcome must be one of: green failed rolled-back blocked abandoned" ;;
   esac
-  local line
-  line="$(printf '{"ts":"%s","packet":"%s","session":"%s","outcome":"%s"}' "$(_rs_now_ts)" "$pkt" "$sess" "$outcome")"
-  _rs_append_outcomes_line "$sess" "$line" || return 0
-  printf 'RECORDED=yes\nPACKET=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+  local ts
+  ts="$(_rs_now_ts)"
+  local pkt line
+  while IFS= read -r pkt; do
+    [ -n "$pkt" ] || continue
+    line="$(printf '{"ts":"%s","packet":"%s","session":"%s","outcome":"%s"}' "$ts" "$pkt" "$sess" "$outcome")"
+    _rs_append_outcomes_line "$sess" "$line" || return 0
+    printf 'RECORDED=yes\nPACKET=%s\nOUTCOME=%s\n' "$pkt" "$outcome"
+  done <<EOF
+$pkts
+EOF
 }
 
 # --- record a packet START or CONTINUATION (loop-measurement T1) -------------
@@ -1484,6 +1532,13 @@ cmd_record_outcome() {
 #
 # SESSION ID default: same variable, same rationale, as record-outcome above
 # (`CLAUDE_CODE_SESSION_ID`, not `CLAUDE_SESSION_ID` — see that comment block).
+#
+# BUNDLING (packet-bundling T3): <packet-id> is a comma-joined list, and one
+# start (or, with --continue, one continuation) record is written per member,
+# all sharing a single timestamp and session — the same rule and the same
+# validate-before-write ordering as record-outcome above (see that comment
+# block for why `pkts="$(...)"`, not `local pkts="$(...)"`, is load-bearing).
+# A single id is the n=1 case and its output is byte-identical to today.
 cmd_record_start() {
   # `--continue` may appear anywhere among the args, so scan rather than assume
   # a fixed position: `record-start <pkt> --continue [sess]` and
@@ -1492,16 +1547,23 @@ cmd_record_start() {
   for a in "$@"; do
     if [ "$a" = "--continue" ]; then cont=yes; else args+=("$a"); fi
   done
-  local pkt="${args[0]:-}" sess="${args[1]:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
-  [ -n "$pkt" ] || die "usage: record-start <packet-id> [--continue] [session-id]"
-  _rs_check_pkt_id "$pkt"
+  local pkt_list="${args[0]:-}" sess="${args[1]:-${CLAUDE_CODE_SESSION_ID:-adhoc}}"
+  [ -n "$pkt_list" ] || die "usage: record-start <packet-id[,id...]> [--continue] [session-id]"
+  local pkts
+  pkts="$(_rs_split_pkt_ids "$pkt_list")"
   local kind=start
   [ "$cont" = yes ] && kind=continue
-  local line
-  line="$(printf '{"ts":"%s","packet":"%s","session":"%s","kind":"%s"}' \
-    "$(_rs_now_ts)" "$pkt" "$sess" "$kind")"
-  _rs_append_outcomes_line "$sess" "$line" || return 0
-  printf 'RECORDED=yes\nPACKET=%s\nKIND=%s\n' "$pkt" "$kind"
+  local ts
+  ts="$(_rs_now_ts)"
+  local pkt line
+  while IFS= read -r pkt; do
+    [ -n "$pkt" ] || continue
+    line="$(printf '{"ts":"%s","packet":"%s","session":"%s","kind":"%s"}' "$ts" "$pkt" "$sess" "$kind")"
+    _rs_append_outcomes_line "$sess" "$line" || return 0
+    printf 'RECORDED=yes\nPACKET=%s\nKIND=%s\n' "$pkt" "$kind"
+  done <<EOF
+$pkts
+EOF
 }
 
 # --- shared: portable ISO-8601(Z) [+ optional .fff] -> whole-second epoch ----
@@ -1642,12 +1704,12 @@ EOF
 }
 
 # --- close out packets started but never ended (loop-measurement T3) ---------
-# sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]
+# sweep-open [--list] [--paused-cursor <id[,id...]>] [--gone <id,...>]
 #
-# For each OPEN packet (see _rs_open_packets) except the paused cursor, appends
-# a TERMINAL record — outcome=interrupted, or =abandoned for an id in --gone —
-# using the SAME terminal shape record-outcome writes (T1/T3 fix this format;
-# nothing downstream reshapes it): {"ts":...,"packet":...,"session":...,"outcome":...}.
+# For each OPEN packet (see _rs_open_packets) except a paused-cursor member,
+# appends a TERMINAL record — outcome=interrupted, or =abandoned for an id in
+# --gone — using the SAME terminal shape record-outcome writes (T1/T3 fix this
+# format; nothing downstream reshapes it): {"ts":...,"packet":...,"session":...,"outcome":...}.
 #
 # The record is written into the SWEEPING session's own log file (same
 # resolution/session default as every other writer here), but its `ts` and
@@ -1661,6 +1723,17 @@ EOF
 #
 # --list prints one OPEN=<id> line per open packet and appends NOTHING, so a
 # caller can resolve --gone (via the gspec adapter) before writing anything.
+#
+# BUNDLING (packet-bundling T3): --paused-cursor takes a comma-joined list, so
+# a paused BUNDLE's whole membership stays exempt — before this, only the
+# first member (an exact-string match) was spared, and every other live member
+# would have been swept as `interrupted`, the one outcome reserved for
+# sweep-open alone. Every member is validated with `_rs_check_pkt_id` (via
+# `_rs_split_pkt_ids`, called directly rather than through `$(...)` so its
+# `die` exits the whole process rather than only a subshell) before any row is
+# read, so a malformed cursor member refuses the whole call rather than
+# silently exempting nothing. Membership is `_rs_in_csv`, not `=` — a single
+# id is the n=1 case and behaves exactly as the old exact match did.
 cmd_sweep_open() {
   local do_list=no cursor="" gone_csv=""
   while [ $# -gt 0 ]; do
@@ -1668,15 +1741,16 @@ cmd_sweep_open() {
       --list)
         do_list=yes; shift ;;
       --paused-cursor)
-        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]"
+        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id[,id...]>] [--gone <id,...>]"
         cursor="$2"; shift 2 ;;
       --gone)
-        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]"
+        [ $# -ge 2 ] || die "usage: sweep-open [--list] [--paused-cursor <id[,id...]>] [--gone <id,...>]"
         gone_csv="$2"; shift 2 ;;
       *)
-        die "usage: sweep-open [--list] [--paused-cursor <id>] [--gone <id,...>]" ;;
+        die "usage: sweep-open [--list] [--paused-cursor <id[,id...]>] [--gone <id,...>]" ;;
     esac
   done
+  [ -n "$cursor" ] && _rs_split_pkt_ids "$cursor" >/dev/null
 
   local main_root
   main_root="$(_rs_main_checkout_root)" || die "sweep-open: not a git repo"
@@ -1691,7 +1765,7 @@ cmd_sweep_open() {
   local pkt sess ts
   while IFS="$(printf '\t')" read -r pkt sess ts; do
     [ -n "$pkt" ] || continue
-    [ "$pkt" = "$cursor" ] && continue
+    [ -n "$cursor" ] && _rs_in_csv "$pkt" "$cursor" && continue
 
     if [ "$do_list" = yes ]; then
       printf 'OPEN=%s\n' "$pkt"

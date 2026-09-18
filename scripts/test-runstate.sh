@@ -1074,6 +1074,129 @@ assert_true "resume shape, status running/crash (rule excludes continuing it): t
   "printf '%s\n' \"\$SORC_OUT\" | grep -qx 'SWEPT=crashed-cursor'"
 
 echo
+echo "== packet-bundling T3: comma-joined packet-id lists at each boundary write =="
+# A bundle holds several ids for ONE packet boundary: record-start,
+# record-outcome and sweep-open --paused-cursor must each write/exempt one
+# record per member, sharing a single timestamp and session, and refuse the
+# whole call (nothing appended) when any member is malformed.
+RB="$(mktemp -d)"; git -C "$RB" init -q
+git -C "$RB" config user.email t@t; git -C "$RB" config user.name t
+RB_DIR="$RB/.agents/metrics/outcomes"
+
+# -- record-start: a three-id bundle --
+RBS_OUT="$(cd "$RB" && "$RUNSTATE" record-start bt1,bt2,bt3 S1)"
+assert_true "record-start with a three-id bundle reports RECORDED=yes three times" \
+  "[ \"\$(printf '%s\n' \"\$RBS_OUT\" | grep -c '^RECORDED=yes')\" = 3 ]"
+assert_true "record-start with a three-id bundle reports each member's own PACKET= line" \
+  "printf '%s\n' \"\$RBS_OUT\" | grep -qx 'PACKET=bt1' \
+    && printf '%s\n' \"\$RBS_OUT\" | grep -qx 'PACKET=bt2' \
+    && printf '%s\n' \"\$RBS_OUT\" | grep -qx 'PACKET=bt3'"
+assert_true "record-start with a three-id bundle writes exactly one JSON start line per member" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"start\")] | length' \"$RB_DIR/S1.jsonl\")\" = 3 ]"
+assert_true "each written start record carries its own packet id" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"start\") | .packet] | sort | join(\",\")' \"$RB_DIR/S1.jsonl\")\" = bt1,bt2,bt3 ]"
+assert_true "the three-id bundle's start records share exactly ONE timestamp" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"start\") | .ts] | unique | length' \"$RB_DIR/S1.jsonl\")\" = 1 ]"
+assert_true "the three-id bundle's start records share exactly ONE session" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"start\") | .session] | unique | length' \"$RB_DIR/S1.jsonl\")\" = 1 ]"
+
+# -- record-start --continue: the SAME three ids, all become continuations --
+RBC_OUT="$(cd "$RB" && "$RUNSTATE" record-start bt1,bt2,bt3 --continue S1)"
+assert_true "record-start --continue with a three-id bundle reports KIND=continue three times" \
+  "[ \"\$(printf '%s\n' \"\$RBC_OUT\" | grep -c '^KIND=continue')\" = 3 ]"
+assert_true "record-start --continue with a three-id bundle writes exactly one continuation JSON line per member" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"continue\")] | length' \"$RB_DIR/S1.jsonl\")\" = 3 ]"
+assert_true "each written continuation record carries its own packet id" \
+  "[ \"\$(jq -r -s '[.[] | select(.kind==\"continue\") | .packet] | sort | join(\",\")' \"$RB_DIR/S1.jsonl\")\" = bt1,bt2,bt3 ]"
+
+# -- record-outcome: a three-id bundle gets ONE shared terminal outcome --
+RBO_OUT="$(cd "$RB" && "$RUNSTATE" record-outcome bt1,bt2,bt3 rolled-back S1)"
+assert_true "record-outcome with a three-id bundle reports RECORDED=yes three times" \
+  "[ \"\$(printf '%s\n' \"\$RBO_OUT\" | grep -c '^RECORDED=yes')\" = 3 ]"
+assert_true "record-outcome with a three-id bundle applies the SAME outcome to every member" \
+  "[ \"\$(jq -r -s '[.[] | select(.outcome==\"rolled-back\")] | length' \"$RB_DIR/S1.jsonl\")\" = 3 ]"
+assert_true "each written outcome record carries its own packet id" \
+  "[ \"\$(jq -r -s '[.[] | select(.outcome==\"rolled-back\") | .packet] | sort | join(\",\")' \"$RB_DIR/S1.jsonl\")\" = bt1,bt2,bt3 ]"
+assert_true "the three-id bundle's outcome records share exactly ONE timestamp" \
+  "[ \"\$(jq -r -s '[.[] | select(.outcome==\"rolled-back\") | .ts] | unique | length' \"$RB_DIR/S1.jsonl\")\" = 1 ]"
+
+# -- single-id compatibility: a bare id (no comma) must behave byte-identically
+# to today on record-start and record-outcome. --
+RBS1_OUT="$(cd "$RB" && "$RUNSTATE" record-start single-a S1)"
+assert_true "record-start with a single id (no comma) produces exactly the unchanged 3-line output" \
+  "[ \"\$(printf '%s\n' \"\$RBS1_OUT\" | wc -l | tr -d ' ')\" = 3 ] \
+    && printf '%s\n' \"\$RBS1_OUT\" | grep -qx 'RECORDED=yes' \
+    && printf '%s\n' \"\$RBS1_OUT\" | grep -qx 'PACKET=single-a' \
+    && printf '%s\n' \"\$RBS1_OUT\" | grep -qx 'KIND=start'"
+RBO1_OUT="$(cd "$RB" && "$RUNSTATE" record-outcome single-a green S1)"
+assert_true "record-outcome with a single id (no comma) produces exactly the unchanged 3-line output" \
+  "[ \"\$(printf '%s\n' \"\$RBO1_OUT\" | wc -l | tr -d ' ')\" = 3 ] \
+    && printf '%s\n' \"\$RBO1_OUT\" | grep -qx 'RECORDED=yes' \
+    && printf '%s\n' \"\$RBO1_OUT\" | grep -qx 'PACKET=single-a' \
+    && printf '%s\n' \"\$RBO1_OUT\" | grep -qx 'OUTCOME=green'"
+
+# -- a malformed member refuses the WHOLE call, nothing appended --
+RB_COUNT_BEFORE="$(wc -l < "$RB_DIR/S1.jsonl" | tr -d ' ')"
+assert_true "record-start with a malformed member in the list fails" \
+  "(cd \"$RB\" && ! \"\$RUNSTATE\" record-start 'good1,bad\"id,good2' S1 2>/dev/null)"
+assert_true "record-start's malformed-member call appends nothing at all, not even the good members" \
+  "[ \"\$(wc -l < \"$RB_DIR/S1.jsonl\" | tr -d ' ')\" = \"\$RB_COUNT_BEFORE\" ]"
+assert_true "record-start's malformed-member call never wrote either good id" \
+  "! grep -q '\"packet\":\"good1\"' \"$RB_DIR/S1.jsonl\" && ! grep -q '\"packet\":\"good2\"' \"$RB_DIR/S1.jsonl\""
+assert_true "record-outcome with a malformed member in the list fails" \
+  "(cd \"$RB\" && ! \"\$RUNSTATE\" record-outcome 'good3,bad\"id,good4' green S1 2>/dev/null)"
+assert_true "record-outcome's malformed-member call appends nothing at all, not even the good members" \
+  "[ \"\$(wc -l < \"$RB_DIR/S1.jsonl\" | tr -d ' ')\" = \"\$RB_COUNT_BEFORE\" ]"
+
+echo
+echo "== packet-bundling T3: sweep-open --paused-cursor exempts every bundle member =="
+RBP="$(mktemp -d)"; git -C "$RBP" init -q
+git -C "$RBP" config user.email t@t; git -C "$RBP" config user.name t
+RBP_DIR="$RBP/.agents/metrics/outcomes"
+# Started as three SEPARATE single-id calls (not record-start's own comma-list
+# form) so this section's assertions test sweep-open's --paused-cursor widening
+# in isolation from record-start's.
+(cd "$RBP" && "$RUNSTATE" record-start pc1 S1 >/dev/null)          # the paused bundle -- must stay open
+(cd "$RBP" && "$RUNSTATE" record-start pc2 S1 >/dev/null)
+(cd "$RBP" && "$RUNSTATE" record-start pc3 S1 >/dev/null)
+(cd "$RBP" && "$RUNSTATE" record-start other-open S1 >/dev/null)   # unrelated -- must still sweep
+
+RBPL_OUT="$(cd "$RBP" && "$RUNSTATE" sweep-open --list --paused-cursor pc1,pc2,pc3)"
+assert_true "a multi-member paused cursor excludes EVERY member from the OPEN list" \
+  "! printf '%s\n' \"\$RBPL_OUT\" | grep -qx 'OPEN=pc1' \
+    && ! printf '%s\n' \"\$RBPL_OUT\" | grep -qx 'OPEN=pc2' \
+    && ! printf '%s\n' \"\$RBPL_OUT\" | grep -qx 'OPEN=pc3'"
+assert_true "a multi-member paused cursor still reports an unrelated open packet" \
+  "printf '%s\n' \"\$RBPL_OUT\" | grep -qx 'OPEN=other-open'"
+
+RBPW_OUT="$(cd "$RBP" && CLAUDE_CODE_SESSION_ID=SWEEPBUNDLE "$RUNSTATE" sweep-open --paused-cursor pc1,pc2,pc3)"
+assert_true "a multi-member paused cursor: no member is swept" \
+  "! printf '%s\n' \"\$RBPW_OUT\" | grep -q 'SWEPT=pc'"
+assert_true "a multi-member paused cursor: the unrelated open packet is still swept as interrupted" \
+  "printf '%s\n' \"\$RBPW_OUT\" | grep -qx 'SWEPT=other-open' \
+    && printf '%s\n' \"\$RBPW_OUT\" | grep -qx 'OUTCOME=interrupted'"
+assert_true "a multi-member paused cursor: no member got any terminal record at all" \
+  "! grep -qE '\"packet\":\"pc(1|2|3)\"' \"$RBP_DIR\"/SWEEPBUNDLE.jsonl 2>/dev/null"
+
+# -- single-id compatibility on sweep-open --paused-cursor --
+RBS_SINGLE="$(mktemp -d)"; git -C "$RBS_SINGLE" init -q
+git -C "$RBS_SINGLE" config user.email t@t; git -C "$RBS_SINGLE" config user.name t
+(cd "$RBS_SINGLE" && "$RUNSTATE" record-start solo-cursor S1 >/dev/null)
+RBS_SINGLE_OUT="$(cd "$RBS_SINGLE" && "$RUNSTATE" sweep-open --list --paused-cursor solo-cursor)"
+assert_true "sweep-open --paused-cursor with a single id (no comma) behaves exactly as today" \
+  "! printf '%s\n' \"\$RBS_SINGLE_OUT\" | grep -qx 'OPEN=solo-cursor'"
+
+# -- a malformed member in --paused-cursor refuses the whole sweep, writes nothing --
+RBM="$(mktemp -d)"; git -C "$RBM" init -q
+git -C "$RBM" config user.email t@t; git -C "$RBM" config user.name t
+RBM_DIR="$RBM/.agents/metrics/outcomes"
+(cd "$RBM" && "$RUNSTATE" record-start open-x S1 >/dev/null)
+assert_true "sweep-open --paused-cursor with a malformed member fails" \
+  "(cd \"$RBM\" && ! \"\$RUNSTATE\" sweep-open --paused-cursor 'good,bad\"id' 2>/dev/null)"
+assert_true "sweep-open --paused-cursor with a malformed member writes no terminal record at all" \
+  "! grep -q outcome \"$RBM_DIR\"/*.jsonl 2>/dev/null"
+
+echo
 echo "== findings: index hot, body cold (ADR 0022) =="
 # The fixture puts run-state at a REAL `.agents/run-state.yaml`, because the index's
 # `file:` value is derived from where the file actually sits. The previous fixture used

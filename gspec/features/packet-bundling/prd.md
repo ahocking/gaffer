@@ -33,29 +33,29 @@ This feature lets the loop group consecutive unchecked tasks that share file sco
 
 ## Capabilities
 
-- [ ] **P0**: The loop groups consecutive same-scope tasks of one feature into a single packet
+- [x] **P0**: The loop groups consecutive same-scope tasks of one feature into a single packet
   - the loop forms each group when it selects the next packet, from the plan as it stands. A group holds unchecked tasks of exactly one feature, consecutive in plan order
   - a task joins the group being formed only when its declared file scope shares at least one file with the union of the scopes of the tasks already in it, and when every task it declares a dependency on is either earlier in the same group or already finished. A task whose declared scope is empty overlaps nothing, so it runs alone
   - a task in the design-heavy tier never joins a group and never starts one: it runs as its own packet
   - a group of one task is an ordinary packet and behaves exactly as it does today
 
-- [ ] **P0**: Bundling is off until the repository raises the cap
+- [x] **P0**: Bundling is off until the repository raises the cap
   - the largest number of tasks a group may hold is set in `.agents/project-overrides.yaml`. The default is 1, and a missing, invalid or zero value reads as 1
   - the setting is documented with a recommended starting value of 4, and with the two costs of a larger value: a larger review diff and more discarded work on failure
   - a group stops growing at the cap even when the next task would otherwise join, and the next task begins the following group
 
-- [ ] **P0**: A bundle is one unit of work for dispatch, review and routing
+- [x] **P0**: A bundle is one unit of work for dispatch, review and routing
   - the bundle's handoff file is the per-task handoff files concatenated in plan order, so the implementer gets every task's text, file scope and acceptance criteria. The packet's file scope is the union of its tasks' scopes
   - one implementer dispatch, one review, one verification run and one commit cover the whole bundle. The reviewer's verdict applies to every task in it, a fix attempt re-does the whole bundle, and the attempt limit `thin-loop-driver` counts applies to the bundle, not to each task
   - when a bundle ends non-green — its attempts used, or the escalation decider discarding it — it ends as one packet: its tasks' work is discarded to the last green checkpoint together, and no part of a bundle lands on its own
   - the loop names a bundle in its reports by its packet id and the plain-English titles of its tasks
 
-- [ ] **P0**: Every task in a bundle keeps its own record
+- [x] **P0**: Every task in a bundle keeps its own record
   - a start is recorded for each task in the bundle when the packet begins, and a terminal outcome for each task when the packet ends, both exactly as `loop-measurement` defines them. Every task in a bundle that ends non-green gets the same outcome, chosen by applying `loop-measurement`'s triggers to the bundle as one packet
   - the bundle's commit flips the gspec checkbox of each task it lands
   - the bundle's commit carries one `[orch packet:<id>]` trailer per task it lands, each naming that task's own id, each on its own line
 
-- [ ] **P0**: Run metrics emit one packet row per trailer on a commit
+- [x] **P0**: Run metrics emit one packet row per trailer on a commit
   - `scripts/metrics.sh collect` emits one packet row for every `[orch packet:]` trailer on a commit, not one row per commit. Each row of a multi-trailer commit carries that commit's tier and implementer labels and its packet boundary
   - a commit carrying one trailer produces exactly the row it produces today, so runs recorded before this feature read the same as they did
   - re-collecting an existing run whose commits carry several trailers — commit `8f236af`, which landed five tasks, is the case to verify against — yields one row per task where it previously yielded one

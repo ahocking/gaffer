@@ -154,8 +154,19 @@
 # you did not read it rather than guessing a number.
 #
 # The core's 🔀 figure counts one per `handoff-feature` line, plus one per
-# still-awaiting `decision` line EXCEPT one whose id already has a
-# `handoff-feature` line of its own. A packet routed `hand-off-feature` always
+# `decision` line whose token is `hand-off-feature`, plus one per still-awaiting
+# `ask-operator` `decision` line — each EXCEPT one whose id already has a
+# `handoff-feature` line of its own. **Still awaiting** is defined here, once, and
+# the rules below refer to it: an `ask-operator` line counts until the same packet
+# has a start, continuation or `abandoned` record in the outcomes log whose parsed
+# timestamp is STRICTLY later than the question's. A tie does not answer (the
+# count fails toward over-reporting), and the `blocked` outcome the pause records
+# for the stop the question itself caused does not answer either — only the
+# `ask-operator` lines are aged this way; the other two kinds count for the whole
+# run. The digest's `decision` line carries no timestamp, so this is the core's
+# judgement, not something to re-derive from the digest.
+#
+# A packet routed `hand-off-feature` always
 # emits BOTH records for the same question (the digest's two records — left
 # untouched here, see above), so counting both would tally that one question
 # twice; the core's exclusion of the `decision` line once its `handoff-feature`
@@ -208,8 +219,9 @@
 #   run's cursor, and it is deliberately never swept, so it carries no terminal
 #   record of its own and cannot be inferred any other way.
 # - **Every `handoff-feature` line becomes exactly one decision block**, whatever
-#   else is in the report, and so does every still-awaiting `decision` line with no
-#   `handoff-feature` line of its own (in practice, `ask-operator` — a
+#   else is in the report, and so does every `decision` line with no
+#   `handoff-feature` line of its own that is still awaiting an answer as the 🔀
+#   paragraph above defines it (in practice, `ask-operator` — a
 #   `hand-off-feature` decision line always has one). A hand-off's two digest
 #   records name the same question, so render ONE block for it, matching the
 #   header's 🔀 count above. The digest carries `handoff-feature` lines for the
@@ -238,9 +250,10 @@
 #
 #   Tally: ⛔ **1 failed** (txn-t4, rolled-back) · ⚠️ **1 unfinished** (txn-t9,
 #   blocked) · 🔀 **2 decisions** — one `handoff-feature` line (txn-t4) plus one
-#   still-awaiting `decision` line with no `handoff-feature` line of its own
-#   (txn-t9's `ask-operator`). txn-t4's OWN `decision` line (token
-#   `hand-off-feature`) is excluded, since its `handoff-feature` line already
+#   `decision` line with no `handoff-feature` line of its own (txn-t9's
+#   `ask-operator`, still awaiting as the 🔀 paragraph above defines it — its
+#   `blocked` outcome is the pause's own and answers nothing). txn-t4's OWN
+#   `decision` line (token `hand-off-feature`) is excluded, since its `handoff-feature` line already
 #   counted that question. The body renders exactly two blocks under
 #   🔀 **Decisions**, one per counted line above — the header's 🔀 figure and the
 #   section's block count match, which is the table-of-contents property this

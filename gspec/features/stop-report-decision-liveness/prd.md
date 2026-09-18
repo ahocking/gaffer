@@ -62,7 +62,7 @@ the same test and cannot diverge.
 
 ## Capabilities
 
-- [ ] **P0**: The DECISIONS figure counts an operator question only while it is still awaiting an answer
+- [x] **P0**: The DECISIONS figure counts an operator question only while it is still awaiting an answer
   - an `ask-operator` decision line counts until the same packet has a record
     in the outcomes log that answers it: a start, a continuation, or an
     `abandoned` outcome (dropping a packet is an answer). An answer must have a
@@ -90,7 +90,7 @@ the same test and cannot diverge.
   - `scripts/test-report-conventions.sh` keeps its case pinning the tally
     sentence's keys to `run-tally`'s output green in both directions
 
-- [ ] **P0**: The liveness rule is pinned by core sweep cases
+- [x] **P0**: The liveness rule is pinned by core sweep cases
   - `scripts/test-runstate.sh` has cases where a question answered by a later
     start, by a continuation, and by an `abandoned` outcome each yield
     `DECISIONS=0`

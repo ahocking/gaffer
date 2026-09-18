@@ -436,13 +436,31 @@
 #                                      DECISIONS=<n>   one per handoff-feature
 #                                                      line, plus one per
 #                                                      decision line whose
-#                                                      token is ask-operator
-#                                                      or hand-off-feature,
-#                                                      EXCEPT one whose id
-#                                                      already carries a
-#                                                      handoff-feature line
-#                                                      (one question, never
-#                                                      tallied twice)
+#                                                      token is hand-off-
+#                                                      feature, plus one per
+#                                                      ask-operator decision
+#                                                      STILL AWAITING an
+#                                                      answer, EXCEPT one
+#                                                      whose id already
+#                                                      carries a handoff-
+#                                                      feature line (one
+#                                                      question, never
+#                                                      tallied twice).
+#                                                      Awaiting: no record
+#                                                      for the same packet
+#                                                      in any session's
+#                                                      outcomes log that is
+#                                                      a start, a continue
+#                                                      or an abandoned
+#                                                      outcome with a
+#                                                      _rs_ts_key STRICTLY
+#                                                      greater than the
+#                                                      question's routing.
+#                                                      jsonl ts (a tie does
+#                                                      not answer; a blocked
+#                                                      outcome -- the stop
+#                                                      /gaffer:pause records
+#                                                      -- never answers)
 #                                    No queued figure: that is the pending
 #                                    count `summary` reports, not a digest
 #                                    fact. Dies exactly where run-digest dies.
@@ -3024,7 +3042,15 @@ cmd_run_tally() {
   esac
   local digest
   digest="$(cmd_run_digest "$f")"
+  # run-digest succeeded, so run_id, the run dir and the main checkout all
+  # resolve here.
+  local run_id rundir main_root live
+  run_id="$(cmd_get "$f" run_id)"
+  rundir="$(_rs_run_dir "$run_id" run-tally)"
+  main_root="$(_rs_main_checkout_root)"
+  live="$(_rs_tally_live_questions "${rundir}/routing.jsonl" "${main_root}/.agents/metrics/outcomes")"
   awk -F'\t' '
+    $1 == "live" { alive[$2]++; next }
     $1 == "packet" {
       o = $4
       if (o == "green") shipped++
@@ -3033,12 +3059,82 @@ cmd_run_tally() {
       next
     }
     $1 == "handoff-feature" { decisions++; hof[$2] = 1; next }
-    $1 == "decision" && ($3 == "ask-operator" || $3 == "hand-off-feature") { dec[++nd] = $2; next }
+    $1 == "decision" && $3 == "hand-off-feature" { dec[++nd] = $2; next }
+    $1 == "decision" && $3 == "ask-operator" { ask[$2]++; next }
     END {
       for (i = 1; i <= nd; i++) if (!(dec[i] in hof)) decisions++
+      # One per ask-operator decision line still awaiting an answer: the
+      # digest carries every question for the packet, the live lines say how
+      # many of them are unanswered, so the smaller of the two counts.
+      for (p in ask) {
+        if (p in hof) continue
+        n = (p in alive) ? alive[p] : 0
+        decisions += (n < ask[p]) ? n : ask[p]
+      }
       printf "SHIPPED=%d\nFAILED=%d\nUNFINISHED=%d\nDECISIONS=%d\n", shipped, failed, unfinished, decisions
     }
-  ' <<<"$digest"
+  ' <<<"$(printf '%s\n%s' "$live" "$digest")"
+}
+
+# --- run-tally: which ask-operator questions are still awaiting an answer
+# --- (stop-report-decision-liveness T1) -------------------------------------
+# Prints `live\t<packet>` once per ask-operator routing record that no record
+# in any session's outcomes log answers. An answer is, for the same packet, a
+# `start` or `continue` record or an `abandoned` outcome whose _rs_ts_key is
+# STRICTLY greater than the question's. A tie does not answer (fails toward
+# over-reporting). A `blocked` outcome never answers: it is what /gaffer:pause
+# records for the stop the question itself caused. Keys come from
+# _rs_ts_key, never the raw string -- "...:08.311Z" sorts below "...:08Z".
+# Liveness lives here and not in run-digest because a digest decision line
+# carries no timestamp, and the digest's four line kinds are frozen.
+_rs_tally_live_questions() {
+  local routing_file="$1" outcomes_dir="$2"
+  [ -f "$routing_file" ] || return 0
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+  local keyed=() type pkt ts
+  while IFS="$(printf '\t')" read -r type pkt ts; do
+    [ -n "$type" ] || continue
+    keyed+=("$(printf '%s\t%s\t%s' "$type" "$pkt" "$(_rs_ts_key "$ts")")")
+  done <<EOF
+$(awk "$extract"'
+    { t = field_esc($0, "token"); if (t != "ask-operator") next
+      p = field_esc($0, "packet"); ts = field_esc($0, "ts")
+      if (p != "" && ts != "") print "Q\t" p "\t" ts }
+  ' "$routing_file" 2>/dev/null)
+$(awk "$extract"'
+    { p = field_esc($0, "packet"); ts = field_esc($0, "ts")
+      if (p == "" || ts == "") next
+      k = field_esc($0, "kind"); o = field_esc($0, "outcome")
+      if (k == "start" || k == "continue" || o == "abandoned") print "A\t" p "\t" ts }
+  ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  [ "${#keyed[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${keyed[@]}" | awk -F'\t' '
+    { n++; type[n] = $1; pkt[n] = $2; key[n] = $3 + 0 }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (type[i] != "Q") continue
+        answered = 0
+        for (j = 1; j <= n; j++)
+          if (type[j] == "A" && pkt[j] == pkt[i] && key[j] > key[i]) { answered = 1; break }
+        if (!answered) print "live\t" pkt[i]
+      }
+    }'
 }
 
 # --- stamp updated_at = now (UTC), atomically -------------------------------

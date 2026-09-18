@@ -2852,6 +2852,176 @@ assert_true "run-digest: every line in the digest still starts with a recognized
   "! printf '%s\n' \"\$RD_BACKSLASH_OUT\" | awk -F'\t' '\$1!=\"packet\" && \$1!=\"decision\" && \$1!=\"handoff-feature\" && \$1!=\"enter\"' | grep -q ."
 
 echo
+echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
+# next-state-reporting-integrity T4 — the twin of T3's case at the foot of
+# scripts/test-gspec-backlog.sh. The construct this feature removed is a
+# pipeline whose final stage is an early-exiting reader used as a condition:
+# `printf … | awk … | grep -q .`. Under the `pipefail` set at the top of
+# scripts/runstate.sh, `grep -q` exits on its first match and closes the pipe
+# while the writer is still writing, the writer takes SIGPIPE (141), and
+# `pipefail` reports 141 instead of grep's 0 — a true condition read as false.
+# It only opens once the payload outgrows a single buffered write, so it passes
+# every small test and fails in production (the `trim-note` flake, ~1 run in
+# 20). This case is what stops a new one being added to the loop's single
+# writer unnoticed.
+#
+# THE SHAPE (settled in the plan preamble; PIPE_GREP_Q_RE below is a VERBATIM
+# copy of T3's, not an import — the two sweeps share no file, and this repo's
+# precedent is to reimplement a small helper rather than add a dependency two
+# standalone CI sweeps both need). A NON-COMMENT source line containing a
+# SINGLE `|` (never `||`) immediately followed by `grep` whose flag cluster
+# contains `q`. Because it is a copy, any change to the shape is TWO edits:
+# here and in scripts/test-gspec-backlog.sh. They must not drift.
+#
+# Each half of that earns its place, verified against this file's own subject:
+#   - non-comment: without it the scan flags prose that merely NAMES the
+#     construct (verified: dropping the leading `[^#[:space:]]` flags
+#     scripts/runstate.sh:893 and :3325, both comments explaining the fix, and
+#     nothing else). Prose that mentions the shape is not the shape.
+#   - single `|`, not `||`: `cmd || grep -q x` is a branch, not a pipeline.
+#   - `grep` immediately after the pipe: the construct is about the FINAL stage
+#     being the condition. A value-producing `… | head -1 | … || true` has a
+#     different final stage and is outside the shape by the PRD's definition,
+#     which is why `orphan_packet_tag` (scripts/runstate.sh:3337) is documented
+#     by T2 rather than listed as an exception here.
+#   - `q` anywhere in the cluster: catches `-q`, `-qx`, `-qxF`, `-n -q` and
+#     `--quiet`. A here-string test (`grep -qxF … <<< "$v"`) has no pipe and is
+#     correctly NOT flagged — that is the form T2 moved this file's three
+#     instances to (scripts/runstate.sh:899, :1016, :1131), so a scan that
+#     flagged it would fail on the fix itself.
+#
+# KNOWN BOUNDARY — and in THIS file it is not hypothetical, so do NOT read the
+# empty exception list below as "scripts/runstate.sh is clean". GNU grep
+# short-circuits on a `/dev/null` stdout the same way `-q` does (it detects the
+# null sink and sets done-on-match), so `… | grep pat >/dev/null` used as a
+# condition is the same hazard — and this scan does NOT catch it, because the
+# line carries no `q`. One such line exists here today:
+#
+#     scripts/runstate.sh:3245     | grep -E "$combined" >/dev/null
+#
+# and it IS condition-shaped: it is the last command of
+# `_dirty_has_reviewed_output` (:3208), so its status is that function's return
+# value, and the function is the condition of the `elif` at :3283. The comment
+# above it dropped `-q` specifically to let the producers finish writing — a
+# fix that holds only for a grep WITHOUT the /dev/null short-circuit, so the
+# original hazard may still be live there under GNU grep. It is NAMED, not
+# excepted: excepting it would misfile an instance the scan never saw, and the
+# exception list is for instances the scan DOES flag. Not reproduced on the
+# implementation host, which has no GNU grep (`/usr/bin/grep` is BSD grep
+# 2.6.0-FreeBSD; `grep` on PATH is ugrep 7.8.4) — and a probe that does not
+# reproduce the phenomenon eliminates nothing (CLAUDE.md), which is exactly why
+# it is recorded here rather than dismissed. Widening the shape to cover stdout
+# redirection is a deliberate edit to PIPE_GREP_Q_RE in BOTH sweeps.
+# Two narrower boundaries, same footing: a line whose TRAILING comment contains
+# the construct is flagged (the scan reads whole lines, not shell tokens), and
+# a pipeline split across a `\`-continuation is not (the two halves are two
+# lines). Both would be caught by review rather than here.
+#
+# Line numbers above are as of this case's implementation (2026-09-18); they
+# are orientation for a reader, never something the scan depends on.
+PIPE_GREP_Q_RE='^[[:space:]]*[^#[:space:]].*[^|]\|[[:space:]]*grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[^[:space:]]*q'
+
+scan_pipe_grep_q() { # scan_pipe_grep_q <file> -> one `<lineno>:<text>` per unexcepted hit
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      # --- REVIEWED EXCEPTIONS: EMPTY, and that is the record ---------------
+      # T2 converted all three of this file's instances to here-strings
+      # (`grep -qxF … <<< "$v"`), so there is nothing to except. The empty list
+      # is deliberate: a hit here is a failure, not a warning. It is also NOT a
+      # statement that the file carries no SIGPIPE-shaped condition at all —
+      # see the KNOWN BOUNDARY above, which names one the shape cannot see.
+      #
+      # To add one, add a branch ABOVE the `*)` catch-all, most specific
+      # fragment first, with the reason on the same line:
+      #
+      #   *'| awk -F: | grep -q .'*) ;; # why it cannot misreport
+      #
+      # SINGLE-quote the fragment. These lines are full of `$`, and a
+      # double-quoted pattern expands it — under this sweep's `set -u` that
+      # aborts the scan mid-file, which reads as "no hits". The fragment must
+      # also not match the `__guard_selfproof_*` markers below, or an exception
+      # would silently disarm the proof.
+      #
+      # The reason must be a BOUND on the writer's maximum output — the size at
+      # which a single atomic write stops holding is 4096 bytes (PIPE_BUF) —
+      # never an observed pass. A probe that does not reproduce the phenomenon
+      # eliminates nothing (CLAUDE.md). Adding a branch is a deliberate edit
+      # that shows up in review; that is the whole point of the literal list.
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < <(grep -nE "$PIPE_GREP_Q_RE" "$1" || true)
+}
+
+# Run against the real deterministic core. Recorded at implementation time
+# (2026-09-18, after T2): 0 hits, exception list empty.
+#
+# The scan feeds its reader by process substitution, not a pipe, and every
+# assertion below goes through `assert_true`, which evaluates with `pipefail`
+# OFF (see its definition at the top of this file) — so this case neither adds
+# an instance of the construct it polices nor disturbs the file's existing
+# `pipefail` handling. Hits are printed before the assertion because
+# `assert_true` discards its command's output.
+GQ_HITS="$(scan_pipe_grep_q "$RUNSTATE")"
+if [ -n "$GQ_HITS" ]; then
+  printf '     unreviewed instances — either rewrite them without the pipe (capture the\n'
+  printf '     value, or use a here-string) or add each to the exception list above with\n'
+  printf '     the bound that makes it unable to misreport:\n%s\n' "$GQ_HITS"
+fi
+assert_true "scripts/runstate.sh contains no pipe-fed \`grep -q\` condition outside the (empty) exception list" \
+  "[ -z \"\$GQ_HITS\" ]"
+
+# --- self-proof: the guard fails when an instance is introduced --------------
+# An assertion that finds nothing proves nothing on its own — it passes just as
+# happily against a scan that can never match. So the same case injects the
+# construct into a copy of scripts/runstate.sh, in the two places it could
+# appear, and asserts the identical scan flags exactly those two lines: one
+# INSIDE a function body (where every real instance lived) and one at END OF
+# FILE (the position a line-anchored or early-terminating scan would miss).
+# Run at implementation time: both flagged, nothing else.
+#
+# Both carry a `__guard_selfproof_*` marker so that no future exception
+# fragment, however broadly written, can accidentally except the proof itself.
+GQ_INJ_FN='  ls "$root" | grep -q __guard_selfproof_fn__ && return 0'
+GQ_INJ_EOF='printf "%s\n" "$x" | grep -qxF __guard_selfproof_eof__'
+GQ_DIR="$(mktemp -d)"
+GQ_INJECTED="$GQ_DIR/injected-runstate.sh"
+export GQ_INJ_FN GQ_INJ_EOF
+awk '
+  { print }
+  !placed && /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$/ {
+      print ENVIRON["GQ_INJ_FN"]; placed = 1
+  }
+  END { print ENVIRON["GQ_INJ_EOF"] }
+' "$RUNSTATE" > "$GQ_INJECTED"
+
+GQ_GOT="$(scan_pipe_grep_q "$GQ_INJECTED")"
+# Strip the line numbers with a here-string rather than `… | sed …`: this file
+# runs with `pipefail` on outside `assert_true`, and the whole point of the
+# case is not to hand a producer to a reader through a pipe.
+GQ_GOT_TEXT="$(sed 's/^[0-9]*://' <<< "$GQ_GOT")"
+GQ_WANT="$(printf '%s\n%s' "$GQ_INJ_FN" "$GQ_INJ_EOF")"
+if [ "$GQ_GOT_TEXT" != "$GQ_WANT" ]; then
+  printf '     got:\n%s\n     want (without line numbers):\n%s\n' "$GQ_GOT" "$GQ_WANT"
+fi
+assert_true "the same scan flags exactly the two injected instances, and only those" \
+  "[ \"\$GQ_GOT_TEXT\" = \"\$GQ_WANT\" ]"
+
+# And the two really are where this case claims: the first sits on the line
+# after a multi-line function opening, the second is the file's last line.
+GQ_LINE="$(sed -n '1s/^\([0-9][0-9]*\):.*/\1/p' <<< "$GQ_GOT")"
+GQ_PREV=''
+[ -n "$GQ_LINE" ] && [ "$GQ_LINE" -gt 1 ] \
+  && GQ_PREV="$(sed -n "$((GQ_LINE - 1))p" "$GQ_INJECTED")"
+assert_true "the first injected instance sits inside a function body" \
+  "case \"\$GQ_PREV\" in *'() {') true;; *) false;; esac"
+assert_true "the second injected instance is the last line of the file" \
+  "[ \"\$(tail -n 1 '$GQ_INJECTED')\" = \"\$GQ_INJ_EOF\" ]"
+# The injected copy is left in its own `mktemp -d`, like every other scratch
+# dir in this sweep bar $REPO: a recursive delete in a test file is a line the
+# guardrail is right to stop, and the OS reaps the temp dir.
+
+echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'passed: %s   failed: %s   (no python3+PyYAML on this host — %s parse assertion(s) could not assert; not asserting vacuously)\n' \

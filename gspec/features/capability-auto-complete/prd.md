@@ -131,7 +131,7 @@ something.
     write flag, mode or side effect, so a scan can still be run by anyone
     without touching the record.
 
-- [ ] **P1**: The standing wording says the loop reconciles the record
+- [x] **P1**: The standing wording says the loop reconciles the record
   - Three places currently say that reconciling a drifted capability record is
     the human's call:
     - the ADR 0025 bullet in `CLAUDE.md`;

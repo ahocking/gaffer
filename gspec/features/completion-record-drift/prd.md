@@ -62,6 +62,9 @@ the two places it is reported — no new write, no new parsing.
 - Flipping a capability checkbox, automatically, ever: today's failure is loud
   and safe — re-picked, zero packets, noticed — while an auto-flip's is silent
   and unblocks everything behind a feature wrongly marked done.
+  *Reversed 2026-09-17 by `capability-auto-complete`: the loop now flips judgeable
+  capabilities with the same rule a human applies to this report, and still only reports
+  unjudgeable rows (see ADR 0025, Revision 2026-09-17).*
 - Widening the adapter's write surface in any other direction: the task-checkbox
   flip and the architect's append of a new unchecked task line are unchanged.
 - Blocking, halting or failing a run on drift.

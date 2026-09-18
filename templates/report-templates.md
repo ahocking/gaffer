@@ -143,19 +143,25 @@
 # they ran. That property is the point: a stop report after a compaction, or from a
 # session that resumed someone else's run, is the same report.
 #
-# The tally counts `packet` lines by outcome — ✅ green · ⛔ failed and rolled-back ·
-# ⚠️ blocked, interrupted, abandoned, open and paused. ⬚ queued is the `N pending`
-# from `runstate.sh summary`; omit the bucket if you did not read it rather than
-# guessing a number.
+# The tally counts `packet` lines by outcome, and the core does the counting: read
+# each digest-derived figure from `runstate.sh run-tally <run-state>` — ✅ from its
+# `SHIPPED`, ⛔ from `FAILED`, ⚠️ from `UNFINISHED`, 🔀 from `DECISIONS` — and
+# render it as printed, never recounted from the digest. The core groups `packet`
+# outcomes as ✅ green · ⛔ failed and rolled-back · ⚠️ blocked, interrupted,
+# abandoned, open and paused, so a reader checks a figure against that grouping
+# rather than against arithmetic the report did. ⬚ queued is not one of its
+# figures: it is the `N pending` from `runstate.sh summary`; omit the bucket if
+# you did not read it rather than guessing a number.
 #
-# 🔀 counts one per `handoff-feature` line, plus one per still-awaiting `decision`
-# line EXCEPT one whose id already has a `handoff-feature` line of its own. A packet
-# routed `hand-off-feature` always emits BOTH records for the same question (the
-# digest's two records — left untouched here, see above) so counting both would
-# tally that one question twice; excluding the `decision` line once its
-# `handoff-feature` line is already counted is what makes a handed-off packet
-# contribute exactly the one 🔀 that the body renders exactly one block for. An
-# `ask-operator` decision has no `handoff-feature` line and so is never excluded.
+# The core's 🔀 figure counts one per `handoff-feature` line, plus one per
+# still-awaiting `decision` line EXCEPT one whose id already has a
+# `handoff-feature` line of its own. A packet routed `hand-off-feature` always
+# emits BOTH records for the same question (the digest's two records — left
+# untouched here, see above), so counting both would tally that one question
+# twice; the core's exclusion of the `decision` line once its `handoff-feature`
+# line is counted is what makes a handed-off packet contribute exactly the one 🔀
+# that the body renders exactly one block for. An `ask-operator` decision has no
+# `handoff-feature` line and so the core never excludes it.
 #
 # The tally is the report's table of contents, not a separate count next to one:
 # every glyph it totals names a section below, and every section the tally counts

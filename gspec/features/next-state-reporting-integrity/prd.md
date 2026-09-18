@@ -90,7 +90,7 @@ slug names its own scope rather than stacking a second `-gaps` suffix.
 
 ## Capabilities
 
-- [ ] **P0**: Neither nothing-to-do branch can report a state it did not find
+- [x] **P0**: Neither nothing-to-do branch can report a state it did not find
   - each of the two condition tests in the feature-selection path (both
     `printf … | awk … | grep -q .` inside `cmd_next`, evaluated under the
     `pipefail` setting earlier in the same file) is expressed with no pipe
@@ -105,7 +105,7 @@ slug names its own scope rather than stacking a second `-gaps` suffix.
     `DEFERRED=` and `HINT=` line forms are byte-identical, and `all features
     complete` is reported exactly when neither of the other two conditions holds
 
-- [ ] **P0**: Each of the three nothing-to-do states has a case in `scripts/test-gspec-backlog.sh`, and the two new cases are shown to fail against the unfixed construct
+- [x] **P0**: Each of the three nothing-to-do states has a case in `scripts/test-gspec-backlog.sh`, and the two new cases are shown to fail against the unfixed construct
   - one fixture whose every incomplete feature is blocked by an unfinished
     dependency and one whose every remaining feature is deferred each assert
     their own `REASON=` text **and** their per-feature `BLOCKED=` / `DEFERRED=`

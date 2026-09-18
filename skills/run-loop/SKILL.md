@@ -82,19 +82,56 @@ stop never has a mark to clear.
   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh capability-drift`. Each
   `DRIFT=<slug>\t<capability text>` line names a feature whose finished plan has
   outrun its own PRD — every task covering that capability is checked but the
-  capability's own box is not. **Say so in the kickoff (§2): one ⚠️ line per
-  `DRIFT=` line, naming the feature and the capability** — never a count alone.
-  State the trailing `unjudgeable=<n>` count separately, as a figure — never
-  one `UNJUDGEABLE=` line per finding — naming only the classes that actually
-  appear among the command's own `UNJUDGEABLE=<class>\t<slug>\t<detail>`
-  lines (possible classes: `unmatched-quote`, `uncovered-capability`,
-  `unrecognized-capability`; e.g. "34 unjudgeable — all unmatched-quote"),
-  never folded into the drift count. Say nothing when the scan is fully clean
-  (`CAPABILITY_DRIFT=ok drift=0 unjudgeable=0`); state the figure whenever
-  `unjudgeable` is nonzero, even if `drift` is `0`. **Flip nothing, halt
-  nothing, and never treat any exit — including `CAPABILITY_DRIFT=attention`
-  — as a stop**, on the same authority as the scan above: reconciling a
-  drifted record is the human's call. The rule holds
+  capability's own box is not. **The loop reconciles this itself, rather
+  than handing it to the operator.** For every distinct slug named on a
+  `DRIFT=` line, call `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh
+  complete-capabilities <slug>` through the adapter — never a main-thread
+  edit, one call per slug even when it covers several `DRIFT=` rows. Stage a
+  call's `FILE=` PRD path only when that call's own summary line reads
+  `completed=<n>` with `n` greater than 0 — equivalently, it printed at
+  least one `COMPLETED=` line. `FILE=` alone does not mean anything
+  flipped: it is present whenever the feature resolved, including a
+  `blocked` hold and a `completed=0` resolve, so staging on `FILE=` presence
+  would stage a PRD nothing changed on. If at least one path was staged this
+  way, land them as **one commit** on the integration branch, outside any
+  packet, message `spec: reconcile capability record (preflight)`, carrying
+  neither an `[orch packet:]` nor an `[orch decider:]` trailer — so run
+  metrics count no packet for it — through the loop's own scripts and commit
+  path. If no call flipped anything, make **no commit**: report no flips,
+  and do not treat the absence of a commit as a failure. The checkout is
+  normally already on the integration branch here (see the task-drift
+  bullet above for why); **if it is not, do not commit** even when something
+  flipped — state the flips in the kickoff exactly as below, noting they
+  were not committed because the checkout was off the integration branch,
+  then restore every PRD this scan touched with `git checkout HEAD -- <path>`
+  — this resets the index as well as the working tree, since the path may
+  already be staged, unlike `git checkout -- <path>` which restores from the
+  index and is a no-op there — and leave the checkout as you found it.
+  `complete-capabilities` exits 0
+  whether a call flips something, flips nothing (`blocked` — an unrelated
+  unmatched `covers:` quote elsewhere in the same feature holds every flip
+  for it), or is skipped outright (no `gspec/` at all); exit 1 (malformed
+  slug) and exit 4 (no resolvable PRD+plan pair) are the real failures.
+  Either failure, or a failed commit, is reported the same way below,
+  restores every PRD this scan touched the same way — `git checkout HEAD --
+  <path>` — and never halts preflight.
+
+  **Say so in the kickoff (§2): one ⚠️ line per capability actually
+  flipped** — from each call's own `COMPLETED=<slug>\t<capability text>`
+  lines, not the earlier `DRIFT=` listing (a `blocked` call flips nothing),
+  **naming the feature and the capability** — the same per-row form this
+  bullet used to report drift in. State the trailing `unjudgeable=<n>` count
+  separately, as a figure — never one `UNJUDGEABLE=` line per finding —
+  naming only the classes that actually appear among the command's own
+  `UNJUDGEABLE=<class>\t<slug>\t<detail>` lines (possible classes:
+  `unmatched-quote`, `uncovered-capability`, `unrecognized-capability`; e.g.
+  "34 unjudgeable — all unmatched-quote"), never folded into the flip count
+  and never flipped, whatever `complete-capabilities` returns for the rest
+  of the scan. Say nothing when the scan is fully clean (`CAPABILITY_DRIFT=ok
+  drift=0 unjudgeable=0`); state the figure whenever `unjudgeable` is
+  nonzero, even if `drift` is `0`. Never treat any exit — including
+  `CAPABILITY_DRIFT=attention` — as a stop: the loop reconciles judgeable
+  drift itself and reports unjudgeable rows to the operator. The rule holds
   wherever a run entry point states a preflight drift scan, not only at this
   one. A repo with no `gspec/` directory reads `CAPABILITY_DRIFT=none` — a
   silent no-op, same as the check above.
@@ -730,14 +767,47 @@ wait.
   states** — the same `gspec-backlog.sh capability-drift` invocation, not a
   second reading of its rule — so a capability whose last covering task
   landed during this run is named by this run rather than by the next one's
-  preflight. Carry each `DRIFT=<slug>\t<capability text>` line into the stop
-  report's `▶ Next` section below — the one section the tally does not
-  count — as an unglyphed line naming the feature and the capability. This
-  does not reuse ⚠️ (the conventions reserve that glyph for a tally-counted
-  section carrying one line per packet, and a drift finding is not a packet)
-  and introduces no new glyph. Flip nothing: a drifted record changes no
-  tally figure, no packet count, and never the outcome recorded for `status`
-  — the run's stop reason is unaffected either way.
+  preflight. **Reconcile it the same way §1 does**: for every distinct slug
+  named on a `DRIFT=` line, call `complete-capabilities <slug>` through the
+  adapter — never a main-thread edit, one call per slug even when it covers
+  several `DRIFT=` rows. Stage a call's `FILE=` PRD path only when that
+  call's own summary line reads `completed=<n>` with `n` greater than 0 —
+  equivalently, it printed at least one `COMPLETED=` line; `FILE=` alone
+  does not mean anything flipped, the same distinction §1 makes. If at
+  least one path was staged this way, land them into **one commit**,
+  outside any packet, message `spec: reconcile capability record
+  (end-of-run)`, carrying neither an `[orch packet:]` nor an `[orch
+  decider:]` trailer. If no call flipped anything, make **no commit** and
+  report no flips — not a failure. At `full-autonomy`, if §3.7 actually
+  merged this run's packets into the integration branch, that commit goes
+  there too, since checking a branch out to merge into it leaves the
+  checkout on that branch; if nothing merged — no green `orch/*` branch this
+  run, or `full-autonomy` did not apply — the commit goes on the run's own
+  branch instead, the same as below `full-autonomy`, where nothing has
+  merged — either way, a flip never reaches the integration branch ahead of
+  the work it records.
+  `complete-capabilities`'s exit codes are read exactly as at preflight:
+  exit 0 whether a call flips something, flips nothing (`blocked`), or is
+  skipped outright; exit 1 or exit 4 is a real failure. Either failure, or a
+  failed commit, is reported below, restores every PRD this scan touched
+  (`git checkout HEAD -- <path>` per staged `FILE=` — this resets the index
+  as well as the working tree, since the path may already be staged), and
+  never withholds `status: done` or otherwise halts.
+
+  Carry each capability this scan actually flipped — from each call's own
+  `COMPLETED=<slug>\t<capability text>` lines, not the earlier `DRIFT=`
+  listing — into the stop report's `▶ Next` section below — the one section
+  the tally does not count — as an unglyphed line naming the feature and the
+  capability. This does not reuse ⚠️ (the conventions reserve that glyph for
+  a tally-counted section carrying one line per packet, and a capability
+  flip is not a packet) and introduces no new glyph, shape, or tally figure.
+  State the trailing `unjudgeable=<n>` count the same way §1 does, in the
+  same section, naming only the classes that actually appear — these rows
+  are never flipped, whatever `complete-capabilities` returns for the rest
+  of the scan. `CAPABILITY_DRIFT=none` stays a silent no-op, same as at
+  preflight. A flip changes no tally figure, no packet count, and never the
+  outcome recorded for `status` — the run's stop reason is unaffected either
+  way.
 
   Once every finding is routed and the whole-branch review is clean, set
   `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then

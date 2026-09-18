@@ -69,7 +69,7 @@ something.
 
 ## Capabilities
 
-- [ ] **P0**: The adapter can mark a feature's finished capabilities complete
+- [x] **P0**: The adapter can mark a feature's finished capabilities complete
   - Given a feature slug, a new subcommand flips a capability's box only when
     at least one task covers it and every task covering it is checked. Each
     flipped capability is named in the output. The sweep case uses one
@@ -110,7 +110,7 @@ something.
     Where a flip fails, the loop reports it through the existing packet line and
     the packet still lands. The task record is unaffected.
 
-- [ ] **P0**: Drift the loop finds is reconciled, not handed to the operator
+- [x] **P0**: Drift the loop finds is reconciled, not handed to the operator
   - The preflight scan flips each drifted capability. So does the scan at the
     end of the backlog-complete path. Each scan's flips land as one commit on the
     integration branch, staging only the PRDs it changed, outside any packet.
@@ -124,7 +124,7 @@ something.
     A failed flip or commit is reported and never halts the run. Where there is
     no gspec directory, both sites stay a silent no-op.
 
-- [ ] **P0**: The drift detector itself stays read-only
+- [x] **P0**: The drift detector itself stays read-only
   - The detector writes nothing. Its existing sweep case, which asserts every
     plan and PRD is byte-identical by checksum, keeps passing unchanged.
   - All capability writing lives in the new subcommand. The detector gains no

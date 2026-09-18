@@ -193,6 +193,48 @@
 #                            sub-bullet lines under a `COVERS=`) so a caller can
 #                            pipe it straight into `runstate.sh handoff`'s
 #                            stdin without reparsing it into another shape.
+#   group <packet-id> [--cap <n>] [root]   form the bundle the loop would
+#                            submit as ONE packet, starting from <packet-id>
+#                            as the cursor: the cursor plus the UNCHECKED
+#                            tasks consecutive after it in the same feature's
+#                            plan order (a checked task between two members
+#                            does not break consecutiveness -- `nodes`
+#                            already emits no node for one, so this reads
+#                            that same list rather than re-deriving it). A
+#                            later task joins only when its declared file
+#                            scope shares >=1 file with the union of the
+#                            scopes already in the group AND every task its
+#                            `deps:` names is either earlier in the same
+#                            group or already checked; an empty scope shares
+#                            nothing with anything, so an empty-scope task
+#                            always ends the group right after it, whether it
+#                            is the cursor itself or a rejected neighbour.
+#                            Stops at `--cap` (default 1, so the command is
+#                            inert unless a caller raises it), at the first
+#                            disqualified task (`scope`|`deps`), or at the
+#                            end of the feature's unchecked tasks (`end`) --
+#                            never crossing into another feature, since the
+#                            node list this reads from is already scoped to
+#                            one. Scope comes from the SAME `_nodes_for`
+#                            files: > fingerprint-matched sidecar > empty
+#                            precedence `nodes`/`handoff` already use, read
+#                            through that function, never re-derived. Output:
+#                              GROUP=<packet-id>
+#                              MEMBER=<node-id><TAB><title>  (one per member,
+#                                                             plan order)
+#                              FILES=<union, pipe-separated>
+#                              STOP=<cap|scope|deps|end>
+#                            An id resolving to no plan, no such task, or an
+#                            already-checked task reuses `handoff`'s
+#                            `HANDOFF=unknown` + `REASON=` refusal shape,
+#                            exit 0 (gspec is optional, same as every other
+#                            read here). A REFUSED canonical-form slug is the
+#                            only non-zero exit, same as
+#                            handoff/check-task/task-status. Never writes;
+#                            `nodes` and every other subcommand are
+#                            unaffected -- grouping is an execution-time
+#                            decision on gaffer's side of ADR 0020's seam,
+#                            not a change to what the backlog is.
 #   capability-drift [root]  READ-ONLY (completion-record-drift-t1): walk
 #                            every feature whose PRD AND plan both resolve
 #                            (no plan is out of scope, not unjudgeable) and
@@ -1790,6 +1832,221 @@ EOF
   printf 'ARCH=%s\n' "$archrel"
 }
 
+# --- group: bundle the cursor with the unchecked tasks that safely follow it -
+# (packet-bundling-t4.) Read-only. Four small helpers, each reused rather than
+# copied from what already exists.
+
+# _pipe_has <list> <item> — is <item> one element of the '|'-separated <list>?
+_pipe_has() {
+  case "|$1|" in *"|$2|"*) return 0 ;; *) return 1 ;; esac
+}
+
+# _pipe_overlap <a> <b> — do the two '|'-separated file lists share >=1
+# element? Prints "1" or "0". An empty list shares nothing with anything,
+# including another empty list — that single property is the whole mechanism
+# behind "an empty scope overlaps nothing and runs alone" below; nothing else
+# in `cmd_group` special-cases it.
+_pipe_overlap() {
+  A="$1" B="$2" awk 'BEGIN{
+    n=split(ENVIRON["A"],a,"|")
+    for(i=1;i<=n;i++) if(a[i]!="") seen[a[i]]=1
+    m=split(ENVIRON["B"],b,"|")
+    for(i=1;i<=m;i++) if(b[i]!="" && (b[i] in seen)) { print "1"; exit }
+    print "0"
+  }'
+}
+
+# _pipe_union <a> <b> — the two '|'-separated lists, deduplicated, in
+# first-seen order.
+_pipe_union() {
+  A="$1" B="$2" awk 'BEGIN{
+    out=""
+    n=split(ENVIRON["A"],a,"|")
+    for(i=1;i<=n;i++) if(a[i]!="" && !(a[i] in seen)) { seen[a[i]]=1; out=(out==""?a[i]:out "|" a[i]) }
+    m=split(ENVIRON["B"],b,"|")
+    for(i=1;i<=m;i++) if(b[i]!="" && !(b[i] in seen)) { seen[b[i]]=1; out=(out==""?b[i]:out "|" b[i]) }
+    print out
+  }'
+}
+
+# _deps_ok <consumes> <slug> <plan> <members-pipe> — true (rc0) when every
+# `feature#<dep>` token in <consumes> (the same field `_nodes_for` already
+# computes from a task's `deps:`) is either already admitted into the group
+# (present in the '|'-separated <members-pipe> of node ids) or already
+# checked in <plan> — via `_task_lookup`, the same duplicate-id-safe lookup
+# check-task/task-status already share, never a second one. Empty <consumes>
+# is trivially satisfied.
+_deps_ok() {
+  local consumes="$1" slug="$2" plan="$3" members="$4"
+  [ -n "$consumes" ] || return 0
+  local tok depraw depidlc depnode lookup
+  local IFS='|'
+  for tok in $consumes; do
+    [ -n "$tok" ] || continue
+    depraw="${tok#*#}"
+    depidlc="$(printf '%s' "$depraw" | tr '[:upper:]' '[:lower:]')"
+    depnode="${slug}-${depidlc}"
+    _pipe_has "$members" "$depnode" && continue
+    lookup="$(_task_lookup "$plan" "$depidlc")"
+    case "$lookup" in
+      already\ *) continue ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# _rowfield <file> <row> <col> — one TSV column from one 1-based row number.
+# awk, never `read -r a b c ...`, on THIS particular TSV — `_nodes_for`'s own
+# output, whose empty `consumes` column is common and whose later columns
+# must not silently shift left because of it (see the comment on this same
+# gotcha in `cmd_nodes_all`, and `cmd_group`'s use of this helper below).
+_rowfield() {
+  R="$2" C="$3" awk -F'\t' 'NR==ENVIRON["R"]{print $(ENVIRON["C"]+0)}' "$1"
+}
+
+# _member_title <plan> <idlc> — a member's header inline text, via
+# `_task_record` (the SAME marker-stripped description `handoff`'s TEXT= is
+# built from), never a second reader of the header line.
+_member_title() {
+  local plan="$1" idlc="$2" line key val
+  while IFS= read -r line; do
+    key="${line%%$'\t'*}"
+    [ "$key" = "BODY" ] && break
+    val="${line#*$'\t'}"
+    [ "$key" = "TEXT" ] && { printf '%s' "$val"; return 0; }
+  done < <(_task_record "$plan" "$idlc")
+}
+
+# cmd_group <packet-id> [--cap <n>] [root] — see the `group` entry in the
+# header Subcommands list for the full contract.
+cmd_group() {
+  local task="${1:-}"; [ -n "$task" ] || die "group: need a packet id"
+  shift
+  local cap="1" root=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cap)
+        [ $# -ge 2 ] || die "group: --cap needs a value"
+        cap="$2"; shift 2
+        ;;
+      *)
+        [ -z "$root" ] || die "group: unexpected argument: $1"
+        root="$1"; shift
+        ;;
+    esac
+  done
+  case "$cap" in
+    ''|*[!0-9]*) die "group: --cap must be a positive whole number, got '$cap'" ;;
+  esac
+  [ "$cap" -ge 1 ] || die "group: --cap must be at least 1, got $cap"
+  root="$(_root "$root")"
+
+  local resolved; resolved="$(_resolve_task_id "$task" "$root")"
+  case "$resolved" in
+    NOGSPEC)
+      printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+      return 0
+      ;;
+    UNRESOLVED)
+      printf 'HANDOFF=unknown\nREASON=not a gspec task id — no plan resolves this packet\n'
+      return 0
+      ;;
+    REFUSED\ *)
+      die "group: ${resolved#REFUSED }"
+      ;;
+  esac
+
+  local slug id
+  slug="$(printf '%s' "$resolved" | cut -f2)"
+  id="$(printf '%s' "$resolved" | cut -f3)"
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  local cursor_key="${slug}-${idlc}"
+
+  # The node list for this ONE feature, in plan order. `_nodes_for` already
+  # skips checked tasks — so a checked task between two members simply never
+  # appears here, and consecutiveness reuses that rather than re-deriving it
+  # — and already resolves file scope via the files: > sidecar > empty
+  # precedence `nodes`/`handoff` share. Never crosses into another feature,
+  # since this call is scoped to one slug.
+  #
+  # Read by ROW NUMBER via `_rowfield`, never by `read -r a b c ...` on this
+  # TSV — the same bug `cmd_nodes_all`'s own comment documents: tab is an IFS
+  # *whitespace* character, so `read` silently collapses an empty middle
+  # field (a task with no consumes:) and shifts every later column left, even
+  # with IFS set to tab alone. `awk -F'\t'` never does that.
+  local rowsfile; rowsfile="$(mktemp)"
+  _nodes_for "$root" "$slug" > "$rowsfile"
+  local n; n="$(awk 'END{print NR+0}' "$rowsfile")"
+
+  local cidx=0 r idatcol
+  r=1
+  while [ "$r" -le "$n" ]; do
+    idatcol="$(_rowfield "$rowsfile" "$r" 1)"
+    if [ "$idatcol" = "$cursor_key" ]; then cidx="$r"; break; fi
+    r=$((r + 1))
+  done
+
+  if [ "$cidx" -eq 0 ]; then
+    rm -f "$rowsfile"
+    local lookup; lookup="$(_task_lookup "$plan" "$idlc")"
+    case "$lookup" in
+      already\ *)
+        printf 'HANDOFF=unknown\nREASON=%s task %s is already checked; nothing to group\n' "$slug" "$id"
+        ;;
+      *)
+        printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$slug" "$id" "$relplan"
+        ;;
+    esac
+    return 0
+  fi
+
+  local -a gidx=("$cidx")
+  local union; union="$(_rowfield "$rowsfile" "$cidx" 3)"
+  local members; members="$(_rowfield "$rowsfile" "$cidx" 1)"
+  local stop=""
+  if [ "${#gidx[@]}" -ge "$cap" ]; then
+    stop="cap"
+  else
+    local j=$((cidx + 1)) overlap cfiles cconsumes
+    while :; do
+      if [ "$j" -gt "$n" ]; then stop="end"; break; fi
+      cfiles="$(_rowfield "$rowsfile" "$j" 3)"
+      overlap="$(_pipe_overlap "$union" "$cfiles")"
+      if [ "$overlap" != "1" ]; then stop="scope"; break; fi
+      cconsumes="$(_rowfield "$rowsfile" "$j" 4)"
+      if ! _deps_ok "$cconsumes" "$slug" "$plan" "$members"; then stop="deps"; break; fi
+      gidx+=("$j")
+      union="$(_pipe_union "$union" "$cfiles")"
+      members="${members}|$(_rowfield "$rowsfile" "$j" 1)"
+      if [ "${#gidx[@]}" -ge "$cap" ]; then stop="cap"; break; fi
+      j=$((j + 1))
+    done
+  fi
+
+  printf 'GROUP=%s\n' "$cursor_key"
+  local k midlc mid mproduces
+  for k in "${gidx[@]}"; do
+    mid="$(_rowfield "$rowsfile" "$k" 1)"
+    mproduces="$(_rowfield "$rowsfile" "$k" 5)"
+    midlc="$(printf '%s' "${mproduces#*#}" | tr '[:upper:]' '[:lower:]')"
+    printf 'MEMBER=%s\t%s\n' "$mid" "$(_member_title "$plan" "$midlc")"
+  done
+  printf 'FILES=%s\n' "$union"
+  printf 'STOP=%s\n' "$stop"
+  rm -f "$rowsfile"
+}
+
 cmd_check_task() {
   local task="${1:-}"; [ -n "$task" ] || die "check-task: need a task id"
   local root; root="$(_root "${2:-}")"
@@ -2091,6 +2348,7 @@ case "${1:-}" in
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
   handoff)    shift; cmd_handoff "$@" ;;
+  group)      shift; cmd_group "$@" ;;
   capability-drift) shift; cmd_capability_drift "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|capability-drift} [root]" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift} [root]" ;;
 esac

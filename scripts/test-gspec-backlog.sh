@@ -3514,6 +3514,143 @@ want:
 $expected"
 
 # =============================================================================
+printf '\n== source guard: no pipe-fed `grep -q` used as a condition in the adapter ==\n'
+# next-state-reporting-integrity T3. The construct this feature removed is a
+# pipeline whose final stage is an early-exiting reader used as a condition:
+# `printf … | awk … | grep -q .`. Under the `pipefail` set at the top of
+# scripts/gspec-backlog.sh, `grep -q` exits on its first match and closes the
+# pipe while the writer is still writing, the writer takes SIGPIPE (141), and
+# `pipefail` reports 141 instead of grep's 0 — a true condition read as false.
+# It only opens once the payload outgrows a single buffered write, so it passes
+# every small test and fails in production. This case is what stops a new one
+# being added to the adapter unnoticed.
+#
+# THE SHAPE (settled in the plan preamble, and copied verbatim into
+# scripts/test-runstate.sh by T4 — the two sweeps share no file, and this repo's
+# precedent is to reimplement a small helper rather than add a dependency two
+# standalone CI sweeps both need): a NON-COMMENT source line containing a
+# SINGLE `|` (never `||`) immediately followed by `grep` whose flag cluster
+# contains `q`.
+#
+# Each half of that earns its place:
+#   - non-comment: without it the scan flags the comment in `cmd_next` that
+#     NAMES the construct it removed (verified: dropping the leading
+#     `[^#[:space:]]` flags scripts/gspec-backlog.sh:839, a comment, and
+#     nothing else). Prose that merely mentions the shape is not the shape.
+#   - single `|`, not `||`: `cmd || grep -q x` is a branch, not a pipeline.
+#   - `grep` immediately after the pipe: the construct is about the FINAL stage
+#     being the condition. A value-producing `… | head -1 | … || true` has a
+#     different final stage and is outside the shape by the PRD's definition,
+#     which is why `orphan_packet_tag` in scripts/runstate.sh is documented by
+#     T2 rather than listed as an exception here.
+#   - `q` anywhere in the cluster: catches `-q`, `-qx`, `-qxF`, `-n -q` and
+#     `--quiet`. A here-string test (`grep -qxF … <<< "$v"`) has no pipe and is
+#     correctly NOT flagged — that is the form T1/T2 moved to, so a scan that
+#     flagged it would fail on the fix.
+#
+# KNOWN BOUNDARY, stated rather than silently excluded: GNU grep short-circuits
+# on a `/dev/null` stdout the same way `-q` does, so `… | grep pat >/dev/null`
+# used as a condition is the same hazard — and this scan does NOT catch it,
+# because it carries no `q`. It appears nowhere in scripts/gspec-backlog.sh
+# today: `grep -nE 'grep[^|]*[^0-9]>[[:space:]]*/dev/null'` finds nothing (the
+# `[^0-9]` matters — the file's three `grep … 2>/dev/null` are stderr
+# redirects, which are not this hazard). Widening the shape to cover stdout
+# redirection is a deliberate edit to PIPE_GREP_Q_RE, in both sweeps.
+# Two narrower boundaries, same footing: a line whose TRAILING comment contains
+# the construct is flagged (the scan reads whole lines, not shell tokens), and
+# a pipeline split across a `\`-continuation is not (the two halves are two
+# lines). Both would be caught by review rather than here.
+PIPE_GREP_Q_RE='^[[:space:]]*[^#[:space:]].*[^|]\|[[:space:]]*grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[^[:space:]]*q'
+
+scan_pipe_grep_q() { # scan_pipe_grep_q <file> -> one `<lineno>:<text>` per unexcepted hit
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      # --- REVIEWED EXCEPTIONS: EMPTY, and that is the record ---------------
+      # T1 removed both adapter instances, so there is nothing to except. The
+      # empty list is deliberate: a hit here is a failure, not a warning.
+      #
+      # To add one, add a branch ABOVE the `*)` catch-all, most specific
+      # fragment first, with the reason on the same line:
+      #
+      #   *'| awk -F: | grep -q .'*) ;; # why it cannot misreport
+      #
+      # SINGLE-quote the fragment. These lines are full of `$`, and a
+      # double-quoted pattern expands it — under this sweep's `set -u` that
+      # aborts the scan mid-file, which reads as "no hits" (verified). The
+      # fragment must also not match the `__guard_selfproof_*` markers below,
+      # or an exception would silently disarm the proof.
+      #
+      # The reason must be a BOUND on the writer's maximum output — the size at
+      # which a single atomic write stops holding is 4096 bytes (PIPE_BUF) —
+      # never an observed pass. A probe that does not reproduce the phenomenon
+      # eliminates nothing (CLAUDE.md). Adding a branch is a deliberate edit
+      # that shows up in review; that is the whole point of the literal list.
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < <(grep -nE "$PIPE_GREP_Q_RE" "$1" || true)
+}
+
+# Run against the real adapter. Recorded at implementation time (2026-09-18,
+# after T1): 0 hits, exception list empty.
+hits="$(scan_pipe_grep_q "$ADAPTER")"
+[ -z "$hits" ] \
+  && ok 'scripts/gspec-backlog.sh contains no pipe-fed `grep -q` condition outside the (empty) exception list' \
+  || bad 'scripts/gspec-backlog.sh contains no pipe-fed `grep -q` condition' \
+      "unreviewed instances — either rewrite them without the pipe (capture the
+     value, or use a here-string) or add each to the exception list above with
+     the bound that makes it unable to misreport:
+$hits"
+
+# --- self-proof: the guard fails when an instance is introduced --------------
+# An assertion that finds nothing proves nothing on its own — it passes just as
+# happily against a scan that can never match. So the same case injects the
+# construct into a copy of the adapter, in the two places it could appear, and
+# asserts the identical scan flags exactly those two lines: one INSIDE a
+# function body (where every real instance lived) and one at END OF FILE (the
+# position a line-anchored or early-terminating scan would miss).
+#
+# Both carry a `__guard_selfproof_*` marker so that no future exception
+# fragment, however broadly written, can accidentally except the proof itself.
+INJ_FN='  ls "$root" | grep -q __guard_selfproof_fn__ && return 0'
+INJ_EOF='printf "%s\n" "$x" | grep -qxF __guard_selfproof_eof__'
+INJECTED="$TMPROOT/injected-gspec-backlog.sh"
+export INJ_FN INJ_EOF
+awk '
+  { print }
+  !placed && /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$/ {
+      print ENVIRON["INJ_FN"]; placed = 1
+  }
+  END { print ENVIRON["INJ_EOF"] }
+' "$ADAPTER" > "$INJECTED"
+
+got="$(scan_pipe_grep_q "$INJECTED")"
+want="$(printf '%s\n%s\n' "$INJ_FN" "$INJ_EOF")"
+[ "$(printf '%s\n' "$got" | sed 's/^[0-9]*://')" = "$want" ] \
+  && ok 'the same scan flags exactly the two injected instances, and only those' \
+  || bad 'the same scan flags exactly the two injected instances, and only those' \
+      "got:
+$got
+want (without line numbers):
+$want"
+
+# And the two really are where this case claims: the first sits on the line
+# after a multi-line function opening, the second is the file's last line.
+inj_line="$(printf '%s\n' "$got" | sed -n '1s/^\([0-9][0-9]*\):.*/\1/p')"
+prev=''
+[ -n "$inj_line" ] && [ "$inj_line" -gt 1 ] \
+  && prev="$(sed -n "$((inj_line - 1))p" "$INJECTED")"
+case "$prev" in
+  *'() {') ok 'the first injected instance sits inside a function body' ;;
+  *) bad 'the first injected instance sits inside a function body' \
+       "first hit was at line ${inj_line:-<none>}; the line above it is: $prev" ;;
+esac
+[ "$(tail -n 1 "$INJECTED")" = "$INJ_EOF" ] \
+  && ok 'the second injected instance is the last line of the file' \
+  || bad 'the second injected instance is the last line of the file' \
+      "last line is: $(tail -n 1 "$INJECTED")"
+
+# =============================================================================
 printf '\n----------------------------------------\n'
 printf 'gspec-backlog: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

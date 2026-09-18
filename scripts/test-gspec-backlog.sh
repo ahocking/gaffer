@@ -387,16 +387,146 @@ check 'and names the remedy'          '/gspec-migrate' "$out"
 out="$("$ADAPTER" features "$R")"
 refute 'a .plan.md is never a feature' 'old.plan' "$out"
 
+# The third nothing-to-do state, and it is asserted over SEVERAL complete
+# features rather than one: the other two states are corrected by making their
+# branches reachable again, and a correction must not be evidenced by a branch
+# that has simply stopped being reached. So this case pins that a backlog whose
+# every feature reads as complete still answers NEXT=none with that reason, and
+# carries neither of the other two states' per-feature lines.
 R="$TMPROOT/alldone"; mkdir -p "$R"
 mk_prd "$R" finished 2 0
+mk_prd "$R" also-finished 1 0
+mk_prd "$R" finished-too 3 0
 out="$("$ADAPTER" next "$R")"
-check 'all-complete reports none' 'REASON=all features complete' "$out"
+check 'all-complete reports none'          'NEXT=none' "$out"
+check 'all-complete names the reason'      'REASON=all features complete' "$out"
+refute 'all-complete is not reported as blocked'  'BLOCKED=' "$out"
+refute 'all-complete is not reported as deferred' 'DEFERRED=' "$out"
 
 R="$TMPROOT/allblocked"; mkdir -p "$R"
 mk_prd "$R" pre 0 1
 mk_prd "$R" post 0 1 pre
 out="$("$ADAPTER" next "$R" | grep -c 'NEXT=pre')"
 [ "$out" = "1" ] && ok 'blocked feature is skipped for its dependency' || bad 'blocked feature skipped' "got=$out"
+
+# =============================================================================
+printf '\n== next: the nothing-to-do branches at a size that reproduces the pipe race ==\n'
+# Both of these fixtures are LARGE on purpose, and the size is the whole point.
+# `cmd_next` used to test each nothing-to-do condition with
+# `printf '%s\n' "$rows" | awk -F'\t' '…' | grep -q .`: `grep -q` exits on its
+# first match and closes the pipe, the awk still writing takes the signal, and
+# the file-wide `pipefail` reports that signal in place of grep's success — so a
+# TRUE condition reads as false and control falls through to the last branch,
+# which reports the backlog finished. The window only opens once the filtered
+# payload outgrows a single buffered write, so a small fixture certifies the fix
+# while exercising nothing: the same construct showed 0 failures in 400
+# iterations at 733 bytes. Each fixture below therefore builds a filtered
+# payload of at least 40 KiB (twice the 18,756-byte reproduction recorded in the
+# PRD), asserted rather than assumed, and each assertion runs over a repeat loop
+# because the failure is a race and a single draw proves nothing.
+#
+# Both assert the branch's own REASON= text AND its per-feature lines by feature
+# name — the full set, compared as a sorted block. An assertion that the output
+# merely differs from `all features complete` passes on several wrong answers.
+BIGWHY="$(awk 'BEGIN{ while (length(s) < 2200) s = s "roadmap rationale text that makes every feature row long "; print substr(s, 1, 2200) }')"
+BIGN=20
+BIGITER=50
+
+# --- every incomplete feature blocked ---------------------------------------
+# OBSERVED PRE-FIX: run against the unfixed `cmd_next` (the `printf | awk |
+# grep -q .` condition) this case failed 40 of 50 and 45 of 50 invocations over
+# two sweep runs — each failure reporting `REASON=all features complete` over a
+# backlog in which nothing was complete and every feature was blocked.
+#
+# Every feature depends on its successor and the last on the first: with no
+# deferred entries and no dependency on a finished feature, that cycle is the
+# shape in which every incomplete feature is genuinely blocked, so the blocked
+# branch is the one under test and the deferred capture is empty.
+R="$TMPROOT/bigblocked"; mkdir -p "$R/.agents"
+exp=""
+{ printf 'schema: 1\nfeatures:\n'
+  for ((i=0;i<BIGN;i++)); do
+    s="$(printf 'bigblk-%02d' "$i")"
+    nxt="$(printf 'bigblk-%02d' $(( (i+1) % BIGN )))"
+    mk_prd "$R" "$s" 0 1 "$nxt"
+    printf '  - slug: %s\n    order: %d\n    why: %s %d\n' "$s" "$((10+i))" "$BIGWHY" "$i"
+    exp="$exp$(printf 'BLOCKED=%s depends_on=%s' "$s" "$nxt")"$'\n'
+  done
+} > "$R/.agents/roadmap.yaml"
+exp_blocked="$(printf '%s' "$exp" | sort)"
+bytes="$("$ADAPTER" features "$R" | awk -F'\t' '$3=="0" && $7!="1"' | wc -c | tr -d ' ')"
+# 44,700 bytes over 20 filtered rows when this comment was written.
+[ "$bytes" -ge 40960 ] \
+  && ok "the blocked fixture's filtered payload is at least 40 KiB ($bytes bytes)" \
+  || bad 'blocked fixture is large enough to reproduce the race' "filtered payload is only $bytes bytes — below the buffer threshold, so this case would certify the fix while exercising nothing"
+
+misreason=0; misline=0
+for ((i=0;i<BIGITER;i++)); do
+  out="$("$ADAPTER" next "$R")"
+  case "$out" in
+    *'REASON=every incomplete feature is blocked by an unfinished dependency'*) ;;
+    *) misreason=$((misreason+1)) ;;
+  esac
+  got="$(printf '%s\n' "$out" | grep '^BLOCKED=' | sort)"
+  [ "$got" = "$exp_blocked" ] || misline=$((misline+1))
+done
+[ "$misreason" -eq 0 ] \
+  && ok "an all-blocked backlog reports the blocked reason on every one of $BIGITER runs" \
+  || bad 'all-blocked reports the blocked reason every time' "wrong reason in $misreason of $BIGITER runs"
+[ "$misline" -eq 0 ] \
+  && ok "and one BLOCKED= line per feature, by name, on every one of $BIGITER runs" \
+  || bad 'all-blocked names every blocked feature every time' "per-feature lines wrong in $misline of $BIGITER runs
+     last run: $out"
+refute 'and never says the backlog is finished' 'all features complete' "$out"
+
+# --- every remaining feature deferred ---------------------------------------
+# OBSERVED PRE-FIX: run against the unfixed `cmd_next` this case failed 45 of 50
+# and 48 of 50 invocations over two sweep runs, each reporting `REASON=all
+# features complete` over a backlog whose every feature was deferred — a human
+# decision, reversible by editing one line, reported as finished work. The same
+# construct at this site showed 0 failures in 400 iterations against the
+# repository's real 733-byte payload; the size is what opens the window.
+R="$TMPROOT/bigdeferred"; mkdir -p "$R/.agents"
+exp=""
+{ printf 'schema: 1\nfeatures:\n'
+  for ((i=0;i<BIGN;i++)); do
+    s="$(printf 'bigdef-%02d' "$i")"
+    mk_prd "$R" "$s" 0 1
+    printf '  - slug: %s\n    order: %d\n    why: %s %d\n    deferred: true\n' "$s" "$((10+i))" "$BIGWHY" "$i"
+    exp="$exp$(printf 'DEFERRED=%s why=%s %d' "$s" "$BIGWHY" "$i")"$'\n'
+  done
+} > "$R/.agents/roadmap.yaml"
+exp_deferred="$(printf '%s' "$exp" | sort)"
+bytes="$("$ADAPTER" features "$R" | awk -F'\t' '$3=="0" && $7=="1"' | wc -c | tr -d ' ')"
+# 44,500 bytes over 20 filtered rows when this comment was written.
+[ "$bytes" -ge 40960 ] \
+  && ok "the deferred fixture's filtered payload is at least 40 KiB ($bytes bytes)" \
+  || bad 'deferred fixture is large enough to reproduce the race' "filtered payload is only $bytes bytes — below the buffer threshold, so this case would certify the fix while exercising nothing"
+
+misreason=0; misline=0; mishint=0
+for ((i=0;i<BIGITER;i++)); do
+  out="$("$ADAPTER" next "$R")"
+  case "$out" in
+    *'REASON=every remaining feature is deferred in .agents/roadmap.yaml'*) ;;
+    *) misreason=$((misreason+1)) ;;
+  esac
+  case "$out" in
+    *'HINT=remove `deferred: true` from an entry to bring it back into the backlog'*) ;;
+    *) mishint=$((mishint+1)) ;;
+  esac
+  got="$(printf '%s\n' "$out" | grep '^DEFERRED=' | sort)"
+  [ "$got" = "$exp_deferred" ] || misline=$((misline+1))
+done
+[ "$misreason" -eq 0 ] \
+  && ok "an all-deferred backlog reports the deferred reason on every one of $BIGITER runs" \
+  || bad 'all-deferred reports the deferred reason every time' "wrong reason in $misreason of $BIGITER runs"
+[ "$misline" -eq 0 ] \
+  && ok "and one DEFERRED= line per feature, with its why, on every one of $BIGITER runs" \
+  || bad 'all-deferred names every deferred feature every time' "per-feature lines wrong in $misline of $BIGITER runs"
+[ "$mishint" -eq 0 ] \
+  && ok "and the HINT= line saying how to undo it, on every one of $BIGITER runs" \
+  || bad 'all-deferred always says how to undo it' "HINT missing in $mishint of $BIGITER runs"
+refute 'and never says the backlog is finished' 'all features complete' "$out"
 
 # =============================================================================
 printf '\n== nodes: task deps become graph edges ==\n'

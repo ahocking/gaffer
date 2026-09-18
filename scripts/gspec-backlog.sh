@@ -834,14 +834,30 @@ cmd_next() {
     # is how "the loop has stopped picking work up" gets misread as "the backlog
     # is finished" — the deferred case in particular is a human decision that can
     # be reversed by editing one line, and the reader has to be told which it is.
-    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1"' | grep -q .; then
+    #
+    # Each state is a CAPTURED value tested with `[ -n ... ]`, never
+    # `printf … | awk … | grep -q .` used directly as a condition. `grep -q`
+    # exits on its first match and closes the pipe; the awk still writing takes
+    # the signal, and the file-wide `pipefail` reports that signal in place of
+    # grep's success — so a TRUE condition reads as FALSE and control falls
+    # through to `all features complete`, reporting a finished backlog over work
+    # nobody built. Measured, not theorised: 235 and 241 misreports in 400
+    # iterations against this repository's own 18,756-byte payload. Command
+    # substitution reads to end of file, so no reader can close before its
+    # writer finishes. The captured rows then feed the per-feature lines through
+    # the same formatting awk — which reads to EOF and so cannot misfire — so
+    # each state is filtered once instead of twice and the output is unchanged.
+    local blocked deferred
+    blocked="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1"')"
+    if [ -n "$blocked" ]; then
       printf 'NEXT=none\nREASON=every incomplete feature is blocked by an unfinished dependency\n'
-      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1" {printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
+      printf '%s\n' "$blocked" | awk -F'\t' '{printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
       return 0
     fi
-    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1"' | grep -q .; then
+    deferred="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1"')"
+    if [ -n "$deferred" ]; then
       printf 'NEXT=none\nREASON=every remaining feature is deferred in .agents/roadmap.yaml\n'
-      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1" {printf "DEFERRED=%s why=%s\n", $1, $6}'
+      printf '%s\n' "$deferred" | awk -F'\t' '{printf "DEFERRED=%s why=%s\n", $1, $6}'
       printf 'HINT=remove `deferred: true` from an entry to bring it back into the backlog\n'
       return 0
     fi

@@ -221,12 +221,23 @@ wait.
    Read the cap — `runstate.sh bundle-cap` prints `CAP=<n>` (default `1`, so
    this whole mechanism is inert until a repo raises `bundle_max_tasks`) —
    then form the candidate group at the cursor: `gspec-backlog.sh group
-   <cursor> --cap <n>`. A leading `HANDOFF=unknown` (no gspec, a non-gspec
-   packet, or a cursor already checked) means this packet does not bundle at
-   all: set `MEMBERS=<cursor>`, decide the packet's `tier`/`--agent` exactly
-   as you would today (nothing about that judgment depended on `group`'s
-   output to begin with — a non-gspec packet never had it), and skip
-   straight to the sweep below. Otherwise `group` prints `GROUP=<cursor>`,
+   <cursor> --cap <n>`. **A non-zero exit** (`group`'s own `die` paths — a
+   refused id, ADR 0025 D1, or a malformed argument — write to stderr only,
+   with no `HANDOFF=`/`GROUP=` line at all) means the command produced no
+   group to read: treat it exactly like a leading `HANDOFF=unknown` below —
+   `MEMBERS=<cursor>` alone, `tier`/`--agent` judged for it exactly as you
+   would today — but say so in whatever report later covers this packet (a
+   plain sentence, no new glyph: bundling was skipped this packet because
+   `group` exited non-zero), since a silent fallback would read as "nothing
+   to bundle" rather than "the check itself failed." Never halt the loop for
+   this and never guess membership from a partial or malformed output — the
+   fallback is always exactly the cursor alone, nothing wider. A leading
+   `HANDOFF=unknown` (no gspec, a non-gspec packet, or a cursor already
+   checked) means this packet does not bundle at all: set `MEMBERS=<cursor>`,
+   decide the packet's `tier`/`--agent` exactly as you would today (nothing
+   about that judgment depended on `group`'s output to begin with — a
+   non-gspec packet never had it), and skip straight to the sweep below.
+   Otherwise `group` prints `GROUP=<cursor>`,
    one `MEMBER=<node-id>\t<title>` line per candidate in plan order (the
    cursor always first), `FILES=` (their scope union) and
    `STOP=<cap|scope|deps|end>` — `group` has already done the mechanical
@@ -253,10 +264,20 @@ wait.
 
    `$MEMBERS` is driver-held shell state for the rest of this packet, the
    same convention `$SINCE`/`$SWEEP` already use — it does not survive a
-   mid-packet compaction on its own. Once §3.3 writes the handoff, it is
-   recoverable from that packet's own `handoff.md` `BUNDLE=` line (absent
-   means `MEMBERS=<cursor>` alone); before the handoff is written, there is
-   nothing to recover and the packet is re-formed from `group` again.
+   mid-packet compaction, or a session picking this same packet back up,
+   on its own. Recover it the **same rule** `${CLAUDE_PLUGIN_ROOT}/skills/
+   resume/SKILL.md` gives its own membership recovery (T9) — one rule,
+   stated once, never restated differently here: once §3.3 has written the
+   handoff, membership is recoverable from that packet's own `handoff.md`
+   `BUNDLE=` line (absent means `MEMBERS=<cursor>` alone), then re-check
+   only the mechanical refusals against it — `gspec-backlog.sh task-status
+   "$MEMBERS"`, dropping any member whose line reads `finished` or `gone`
+   (never the cursor itself, regardless of what its own line reads) — never
+   re-deriving the scope/deps/cap judgment `group` applies when forming a
+   bundle fresh, since that could shrink or grow a membership a start record
+   already covers. Before the handoff is written, there is nothing to
+   recover and the packet is re-formed from `group` again, exactly as
+   above.
 
    Now sweep, using `MEMBERS` wherever this used to read `<cursor>` alone.
    `runstate.sh sweep-open --list` prints one `OPEN=<id>` line per open
@@ -725,8 +746,11 @@ wait.
   reachable from the integration branch, not from `<base>..HEAD`; that
   range finds nothing for any bundle but the most recent one — exactly the
   resumed/compacted case this step exists to cover. Find the commit whose
-  trailers name this packet's id with
-  `git log orch/<id> <base> -F --grep "[orch packet:<id>]" --format=%H -1`
+  trailers name this packet's id, anchored to the **whole line** — the
+  same `^[[:space:]]*\[orch packet:<id>\][[:space:]]*$` shape §1's drift
+  scan uses, never a bare substring, so prose that merely mentions a
+  trailer can never be read as a landed member:
+  `git log orch/<id> <base> -E --grep '^[[:space:]]*\[orch packet:<id>\][[:space:]]*$' --format=%H -1`
   (fall back to `--all` when `orch/<id>` no longer exists, e.g. deleted
   after merging — the same targeted trailer search the branch-cleanup step
   above already runs for `[orch decider:`, and the same read T7 gives

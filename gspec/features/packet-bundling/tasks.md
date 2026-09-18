@@ -142,7 +142,7 @@ Every regression sweep must pass green after every task.
   - covers: The loop groups consecutive same-scope tasks of one feature into a single packet · Every task in a bundle keeps its own record
   - arch: —
   - files: skills/run-loop/SKILL.md
-- [ ] **T11** [P] **P0** Carry the bundle into `skills/pause/SKILL.md`: where the `stop` path persists a blocking question and records the packet `blocked` (around lines 45 and 51, which name only the cursor), record `blocked` for every member of the bundle in one `record-outcome "$MEMBERS" blocked` call and name the bundle's packet id as the question's `packet:`, recovering `$MEMBERS` by the same rule T9 and T10 state when the pausing session no longer holds it; a single-task packet must read exactly as today. Prose only, no sweep case, checkable by reading pause's stop path against run-loop §3.5's `stop` action.
+- [x] **T11** [P] **P0** Carry the bundle into `skills/pause/SKILL.md`: where the `stop` path persists a blocking question and records the packet `blocked` (around lines 45 and 51, which name only the cursor), record `blocked` for every member of the bundle in one `record-outcome "$MEMBERS" blocked` call and name the bundle's packet id as the question's `packet:`, recovering `$MEMBERS` by the same rule T9 and T10 state when the pausing session no longer holds it; a single-task packet must read exactly as today. Prose only, no sweep case, checkable by reading pause's stop path against run-loop §3.5's `stop` action.
   - deps: T6
   - covers: Every task in a bundle keeps its own record
   - arch: —

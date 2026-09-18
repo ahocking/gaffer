@@ -95,6 +95,41 @@ session. Fill in truthfully:
 - `backlog.cursor` / `pending` — where the loop stopped and what remains,
 - `pending_questions` — every unanswered blocking/high question, with severity.
 
+**When the `status` you are about to write is `blocked` because the `stop`
+action (`skills/run-loop/SKILL.md` §3.5) handed a question here, this pause
+is a terminal outcome for the packet, not a checkpoint on work still open** —
+the opposite of the WIP-commit case in step 1 above, which records none. The
+`stop` action hands the question here with `packet: <cursor>` and writes no
+run-state itself, so persisting `pending_questions` above and recording the
+outcome below are both this step's job. `packet-bundling` means `<cursor>`
+may be a bundle rather than a single task, so the question's `packet:` field
+already names the whole bundle unchanged — a bundle's packet id is always its
+first member's — but the *outcome* record must cover every member, not just
+the cursor.
+
+Recover the bundle's membership by the same rule T9 (`resume/SKILL.md`) and
+T10 (`run-loop/SKILL.md` §3.2) state — one rule, stated once, not restated
+differently here — in case this session does not already hold `$MEMBERS` as
+shell state from earlier in the same packet: the cursor's own
+`$RUN_DIR/<cursor>/handoff.md` (the run directory `begin-run` printed,
+`.agents/loop/<run_id>/`) already exists whenever the `stop` action reaches
+here (it always follows a dispatched packet), so take `$MEMBERS` from its
+`BUNDLE=` line — absence means `MEMBERS=<cursor>` alone, the single-task
+case, unchanged. Then re-check only the mechanical refusals against it —
+`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "$MEMBERS"`,
+dropping any member whose line reads `finished` or `gone` (never the cursor
+itself) — never re-deriving the scope/deps/cap judgment `group` applies when
+forming a bundle fresh. Only when no handoff exists at all is there nothing
+to recover, and `$MEMBERS` stays `<cursor>` alone by construction rather than
+re-forming the group. Before writing the file below, record the outcome for
+the surviving bundle in one call, never once per member:
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh record-outcome "$MEMBERS" blocked`
+— so a bundle's later tasks share the cursor's own terminal outcome rather
+than reading as still-open work a later sweep would close as `interrupted`.
+A single-task packet has no `BUNDLE=` line, so `$MEMBERS` is `<cursor>` alone
+and this reads exactly as `record-outcome <cursor> blocked` — the single-task
+`blocked` record run-loop §3.6 already names, unchanged in shape.
+
 **A pause is where findings pile up, so route them before you write** (ADR 0022).
 Everything you learned this run that the next session would want is one of three
 things, and only the last belongs in run-state:

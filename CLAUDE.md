@@ -587,10 +587,21 @@ passing sweeps.
   the scheduler flipped it at green-lane merge instead, because the task file sits
   outside every packet's `allowed_files` and two lanes sharing a feature would
   contend on it — retired along with `--parallel`.) It is `gspec-backlog.sh check-task` —
-  the plugin's ONLY write into `gspec/`, one character on one line — and a caller must
+  one character on one line — and a caller must
   distinguish its exit codes: `CHECKED=none` at exit 0 is *skipped, not failed* (gspec is
   optional), while **exit 4 is genuine drift that must be reported and must NOT halt** the
-  loop.
+  loop. **`check-task` is no longer the plugin's only write into `gspec/`**
+  (`capability-auto-complete`, ADR 0025 revision 2026-09-17): the second, separately
+  named write is **`gspec-backlog.sh complete-capabilities <slug>`**, which changes only
+  the checkbox characters of capability lines — a capability flips only when at least one
+  task covers it and every covering task is checked, a feature with an unchecked task whose
+  `covers:` is unmatched flips nothing, and it **never unflips**. The loop runs it inside the
+  packet commit at land, on the resume adopt path, and to reconcile judgeable capability
+  drift at preflight and at end of run (the drift detector itself stays read-only).
+  Unjudgeable rows — unmatched `covers:`, uncovered or unrecognized capabilities — are
+  still **reported to the operator and never flipped**. This reverses
+  `completion-record-drift`'s "never flip a capability automatically"; that reasoning is
+  kept, dated and marked reversed, in ADR 0025 and the parent PRD.
   **A finding is scoped to packets and expires**; `--packets` is mandatory with no
   run-wide escape hatch, because an entry that can never expire is precisely what was
   being removed. Expiry demands **positive evidence** — the checkbox, or an

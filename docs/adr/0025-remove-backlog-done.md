@@ -260,3 +260,75 @@ so `apply` reports and does not flip. `cmd_verify` asserts `done:` is gone.
   indistinguishable from a correct one.
 - **Keep a bounded tail of the last N ids.** Still a list re-emitted from memory every
   packet, still drifts, `N` arbitrary, and it implies a recency guarantee nothing needs.
+
+## Revision 2026-09-17 — D1's in-commit flip extends to capability boxes
+
+Source: the `capability-auto-complete` feature
+(`gspec/features/capability-auto-complete/prd.md`), on the operator's decision of
+2026-09-17 that a complete feature should be marked complete.
+
+**D1 is extended, not replaced.** D1's sentence *"This is the plugin's one write into
+`gspec/`"* stays above as the record of what was decided on 2026-08-10; it is no longer
+true on its own. There is now a **second, separately named write**:
+`gspec-backlog.sh complete-capabilities <slug>`. It sits beside `check-task` and leaves it
+unchanged — the task flip is still one id, one line. The new write is bounded the same way
+D1 bounds the first:
+
+- **Only the checkbox characters of capability lines change.** Never capability text,
+  never acceptance-criteria sub-bullets, and never a task line.
+- **It never unflips.** A checked capability is not even considered.
+- **It flips only what the drift rule can judge.** A capability flips only when at least
+  one task covers it and every covering task is checked, and a feature with any unchecked
+  task whose `covers:` quote is unmatched flips **no** capability. Completion is still
+  derived from the checkbox alone, never from criterion text or counts.
+
+Where it runs, extending D1's atomicity:
+
+- **At land**, inside the packet commit, after the per-task flips — so a feature's
+  capabilities read complete in the same commit as the work that completes them.
+- **On adopt** (D5's orphan-adoption site in `skills/resume/SKILL.md`), as its own commit,
+  since the adopted commit already exists.
+- **At preflight and at end of run**, the loop **reconciles** judgeable capability drift
+  as one commit per scan, outside any packet and carrying no packet trailer. The drift
+  detector (`capability-drift`) stays read-only; all capability writing lives in
+  `complete-capabilities`.
+- **Unjudgeable rows** — an unmatched `covers:` quote, a capability no task covers, a
+  capability line the matcher does not recognize — are **reported to the operator and
+  never flipped**. That is the reconciliation work left for a human, and the only part
+  where human judgement adds something.
+
+A failed flip is reported and never halts the run; in a repo with no `gspec/`, every site
+is a silent no-op (ADR 0020 D4).
+
+### Reversed: `completion-record-drift`'s "never flip a capability"
+
+Kept as history, the same way superseded ADR revisions are kept. The parent feature
+`completion-record-drift` (`gspec/features/completion-record-drift/prd.md`) put this in
+its **Out** scope:
+
+> Flipping a capability checkbox, automatically, ever: today's failure is loud and safe —
+> re-picked, zero packets, noticed — while an auto-flip's is silent and unblocks everything
+> behind a feature wrongly marked done.
+
+and stated as its central constraint that the feature *"DETECTS and never flips"*, with the
+operator as *"the only party allowed to flip a capability box"* and reconciling a drifted
+record *"the human's call"*.
+
+**That reasoning is reversed as of 2026-09-17**, by `capability-auto-complete`. The
+justification: the flip uses the same mechanical rule a human applies when reconciling the
+drift report — at least one covering task, every covering task checked, no unchecked task
+with an unmatched `covers:` quote — so the loop sees everything the report showed the
+human, and in practice the operator flipped on that report without gathering further
+evidence (`packet-bundling` needed five capabilities flipped by hand, `b47d5cd`; the
+parent's own two observed misses were `4a33ae3` and `28c387e`). The silent-wrong-flip risk
+the parent feared remains for exactly one case — a wrong `covers:` quote that still
+matches verbatim — and that is as wrong as a human flipping on the same report, with the
+packet's review as the gate for plan text. What the rule cannot judge is still reported
+and never flipped. The parent PRD carries a reversed-by pointer beside its `Out` bullet;
+its capabilities are not re-opened and its completion is unchanged.
+
+Consequence, amending this ADR's own Consequences: the "plugin now writes into `gspec/`"
+bullet described a write *"bounded to one character on one line"*. That bound still holds
+for `check-task`; `complete-capabilities` is the second write, bounded to the checkbox
+characters of capability lines in one feature's PRD, and capability boxes can now change
+without an operator in the path.

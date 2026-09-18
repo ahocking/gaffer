@@ -2852,6 +2852,80 @@ assert_true "run-digest: every line in the digest still starts with a recognized
   "! printf '%s\n' \"\$RD_BACKSLASH_OUT\" | awk -F'\t' '\$1!=\"packet\" && \$1!=\"decision\" && \$1!=\"handoff-feature\" && \$1!=\"enter\"' | grep -q ."
 
 echo
+echo "== run-tally: the four digest-derived tally figures, counted from the digest's own"
+echo "   lines for the whole run (report-render-conformance T1) =="
+rd_tally() { (cd "$RD" && "$RUNSTATE" run-tally .agents/run-state.yaml "$@"); }
+
+# The four existing line kinds must be byte-identical to what run-digest
+# emitted BEFORE run-tally existed. This literal was captured from this exact
+# fixture state (sorted with LC_ALL=C, since the digest is deliberately
+# unordered) before scripts/runstate.sh was edited for T1. `<TAB>` stands for
+# a real tab, so the literal survives editors; nothing else is transformed.
+echo "-- the fixture's four existing line kinds are byte-identical to their pre-run-tally output --"
+RT_PRE_DIGEST="$(awk '{ gsub(/<TAB>/, "\t"); print }' <<'RT_PRE_EOF'
+decision<TAB>rd-hof<TAB>hand-off-feature
+enter<TAB><TAB>medium<TAB>300000
+handoff-feature<TAB>rd-hof<TAB>hand-off-feature · rd-hof needs a "bulk import" feature, spec at C:\import\spec.md · result: needs-reading · .agents/loop/x/rd-hof/decider.md
+packet<TAB>rd-backslash<TAB>T9 has a literal \n escape and a Windows path C:\import\file.md<TAB>open
+packet<TAB>rd-body<TAB>T5 write a result file<TAB>green
+packet<TAB>rd-continued<TAB>T7 continued after a false finish<TAB>interrupted
+packet<TAB>rd-green<TAB>T1 add the first thing<TAB>green
+packet<TAB>rd-hof<TAB>T3 needs a bigger feature<TAB>open
+packet<TAB>rd-interrupted<TAB>T8 gets swept as interrupted<TAB>interrupted
+packet<TAB>rd-onlys2<TAB>T6b lives only in the second session<TAB>failed
+packet<TAB>rd-open<TAB>T2 add the second thing<TAB>interrupted
+packet<TAB>rd-paused<TAB>T4 mid-edit when paused<TAB>interrupted
+packet<TAB>rd-twosess<TAB>T6 finish in another session<TAB>blocked
+RT_PRE_EOF
+)"
+RT_NOW_DIGEST="$(rd_digest | LC_ALL=C sort)"
+assert_true "run-digest: the literal really carries all four line kinds (so the byte comparison below is not vacuous)" \
+  "[ \"\$(cut -f1 <<<\"\$RT_PRE_DIGEST\" | LC_ALL=C sort -u | tr '\n' ' ')\" = 'decision enter handoff-feature packet ' ]"
+assert_true "run-digest: the fixture's sorted output is byte-identical to its pre-run-tally capture -- same fields, same tabs, no header, no new line kind" \
+  "[ \"\$RT_NOW_DIGEST\" = \"\$RT_PRE_DIGEST\" ]"
+
+echo "-- a run carrying every outcome the digest can emit: each figure counted from its own group --"
+printf 'T10 abandoned mid-way\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-abandoned --tier integration --agent implementer) >/dev/null
+printf 'T11 rolled back\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-rolledback --tier integration --agent implementer) >/dev/null
+printf 'T12 needs the operator\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-ask --tier integration --agent implementer) >/dev/null
+printf '{"ts":"2026-02-04T00:00:01Z","packet":"rd-abandoned","session":"S3","kind":"start"}\n{"ts":"2026-02-04T00:00:02Z","packet":"rd-abandoned","session":"S3","outcome":"abandoned"}\n{"ts":"2026-02-04T00:00:03Z","packet":"rd-rolledback","session":"S3","kind":"start"}\n{"ts":"2026-02-04T00:00:04Z","packet":"rd-rolledback","session":"S3","outcome":"rolled-back"}\n' \
+  > "$RD/.agents/metrics/outcomes/S3.jsonl"
+(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-ask ask-operator --status "ask-operator · rd-ask needs a call · result: needs-reading · x" >/dev/null)
+# A `retry` decision line: a decider token, but not a question for the
+# operator, so it must count toward no figure.
+(cd "$RD" && "$RUNSTATE" route .agents/run-state.yaml rd-green retry >/dev/null)
+printf 'schema: 3\nstatus: paused\nrun_id: %s\nbacklog:\n  cursor: rd-paused\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
+RT_ALL_DIGEST="$(rd_digest)"
+RT_ALL_OUTCOMES="$(awk -F'\t' '$1 == "packet" { print $4 }' <<<"$RT_ALL_DIGEST" | LC_ALL=C sort -u | tr '\n' ' ')"
+assert_true "run-tally fixture: the digest really carries every outcome it can emit (so no figure below is vacuous)" \
+  "[ \"\$RT_ALL_OUTCOMES\" = 'abandoned blocked failed green interrupted open paused rolled-back ' ]"
+assert_true "run-tally fixture: the digest carries the handoff-feature line, both operator-question decisions and the non-question retry" \
+  "[ \"\$(awk -F'\t' '\$1 == \"decision\" || \$1 == \"handoff-feature\" { print \$1 \"/\" \$2 \"/\" \$3 }' <<<\"\$RT_ALL_DIGEST\" | cut -d/ -f1-2 | LC_ALL=C sort | tr '\n' ' ')\" = 'decision/rd-ask decision/rd-green decision/rd-hof handoff-feature/rd-hof ' ]"
+RT_ALL_TALLY="$(rd_tally)"
+assert_true "run-tally: prints exactly SHIPPED/FAILED/UNFINISHED/DECISIONS in the fixed tally order and nothing else (no queued figure)" \
+  "[ \"\$RT_ALL_TALLY\" = \"\$(printf 'SHIPPED=2\nFAILED=2\nUNFINISHED=9\nDECISIONS=2')\" ]"
+assert_true "run-tally: SHIPPED counts only green packet lines" \
+  "[ \"\$(sed -n 's/^SHIPPED=//p' <<<\"\$RT_ALL_TALLY\")\" = 2 ]"
+assert_true "run-tally: FAILED aggregates failed and rolled-back" \
+  "[ \"\$(sed -n 's/^FAILED=//p' <<<\"\$RT_ALL_TALLY\")\" = 2 ]"
+assert_true "run-tally: UNFINISHED aggregates blocked, interrupted, abandoned, open and paused" \
+  "[ \"\$(sed -n 's/^UNFINISHED=//p' <<<\"\$RT_ALL_TALLY\")\" = 9 ]"
+assert_true "run-tally: emits no queued figure" \
+  "[ -z \"\$(grep -i queued <<<\"\$RT_ALL_TALLY\" || true)\" ]"
+
+echo "-- a handed-off packet plus an ask-operator question in one run is TWO decisions, not three --"
+assert_true "run-tally: the handed-off packet's own hand-off-feature decision line is not counted again beside its handoff-feature line -- DECISIONS=2, not 3" \
+  "[ \"\$(sed -n 's/^DECISIONS=//p' <<<\"\$RT_ALL_TALLY\")\" = 2 ]"
+
+echo "-- run-tally dies where run-digest dies --"
+printf 'schema: 3\nstatus: running\n' > "$RD/.agents/run-state-norunid.yaml"
+assert_true "run-tally: a run-state with no run_id dies, as run-digest does" \
+  "! (cd \"\$RD\" && \"\$RUNSTATE\" run-tally .agents/run-state-norunid.yaml >/dev/null 2>&1)"
+assert_true "run-tally: takes no --since (the dedup needs the whole run)" \
+  "! rd_tally --since 1970-01-01T00:00:00Z >/dev/null 2>&1"
+printf 'schema: 3\nstatus: running\nrun_id: %s\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
+
+echo
 echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of
 # scripts/test-gspec-backlog.sh. The construct this feature removed is a

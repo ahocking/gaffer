@@ -84,7 +84,7 @@ report together with the digest behind it rather than asked to find one.
 
 ## Capabilities
 
-- [ ] **P0**: The tally's four digest-derived figures are computed by the deterministic core
+- [x] **P0**: The tally's four digest-derived figures are computed by the deterministic core
   - the deterministic core emits the four digest-derived tally figures for the
     run it is given — ✅ one per `packet` line reading `green`; ⚠️ aggregating
     `blocked`, `interrupted`, `abandoned`, `open` and `paused`; ⛔ `failed` and

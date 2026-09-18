@@ -423,7 +423,17 @@ answerable choice with what follows from each option and your lean, not the raw
 `pending_questions` text. These were written by a session that no longer exists, so
 give the human the plain-English title of the packet they block — they will not
 recognise the id. Non-blocking questions are surfaced but do not halt progress on
-unrelated packets. When this stop report is the whole of what this session does,
+unrelated packets. Take its four digest-derived tally figures from `runstate.sh
+run-tally .agents/run-state.yaml` and compute none of them, and lint it before you
+emit it — `<RUN_DIR>/stop-digest.tsv`, `<RUN_DIR>/stop-report.md` and
+`${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape B <RUN_DIR>/stop-report.md
+<RUN_DIR>/stop-digest.tsv`, with `<RUN_DIR>` the `RUN_DIR=` value §2's
+`begin-run` printed **written out literally**, never `$RUN_DIR` — both exactly as
+run-loop §4 does, correcting the lines a finding names at most once and never
+re-linting in a loop. `REPORT_LINT=clean` means *no mechanical rule was broken*,
+never that the report conforms to the contract, and `REPORT_LINT=unjudged` is
+**not** clean; what the lint cannot judge is stated once, in run-loop §4's "How
+to read the lint's result". When this stop report is the whole of what this session does,
 run `runstate.sh driver-mode exit` right after emitting it.
 
 ## 4. Continue from the cursor
@@ -442,6 +452,21 @@ you just loaded is the only thing that does. Where the tree needed reconciling (
 say so in one line — whether anything was adopted or set aside, and whether the
 resumed state matches where they think they left off. If `$ARGUMENTS` carried
 `--relay`/`--inline`, add the one `⚠️` line per flag described above.
+
+**Lint the kickoff before you emit it**, exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §2 lints a fresh run's: write
+`runstate.sh run-digest .agents/run-state.yaml > <RUN_DIR>/kickoff-digest.tsv`
+and the rendered kickoff to `<RUN_DIR>/kickoff.md`, with `<RUN_DIR>` the
+`RUN_DIR=` value §2's `begin-run` printed **written out literally** — never
+`$RUN_DIR` or any other variable, which driver mode refuses — then run
+`${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape C <RUN_DIR>/kickoff.md
+<RUN_DIR>/kickoff-digest.tsv` (both paths literal). On findings, correct the
+lines they name **at most once**, then emit — never re-lint in a loop. A finding
+records nothing, blocks nothing, rolls back nothing, flips nothing and halts
+nothing. `REPORT_LINT=clean` means *no mechanical rule was broken*, never that
+the kickoff conforms to the contract, and `REPORT_LINT=unjudged` is **not**
+clean; what the lint cannot judge is stated once, in run-loop §4's "How to read
+the lint's result".
 
 **Form the cursor's bundle membership before anything else here** (T7,
 membership rule settled T9). A paused or crashed session's cursor may be a

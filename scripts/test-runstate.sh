@@ -2321,6 +2321,57 @@ assert_true "not a git repo -> ENDED=0/EVERY=off/DUE=no, never a die" \
   "[ \"\$(cd \"\$PP_NOTGIT\" && \"\$RUNSTATE\" periodic-pause PPSX)\" = \"\$(printf 'ENDED=0\nEVERY=off\nDUE=no')\" ]"
 
 echo
+echo "== bundle-cap: bundle_max_tasks reader, pure reader (packet-bundling T2) =="
+BC="$(mktemp -d)"; git -C "$BC" init -q
+git -C "$BC" config user.email t@t; git -C "$BC" config user.name t
+mkdir -p "$BC/.agents"
+bc_run() { (cd "$1" && "$RUNSTATE" bundle-cap); }
+
+echo "-- default with no overrides file at all --"
+assert_true "no project-overrides.yaml -> CAP=1" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=1' ]"
+
+echo "-- a missing bundle_max_tasks key --"
+printf 'schema: 1\npacket_attempts: 3\n' > "$BC/.agents/project-overrides.yaml"
+assert_true "an overrides file with no bundle_max_tasks key -> CAP=1" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=1' ]"
+
+echo "-- a quoted value must not silently fall back to 1 --"
+printf "bundle_max_tasks: '4'\n" > "$BC/.agents/project-overrides.yaml"
+assert_true "a single-quoted bundle_max_tasks value is honoured (CAP=4, not 1)" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=4' ]"
+
+echo "-- a value with a trailing comment --"
+printf "bundle_max_tasks: 4  # tune later\n" > "$BC/.agents/project-overrides.yaml"
+assert_true "a trailing comment does not defeat the token scan (CAP=4)" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=4' ]"
+
+echo "-- 0 falls back to 1 (bundling off) --"
+printf 'bundle_max_tasks: 0\n' > "$BC/.agents/project-overrides.yaml"
+assert_true "bundle_max_tasks: 0 -> CAP=1" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=1' ]"
+
+echo "-- a non-numeric value falls back to 1 --"
+printf 'bundle_max_tasks: bogus\n' > "$BC/.agents/project-overrides.yaml"
+assert_true "an invalid (non-numeric) bundle_max_tasks -> CAP=1" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=1' ]"
+
+echo "-- a negative value falls back to 1 --"
+printf 'bundle_max_tasks: -4\n' > "$BC/.agents/project-overrides.yaml"
+assert_true "a negative bundle_max_tasks -> CAP=1" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=1' ]"
+
+echo "-- a valid value is read back --"
+printf 'bundle_max_tasks: 4\n' > "$BC/.agents/project-overrides.yaml"
+assert_true "bundle_max_tasks: 4 -> CAP=4" \
+  "[ \"\$(bc_run \"$BC\")\" = 'CAP=4' ]"
+
+echo "-- not a git repo, never a die --"
+BC_NOTGIT="$(mktemp -d)"
+assert_true "not a git repo -> CAP=1, never a die" \
+  "[ \"\$(cd \"\$BC_NOTGIT\" && \"\$RUNSTATE\" bundle-cap)\" = 'CAP=1' ]"
+
+echo
 echo "== run-digest: assembled from files alone -- handoff files, routing records, the"
 echo "   outcomes log and driver-mode records, nothing from memory (thin-loop-driver T11,"
 echo "   ADR 0028 result 4) =="

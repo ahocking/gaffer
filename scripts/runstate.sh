@@ -327,6 +327,24 @@
 #                                    comparison. No enter record for the
 #                                    session, or not a git repo, reads as
 #                                    ENDED=0/EVERY=off/DUE=no.
+#   bundle-cap                       packet-bundling T2: prints CAP=<n> the
+#                                    way periodic-pause prints EVERY=. Pure
+#                                    reader, no side effect. Comes from
+#                                    `bundle_max_tasks` in
+#                                    .agents/project-overrides.yaml: 1 when
+#                                    the key is missing, invalid, zero or
+#                                    negative -- bundling is off until a
+#                                    repository raises it. Same token-scan
+#                                    shape as packet_attempts (see
+#                                    _rs_bundle_max_tasks/
+#                                    _rs_packet_attempts_limit): skips
+#                                    non-digit tokens after the key (so a
+#                                    trailing comment cannot defeat it) and
+#                                    strips one matching pair of quotes per
+#                                    token before testing digit-ness, so
+#                                    `bundle_max_tasks: '4'` is honoured
+#                                    rather than read as missing. Not a git
+#                                    repo reads as CAP=1.
 #   run-digest <run-state> [--since <ts>]
 #                                    thin-loop-driver T11 (ADR 0028 result 4):
 #                                    assembles a report from FILES ALONE --
@@ -2400,6 +2418,55 @@ _rs_packet_attempts_limit() {
   case "$v" in ''|0|*[!0-9]*) echo 1 ;; *) echo "$v" ;; esac
 }
 
+# --- bundle_max_tasks: the largest number of tasks a bundle may hold -------
+# Same token-scanning shape as _rs_packet_attempts_limit directly above:
+# token-scan the remainder after `bundle_max_tasks:`, skipping over anything
+# that isn't purely digits (so a trailing comment cannot defeat this) and,
+# for EACH token, stripping one matching pair of quotes before testing digit-
+# ness -- `bundle_max_tasks: '4'` is legal YAML and must not silently read as
+# missing/invalid just because the raw token is `'4'`, not `4`.
+#
+# Missing, invalid, zero AND negative all read as 1 -- unlike
+# _rs_pause_every_packets's "off" sentinel, this has a numeric floor: a
+# bundle of 1 task is just a packet, so "1" already means bundling is off,
+# with no separate off/on distinction needed. Negative values never reach
+# the case statement as candidates in the first place: the awk token match
+# `^[0-9]+$` has no sign class, so a token like `-4` is skipped as non-digit
+# by the same rule that skips a trailing comment, and the scan falls through
+# to empty (missing) just as if the key had not matched at all.
+_rs_bundle_max_tasks() {
+  local main_root="$1" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^bundle_max_tasks:[[:space:]]*/ {
+        line = $0
+        sub(/^bundle_max_tasks:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo 1 ;; *) echo "$v" ;; esac
+}
+
+# Always exits 0 -- a pure reader, same contract as periodic-pause/compact-
+# threshold. Never writes anything.
+cmd_bundle_cap() {
+  local main_root
+  if ! main_root="$(_rs_main_checkout_root)"; then
+    printf 'CAP=1\n'
+    return 0
+  fi
+  printf 'CAP=%s\n' "$(_rs_bundle_max_tasks "$main_root")"
+}
+
 # --- attempts already spent on $pkt since its latest kind=start record -----
 # A kind=continue record deliberately does NOT move this boundary (the plan's
 # own rule: "a continuation does not reset the count") — only a genuine new
@@ -3291,6 +3358,7 @@ case "$cmd" in
   compact-threshold) cmd_compact_threshold "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;
-  -h|--help|help|"") sed -n '2,401p' "$0" | sed 's/^# \{0,1\}//' ;;
+  bundle-cap)        cmd_bundle_cap        "$@" ;;
+  -h|--help|help|"") sed -n '2,419p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

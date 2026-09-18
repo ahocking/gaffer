@@ -229,23 +229,65 @@ Act on the `DECISION=` it prints:
   is disposable loop scratch** rather than deliberate output someone else
   produced, matching the instinct `skills/pause/SKILL.md` carries for the same
   shared-checkout risk. **Record no outcome here** — nothing finished; whether
-  the cursor's open start reads `interrupted` is step 4's sweep to decide.
-- **`adopt`** — a single clean orphan commit tagged `[orch packet:<cursor>]` is one
-  ahead of the recorded green SHA: a **torn write** (the packet committed but the
-  crash beat the run-state update). **Re-verify build+tests are green on that
-  commit yourself** (the helper cannot run the suite), then adopt it: set
-  `last_green_commit` to that SHA and **remove the cursor packet from `pending`**
-  — there is no `done` list to move it into (ADR 0025). If the orphan commit does
-  not already carry the gspec checkbox flip (it should — §3.4 lands it in the same
-  commit; `git show --stat <sha> -- gspec/` tells you), perform it now:
-  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <cursor>`, same exit
-  codes as §3.4 (`CHECKED=none` is skipped, not failed, for a non-gspec backlog;
-  exit 4 is drift — note it, do not halt). Commit that flip as its own small
-  commit if you had to make it — the orphan commit is already recorded, so
-  amending it would rewrite history. **Attest the outcome** — it landed, just
-  was not recorded: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh record-outcome
-  <cursor> green`. Advance `cursor`, and write run-state atomically via
-  `runstate.sh write`. The packet is done — do not redo it.
+  the cursor's bundle's open starts read `interrupted` is step 4's sweep to
+  decide, once it re-forms the bundle's membership.
+- **`adopt`** — a clean orphan commit one ahead of the recorded green SHA
+  carries a `[orch packet:<cursor>]` trailer FIRST (`reconcile` only checks
+  that first trailer — `orphan_packet_tag` reads no further): a **torn
+  write** (the packet committed but the crash beat the run-state update).
+  **Re-verify build+tests are green on that commit yourself** (the helper
+  cannot run the suite). The commit may carry more than one
+  `[orch packet:...]` trailer — a landed bundle (`packet-bundling`) writes
+  one per member, cursor first, in the same commit (§3.6) — so read
+  **every** trailer on it, in commit order, rather than trusting the cursor
+  alone (T7), the same read `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md`
+  §4 uses to recover a landed bundle's membership:
+  ```bash
+  MEMBERS="$(git log -1 --format=%B HEAD \
+    | grep -oE '^[[:space:]]*\[orch packet:[a-z0-9][a-z0-9-]*\][[:space:]]*$' \
+    | sed -E 's/^[[:space:]]*\[orch packet:(.*)\][[:space:]]*$/\1/' \
+    | awk '!seen[$0]++' | paste -sd, -)"
+  ```
+  the same anchored, deduplicated read the drifted-completion-record preflight
+  uses (`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` :69-72) — anchored to
+  the whole line so prose elsewhere in the commit body that merely *mentions*
+  another packet's trailer cannot be read as a member, and deduplicated so a
+  repeated trailer cannot hand `record-outcome` the same id twice. **If the
+  first id in `$MEMBERS` is not `<cursor>` itself, escalate to the human
+  instead of adopting** — `reconcile`'s own `orphan_packet_tag` match is
+  unanchored and only reads the first hit it finds, so an orphan whose real
+  first trailer differs from what `orphan_packet_tag` matched can still reach
+  `DECISION=adopt`; this re-read, anchored, is what catches that case before
+  anything is attested. (a lone `<cursor>` trailer reads back as
+  `MEMBERS=<cursor>`, byte-identical to a single-member adoption). Then adopt
+  it: set `last_green_commit` to that SHA and **remove every member of
+  `$MEMBERS` from `pending`** — there
+  is no `done` list to move them into (ADR 0025). For each member, in the
+  same trailer order, check whether it already carries the gspec checkbox
+  flip (it should — §3.6 lands every member's flip in the same commit;
+  `git show --stat <sha> -- gspec/` tells you) and flip it now if not:
+  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <member>`, same
+  exit-code rules as §3.6 (`CHECKED=none` is skipped, not failed, for a
+  non-gspec backlog; exit 4 is drift — note it by name, do not halt, and
+  move on to the next member — the commit already landed regardless of
+  whether its own checkbox could be flipped; exit 1 is a malformed id, a
+  real usage error §3.6 treats as grounds to stop before committing — here
+  the commit is already made, so instead **escalate to the human** naming
+  the member, since an already-landed trailer failing `check-task` this way
+  is not expected and should not be guessed past). Commit any flips you had
+  to make as one small commit covering every member that needed one — the
+  orphan commit is already recorded, so amending it would rewrite history.
+  **Attest the outcome** — it landed, just was not recorded, for every
+  member in one call: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
+  record-outcome "$MEMBERS" green`. Set `cursor` to whatever entry remains
+  first in `pending` (or none, if nothing does — the same rule §3.6's own
+  cursor-advance uses, since `group` forms a bundle from the plan's order
+  while `pending` is the loop's own chosen order, so a member is never
+  assumed to sit at a consecutive prefix of it), and write run-state
+  atomically via `runstate.sh write`. Every member of the bundle is done —
+  do not redo any of them: this is exactly the crash window the task exists
+  to close, so a crash between a bundled commit and the run-state write can
+  never leave a landed member unchecked and queued for re-execution.
 - **`escalate`** — diverged history, multiple unexplained commits, an untagged /
   mismatched orphan, or a dirty tree holding a reviewed-output path (deliberate
   output the loop did not create, sitting where `discard` would otherwise stash
@@ -306,18 +348,41 @@ say so in one line — whether anything was adopted or set aside, and whether th
 resumed state matches where they think they left off. If `$ARGUMENTS` carried
 `--relay`/`--inline`, add the one `⚠️` line per flag described above.
 
-**Then sweep before recording the cursor packet** (T3, T8): run
+**Form the cursor's bundle membership before anything else here** (T7). A
+paused or crashed session's cursor may be a multi-task bundle
+(`packet-bundling`), exactly as a fresh packet's cursor can be — `$MEMBERS`
+is driver-held shell state (the same convention `$SINCE`/`$SWEEP` use) that
+does not survive a crash or a pause on its own, so this session must re-form
+it before the sweep below can know every member to exempt. Form it exactly
+as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.2 does: read the cap
+(`runstate.sh bundle-cap` → `CAP=<n>`), form the candidate group at the
+cursor (`gspec-backlog.sh group <cursor> --cap <n>`), then walk its
+`MEMBER=` lines in that printed (plan) order and judge each one's tier from
+its title exactly as §3.2 judges a fresh packet's — the first one is the
+cursor itself: judging it design-heavy ends the group right there
+(`MEMBERS=<cursor>` alone); otherwise keep walking and stop before the first
+member you would judge design-heavy, dropping it and everything after it. A
+leading `HANDOFF=unknown` from `group` (no gspec, a non-gspec packet, or a
+cursor already checked) means this packet does not bundle at all: set
+`MEMBERS=<cursor>` and decide `tier`/`--agent` for it alone, exactly as you
+would today. Otherwise `MEMBERS` is the comma-joined ids that survive the
+walk, cursor first, in plan order, and `tier`/`--agent` are decided for the
+whole of `MEMBERS` the same way §3.2 decides them. Use `$MEMBERS` everywhere
+below in place of `<cursor>` alone.
+
+**Then sweep before recording the packet** (T3, T7, T8): run
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
-`--paused-cursor <cursor>` exactly when this session is about to continue it
-(cosmetic on the `--list` call, which only lists — it costs one extra id in
+`--paused-cursor "$MEMBERS"` exactly when this session is about to continue it
+(cosmetic on the `--list` call, which only lists — it costs extra ids in
 `OPEN=` if omitted; run-loop's own `--list` call below omits it and passes it
 only on the real sweep, which is the call that matters) —
-`status` read `paused` **or** `blocked` in step 1, both of which leave the cursor
-packet's start open for this same session to pick back up; the cursor packet is
-the one this session is about to continue, not the one the sweep should close. A
-crash (`status` read `running`) is not this situation — the cursor packet is not
-excluded there, and it still closes as `interrupted` (or `abandoned`, if it is
-also gone) like any other open packet. It prints one `OPEN=<id>` line per open
+`status` read `paused` **or** `blocked` in step 1, both of which leave every
+member of the cursor's bundle open for this same session to pick back up; the
+cursor's whole bundle is what this session is about to continue, not what the
+sweep should close. A crash (`status` read `running`) is not this situation —
+no member of `$MEMBERS` is excluded there, and each still closes as
+`interrupted` (or `abandoned`, if it is also gone) like any other open packet.
+It prints one `OPEN=<id>` line per open
 packet. If it printed any, comma-join the ids (the `paste -sd,` idiom at
 run-loop/SKILL.md :84–87) into one
 string and resolve them —
@@ -331,7 +396,7 @@ for the real sweep to close either — and leave `SWEEP` empty). Otherwise
 sweep for real, same `--paused-cursor`/`--gone`, capturing the sweep's own
 output:
 `SWEEP="$(${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor
-<cursor> --gone "$GONE")"`. `$SWEEP` holds one
+"$MEMBERS" --gone "$GONE")"`. `$SWEEP` holds one
 `SWEPT=<id>`/`OUTCOME=<interrupted|abandoned>` line pair per packet the sweep
 actually closed — every open packet, not only the gone ones; a gone packet's
 pair reads `abandoned`, every other open packet's reads `interrupted` —
@@ -343,20 +408,49 @@ filtered by `--since`, so this sweep's own record of what it just closed is
 the only thing marking it as new. The kickoff above needs nothing, since a
 sweep always runs after it.
 
-Write the cursor packet's handoff exactly as
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — decide its
-`tier`/`--agent`, pipe `gspec-backlog.sh handoff` (or its non-gspec task text)
-into `runstate.sh handoff`, and skip the packet with no record if the handoff
-is refused. Only once it is written do you attest the start — capture
-`SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` first, the same capture
+Write the packet's handoff for `$MEMBERS` exactly as
+`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — `tier`/`--agent`
+were already decided above.
+
+**Check for `HANDOFF=unknown` or a non-cursor `HANDOFF=refused` before piping
+anything**, the same check §3.3 runs (T7 — a resumed bundle can legitimately
+carry a member routed `hand-off-feature` earlier in the same run, same as a
+freshly-formed one). Run `gspec-backlog.sh handoff "$MEMBERS"` first and read
+its output. A leading `HANDOFF=unknown` line means some id in `$MEMBERS` does
+not resolve in gspec — this can only be `<cursor>` alone when `$MEMBERS` has
+one member, since `group` already confirmed every other candidate resolves;
+when you have run-state's own task text for this packet instead (a non-gspec
+packet, never a bundle), pipe that in its place. Otherwise **skip the packet
+with no record** — advance the cursor and report the skip.
+
+A leading `HANDOFF=refused` line (`REASON=hand-off-feature`) means some id in
+`$MEMBERS` was already routed `hand-off-feature` this run — its own
+`PACKET=` line names which one. When `PACKET=` is `<cursor>` itself, **skip
+the packet with no record** — advance the cursor and report the skip. When
+`PACKET=` names a later member instead, **truncate `$MEMBERS` to the members
+before it**, dropping the refused member and everything after it, then
+re-run `gspec-backlog.sh handoff` on the truncated `$MEMBERS` and proceed
+with that narrower bundle — the refused member is left at its place in
+`pending` and gets its own packet, refused again in turn, on a later
+iteration. Never pipe a `HANDOFF=refused` body through to `runstate.sh
+handoff` as if it were real task text.
+
+Once `HANDOFF=<path>` prints clean (or a non-gspec packet's task text is
+ready), pipe it (or run-state's own task text, always a single id in that
+case) into `runstate.sh handoff .agents/run-state.yaml <cursor> --tier
+<tier> --agent <agent>` (still exactly one packet id, the bundle's own —
+never `$MEMBERS` — same as §3.3). Only once it is written do you attest the start —
+capture `SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` first, the same capture
 run-loop/SKILL.md §3.3 pairs with this exact step, so the first shape-A report
 after this resume scopes `run-digest --since "$SINCE"` to only this packet's
 own decisions rather than every decision the whole run has ever recorded —
-then `runstate.sh record-start <cursor> --continue` when this session is
-about to continue the cursor packet — the same condition the sweep above
-used to exclude this packet from closing — else `runstate.sh record-start
-<cursor>` (a fresh start — its prior attempt, if any, already closed with a
-recorded outcome, since a crash is not excluded from the sweep above).
+then `runstate.sh record-start "$MEMBERS" --continue` when this session is
+about to continue the cursor's bundle — the same condition the sweep above
+used to exclude it from closing — else `runstate.sh record-start "$MEMBERS"`
+(a fresh start for every member — its prior attempt, if any, already closed
+with a recorded outcome, since a crash is not excluded from the sweep
+above); either call writes one start (or continuation) record per member in
+a single call, sharing a timestamp and session, exactly as §3.3 does.
 
 Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,

@@ -489,6 +489,40 @@ wait.
      branch, so no part of the bundle lands on its own — and run `runstate.sh
      driver-mode exit` immediately after that stop report.
 
+   **Complete the feature's capabilities.** Once every member above has
+   been flipped or drifted (an exit-1 above already ended the bundle before
+   this point is ever reached), run `gspec-backlog.sh complete-capabilities
+   <slug>` exactly once for the landed feature — a bundle is always one
+   feature. Take the slug from any member's own `CHECKED=<feature>#T<n>`
+   line above when one was printed; they all name the same one.
+   `CHECKED=already` (the idempotent path) prints no feature slug, and
+   neither does the `CHECKED=none` drift case, so when no member printed a
+   `<feature>#T<n>` line, fall back to the handoff's own `FEATURE=` line
+   (§3.3, still in this session's context — one feature per bundle); that
+   still counts as gspec-sourced. Skip the call entirely only when every
+   member returned `CHECKED=none` — the non-gspec case, with no capability
+   to complete.
+   - **exit 0** — whenever a `FILE=` line was printed (a fully-done
+     feature, a held one, and a normal flip all print it; only the
+     gspec-optional skip does not), stage that PRD into this same commit,
+     alongside the plan file(s) staged above.
+   - **exit 4, exit 1, or anything else** — report it on this packet's own
+     landing report below (shape A), naming the feature and the failure,
+     but never for this reason: halt the loop, withhold the commit, or
+     record an outcome other than `green` for `$MEMBERS`. This is **not**
+     `check-task`'s exit-1 rule just above — that one is unchanged and
+     still ends the bundle without landing it; a capability flip is derived
+     bookkeeping on top of tasks that already landed, never a condition of
+     landing them, and the task record itself is unaffected either way.
+     Since no `FILE=` line is ever printed on a failure here, restore the
+     PRD with `git checkout -- <path>` — the same path the handoff's own
+     `PRD=` line already named for this bundle — so a partial or unexpected
+     write from this call never rides into the commit unstaged.
+   A single-task packet that completes no capability (`completed=0`, or the
+   call skipped outright) reads exactly as it does today: nothing staged,
+   nothing to report — staging an unchanged PRD via `git add` is a no-op
+   even though `FILE=` is still printed on a `completed=0` resolve.
+
    **Commit on the branch.** Trailers, each on its own line (ADR 0019
    self-label — a factual record, not a grade):
    - `[orch packet:<id>]` — one per member that landed, each on its own
@@ -582,9 +616,13 @@ wait.
      by `--since`, so this sweep's own record of what it just closed is the
      only thing marking these as new, not already carried by an earlier
      report — plus one 🔀 line per `decision` line `<landed>` carries other
-     than `retry` (already the 🔁 above, never reported twice). Never write this
-     from the dispatched agent's or reviewer's own words — the digest's
-     fields are what render, not your memory of their status lines.
+     than `retry` (already the 🔁 above, never reported twice), plus one
+     ⚠️ line naming the feature whenever the capability-completion call
+     above failed (exit 4, exit 1, or anything else) — the packet still
+     landed, so this is an alert alongside the ✅/🔁 line, never a reason to
+     withhold it. Never write this from the dispatched agent's or
+     reviewer's own words — the digest's fields are what render, not your
+     memory of their status lines.
 7. **Integrate (only at `full-autonomy`).** After the packet lands green, you
    may merge the branch into the integration branch, rebase it to keep it
    current, and push feature/integration branches — never targeting `main`; a

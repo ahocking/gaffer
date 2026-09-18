@@ -121,7 +121,7 @@ slug names its own scope rather than stacking a second `-gaps` suffix.
     with the `all features complete` reason, so the correction cannot be
     evidenced by a branch that has simply stopped being reached
 
-- [ ] **P1**: Every remaining instance of the construct in `scripts/runstate.sh` is closed or recorded
+- [x] **P1**: Every remaining instance of the construct in `scripts/runstate.sh` is closed or recorded
   - each `printf … | grep -q`-shaped test used directly as a condition under
     `pipefail` in `scripts/runstate.sh` — the set-membership helper and the two
     findings duplicate-id checks — is either expressed without the pipe or

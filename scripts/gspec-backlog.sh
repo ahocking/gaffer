@@ -19,8 +19,8 @@
 #                              WRITTEN as well as read (ADR 0025 D1): `check-task`
 #                              flips ONE task line's `[ ]` to `[x]` and nothing
 #                              else — never the text, never any other line. This
-#                              is the adapter's one write; it records that a unit
-#                              of work executed, not what to build (ADR 0020 D2).
+#                              is the plan file's only write; it records that a
+#                              unit of work executed, not what to build (ADR 0020 D2).
 #   <prd>                      the PRD. Capability lines
 #                              `- [ ] **P<n>**: <text>`; completion is DERIVED
 #                              from them (ADR 0020 D2 — never stored). Optional
@@ -31,6 +31,15 @@
 #                              consumed — the D2 amendment (2026-09-15) that
 #                              widened this contract for `handoff` below, the
 #                              ONE reader of them (`_prd_capability`).
+#                              ALSO WRITTEN, since capability-auto-complete-t1:
+#                              `complete-capabilities` flips a capability's own
+#                              `[ ]` to `[x]` once its covering tasks are all
+#                              checked, in the same read-only-lookup-then-`sub()`
+#                              shape as `check-task` — never the text, never a
+#                              checked box unflipped. Completion stays DERIVED,
+#                              never a second stored flag: this write only ever
+#                              makes the checkbox agree with what the plan
+#                              already showed to be true.
 #                              `runstate.sh` still never reads gspec/.
 #
 # ...where <plan> and <prd> are LAYOUT-DEPENDENT and resolved in exactly one
@@ -301,6 +310,44 @@
 #                            plus a `NOTE=` line when there is no gspec/ at
 #                            all (D4). Never writes; exits 0 on every path —
 #                            a report, not a gate.
+#   complete-capabilities <slug> [root]   WRITE (capability-auto-complete-t1):
+#                            flip a feature's finished capabilities to `[x]`.
+#                            Walks the same derivation `capability-drift`
+#                            walks -- `_prd_capabilities` / `_plan_task_covers`
+#                            / `_split_covers` / `_prd_capability` -- so a
+#                            capability flips here iff it would have printed
+#                            `DRIFT=<slug>\t<capability text>` there; never a
+#                            second guess at the same question, and
+#                            `capability-drift` itself is unchanged by this
+#                            (same functions, same output, still read-only).
+#                            Never flips an uncovered or unrecognized
+#                            capability, and never unflips a checked one -- a
+#                            checked capability is never even considered.
+#                            A feature with an UNCHECKED task whose `covers:`
+#                            quote matches no capability holds EVERY flip,
+#                            never a partial one: a typo'd quote may be
+#                            evidence against a capability that would
+#                            otherwise flip, and a flip is never undone once
+#                            applied. The same quote on an already-CHECKED
+#                            task holds nothing -- stale evidence about a task
+#                            that is itself already done. Output:
+#                              COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#                              COMPLETED=<slug>\t<capability text>  (n lines, PRD order)
+#                              FILE=<relprd>          (present whenever the feature resolved)
+#                              REASON=...             (blocked / none / unresolved)
+#                            Exit codes mirror check-task (ADR 0025 D1): 0
+#                            where there is no gspec/ at all (skipped, D4) or
+#                            the feature resolved (whether or not anything
+#                            flipped); 1 for a malformed slug (a path
+#                            separator or '..' component -- REFUSED, `die`d,
+#                            same as check-task's canonical-form guard); 4
+#                            for a slug with no resolvable PRD+plan pair in
+#                            any layout, distinguishable from the skip. Writes
+#                            with check-task's read-only-lookup-then-`sub()`
+#                            shape -- only the flipped lines' checkbox
+#                            characters change. `check-task` remains the
+#                            adapter's only writer of a TASK line; this is the
+#                            only writer of a CAPABILITY line.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -1711,6 +1758,217 @@ cmd_capability_drift() {
     "$drift" "$unjudgeable"
 }
 
+# --- complete-capabilities: flip a feature's finished capabilities ----------
+# (capability-auto-complete-t1). WRITE -- a second write site alongside
+# check-task's task-line flip (ADR 0025 D1): `check-task` remains the only
+# writer of a TASK line, and this is the only writer of a CAPABILITY line; the
+# two never touch the same line of the same file.
+#
+# Walks the SAME derivation `_capability_drift_for` walks -- built from
+# `_prd_capabilities` / `_plan_task_covers` / `_split_covers` / `_prd_capability`
+# -- rather than calling `_capability_drift_for` itself: that function's own
+# `UNJUDGEABLE=unmatched-quote` line drops the covering task's checked state
+# (a read-only report has no need of it -- an unmatched quote is unjudgeable
+# either way), but the flip rule below needs exactly that bit, so this
+# rebuilds the same walk from its four low-level pieces rather than widen
+# `_capability_drift_for`'s own output shape for one caller.
+# `_capability_drift_for`/`cmd_capability_drift` are UNTOUCHED by this --
+# same functions, same output, still read-only, same checksum-pinned
+# no-write guarantee its own sweep case already covers.
+#
+# Flip rule:
+#   - flips a capability iff `_capability_drift_for` would print
+#     `DRIFT=<slug>\t<capability text>` for it: >=1 covering task, all
+#     checked, canonical (`**P<n>**:`) text. Never an uncovered-capability or
+#     unrecognized-capability row -- neither ever reaches the flip branch.
+#   - never unflips a checked capability -- only an UNCHECKED capability
+#     (`ccapchecked=="0"`) is ever considered, so this is structural, not a
+#     second check.
+#   - a feature with an UNCHECKED task whose `covers:` quote matches no
+#     capability holds EVERY flip, never a partial one: a typo'd quote may be
+#     evidence against a capability that would otherwise flip, and a flip is
+#     never undone once applied. The SAME quote on an already-CHECKED task
+#     holds nothing -- it is stale evidence about a task that is itself
+#     already done, not a live signal about what is still in flight.
+#
+# Output:
+#   COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#   COMPLETED=<slug>\t<capability text>     (n lines, PRD order)
+#   FILE=<relprd>                           (present whenever the feature resolved)
+#   REASON=...                              (blocked / none / unresolved)
+#
+# Exit codes mirror check-task (ADR 0025 D1):
+#   0   no gspec/ at all (skipped, D4 -- gspec is optional), or a resolved
+#       feature with zero or more capabilities flipped (blocked or ok)
+#   1   a malformed slug -- a path separator or '..' component, which would
+#       interpolate into a DIRECTORY name under gspec 3.x -- REFUSED, `die`d
+#   4   the slug has no resolvable PRD+plan pair in any gspec layout: genuine
+#       drift in the caller's own argument, distinguishable from the skip
+#
+# Writes with check-task's read-only-lookup-then-`sub()` shape: every flip
+# target is decided by the read-only walk above, and the mutating awk pass
+# re-confirms each target is still an unchecked, canonical capability line
+# before touching it -- so only the flipped lines' checkbox characters
+# change, byte-identical otherwise, through the same atomic
+# temp-file-then-`mv` write check-task uses.
+cmd_complete_capabilities() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "complete-capabilities: need a feature slug"
+  local root; root="$(_root "${2:-}")"
+
+  if ! _has_gspec "$root"; then
+    printf 'COMPLETE_CAPABILITIES=none completed=0\n'
+    printf 'REASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    return 0
+  fi
+
+  # Same guard `_resolve_task_id`'s canonical-form branch applies to a
+  # caller-supplied slug (ADR 0025 D1): gspec 3.x interpolates it into a
+  # DIRECTORY name (gspec/features/<slug>/...), so a path separator or '..'
+  # component is refused before any file test. Runs AFTER the gspec-optional
+  # early return, for the same reason that ordering holds there: every
+  # gspec-optional case must still exit 0 regardless of what was passed.
+  case "$slug" in
+    */*|*'..'*)
+      die "complete-capabilities: refusing a feature slug containing a path separator or '..' component (ADR 0025 D1)"
+      ;;
+  esac
+
+  local prdpp prdabs relprd
+  prdpp="$(_resolve_prd_path "$slug" "$root")"
+  prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+  relprd="$(printf '%s' "$prdpp" | cut -f2)"
+
+  local pp plan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  plan="$(printf '%s' "$pp" | cut -f1)"
+
+  if [ -z "$prdabs" ] || [ -z "$plan" ]; then
+    printf 'COMPLETE_CAPABILITIES=none completed=0\n'
+    printf 'REASON=feature %s has no resolvable PRD and plan pair in any gspec layout\n' "$slug"
+    return 4
+  fi
+
+  # A feature already fully done (`_feature_done` -- ADR 0020 D2, never a
+  # second guess) has nothing unchecked left to flip. Skipped entirely, same
+  # as `cmd_capability_drift`'s own skip and for the same reason: the walk
+  # below would otherwise raise a hold from a long-checked task's unmatched
+  # quote with nothing left to flip anything against.
+  if [ "$(_feature_done "$prdabs")" = "1" ]; then
+    printf 'COMPLETE_CAPABILITIES=ok completed=0\n'
+    printf 'FILE=%s\n' "$relprd"
+    return 0
+  fi
+
+  local caps; caps="$(mktemp)"
+  _prd_capabilities "$prdabs" > "$caps"
+  local matched; matched="$(mktemp)"
+
+  local hold=0 tchecked craw q capout first
+  while IFS=$'\t' read -r tchecked craw; do
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      capout="$(_prd_capability "$prdabs" "$q")"
+      first="${capout%%$'\n'*}"
+      if [ "$first" = "MATCH" ]; then
+        printf '%s\t%s\n' "$q" "$tchecked" >> "$matched"
+      elif [ "$tchecked" = "0" ]; then
+        hold=1
+      fi
+    done < <(_split_covers "$craw")
+  done < <(_plan_task_covers "$plan")
+
+  if [ "$hold" = "1" ]; then
+    printf 'COMPLETE_CAPABILITIES=blocked completed=0\n'
+    printf 'REASON=%s has an unchecked task whose covers: quote matches no capability — holding every flip until it is fixed\n' "$slug"
+    printf 'FILE=%s\n' "$relprd"
+    rm -f "$caps" "$matched"
+    return 0
+  fi
+
+  local texts; texts="$(mktemp)"
+  local ccapchecked ccanonical ctext bits
+  while IFS=$'\t' read -r ccapchecked ccanonical ctext; do
+    [ "$ccapchecked" = "0" ] || continue
+    [ "$ccanonical" = "1" ] || continue
+    bits="$(TXT="$ctext" awk -F'\t' '$1==ENVIRON["TXT"]{print $2}' "$matched")"
+    [ -n "$bits" ] || continue
+    grep -qx '0' <<< "$bits" && continue
+    printf '%s\n' "$ctext" >> "$texts"
+  done < "$caps"
+  rm -f "$caps" "$matched"
+
+  local n; n="$(wc -l < "$texts" | tr -d '[:space:]')"
+  n="${n:-0}"
+  if [ "$n" -eq 0 ]; then
+    printf 'COMPLETE_CAPABILITIES=ok completed=0\n'
+    printf 'FILE=%s\n' "$relprd"
+    rm -f "$texts"
+    return 0
+  fi
+
+  # Atomic write, same shape as check-task: build into a temp file beside the
+  # PRD, then `mv` over it so a reader never observes a partial write.
+  # GLOBALS, deliberately -- see check-task's own comment on the bash
+  # 3.2-vs-5.2 EXIT-trap scoping difference this guards against; do not make
+  # these `local` again.
+  _cc_tmp=""; _cc_tmp2=""
+  _cc_tmp="$(mktemp "$(dirname "$prdabs")/.gspec-complete-cap.XXXXXX")"
+  trap 'for _f in "${_cc_tmp:-}" "${_cc_tmp2:-}"; do [ -n "$_f" ] && rm -f "$_f"; done; :' EXIT
+  local tmp; tmp="$_cc_tmp"
+  cp -p "$prdabs" "$tmp"
+
+  # Re-derives, for the write pass only, exactly the checked/canonical/text
+  # triple `_prd_capabilities` already computed above -- the same duplication
+  # check-task accepts between its own read (`_task_lookup`) and write
+  # passes, so the write re-confirms a target is still unchecked immediately
+  # before flipping it rather than trusting a stale read.
+  awk -v targetsfile="$texts" '
+    BEGIN {
+      while ((getline line < targetsfile) > 0) if (line != "") want[line]++
+      close(targetsfile)
+    }
+    /'"$_CAPABILITY_LINE_RE"'/ {
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+/, "", rest)
+      canonical = 0; text = rest
+      if (rest ~ /^\*\*:/) { canonical = 1; sub(/^\*\*:[[:space:]]*/, "", text) }
+      else { sub(/^[[:space:]]*/, "", text); sub(/\*\*[[:space:]]*$/, "", text) }
+      sub(/[[:space:]]+$/, "", text)
+      if (!checked && canonical == 1 && (text in want) && want[text] > 0) {
+        line = $0
+        sub(/\[ \]/, "[x]", line)
+        print line
+        want[text]--
+        next
+      }
+    }
+    { print }
+  ' "$prdabs" > "$tmp"
+
+  # Same no-trailing-newline guard as check-task: awk's print always
+  # terminates the record it writes, so a PRD lacking a final newline would
+  # otherwise gain one byte here.
+  if [ -n "$(tail -c1 "$prdabs")" ]; then
+    local sz; sz="$(wc -c < "$tmp")"; sz=$((sz - 1))
+    _cc_tmp2="$(mktemp "$(dirname "$prdabs")/.gspec-complete-cap.XXXXXX")"
+    head -c "$sz" "$tmp" > "$_cc_tmp2"
+    cat "$_cc_tmp2" > "$tmp"
+    rm -f "$_cc_tmp2"; _cc_tmp2=""
+  fi
+
+  mv "$tmp" "$prdabs"
+  trap - EXIT
+
+  printf 'COMPLETE_CAPABILITIES=ok completed=%d\n' "$n"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    printf 'COMPLETED=%s\t%s\n' "$slug" "$t"
+  done < "$texts"
+  printf 'FILE=%s\n' "$relprd"
+  rm -f "$texts"
+}
+
 # _handoff_one <packet-id> [root] — the block for exactly ONE task id, byte-
 # identical to what `cmd_handoff` printed before bundling existed (packet-
 # bundling-t5 renamed this function; its body is otherwise untouched). See the
@@ -2602,5 +2860,6 @@ case "${1:-}" in
   handoff)    shift; cmd_handoff "$@" ;;
   group)      shift; cmd_group "$@" ;;
   capability-drift) shift; cmd_capability_drift "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift} [root]" ;;
+  complete-capabilities) shift; cmd_complete_capabilities "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift|complete-capabilities <slug>} [root]" ;;
 esac

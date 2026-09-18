@@ -87,6 +87,7 @@ but is retired; see `retire-unused-loop-modes`.)
 | `hooks/driver-mode-compact.sh` | SessionStart hook on `compact` only: if the compacted session still holds a driver-mode mark, points it back at `agents/loop-driver.md` so it keeps driving (ADR 0028). Silent otherwise. |
 | `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
 | `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. Also the driver-mode core (ADR 0028): `driver-mode`, `begin-run`, `handoff`, `write-result`, `route`, `run-digest`, `periodic-pause`, `compact-threshold`. |
+| `scripts/report-lint.sh` | Checks a rendered stop report or kickoff against the `run-digest` it was rendered from: `--shape <B\|C> <report> <digest>` prints `REPORT_LINT=clean`, `findings` with one `FINDING=` per broken mechanical rule, or `unjudged` with a `REASON=`. Glyph vocabulary and section order are derived from `templates/report-conventions.md`. Writes nothing and always exits 0. A clean result means no mechanical rule was broken, not that the report is good. |
 | `.mcp.json` | Stubbed git / github / filesystem MCP servers (tokens via env vars only). |
 
 ### Model routing intent

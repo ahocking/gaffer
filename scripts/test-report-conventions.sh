@@ -468,6 +468,242 @@ else
       "expected: $EXPECTED_ORDER -- got: $ACTUAL_ORDER"
 fi
 
+printf '\n== report-lint checks a rendered report against its digest (report-render-conformance T2) ==\n'
+# Every rule gets a CONFORMING fixture that yields no finding of that rule and a
+# VIOLATING fixture that yields it BY NAME -- so no rule can pass by the lint
+# reporting nothing at all. The fixtures are small and written here; nothing is
+# read from a real run.
+LINT="$ROOT/scripts/report-lint.sh"
+LD="$TMP/lint"; mkdir -p "$LD"
+
+[ -x "$LINT" ] && ok 'report-lint.sh exists and is executable' \
+  || bad 'report-lint.sh exists and is executable' "$LINT"
+
+_lint() { "$LINT" --shape "$1" "$2" "$3" 2>/dev/null; }
+_fires()    { case "$2" in *"FINDING=$1"$'\t'*) return 0;; esac; return 1; }
+fires()     { if _fires "$2" "$3"; then ok "$1"; else bad "$1" "expected FINDING=$2 -- got: $(printf '%s' "$3" | head -3 | tr '\n' ' ')"; fi; }
+not_fires() { if _fires "$2" "$3"; then bad "$1" "unexpected: $(printf '%s\n' "$3" | grep "FINDING=$2" | head -2 | tr '\n' ' ')"; else ok "$1"; fi; }
+
+# The digest a conforming shape B was rendered from, and an empty one.
+printf 'packet\ttxn-t1\tStream large imports\tgreen\npacket\ttxn-t2\tPaginate the list\tgreen\npacket\ttxn-t4\tDuplicate detection\tpaused\ndecision\ttxn-t4\task-operator\nenter\tclaude-opus-5\thigh\tunknown\n' > "$LD/digest"
+: > "$LD/digest-empty"
+
+# A conforming shape B, carrying every construct the shape itself defines: the
+# multi-glyph tally line, the `▶ Next` section, and a state line whose branch
+# CONTAINS a digest id (`orch/txn-t4`) next to a bare sha.
+cat > "$LD/b-ok.md" <<'EOF'
+⏸️ **PAUSED** · Transaction import · ✅ **2 shipped** · ⚠️ **1 unfinished** · 🔀 **2 decisions** · ⬚ **2 queued**
+
+Paused after 3 packets. Nothing at risk, nothing half-written.
+
+✅ **Shipped**
+
+> ✅ **Large imports don't time out** (`txn-t1`) — 50k rows in one pass
+> ✅ **Transaction list paginates** (`txn-t2`) — 200 a page, not the whole table
+
+⚠️ **Unfinished**
+
+> ⚠️ **Duplicate detection** (`txn-t4`) — paused here; the run stopped on this one
+
+🔀 **Decisions** — reply `1A`
+
+> **1 · How do we decide two imports are the same transaction?**
+>
+> - **A ›** Match on amount + date + description
+>   → duplicates vanish silently; ~1 in 500 genuine repeats swallowed
+> - **B ›** Flag for the user to confirm
+>   → nothing is ever lost; ~1,000 prompts on a first big import
+>
+> **→ Pick A** — recoverable, and confirm-flows are the ones users abandon.
+> *Silence = A, matches logged.*
+>
+> *1 more, lower stakes — ask and I'll lay them out.*
+
+⬚ **Queued**
+
+> ⬚ **2 more** — the date filter and the audit log, neither blocked
+
+▶ **Next** — answer decision 1, then `/gaffer:resume`.
+
+> `orch/txn-t4` @ `c40aa11` · tree clean · `/gaffer:resume`
+EOF
+
+# A conforming shape C: phase lines, `▶ Session`/`▶ Autonomy` headings, and a
+# `Will need you` section whose "nothing expected" value is real information.
+cat > "$LD/c-ok.md" <<'EOF'
+▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **5 packets** · 2 phases
+
+> **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
+> **Phase 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
+
+⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.
+
+🔀 **Will need you** — none
+
+> **Won't touch:** the transactions table schema, so no migration.
+
+▶ **Session** claude-opus-5[1m] · effort unknown
+
+▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+EOF
+
+out="$(_lint B "$LD/b-ok.md" "$LD/digest")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'a conforming shape B (tally line, ▶ Next, branch+sha state line) is clean' \
+  || bad 'a conforming shape B (tally line, ▶ Next, branch+sha state line) is clean' "$out"
+out="$(_lint C "$LD/c-ok.md" "$LD/digest-empty")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'a conforming kickoff with an EMPTY digest is judged, and clean (phase lines, ▶ Session/Autonomy, Will need you)' \
+  || bad 'a conforming kickoff with an EMPTY digest is judged, and clean' "$out"
+out="$(_lint C "$LD/c-ok.md" "$LD/digest")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'the same kickoff against a populated digest is clean too' \
+  || bad 'the same kickoff against a populated digest is clean too' "$out"
+
+# The shape-defined constructs, one assertion each, against the rule each would
+# otherwise trip -- so an exemption that silently widens or vanishes shows here.
+b_ok="$(_lint B "$LD/b-ok.md" "$LD/digest")"
+c_ok="$(_lint C "$LD/c-ok.md" "$LD/digest-empty")"
+not_fires 'the tally line may carry many glyphs (shape-defined)' two-glyphs "$b_ok"
+not_fires "▶ Next is outside the tally's order (shape-defined)" section-order "$b_ok"
+not_fires 'a branch naming an id, and a bare sha, in the state line never fire (shape-defined)' untitled-id "$b_ok"
+not_fires "the kickoff's phase lines may carry many glyphs (shape-defined)" two-glyphs "$c_ok"
+not_fires "the kickoff's ▶ Session and ▶ Autonomy headings are not out of order (shape-defined)" section-order "$c_ok"
+not_fires "the kickoff's Will need you may say none (rule 3's exception)" empty-section "$c_ok"
+# ...and the phase-line exemption belongs to shape C: the same line in a B is two glyphs.
+{ head -1 "$LD/b-ok.md"; printf '\n> **Phase 1 — speed** · ⬚ Stream · ⬚ Page\n'; } > "$LD/b-phase.md"
+fires 'a phase line is only exempt in the shape that defines it' two-glyphs "$(_lint B "$LD/b-phase.md" "$LD/digest")"
+
+# --- rule: unknown-glyph --------------------------------------------------------
+not_fires 'unknown-glyph: every glyph in the vocabulary is conformant' unknown-glyph "$b_ok"
+sed 's/^> ⬚ \*\*2 more\*\*/> 📦 **2 more**/' "$LD/b-ok.md" > "$LD/v-unknown.md"
+fires 'unknown-glyph: a glyph outside the vocabulary is named' unknown-glyph "$(_lint B "$LD/v-unknown.md" "$LD/digest")"
+
+# --- rule: two-glyphs -------------------------------------------------------------
+sed 's/^> ✅ \*\*Large imports/> ✅ 🔁 **Large imports/' "$LD/b-ok.md" > "$LD/v-two.md"
+fires 'two-glyphs: two glyphs on one line is named' two-glyphs "$(_lint B "$LD/v-two.md" "$LD/digest")"
+
+# --- rule: section-order -----------------------------------------------------------
+# Move the ✅ Shipped section below ⚠️ Unfinished.
+awk 'NR==5||NR==6||NR==7||NR==8||NR==9{held=held $0 "\n"; next} {print} /paused here; the run stopped/{printf "\n%s", held}' \
+  "$LD/b-ok.md" > "$LD/v-order.md"
+fires 'section-order: headings out of the tally order are named' section-order "$(_lint B "$LD/v-order.md" "$LD/digest")"
+# Shape B: a section the header tally does not count breaks the table of contents.
+sed 's/ · ⬚ \*\*2 queued\*\*//' "$LD/b-ok.md" > "$LD/v-toc.md"
+fires 'section-order: a shape-B heading with no figure in the tally is named' section-order "$(_lint B "$LD/v-toc.md" "$LD/digest")"
+
+# The order is DERIVED from the conventions' fixed-tally line, not frozen: reorder
+# the authority (🔀 before ✅) in a copy, and the conforming report now fails.
+CONV_RE="$LD/conv-reordered.md"
+awk '/# Fixed order, omitting any bucket that is zero:/{print; getline; print "#   🔀 N decisions · ✅ N shipped · ⛔ N failed · ⚠️ N blocked · ⬚ N queued"; next} {print}' \
+  "$CONV" > "$CONV_RE"
+out="$(ORCH_REPORT_LINT_CONVENTIONS="$CONV_RE" "$LINT" --shape B "$LD/b-ok.md" "$LD/digest" 2>/dev/null)"
+fires 'section-order re-derives from a reordered fixed-tally line (not a frozen copy)' section-order "$out"
+# Same for the vocabulary: add 📦 to a copy's glyph table and it stops being unknown.
+CONV_VOC="$LD/conv-vocab.md"
+awk '{print} /^#   ▶  the next action/{print "#   📦  a package                          line"}' "$CONV" > "$CONV_VOC"
+out="$(ORCH_REPORT_LINT_CONVENTIONS="$CONV_VOC" "$LINT" --shape B "$LD/v-unknown.md" "$LD/digest" 2>/dev/null)"
+not_fires 'unknown-glyph re-derives from the glyph table (not a frozen copy)' unknown-glyph "$out"
+
+# --- rule: decision-count ------------------------------------------------------------
+not_fires 'decision-count: the 🔀 figure equals blocks + the "N more" deferral' decision-count "$b_ok"
+sed 's/🔀 \*\*2 decisions\*\*/🔀 **3 decisions**/' "$LD/b-ok.md" > "$LD/v-count.md"
+fires 'decision-count: a 🔀 figure unequal to the body is named' decision-count "$(_lint B "$LD/v-count.md" "$LD/digest")"
+# The ⬚ Queued "2 more" is not a decision deferral, and must not be counted as one.
+grep -v 'lower stakes' "$LD/b-ok.md" > "$LD/v-defer.md"
+fires 'decision-count: a dropped deferral is caught (the queued "N more" is not counted)' decision-count "$(_lint B "$LD/v-defer.md" "$LD/digest")"
+# Only the italic deferral line counts: an "N more" inside a question is not one.
+grep -v 'lower stakes' "$LD/b-ok.md" \
+  | sed -e 's/🔀 \*\*2 decisions\*\*/🔀 **1 decision**/' \
+        -e 's/^> \*\*1 · How do we decide two imports are the same transaction?\*\*/> **1 · Import 2 more banks?**/' \
+  > "$LD/c-inq.md"
+not_fires 'decision-count: an "N more" inside a question is not a deferral' decision-count "$(_lint B "$LD/c-inq.md" "$LD/digest")"
+
+# --- rule: untitled-id ------------------------------------------------------------------
+not_fires 'untitled-id: every digest id first appears after a bold title' untitled-id "$b_ok"
+sed 's/^> ✅ \*\*Transaction list paginates\*\* (`txn-t2`)/> ✅ `txn-t2` paginates/' "$LD/b-ok.md" > "$LD/v-id.md"
+out="$(_lint B "$LD/v-id.md" "$LD/digest")"
+fires 'untitled-id: a digest id with no title on first appearance is named' untitled-id "$out"
+case "$out" in *'txn-t2'*) ok 'untitled-id names the id it found';; *) bad 'untitled-id names the id it found' "$out";; esac
+# Ids come ONLY from the digest: a sha and a branch not in it never fire, even bare.
+printf '%s\n\n> bare `deadbeef` and `feature/other-t9` in prose\n' "$(head -1 "$LD/b-ok.md")" > "$LD/c-shas.md"
+not_fires 'untitled-id: a sha or branch not in the digest never fires' untitled-id "$(_lint B "$LD/c-shas.md" "$LD/digest")"
+
+# --- rule: empty-section ----------------------------------------------------------------
+not_fires 'empty-section: a report that omits empty sections is conformant' empty-section "$b_ok"
+awk '{print} /^✅ \*\*Shipped\*\*/{hold=1} hold && /^$/ && ++n==2 {print "⛔ **Failed** — none\n"; hold=0}' \
+  "$LD/b-ok.md" > "$LD/v-none.md"
+fires 'empty-section: a section written as "none" is named' empty-section "$(_lint B "$LD/v-none.md" "$LD/digest")"
+# The kickoff exception is only for `Will need you`: another kickoff section saying none fires.
+sed 's/^> \*\*Won.t touch:\*\* .*/> **Won'"'"'t touch:** none/' "$LD/c-ok.md" > "$LD/v-none-c.md"
+fires "empty-section: the kickoff's exception covers only Will need you" empty-section "$(_lint C "$LD/v-none-c.md" "$LD/digest-empty")"
+
+# --- a finding changes nothing about the run ---------------------------------------------
+# An all-violations report, linted from inside a synthetic repo carrying a run-state,
+# an outcomes log and a plan file: exit 0, every rule fires, and every one of those
+# files -- and the directory listing -- is byte-identical afterwards.
+AV="$TMP/allviol"; mkdir -p "$AV/.agents/metrics/outcomes" "$AV/gspec/features/x"
+printf 'schema: 3\nstatus: running\nrun_id: 20260918T000000-0000\n' > "$AV/.agents/run-state.yaml"
+printf '{"packet":"txn-t1","kind":"start"}\n{"packet":"txn-t1","outcome":"green"}\n' > "$AV/.agents/metrics/outcomes/s.jsonl"
+printf -- '- [ ] **T1** Stream large imports\n  - covers: speed\n' > "$AV/gspec/features/x/tasks.md"
+cp "$LD/digest" "$AV/.agents/digest"
+cat > "$AV/.agents/report.md" <<'EOF'
+⏸️ **PAUSED** · Everything wrong · ✅ **1 shipped** · 🔀 **4 decisions**
+
+🔀 **Decisions**
+
+> **1 · Which one?**
+
+✅ **Shipped** 📦
+
+> ✅ `txn-t1` landed
+
+⛔ **Failed** — none
+EOF
+_snap() { (cd "$AV" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done); }
+before="$(_snap)"
+out="$(cd "$AV" && "$LINT" --shape B .agents/report.md .agents/digest 2>/dev/null)"; rc=$?
+after="$(_snap)"
+[ "$rc" = 0 ] && ok 'an all-violations report exits 0' || bad 'an all-violations report exits 0' "rc=$rc"
+missing=""
+for r in unknown-glyph two-glyphs section-order decision-count untitled-id empty-section; do
+  _fires "$r" "$out" || missing="$missing $r"
+done
+[ -z "$missing" ] && ok 'the all-violations report yields every rule by name' \
+  || bad 'the all-violations report yields every rule by name' "missing:$missing"
+for f in .agents/run-state.yaml .agents/metrics/outcomes/s.jsonl gspec/features/x/tasks.md; do
+  b="$(printf '%s\n' "$before" | grep -F " ./$f")"
+  a="$(printf '%s\n' "$after"  | grep -F " ./$f")"
+  [ -n "$b" ] && [ "$a" = "$b" ] && ok "the lint left $f byte-identical" \
+    || bad "the lint left $f byte-identical" "before=[$b] after=[$a]"
+done
+[ "$before" = "$after" ] && ok 'the lint wrote nothing: the whole tree is unchanged' \
+  || bad 'the lint wrote nothing: the whole tree is unchanged' "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -5)"
+
+# --- fail soft: each direction is distinguishable from clean ------------------------------
+mkdir -p "$LD/a-dir"
+: > "$LD/empty.md"; printf '  \n\n' > "$LD/blank.md"
+reasons=""
+_soft() { # label, expected reason, args...
+  local label="$1" want="$2"; shift 2
+  local o r; o="$("$LINT" "$@" 2>/dev/null)"; r=$?
+  if [ "$r" = 0 ] && [ "$o" != 'REPORT_LINT=clean' ] \
+     && [ "$o" = "$(printf 'REPORT_LINT=unjudged\nREASON=%s' "$want")" ]; then
+    ok "fail-soft: $label -> unjudged, REASON=$want, exit 0"
+  else
+    bad "fail-soft: $label -> unjudged, REASON=$want, exit 0" "rc=$r out=$(printf '%s' "$o" | tr '\n' ' ')"
+  fi
+  reasons="$reasons $want"
+}
+_soft 'a missing digest'       digest-missing     --shape B "$LD/b-ok.md" "$LD/no-such-digest"
+_soft 'an unreadable digest'   digest-unreadable  --shape B "$LD/b-ok.md" "$LD/a-dir"
+_soft 'an unreadable report'   report-unreadable  --shape B "$LD/a-dir" "$LD/digest"
+_soft 'a missing report'       report-unreadable  --shape B "$LD/no-such-report" "$LD/digest"
+_soft 'an empty report'        report-empty       --shape B "$LD/empty.md" "$LD/digest"
+_soft 'a whitespace-only report' report-empty     --shape B "$LD/blank.md" "$LD/digest"
+_soft 'no arguments (usage)'   usage
+_soft 'an unknown shape'       unknown-shape      --shape A "$LD/b-ok.md" "$LD/digest"
+dist="$(printf '%s\n' digest-missing digest-unreadable report-unreadable report-empty | sort -u | wc -l | tr -d ' ')"
+[ "$dist" = 4 ] && ok 'the digest and report directions carry distinct reasons' \
+  || bad 'the digest and report directions carry distinct reasons' "$dist distinct"
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

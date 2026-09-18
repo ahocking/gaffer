@@ -1343,6 +1343,88 @@ check "TO: same-second single-trailer commits sort by id, not hash order" "same-
 check "TO: neither same-second row is flagged as a shared boundary" "0" \
   "$(jq -r '[.packets[]|.audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$TOOUT")"
 
+echo "== packet-bundling T8: a bundle that did NOT land green nulls its later members =="
+# A rolled-back bundle has no commit and so no [orch packet:] trailers -- its three
+# members reach the collector ONLY through the record-only (recordjoin) join.
+# record-start/record-outcome write one line per member per call, in ONE call, cursor
+# id first (packet-bundling T3), all sharing one timestamp and one session -- so
+# before this fix every member got the fixed `seq: 1` the trailer-FIRST value uses,
+# which made $is_sibling false for members 2/3 too: they fell into the ordinary
+# per-packet branch, whose $start collapses to the row before it (identical shared
+# end), producing a REAL, honest-looking 0 for a window that never existed. The fix
+# groups record-only ids by (session, ts) of their winning terminal record and gives
+# each a seq ordinal from write order, so members 2/3 take the same null+flag path a
+# trailer sibling already gets.
+PB8REPO="$ROOT/pb8-repo"; mkdir -p "$PB8REPO/.agents/metrics/events" "$PB8REPO/.agents/metrics/outcomes"
+git -C "$PB8REPO" init -q; git -C "$PB8REPO" config user.email t@t; git -C "$PB8REPO" config user.name t
+cat > "$PB8REPO/.agents/metrics/events/BT8.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"BT8","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"BT8","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:03Z","session_id":"BT8","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":10}
+JSON
+# One record-start call and one record-outcome call, each writing the whole bundle in
+# ONE go -- cursor id (bt8-a) first, then bt8-b, bt8-c -- all three lines per call
+# sharing a single timestamp and session, exactly as runstate.sh's `record-start`/
+# `record-outcome` write a bundle (packet-bundling T3).
+cat > "$PB8REPO/.agents/metrics/outcomes/BT8.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-a","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-b","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-c","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-a","session":"BT8","outcome":"rolled-back"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-b","session":"BT8","outcome":"rolled-back"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-c","session":"BT8","outcome":"rolled-back"}
+JSON
+PB8OUT="$ROOT/pb8-run.json"
+"$METRICS" collect --main-root "$PB8REPO" --projects-dir "$ROOT/none" --out "$PB8OUT" >/dev/null 2>&1
+check "PB8: three rows, no commit -- all record-only" "3" "$(jq -r '.packets|length' "$PB8OUT")"
+check "PB8: row order is write order, cursor first" "bt8-a bt8-b bt8-c" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$PB8OUT")"
+check "PB8: every row shares the same outcome"      "rolled-back rolled-back rolled-back" \
+  "$(jq -r '[.packets[].outcome]|join(" ")' "$PB8OUT")"
+check "PB8: cursor row (seq 1) is measured, not nulled" "2" \
+  "$(jq -r '.packets[0].tool_calls' "$PB8OUT")"
+check "PB8: cursor row is not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: cursor row is not swept"                 "false" "$(jq -r '.packets[0].swept' "$PB8OUT")"
+check "PB8: sibling row 2 tool_calls is null, not 0" "null" "$(jq -r '.packets[1].tool_calls' "$PB8OUT")"
+check "PB8: sibling row 3 tool_calls is null, not 0" "null" "$(jq -r '.packets[2].tool_calls' "$PB8OUT")"
+check "PB8: sibling row 2 active_seconds is null, not 0" "null" "$(jq -r '.packets[1].active_seconds' "$PB8OUT")"
+check "PB8: sibling row 3 active_seconds is null, not 0" "null" "$(jq -r '.packets[2].active_seconds' "$PB8OUT")"
+check "PB8: sibling row 2 tokens is null"            "null" "$(jq -r '.packets[1].tokens' "$PB8OUT")"
+check "PB8: sibling row 3 tokens is null"            "null" "$(jq -r '.packets[2].tokens' "$PB8OUT")"
+check "PB8: sibling row 2 carries the shared-boundary flag" "1" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: sibling row 3 carries the shared-boundary flag" "1" \
+  "$(jq -r '[.packets[2].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: sibling row 2 is not ALSO flagged swept"  "false" "$(jq -r '.packets[1].swept' "$PB8OUT")"
+check "PB8: sibling row 3 is not ALSO flagged swept"  "false" "$(jq -r '.packets[2].swept' "$PB8OUT")"
+check "PB8: sibling row 2 end still carries its own outcome ts, not null" \
+  "2026-07-21T10:00:06.000Z" "$(jq -r '.packets[1].end' "$PB8OUT")"
+check "PB8: totals.packets counts all three rows"    "3" "$(jq -r '.totals.packets' "$PB8OUT")"
+
+echo "== packet-bundling T8: a LONE record-only packet (no sibling) is byte-identical to today =="
+# Same shape as above but n=1 -- must NOT be treated as a bundle: seq stays 1 (the
+# group-of-one case), so it is measured exactly like the never-committed/abandoned-
+# direct fixtures above and carries no shared-boundary flag.
+PB8LREPO="$ROOT/pb8l-repo"; mkdir -p "$PB8LREPO/.agents/metrics/events" "$PB8LREPO/.agents/metrics/outcomes"
+git -C "$PB8LREPO" init -q; git -C "$PB8LREPO" config user.email t@t; git -C "$PB8LREPO" config user.name t
+cat > "$PB8LREPO/.agents/metrics/events/BT8L.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"BT8L","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"BT8L","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$PB8LREPO/.agents/metrics/outcomes/BT8L.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8l-only","session":"BT8L","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"bt8l-only","session":"BT8L","outcome":"failed"}
+JSON
+PB8LOUT="$ROOT/pb8l-run.json"
+"$METRICS" collect --main-root "$PB8LREPO" --projects-dir "$ROOT/none" --out "$PB8LOUT" >/dev/null 2>&1
+check "PB8L: one row"                       "1"      "$(jq -r '.packets|length' "$PB8LOUT")"
+check "PB8L: outcome"                       "failed" "$(jq -r '.packets[0].outcome' "$PB8LOUT")"
+check "PB8L: measured, not nulled"          "1"      "$(jq -r '.packets[0].tool_calls' "$PB8LOUT")"
+check "PB8L: not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8LOUT")"
+check "PB8L: not swept"                     "false"  "$(jq -r '.packets[0].swept' "$PB8LOUT")"
+
 echo "== loop-measurement M1: one malformed ts anywhere does not zero every outcome =="
 # ts_ms runs unconditionally over EVERY record in the outcomes log before any
 # window filter narrows it; fromdateiso8601 THROWS on an unparseable value, and

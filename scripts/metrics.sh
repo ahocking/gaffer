@@ -701,13 +701,28 @@ cmd_collect() {
     "$tmp/records_raw.ndjson" > "$tmp/attributed.json" 2>/dev/null || echo '[]' > "$tmp/attributed.json"
 
   # recordjoin.json: {outcomes: {id:outcome}, started_ids: [id...], record_end: {id:ts},
-  # swept_ids: [id...], has_start: bool}. Split from the attributed stream by field
-  # shape (`kind` marks a boundary record, `outcome` marks a terminal one — same rule
-  # runstate.sh's own `_rs_open_packets` uses), never by which log file a record
-  # happened to land in.
+  # swept_ids: [id...], has_start: bool, record_seq: {id:seq}}. Split from the
+  # attributed stream by field shape (`kind` marks a boundary record, `outcome`
+  # marks a terminal one — same rule runstate.sh's own `_rs_open_packets` uses),
+  # never by which log file a record happened to land in.
+  #
+  # `record_seq` (packet-bundling T8): a bundle that does NOT land green has no
+  # commit and so no trailers, so its members reach section 5 only through the
+  # extra-entries merge below — and every one of them used to get `seq: 1`, which
+  # is the trailer-FIRST value, so members 2..n read as measured zeros across a
+  # window they never had (they share one boundary with member 1). `_ord` tags
+  # every attributed record with its position in `attributed.json`, which is
+  # outcomes-log line order — `record-outcome`/`record-start` write one line per
+  # bundle member, all in one call, cursor id first (packet-bundling T3) — so
+  # sibling ids sharing one boundary sort back into that same write order. The
+  # group key is the WINNING terminal record's (effective session, parsed ts):
+  # bundle siblings share one `_rs_now_ts()` call and one session (T3), so this
+  # is exactly "(session, ts) of their latest terminal record", and a lone
+  # record-only packet is a group of one, seq 1 — byte-identical to today.
   jq '
-    (map(select(.kind != null))) as $boundary
-    | (map(select(.outcome != null))) as $terminal
+    (to_entries | map(.value + {_ord: .key})) as $indexed
+    | ($indexed | map(select(.kind != null))) as $boundary
+    | ($indexed | map(select(.outcome != null))) as $terminal
     | ($boundary | group_by(.packet)
        | map({key: .[0].packet, value: ((sort_by(._ms))[-1])}) | from_entries) as $latest_boundary
     | ($terminal | group_by(.packet) | map(
@@ -734,11 +749,15 @@ cmd_collect() {
     | ($winning_terminal | to_entries
        | map(select(.value._ms == ($latest_boundary[.key]._ms)))
        | map(.key)) as $swept_ids
+    | ($winning_terminal | to_entries | group_by([.value._esess, .value._ms])
+       | map(sort_by(.value._ord))
+       | map( . as $g | range(0; $g|length) as $i | {key: $g[$i].key, value: ($i+1)} )
+       | from_entries) as $record_seq
     | { outcomes: $outcomes, started_ids: $started, record_end: $record_end,
-        swept_ids: $swept_ids,
+        swept_ids: $swept_ids, record_seq: $record_seq,
         has_start: (($boundary | map(select(.kind == "start")) | length) > 0) }
   ' "$tmp/attributed.json" > "$tmp/recordjoin.json" 2>/dev/null \
-    || echo '{"outcomes":{},"started_ids":[],"record_end":{},"swept_ids":[],"has_start":false}' > "$tmp/recordjoin.json"
+    || echo '{"outcomes":{},"started_ids":[],"record_end":{},"swept_ids":[],"record_seq":{},"has_start":false}' > "$tmp/recordjoin.json"
 
   jq -c '.outcomes // {}' "$tmp/recordjoin.json" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
 
@@ -748,16 +767,20 @@ cmd_collect() {
   # string-compared). Trailer ids keep their trailer end/tier/impl/seq unchanged.
   # `swept` (C1) carries forward so section 5 can null the derived metrics rather
   # than report a lying zero for a packet whose window collapsed to a point.
-  # `seq: 1` on every record-only entry (never a bundle sibling): the tie-break
-  # below is a NUMERIC re-sort of `end`, so trailer bundle siblings (same end,
-  # ascending seq) keep their message order even after this re-sort re-parses the
+  # `seq` on a record-only entry comes from `$rj.record_seq` (packet-bundling T8):
+  # 1 for a lone record-only packet (byte-identical to today) or its within-
+  # boundary ordinal — cursor id first — when it shares a boundary with sibling
+  # bundle members that never got a commit. The tie-break below is a NUMERIC
+  # re-sort of `end`, so both trailer and record-only bundle siblings (same end,
+  # ascending seq) keep their write order even after this re-sort re-parses the
   # timestamp string section 2 already sorted lexically.
   jq -s "${JQ_TS_MS}"'
     .[0] as $trailer_pk
     | .[1] as $rj
     | ($trailer_pk | map(.id)) as $trailer_ids
     | (($rj.started_ids // []) | map(select(. as $i | ($trailer_ids | index($i)) == null))) as $extra_ids
-    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null, seq: 1,
+    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null,
+                          seq: (($rj.record_seq // {})[.] // 1),
                           swept: ((($rj.swept_ids // []) | index(.)) != null)})
                   | map(select(.end != null))) as $extra_entries
     | ($trailer_pk + $extra_entries)
@@ -1163,14 +1186,21 @@ cmd_collect() {
          # packet means. Report the derived fields as null (unmeasured), not 0 —
          # same rule as the pre-instrumentation-run nulls elsewhere in this file.
          | ($p.swept == true) as $is_swept
-         # BUNDLE SIBLING (packet-bundling T1). `seq` is the within-commit ordinal
-         # the section 2 trailer scan stamped: seq==1 is a commit first (or only)
-         # trailer, seq>1 is a later trailer on the SAME commit. Siblings share one
-         # boundary with the row before them, so $start computed above collapses to
-         # $p.end (zero width) — but that is a CONSEQUENCE of the bundle, not the
-         # detector for it: `seq` is used directly rather than re-deriving
-         # sibling-ness from the zero-width window, which two unrelated
-         # single-trailer commits landing in the same second could also produce.
+         # BUNDLE SIBLING (packet-bundling T1, extended by T8). `seq` is the
+         # within-boundary ordinal: for a trailer row it is the within-commit
+         # ordinal the section 2 trailer scan stamped (seq==1 a commit first/only
+         # trailer, seq>1 a later trailer on the SAME commit); for a record-only
+         # row (no commit -- the bundle never landed green) it is `$rj.record_seq`
+         # from section 3, the within-boundary ordinal derived from outcomes-log
+         # write order among ids sharing one terminal record boundary (session,
+         # ts). Either way, seq>1 means this row shares one boundary with the row
+         # before it, so $start computed above collapses to $p.end (zero width)
+         # -- but that is a CONSEQUENCE of the bundle, not the detector for it:
+         # `seq` is used directly rather than re-deriving sibling-ness from the
+         # zero-width window, which two unrelated single-trailer commits (or two
+         # unrelated record-only packets) landing in the same second could also
+         # produce. (No apostrophes in here: the whole program is one
+         # single-quoted shell word.)
          | (($p.seq // 1) > 1) as $is_sibling
          | {
              id: $p.id,

@@ -145,7 +145,7 @@ something.
     Wherever that reasoning is kept, a pointer to this feature records the
     reversal and its justification.
 
-- [ ] **P0**: A feature the loop cannot complete yet is still named
+- [x] **P0**: A feature the loop cannot complete yet is still named
   - When the capability-completion subcommand holds a feature back, because an
     unchecked task's `covers:` quote matches no capability, the loop names that
     feature with the subcommand's reason: once in the kickoff, using the
@@ -158,7 +158,7 @@ something.
     describe a held feature the same way: named, never flipped, with the
     capability-completion subcommand's reason.
 
-- [ ] **P0**: Follow-up correctness fixes from the end-of-run review
+- [x] **P0**: Follow-up correctness fixes from the end-of-run review
   - When no task handoff exists for the adopted packet (the file that names the
     landed feature), the `resume` adopt path skips capability completion, and
     the end-of-run scan reconciles.

@@ -296,6 +296,16 @@ Where it runs, extending D1's atomicity:
   capability line the matcher does not recognize — are **reported to the operator and
   never flipped**. That is the reconciliation work left for a human, and the only part
   where human judgement adds something.
+- **A held feature** — one where an unchecked task's `covers:` quote matches no
+  capability, so the subcommand holds back every flip for that feature and its summary
+  line reads `COMPLETE_CAPABILITIES=blocked` — is **named, never flipped**: once at the
+  kickoff and once in the stop report's next steps, carrying the subcommand's own
+  `REASON=` text. **Nothing is flipped, restored or committed for it** — `blocked` is
+  exit 0 with `completed=0`, so it stages no PRD, joins no commit, and leaves nothing to
+  restore — which makes it **neither a failure nor a flip**, but a feature the run
+  cannot complete yet, named so the operator can fix the quote rather than left silent.
+  Before this, the drift scan named these rows; the flip rule's hold-back made them
+  silent.
 
 A failed flip is reported and never halts the run; in a repo with no `gspec/`, every site
 is a silent no-op (ADR 0020 D4).

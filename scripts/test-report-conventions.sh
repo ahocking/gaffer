@@ -342,6 +342,36 @@ done
 [ -z "$missing" ] && ok 'every run-digest outcome has a rendering in the shapes' \
   || bad 'every run-digest outcome has a rendering in the shapes' "missing:$missing"
 
+printf '\n== shape B tally sentence names exactly the figures run-tally emits (report-render-conformance T3) ==\n'
+# Shape B reads its digest-derived figures from `runstate.sh run-tally` rather than
+# counting the digest itself, so the two sides are one contract: a figure the sentence
+# names and the core does not emit is a number the renderer has to invent, and a figure
+# the core emits and the sentence does not name is a count nobody renders. Both
+# directions are asserted. The sentence side is the backticked all-caps keys inside the
+# same anchor range the enum case above uses; the core side is the key of each KEY=value
+# line run-tally prints over a minimal synthetic run (a run-state with a run_id and
+# nothing else -- the keys do not depend on the counts). Both sets are guarded
+# non-empty, so a moved anchor or a dead subcommand fails here instead of comparing two
+# empty sets and passing.
+tally_sentence="$(sed -n '/The tally counts `packet` lines by outcome/,/rather than guessing a number/p' "$SHAPES")"
+RT="$TMP/run-tally"; mkdir -p "$RT/.agents"; git -C "$RT" init -q
+printf 'schema: 3\nstatus: paused\nrun_id: 20260101T000000-0001\n' > "$RT/.agents/run-state.yaml"
+rt_out="$(cd "$RT" && "$ROOT/scripts/runstate.sh" run-tally .agents/run-state.yaml 2>&1)"; rt_rc=$?
+shape_keys="$(printf '%s\n' "$tally_sentence" | grep -o '`[A-Z][A-Z_]*`' | tr -d '`' | LC_ALL=C sort -u)"
+core_keys="$(printf '%s\n' "$rt_out" | sed -n 's/^\([A-Z][A-Z_]*\)=.*/\1/p' | LC_ALL=C sort -u)"
+[ -n "$tally_sentence" ] && ok "shape B's tally sentence anchor range is found" \
+  || bad "shape B's tally sentence anchor range is found" 'anchor moved or renamed -- the range is empty'
+[ -n "$shape_keys" ] && ok "shape B's tally sentence names at least one run-tally figure" \
+  || bad "shape B's tally sentence names at least one run-tally figure" 'no backticked KEY found in the range'
+[ "$rt_rc" = 0 ] && [ -n "$core_keys" ] && ok 'run-tally over a minimal synthetic run emits figure keys' \
+  || bad 'run-tally over a minimal synthetic run emits figure keys' "rc=$rt_rc out=$rt_out"
+only_shape="$(LC_ALL=C comm -23 <(printf '%s\n' "$shape_keys") <(printf '%s\n' "$core_keys") | tr '\n' ' ')"
+only_core="$(LC_ALL=C comm -13 <(printf '%s\n' "$shape_keys") <(printf '%s\n' "$core_keys") | tr '\n' ' ')"
+[ -z "$only_shape" ] && ok 'every figure the tally sentence names is one run-tally emits' \
+  || bad 'every figure the tally sentence names is one run-tally emits' "named but not emitted: $only_shape"
+[ -z "$only_core" ] && ok 'every figure run-tally emits is named by the tally sentence' \
+  || bad 'every figure run-tally emits is named by the tally sentence' "emitted but not named: $only_core"
+
 printf '\n== the shapes and the conventions agree where they overlap ==\n'
 # The shapes file opens by saying it ASSUMES the conventions file, so the two
 # disagreeing is not a cosmetic nit -- in a change whose only product is the wording of

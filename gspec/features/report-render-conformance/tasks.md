@@ -97,7 +97,7 @@ Every regression sweep must pass green after every task.
   - covers: A rendered report is checked against the digest it was rendered from · A finding changes nothing about the run
   - arch: —
   - files: scripts/report-lint.sh, scripts/test-report-conventions.sh, README.md
-- [ ] **T3** [P] **P0** Rewrite shape B's tally sentence and its 🔀 dedup paragraph in `templates/report-templates.md`. Each digest-derived figure is read from `runstate.sh run-tally <run-state>`. The ✅/⛔/⚠️ outcome grouping and the 🔀 dedup rule are restated as what the core counts, not as arithmetic for the renderer.
+- [x] **T3** [P] **P0** Rewrite shape B's tally sentence and its 🔀 dedup paragraph in `templates/report-templates.md`. Each digest-derived figure is read from `runstate.sh run-tally <run-state>`. The ✅/⛔/⚠️ outcome grouping and the 🔀 dedup rule are restated as what the core counts, not as arithmetic for the renderer.
 
   Change nothing else:
   - keep the fixed order;

@@ -28,7 +28,7 @@ Every regression sweep must pass green after every task.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** In `scripts/runstate.sh`, make `cmd_run_tally` count an `ask-operator` decision only while it is still awaiting an answer. Change nothing else about the tally.
+- [x] **T1** [P] **P0** In `scripts/runstate.sh`, make `cmd_run_tally` count an `ask-operator` decision only while it is still awaiting an answer. Change nothing else about the tally.
 
   The liveness rule:
   - it reads the question's `ts` from the run's `routing.jsonl`;

@@ -2925,6 +2925,56 @@ assert_true "run-tally: takes no --since (the dedup needs the whole run)" \
   "! rd_tally --since 1970-01-01T00:00:00Z >/dev/null 2>&1"
 printf 'schema: 3\nstatus: running\nrun_id: %s\n' "$RD_RUN_ID" > "$RD/.agents/run-state.yaml"
 
+echo "-- run-tally counts an ask-operator question only while it is still awaiting an answer --"
+# stop-report-decision-liveness T1. Each case is a FRESH run with hand-written
+# routing and outcome records at fixed timestamps, so no case leans on
+# wall-clock ordering. $1 = routing.jsonl body, $2 = outcomes log body; prints
+# the DECISIONS figure run-tally reports for that run.
+lv_decisions() {
+  local d rid
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  mkdir -p "$d/.agents/metrics/outcomes"
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  rid="$(cd "$d" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  mkdir -p "$d/.agents/loop/$rid"
+  printf '%s' "$1" > "$d/.agents/loop/$rid/routing.jsonl"
+  [ -z "$2" ] || printf '%s' "$2" > "$d/.agents/metrics/outcomes/LV.jsonl"
+  (cd "$d" && "$RUNSTATE" run-tally .agents/run-state.yaml) | sed -n 's/^DECISIONS=//p'
+  rm -rf "$d"
+}
+LV_Q='{"ts":"2026-03-01T00:00:10.500Z","packet":"lv","token":"ask-operator","action":"stop","status":""}
+'
+LV_BLOCKED='{"ts":"2026-03-01T00:00:11Z","packet":"lv","session":"LV","outcome":"blocked"}
+'
+assert_true "run-tally liveness: an unanswered question counts (control -- DECISIONS=1)" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" '')\" = 1 ]"
+assert_true "run-tally liveness: a question answered by a later start yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" \"\${LV_BLOCKED}\"'{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: a question answered by a later continuation yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" \"\${LV_BLOCKED}\"'{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"continue\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: a question answered by a later abandoned outcome yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" \"\${LV_BLOCKED}\"'{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"outcome\":\"abandoned\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: a question followed only by a blocked outcome (the pause's own stop) yields DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" \"\$LV_BLOCKED\")\" = 1 ]"
+assert_true "run-tally liveness: an answer whose timestamp TIES the question's does not answer it -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" '{\"ts\":\"2026-03-01T00:00:10.500Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 1 ]"
+# "...:10Z" > "...:10.500Z" as a string ('Z' 0x5A > '.' 0x2E), but it
+# parses 500ms EARLIER -- a raw-string comparison would call it an answer.
+assert_true "run-tally liveness: a whole-second start that sorts after a sub-second question as a string but parses earlier does not answer it -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" '{\"ts\":\"2026-03-01T00:00:10Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 1 ]"
+assert_true "run-tally liveness: an answer for a DIFFERENT packet does not answer this one -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_Q\" '{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv-other\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 1 ]"
+assert_true "run-tally liveness: two questions on one packet with a start between them -- the first answered, the second still awaiting -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\${LV_Q}\"'{\"ts\":\"2026-03-01T00:02:00Z\",\"packet\":\"lv\",\"token\":\"ask-operator\",\"action\":\"stop\",\"status\":\"\"}
+' '{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 1 ]"
+
 echo
 echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of

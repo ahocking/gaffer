@@ -2264,6 +2264,268 @@ refute 'flat layout: the other feature'"'"'s task is never a member' 'MEMBER=grp
 check 'flat layout: STOP=end' 'STOP=end' "$out"
 
 # =============================================================================
+# handoff bundling (packet-bundling-t5). `handoff` accepts a comma-joined
+# packet-id list on top of the single-id path exercised above.
+
+printf '\n== handoff bundle: three ids, in PLAN order, blocks delimited, criteria intact, union scope correct ==\n'
+R="$TMPROOT/handoff-bundle"; mkdir -p "$R/gspec/features/bun"
+cat > "$R/gspec/features/bun/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bun
+
+## Capabilities
+
+- [ ] **P0**: First capability
+  - first criterion
+- [ ] **P1**: Second capability
+  - second criterion
+- [ ] **P2**: Third capability
+  - third criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bun <<'EOF'
+- [ ] **T1** **P0** first bundle task
+  - deps: —
+  - covers: First capability
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second bundle task
+  - deps: —
+  - covers: Second capability
+  - files: [src/a.ts, src/b.ts]
+- [ ] **T3** **P2** third bundle task
+  - deps: —
+  - covers: Third capability
+  - files: [src/c.ts]
+EOF
+
+# Given SCRAMBLED (not plan order) so the test actually exercises reordering,
+# not just an input list that happened to already be sorted.
+out="$("$ADAPTER" handoff bun-t3,bun-t1,bun-t2 "$R")"
+check 'BUNDLE= lists every member' 'BUNDLE=bun-t1,bun-t2,bun-t3' "$out"
+check 'BUNDLE_FILES= is the union, first-seen order, through the same precedence group uses' \
+  'BUNDLE_FILES=src/a.ts|src/b.ts|src/c.ts' "$out"
+
+pkts="$(printf '%s\n' "$out" | grep '^PACKET=')"
+expected_pkts="$(printf 'PACKET=bun-t1\nPACKET=bun-t2\nPACKET=bun-t3')"
+[ "$pkts" = "$expected_pkts" ] && ok 'every member'"'"'s block is present, in PLAN order regardless of the order given' \
+  || bad 'blocks should appear in plan order bun-t1, bun-t2, bun-t3' "got: $pkts"
+
+filelines="$(printf '%s\n' "$out" | grep '^FILES=')"
+expected_filelines="$(printf 'FILES=src/a.ts\nFILES=src/a.ts|src/b.ts\nFILES=src/c.ts')"
+[ "$filelines" = "$expected_filelines" ] && ok 'each member'"'"'s own FILES= is correct and in plan order' \
+  || bad 'per-member FILES=' "expected:
+$expected_filelines
+got:
+$filelines"
+
+check "member 1's text"  'TEXT=first bundle task'  "$out"
+check "member 2's text"  'TEXT=second bundle task' "$out"
+check "member 3's text"  'TEXT=third bundle task'  "$out"
+
+# Block delimiting: one member's criterion must never bleed into another's.
+block1="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t1$/{f=1} /^PACKET=bun-t2$/{exit} f')"
+check  'block 1 carries its own criterion'                 'first criterion'  "$block1"
+refute 'block 1 does not leak block 2'"'"'s criterion'     'second criterion' "$block1"
+refute 'block 1 does not leak block 3'"'"'s criterion'     'third criterion'  "$block1"
+
+block2="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t2$/{f=1} /^PACKET=bun-t3$/{exit} f')"
+check  'block 2 carries its own criterion'                 'second criterion' "$block2"
+refute 'block 2 does not leak block 1'"'"'s criterion'     'first criterion'  "$block2"
+refute 'block 2 does not leak block 3'"'"'s criterion'     'third criterion'  "$block2"
+
+block3="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t3$/{f=1} f')"
+check  'block 3 carries its own criterion'                 'third criterion'  "$block3"
+refute 'block 3 does not leak block 1'"'"'s criterion'     'first criterion'  "$block3"
+refute 'block 3 does not leak block 2'"'"'s criterion'     'second criterion' "$block3"
+
+n="$(printf '%s\n' "$out" | grep -c '^PACKET=')"
+[ "$n" = "3" ] && ok 'exactly three blocks, one per member' || bad 'exactly three blocks' "got $n: $out"
+
+# The canonical <feature>#T<n> form resolves identically inside a bundle too.
+out2="$("$ADAPTER" handoff 'bun#T1,bun-t2' "$R")"
+check 'a mixed canonical/packet-id member list still resolves' 'BUNDLE=bun-t1,bun-t2' "$out2"
+
+printf '\n== handoff bundle: a single id (no comma) is byte-identical to today, with no BUNDLE= header ==\n'
+R="$TMPROOT/handoff-bundle-solo"; mkdir -p "$R/gspec/features/solo"
+cat > "$R/gspec/features/solo/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: solo
+
+## Capabilities
+
+- [ ] **P0**: Only capability
+  - the only criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" solo <<'EOF'
+- [ ] **T1** **P0** the only task
+  - deps: —
+  - covers: Only capability
+  - files: [src/solo.ts]
+EOF
+expected="$(printf 'PACKET=solo-t1\nFEATURE=solo\nID=T1\nCHECKED=0\nTEXT=the only task\nFILES=src/solo.ts\nCOVERS=Only capability\n    - the only criterion\nPRD=gspec/features/solo/prd.md\nARCH=absent')"
+out="$("$ADAPTER" handoff solo-t1 "$R")"
+[ "$out" = "$expected" ] && ok 'a single id'"'"'s output is byte-identical to the pre-bundling shape' \
+  || bad 'single id output changed' "expected:
+$expected
+got:
+$out"
+refute 'no BUNDLE= header for a single id' 'BUNDLE=' "$out"
+refute 'no BUNDLE_FILES= header for a single id' 'BUNDLE_FILES=' "$out"
+
+printf '\n== handoff bundle: an unresolvable member refuses the WHOLE call, with no partial output ==\n'
+Rbun="$TMPROOT/handoff-bundle"
+out="$("$ADAPTER" handoff bun-t1,zzz-t1,bun-t2 "$Rbun" 2>&1)"; rc=$?
+check 'names the offending member' 'zzz-t1' "$out"
+check 'reuses the existing HANDOFF=unknown shape' 'HANDOFF=unknown' "$out"
+refute 'no PACKET= line leaks from either resolvable member' 'PACKET=' "$out"
+refute 'the good members never partially print either' 'bun-t1' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0, mirroring the single-id unresolved case' \
+  || bad 'exit 0 on an unresolvable member' "rc=$rc"
+
+printf '\n== handoff bundle: a two-feature list refuses -- grouping across features is out of scope ==\n'
+R="$TMPROOT/handoff-bundle-2feat"; mkdir -p "$R/gspec/features/bunA" "$R/gspec/features/bunB"
+cat > "$R/gspec/features/bunA/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bunA
+
+## Capabilities
+
+- [ ] **P0**: A capability
+  - a criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bunA <<'EOF'
+- [ ] **T1** **P0** feature A task
+  - deps: —
+  - covers: A capability
+EOF
+cat > "$R/gspec/features/bunB/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bunB
+
+## Capabilities
+
+- [ ] **P0**: B capability
+  - b criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bunB <<'EOF'
+- [ ] **T1** **P0** feature B task
+  - deps: —
+  - covers: B capability
+EOF
+out="$("$ADAPTER" handoff bunA-t1,bunB-t1 "$R" 2>&1)"; rc=$?
+check 'reuses HANDOFF=unknown, naming the cross-feature member' 'HANDOFF=unknown' "$out"
+check 'and explains why' 'grouping across features is out of scope' "$out"
+refute 'no partial output from the first, resolvable member' 'PACKET=' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 on a two-feature list' "rc=$rc"
+
+printf '\n== handoff bundle: a member already routed hand-off-feature this run refuses the whole call ==\n'
+R="$TMPROOT/handoff-bundle-hof"; mkdir -p "$R/gspec/features/hof"
+cat > "$R/gspec/features/hof/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: hof
+
+## Capabilities
+
+- [ ] **P0**: First hof capability
+  - one criterion
+- [ ] **P1**: Second hof capability
+  - another criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" hof <<'EOF'
+- [ ] **T1** **P0** first hof task
+  - deps: —
+  - covers: First hof capability
+- [ ] **T2** **P1** second hof task, already handed to the operator
+  - deps: —
+  - covers: Second hof capability
+EOF
+mkdir -p "$R/.agents/loop/test-run-1"
+printf "run_id: 'test-run-1'\n" > "$R/.agents/run-state.yaml"
+printf '{"ts":"2026-09-18T01:00:00.000Z","packet":"hof-t2","token":"hand-off-feature","action":"discard-advance","status":"handed to operator"}\n' \
+  > "$R/.agents/loop/test-run-1/routing.jsonl"
+out="$("$ADAPTER" handoff hof-t1,hof-t2 "$R" 2>&1)"; rc=$?
+check 'reuses runstate.sh'"'"'s own HANDOFF=refused shape' 'HANDOFF=refused' "$out"
+check 'names the routing reason' 'REASON=hand-off-feature' "$out"
+check 'names the offending member' 'PACKET=hof-t2' "$out"
+refute 'no partial output from the earlier, unrouted member' 'PACKET=hof-t1' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0, gspec is still optional' || bad 'exit 0 on a hand-off-feature member' "rc=$rc"
+
+# The clean member alone is unaffected -- the routing record is per packet id,
+# never a blanket refusal of the whole feature.
+out="$("$ADAPTER" handoff hof-t1 "$R")"
+check 'the unrouted member alone still hands off normally' 'PACKET=hof-t1' "$out"
+
+printf '\n== handoff bundle: no run-state, no run_id, or no routing.jsonl all fail SOFT -- never a reason to refuse ==\n'
+R="$TMPROOT/handoff-bundle-nohof"; mkdir -p "$R/gspec/features/nohof"
+cat > "$R/gspec/features/nohof/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: nohof
+
+## Capabilities
+
+- [ ] **P0**: A nohof capability
+  - a criterion
+- [ ] **P1**: Another nohof capability
+  - another criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" nohof <<'EOF'
+- [ ] **T1** **P0** first nohof task
+  - deps: —
+  - covers: A nohof capability
+- [ ] **T2** **P1** second nohof task
+  - deps: —
+  - covers: Another nohof capability
+EOF
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'no .agents/run-state.yaml at all still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+mkdir -p "$R/.agents"
+printf "schema: 3\n" > "$R/.agents/run-state.yaml"
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'a run-state.yaml with no run_id: line still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+printf "run_id: 'no-such-run'\n" > "$R/.agents/run-state.yaml"
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'a run_id with no matching .agents/loop/ directory still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+printf '\n== handoff bundle: a malformed comma list is a genuine usage error ==\n'
+out="$("$ADAPTER" handoff ',bun-t1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a leading comma is refused' || bad 'leading comma should be non-zero' "rc=$rc, out=$out"
+out="$("$ADAPTER" handoff 'bun-t1,' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a trailing comma is refused' || bad 'trailing comma should be non-zero' "rc=$rc, out=$out"
+out="$("$ADAPTER" handoff 'bun-t1,,bun-t2' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a doubled comma is refused' || bad 'doubled comma should be non-zero' "rc=$rc, out=$out"
+
+# =============================================================================
 # capability-drift (completion-record-drift-t1). Output contract, fixed by
 # gspec/features/completion-record-drift/tasks.md and binding on all five
 # tasks in that plan:

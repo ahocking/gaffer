@@ -161,20 +161,21 @@
 #                            of them, non-zero only for a genuine usage error (no
 #                            ids, an unreadable root, or the REFUSED path shared
 #                            with check-task).
-#   handoff <packet-id> [root]   print everything an agent needs to start a
-#                            packet: the task text; its file scope, resolved by
-#                            calling `_nodes_for` and reading its row for this
-#                            packet id — the SAME precedence `nodes` uses (plan
-#                            `files:` > fingerprint-matched sidecar > empty),
-#                            never a second copy of it; each `covers:`
-#                            capability (split on the `' · '` separator) with
-#                            that capability's PRD acceptance-criteria
-#                            sub-bullets verbatim (ADR 0020's D2 amendment); and
-#                            the PRD and `arch.md` paths — `ARCH=` is always
-#                            printed, as `absent` when there is no arch.md, so a
-#                            caller never has to guess whether the line was
-#                            omitted or forgotten. A `covers:` quote matching no
-#                            PRD capability prints `UNMATCHED=<quote>`, never
+#   handoff <packet-id[,packet-id...]> [root]   print everything an agent
+#                            needs to start a packet: the task text; its file
+#                            scope, resolved by calling `_nodes_for` and
+#                            reading its row for this packet id — the SAME
+#                            precedence `nodes` uses (plan `files:` >
+#                            fingerprint-matched sidecar > empty), never a
+#                            second copy of it; each `covers:` capability
+#                            (split on the `' · '` separator) with that
+#                            capability's PRD acceptance-criteria sub-bullets
+#                            verbatim (ADR 0020's D2 amendment); and the PRD
+#                            and `arch.md` paths — `ARCH=` is always printed,
+#                            as `absent` when there is no arch.md, so a caller
+#                            never has to guess whether the line was omitted
+#                            or forgotten. A `covers:` quote matching no PRD
+#                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
 #                            as check-task/task-status, resolved by the SAME
 #                            `_resolve_task_id`. A CHECKED task still prints —
@@ -193,6 +194,40 @@
 #                            sub-bullet lines under a `COVERS=`) so a caller can
 #                            pipe it straight into `runstate.sh handoff`'s
 #                            stdin without reparsing it into another shape.
+#                            BUNDLING (packet-bundling-t5): a comma-joined
+#                            `<packet-id,packet-id,...>` prints each member's
+#                            block UNCHANGED (exactly the single-id shape
+#                            above, one per member, self-delimiting on its own
+#                            `PACKET=`), in PLAN ORDER — never the order the
+#                            caller listed them in — preceded by
+#                            `BUNDLE=<id,id,...>` (the members, plan-order) and
+#                            `BUNDLE_FILES=` (their scopes' union, through the
+#                            SAME `_nodes_for` precedence `group` uses, so the
+#                            two can never disagree about a packet's scope).
+#                            A single id (no comma) takes the ORIGINAL code
+#                            path unchanged and never prints either header
+#                            line — byte-identical to before bundling existed.
+#                            Every member is validated BEFORE anything is
+#                            printed, so a refusal never leaves partial
+#                            output: any member that does not resolve or
+#                            carries no task reuses the `HANDOFF=unknown` +
+#                            `REASON=` shape, naming that member; a list
+#                            spanning more than one feature is refused the
+#                            same way (grouping across features is out of
+#                            scope); and a member whose LATEST routing record
+#                            in this run's `routing.jsonl` is `hand-off-feature`
+#                            (ADR 0028 T9) is refused with the SAME
+#                            `HANDOFF=refused`/`REASON=hand-off-feature`/
+#                            `PACKET=<id>` shape `runstate.sh handoff` already
+#                            uses for the single-id case — read directly here
+#                            (this adapter's FILES scope for T5 is itself
+#                            alone), fail-soft exactly like `interlock`'s
+#                            `.gspec/build/status.json` read: outside the
+#                            pinned gspec contract, so a missing run-state,
+#                            run_id or routing.jsonl always means "not
+#                            routed", never a reason to refuse. `check-task`
+#                            stays at exactly one id — the plugin's one write
+#                            into `gspec/` is unwidened.
 #   group <packet-id> [--cap <n>] [root]   form the bundle the loop would
 #                            submit as ONE packet, starting from <packet-id>
 #                            as the cursor: the cursor plus the UNCHECKED
@@ -1676,8 +1711,11 @@ cmd_capability_drift() {
     "$drift" "$unjudgeable"
 }
 
-# cmd_handoff <packet-id> [root] — see the `handoff` entry in the header
-# Subcommands list for the full output-shape and exit-code contract. Output:
+# _handoff_one <packet-id> [root] — the block for exactly ONE task id, byte-
+# identical to what `cmd_handoff` printed before bundling existed (packet-
+# bundling-t5 renamed this function; its body is otherwise untouched). See the
+# `handoff` entry in the header Subcommands list for the full output-shape and
+# exit-code contract. Output:
 #   PACKET=<feature>-<id>
 #   FEATURE=<slug>
 #   ID=<the plan's own literal task id>
@@ -1698,7 +1736,7 @@ cmd_capability_drift() {
 #   UNMATCHED=<covers quote matching no PRD capability>   (zero or more)
 #   PRD=<relpath, or "none">
 #   ARCH=<relpath, or "absent">
-cmd_handoff() {
+_handoff_one() {
   local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
   local root; root="$(_root "${2:-}")"
 
@@ -2045,6 +2083,220 @@ cmd_group() {
   printf 'FILES=%s\n' "$union"
   printf 'STOP=%s\n' "$stop"
   rm -f "$rowsfile"
+}
+
+# --- handoff bundling (packet-bundling-t5) -----------------------------------
+# `cmd_handoff` below is the real dispatcher `handoff` invokes; it does
+# nothing itself beyond picking `_handoff_one` (no comma — the original,
+# unchanged path) or `_handoff_bundle` (a comma-joined list). The comma split
+# itself is inlined at the top of `_handoff_bundle`, exactly mirroring
+# `runstate.sh`'s own `_rs_split_pkt_ids` (same malformed-shape checks: a
+# leading, trailing, or doubled comma is a usage error, before anything
+# prints) rather than factored into its own function -- a helper that `die`s
+# must be called DIRECTLY, never through a process-substitution `< <(...)`
+# feeding a `while read` loop, which runs it in a DETACHED subshell whose
+# `exit` is invisible to the caller's `set -e` (the read loop just sees the
+# pipe close early and continues as if nothing happened — this shipped once,
+# was caught by `test-gspec-backlog.sh`'s malformed-comma-list cases reading
+# `rc=0`, and is exactly the same class of subshell trap CLAUDE.md's
+# `trim-note` SIGPIPE story warns about). Two more small helpers, reused
+# rather than copied: `_plan_order` gives the plan's OWN id order (both
+# checked and unchecked — unlike `_nodes_for`, which only emits unchecked
+# rows — because a bundle member's position in the file is what "plan order"
+# means here, not its presence in the backlog); `_routed_hand_off_feature` is
+# documented at the `handoff` header entry above.
+
+# _plan_order <plan> — every task id in <plan>, lowercased, FIRST occurrence
+# only, in plan (file) order. Same `_TASK_LINE_RE` family every other reader
+# in this file shares — never a second pattern for "what is a task line".
+_plan_order() {
+  local plan="$1"
+  awk '
+    /'"$_TASK_LINE_RE"'/ {
+      desc = $0
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
+      lid = tolower(substr(desc, 1, RLENGTH))
+      if (!(lid in seen)) { seen[lid] = 1; print lid }
+    }
+  ' "$plan"
+}
+
+# _routed_hand_off_feature <root> <pkt> — has <pkt>'s LATEST routing record in
+# THIS run's `.agents/loop/<run_id>/routing.jsonl` already recorded token
+# `hand-off-feature`? Mirrors `runstate.sh`'s own
+# `_rs_latest_routing_token`/`cmd_handoff` check (ADR 0028 T9) rather than
+# calling into `runstate.sh` — packet-bundling-t5's FILES scope is this
+# adapter alone, and this read sits OUTSIDE the pinned gspec contract, exactly
+# like `interlock`'s `.gspec/build/status.json` read: FAIL-SOFT. No
+# run-state.yaml, no `run_id:` line, an unsafe run_id, or no routing.jsonl all
+# mean "not routed" — never a reason to refuse a bundle. Returns 0 (true)
+# only on a positive `hand-off-feature` match; 1 (false) otherwise, including
+# every fail-soft case above.
+_routed_hand_off_feature() {
+  local root="$1" pkt="$2" rsfile run_id routing_file line token
+  rsfile="$root/.agents/run-state.yaml"
+  [ -f "$rsfile" ] || return 1
+  run_id="$(awk '
+    /^run_id:[[:space:]]*/ {
+      sub(/^run_id:[[:space:]]*/, "")
+      gsub(/^["'"'"']|["'"'"']$/, "")
+      print; exit
+    }' "$rsfile")"
+  [ -n "$run_id" ] || return 1
+  # Validated before use as a path component -- the same discipline ADR
+  # 0028's driver-mode mark applies to a session id, for the same reason: an
+  # unvalidated value must never be trusted to build a filesystem path.
+  case "$run_id" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  routing_file="$root/.agents/loop/$run_id/routing.jsonl"
+  [ -f "$routing_file" ] || return 1
+  line="$(grep -F "\"packet\":\"${pkt}\"" "$routing_file" 2>/dev/null | tail -1 || true)"
+  [ -n "$line" ] || return 1
+  token="$(printf '%s' "$line" | sed -E 's/.*"token":"([^"]*)".*/\1/')"
+  [ "$token" = "hand-off-feature" ]
+}
+
+# _handoff_bundle <raw-ids> <root> — see the `handoff` entry in the header
+# Subcommands list. Validates every member BEFORE printing anything, so a
+# refusal never leaves partial output: pass 1 resolves each id and confirms
+# every member names the SAME feature; pass 2 confirms each member actually
+# names a task in that feature's plan and has not already been routed
+# `hand-off-feature` this run. Only once every member clears both passes does
+# it print `BUNDLE=`/`BUNDLE_FILES=` and each member's block, UNCHANGED from
+# `_handoff_one`'s own output, in PLAN ORDER — never the order the caller
+# listed them in.
+_handoff_bundle() {
+  local raw="$1" root="$2"
+  # Splits on a bare comma only (no whitespace form), duplicates kept -- the
+  # three malformed shapes a comma list can take (leading, trailing, doubled)
+  # are rejected up front, called DIRECTLY (no subshell) so `die`'s `exit`
+  # terminates the whole script under `set -e`, exactly as it does everywhere
+  # else in this file.
+  case "$raw" in
+    ,*|*,|*,,*) die "handoff: packet id list must not contain an empty member" ;;
+  esac
+  local -a raw_ids
+  IFS=',' read -r -a raw_ids <<<"$raw"
+  local n="${#raw_ids[@]}"
+
+  # --- pass 1: resolve every member; confirm one shared feature -------------
+  local -a idlcs
+  local bundle_slug="" i=0 tid resolved slug id
+  while [ "$i" -lt "$n" ]; do
+    tid="${raw_ids[$i]}"
+    resolved="$(_resolve_task_id "$tid" "$root")"
+    case "$resolved" in
+      NOGSPEC)
+        printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+        return 0
+        ;;
+      UNRESOLVED)
+        printf 'HANDOFF=unknown\nREASON=%s does not resolve to a gspec task id — no plan resolves this packet\n' "$tid"
+        return 0
+        ;;
+      REFUSED\ *)
+        die "handoff: ${tid}: ${resolved#REFUSED }"
+        ;;
+    esac
+    slug="$(printf '%s' "$resolved" | cut -f2)"
+    id="$(printf '%s' "$resolved" | cut -f3)"
+    if [ -z "$bundle_slug" ]; then
+      bundle_slug="$slug"
+    elif [ "$slug" != "$bundle_slug" ]; then
+      printf 'HANDOFF=unknown\nREASON=%s resolves to feature %s, but this bundle is feature %s — grouping across features is out of scope\n' "$tid" "$slug" "$bundle_slug"
+      return 0
+    fi
+    idlcs[i]="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+    i=$((i + 1))
+  done
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$bundle_slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$bundle_slug"
+    return 0
+  fi
+
+  # --- pass 2: confirm each member is a real task and not already routed ----
+  # --- away as hand-off-feature ----------------------------------------------
+  local rec pkt
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    rec="$(_task_record "$plan" "${idlcs[$i]}")"
+    if [ -z "$rec" ]; then
+      printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$bundle_slug" "${raw_ids[$i]}" "$relplan"
+      return 0
+    fi
+    pkt="${bundle_slug}-${idlcs[$i]}"
+    if _routed_hand_off_feature "$root" "$pkt"; then
+      printf 'HANDOFF=refused\nREASON=hand-off-feature\nPACKET=%s\n' "$pkt"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+
+  # --- every member clears both passes: determine PLAN order ---------------
+  # Walk the plan's own id order once and claim each member's FIRST unclaimed
+  # occurrence -- `_plan_order` dedups by first sighting, so a duplicated
+  # member id in the caller's list claims its slot once and any repeat is
+  # simply not re-emitted, never a second copy of the same block.
+  local -a order_idx claimed
+  i=0
+  while [ "$i" -lt "$n" ]; do claimed[i]=0; i=$((i + 1)); done
+  local pid m_i
+  while IFS= read -r pid; do
+    m_i=0
+    while [ "$m_i" -lt "$n" ]; do
+      if [ "${claimed[$m_i]}" = "0" ] && [ "${idlcs[$m_i]}" = "$pid" ]; then
+        order_idx+=("$m_i")
+        claimed[m_i]=1
+        break
+      fi
+      m_i=$((m_i + 1))
+    done
+  done < <(_plan_order "$plan")
+
+  local bundle_ids="" oi
+  for oi in "${order_idx[@]}"; do
+    bundle_ids="${bundle_ids}${bundle_ids:+,}${bundle_slug}-${idlcs[$oi]}"
+  done
+  printf 'BUNDLE=%s\n' "$bundle_ids"
+
+  # BUNDLE_FILES: the union of each member's own scope, through the SAME
+  # `_nodes_for` files: > sidecar > empty precedence `group` uses -- ONE
+  # `_nodes_for` call for the whole feature, read per member, never
+  # re-derived.
+  local nodesfile; nodesfile="$(mktemp)"
+  _nodes_for "$root" "$bundle_slug" > "$nodesfile"
+  local bundle_files="" mfiles
+  for oi in "${order_idx[@]}"; do
+    mfiles="$(WANT="${bundle_slug}-${idlcs[$oi]}" awk -F'\t' '$1 == ENVIRON["WANT"] { f = $3 } END { print f }' "$nodesfile")"
+    bundle_files="$(_pipe_union "$bundle_files" "$mfiles")"
+  done
+  rm -f "$nodesfile"
+  printf 'BUNDLE_FILES=%s\n' "$bundle_files"
+
+  for oi in "${order_idx[@]}"; do
+    _handoff_one "${raw_ids[$oi]}" "$root"
+  done
+}
+
+# cmd_handoff <packet-id[,packet-id...]> [root] — the real dispatcher; see the
+# `handoff` entry in the header Subcommands list. A comma anywhere in the
+# first argument selects the bundling path; its absence takes the ORIGINAL,
+# unwrapped single-id path, so a single id's output is byte-identical to
+# before bundling existed.
+cmd_handoff() {
+  local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
+  local root; root="$(_root "${2:-}")"
+  case "$task" in
+    *,*) _handoff_bundle "$task" "$root" ;;
+    *)   _handoff_one "$task" "$root" ;;
+  esac
 }
 
 cmd_check_task() {

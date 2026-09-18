@@ -55,7 +55,7 @@ Every regression sweep must pass green after every task.
   - covers: The DECISIONS figure counts an operator question only while it is still awaiting an answer · The liveness rule is pinned by core sweep cases
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** [P] **P0** In `templates/report-templates.md`, rewrite shape B's paragraph on the core's 🔀 figure (the one opening "The core's 🔀 figure counts") — that paragraph is where the PRD's "tally sentence" definition lives — to define "still awaiting" as T1 counts it:
+- [x] **T2** [P] **P0** In `templates/report-templates.md`, rewrite shape B's paragraph on the core's 🔀 figure (the one opening "The core's 🔀 figure counts") — that paragraph is where the PRD's "tally sentence" definition lives — to define "still awaiting" as T1 counts it:
   - an `ask-operator` line counts until the same packet has a strictly later start, continuation or `abandoned` record;
   - a tie does not answer;
   - the pause's own `blocked` outcome does not answer.

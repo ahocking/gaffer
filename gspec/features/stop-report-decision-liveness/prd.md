@@ -79,7 +79,7 @@ the same test and cannot diverge.
   - `SHIPPED`, `FAILED` and `UNFINISHED` are byte-identical to today's output
     for the same run, and so are run-digest's four existing line kinds
 
-- [ ] **P0**: The template's tally sentence and body rule state the core's definition
+- [x] **P0**: The template's tally sentence and body rule state the core's definition
   - the tally sentence in `templates/report-templates.md` says exactly what
     `run-tally` counts for 🔀, including the answering records named in the
     first capability. It no longer attributes to the core a property the core

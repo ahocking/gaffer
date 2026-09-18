@@ -136,7 +136,7 @@ slug names its own scope rather than stacking a second `-gaps` suffix.
     a comment stating both facts, so a later reader auditing this shape does not
     convert a working value-producing pipeline into something else
 
-- [ ] **P1**: A new condition-shaped instance of the construct cannot be added to either file unnoticed
+- [x] **P1**: A new condition-shaped instance of the construct cannot be added to either file unnoticed
   - the sweep that owns each file — `scripts/test-gspec-backlog.sh` for the
     adapter, `scripts/test-runstate.sh` for the deterministic core — carries a
     case scanning that file for a pipeline whose final stage is an early-exiting

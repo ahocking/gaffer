@@ -95,7 +95,7 @@ used as a condition: the one live instance plus the detector that missed it.
 
 ## Capabilities
 
-- [ ] **P0**: Reconcile's reviewed-output check reads its whole input before deciding
+- [x] **P0**: Reconcile's reviewed-output check reads its whole input before deciding
   - `_dirty_has_reviewed_output` in `scripts/runstate.sh` holds no pipeline
     whose reader can exit before its writers finish, so a dirty tree holding
     loop scratch plus at least one reviewed-output path yields `escalate` on
@@ -127,7 +127,7 @@ used as a condition: the one live instance plus the detector that missed it.
     trailing comment, a pipeline split across a `\`-continuation, and any
     shape excluded by the Deferred Decision below
 
-- [ ] **P1**: A reconcile sweep case pins the corrected reviewed-output check against the reader-closes-the-pipe misfire
+- [x] **P1**: A reconcile sweep case pins the corrected reviewed-output check against the reader-closes-the-pipe misfire
   - the fixture is a dirty tree with one reviewed-output path and enough
     untracked leaf files that the status listing exceeds any pipe buffer by a
     wide margin, and the case asserts `escalate` **by name** over a repeat

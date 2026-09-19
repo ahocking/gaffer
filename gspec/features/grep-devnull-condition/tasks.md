@@ -30,7 +30,7 @@ Every regression sweep must pass after every task.
 
 ## Plan
 
-- [ ] **T1** **P0** Make `_dirty_has_reviewed_output` in `scripts/runstate.sh` read the whole `git status` listing before it decides, and extend the large-dirty-tree reconcile case in `scripts/test-runstate.sh` (~:433–451) into a repeat loop that asserts `escalate` by name on every iteration.
+- [x] **T1** **P0** Make `_dirty_has_reviewed_output` in `scripts/runstate.sh` read the whole `git status` listing before it decides, and extend the large-dirty-tree reconcile case in `scripts/test-runstate.sh` (~:433–451) into a repeat loop that asserts `escalate` by name on every iteration.
 
   The function:
   - keeps its never-fails contract and its true/false meaning: a tree with no reviewed-output path reads false, and a tree that cannot be listed reads as it does today;

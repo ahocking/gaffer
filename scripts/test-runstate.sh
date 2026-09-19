@@ -442,7 +442,8 @@ assert_true "clean again after removing the mixed tree" "[ \"\$(decision)\" = cl
 # `-q` form.
 #
 # The fixture is sized so the listing is FAR past any pipe buffer (5000 padded
-# leaf paths, ~400 KB, against the 64 KB buffer Linux and macOS both default to)
+# leaf paths, ~400 KB, against a Linux default of 64 KB and a macOS pipe that
+# starts at 16 KB and grows to 64 KB -- an order of magnitude either way)
 # and the decision is asserted to be `escalate` BY NAME on every pass of a repeat
 # loop -- never merely "not discard", which several wrong answers would satisfy.
 # The repeat matters because this failure is load- and timing-dependent: one

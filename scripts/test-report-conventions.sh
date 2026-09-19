@@ -43,6 +43,22 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 has() { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "expected: $2";; esac; }
 
+# A `sed`-range extraction whose END anchor stops matching is the failure a non-empty
+# guard cannot see: the range runs on to end of file, and every prose pin below it then
+# passes on text from outside the span it claims to read. Measured on this file's own
+# extractions: one changed character on an end-anchor line yields an 864-line span with
+# every assertion still green. A ceiling well above the live span (a few dozen lines)
+# and well below the whole file turns that vacuous pass into a red bar.
+SPAN_CEILING=60
+under_ceiling() { # label, span -- refuse a span that ran past its end anchor
+  local n
+  n=$(printf '%s\n' "$2" | wc -l); n="${n//[^0-9]/}"
+  if [ "${n:-0}" -le "$SPAN_CEILING" ]; then ok "$1"
+  else bad "$1" \
+    "span is $n lines, over the $SPAN_CEILING-line ceiling -- the end anchor no longer matches, so the range ran on past the end of the bullet"
+  fi
+}
+
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # A JSON reader that does not depend on the parser the HOOK avoids. Prefer python3,
@@ -329,6 +345,8 @@ fresh_run_write="$(_extract_fresh_run_write "$ROOT/skills/run-loop/SKILL.md")"
 [ -n "$fresh_run_write" ] && ok 'run-loop fresh-run carry-through clause extracted (anchor holds)' \
   || bad 'run-loop fresh-run carry-through clause extracted (anchor holds)' \
       'empty -- anchor moved, or the carry-through clause is gone'
+under_ceiling 'the fresh-run span stays inside its ceiling (end anchor still matches)' \
+  "$fresh_run_write"
 
 has 'the clause fires on a write that replaces a completed checkpoint' \
   '`done` checkpoint' "$fresh_run_write"
@@ -349,6 +367,25 @@ has "the run's own identity is explicitly not carried" \
   'no `run_id` line' "$fresh_run_write"
 has 'so the run beginning mints its own id rather than inheriting one' \
   'begin-run' "$fresh_run_write"
+
+# The clause says WHERE the index is read from, not only what crosses (loop-entry-
+# routing-gaps T1). At this point the driver holds only the checkpoint's status, so
+# "carry it verbatim" is satisfied equally by the file's own lines and by the one
+# subcommand named `findings` -- which prints a projection that STRIPS the single-
+# quoting the durable-state writer applies (ADR 0027, probed: a summary stored as
+# `'x: y'` prints bare). Re-emitting that as index lines re-opens the `": "`
+# corruption in the one file whose parse failure is unrecoverable, so the source is
+# pinned from both ends: the file and block that ARE the source, and the projection
+# that is not. Each needle sits on ONE wrapped line of the paragraph for the reason
+# the note above gives; the refusal is pinned on a phrase distinctive to its own
+# sentence (a positive substring match cannot see a negation, so the phrase has to
+# be one that only the refusal carries).
+has 'the source is the checkpoint file itself' \
+  '.agents/run-state.yaml' "$fresh_run_write"
+has 'read from disk and copied line-for-line, so the quoting survives' \
+  'line-for-line into the new content' "$fresh_run_write"
+has 'and the durable-state projection is refused as a source' \
+  '`runstate.sh findings` is not a source' "$fresh_run_write"
 
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can

@@ -21,7 +21,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
 
 ## Plan
 
-- [ ] **T1** **P0** In `skills/run-loop/SKILL.md` §2's fresh-run write, add the source clause naming `.agents/run-state.yaml`'s `findings:` block as what is copied line-for-line and the `runstate.sh findings` projection as not a source, and pin it in `scripts/test-report-conventions.sh` with new assertions over the existing carry-through extraction plus a line-count ceiling on that extraction.
+- [x] **T1** **P0** In `skills/run-loop/SKILL.md` §2's fresh-run write, add the source clause naming `.agents/run-state.yaml`'s `findings:` block as what is copied line-for-line and the `runstate.sh findings` projection as not a source, and pin it in `scripts/test-report-conventions.sh` with new assertions over the existing carry-through extraction plus a line-count ceiling on that extraction.
 
   The clause, written into the existing carry-through paragraph **before its closing sentence** — the one ending "inheriting the finished run's directory and records", which is the extraction's end anchor, so a clause appended after it would fall outside `_extract_fresh_run_write`'s span and pin nothing:
   - names the file `.agents/run-state.yaml` and its `findings:` block as the span, read **from disk** — a `Read` of the file, or a line-range extraction of that block — and **copied line-for-line** into the new content, so the quoting the file carries is the quoting the new file carries;

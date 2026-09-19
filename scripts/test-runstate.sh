@@ -2975,6 +2975,21 @@ assert_true "run-tally liveness: two questions on one packet with a start betwee
 ' '{\"ts\":\"2026-03-01T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
 ')\" = 1 ]"
 
+echo "-- run-tally counts a still-awaiting retry-past-limit stop as a decision too, tallied separately from ask-operator (answered-question-expiry T1) --"
+LV_RETRY_STOP='{"ts":"2026-03-02T00:00:10Z","packet":"lv","token":"retry","action":"stop","status":""}
+'
+LV_RETRY_ATTEMPT='{"ts":"2026-03-02T00:00:10Z","packet":"lv","token":"retry","action":"attempt","status":""}
+'
+assert_true "run-tally liveness: an unanswered retry routed stop (past its attempt limit) counts -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_RETRY_STOP\" '')\" = 1 ]"
+assert_true "run-tally liveness: the same retry-past-limit stop answered by a later start yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_RETRY_STOP\" '{\"ts\":\"2026-03-02T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: a retry routed attempt (still within its limit) counts toward no figure -- DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_RETRY_ATTEMPT\" '')\" = 0 ]"
+assert_true "run-tally liveness: one packet with a live ask-operator question AND a live retry-past-limit stop is TWO separate decisions, not one -- DECISIONS=2" \
+  "[ \"\$(lv_decisions \"\${LV_Q}\${LV_RETRY_STOP}\" '')\" = 2 ]"
+
 echo
 echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of

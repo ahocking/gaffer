@@ -27,7 +27,7 @@ Every regression sweep must pass green after every task.
 
 ## Plan
 
-- [ ] **T1** [P] **P0** In `scripts/runstate.sh`, split the parent's liveness rule out of `_rs_tally_live_questions` into one helper, and make `run-tally` also count a still-awaiting retry-past-limit stop.
+- [x] **T1** [P] **P0** In `scripts/runstate.sh`, split the parent's liveness rule out of `_rs_tally_live_questions` into one helper, and make `run-tally` also count a still-awaiting retry-past-limit stop.
 
   The helper:
   - takes (packet, ts, tag) question entries and the outcomes dir, and prints the unanswered ones with their tag echoed (T2 passes a fixed tag);

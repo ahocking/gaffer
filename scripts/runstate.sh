@@ -445,7 +445,16 @@
 #                                                      carries a handoff-
 #                                                      feature line (one
 #                                                      question, never
-#                                                      tallied twice).
+#                                                      tallied twice), plus
+#                                                      one per routing.jsonl
+#                                                      record whose token is
+#                                                      retry and whose action
+#                                                      is stop (past its
+#                                                      attempt limit) that is
+#                                                      STILL AWAITING an
+#                                                      answer, never hand-off-
+#                                                      excluded (a distinct
+#                                                      question).
 #                                                      Awaiting: no record
 #                                                      for the same packet
 #                                                      in any session's
@@ -3050,7 +3059,11 @@ cmd_run_tally() {
   main_root="$(_rs_main_checkout_root)"
   live="$(_rs_tally_live_questions "${rundir}/routing.jsonl" "${main_root}/.agents/metrics/outcomes")"
   awk -F'\t' '
-    $1 == "live" { alive[$2]++; next }
+    $1 == "live" {
+      if ($2 == "ask-operator") alive[$3]++
+      else if ($2 == "retry") retry_live++
+      next
+    }
     $1 == "packet" {
       o = $4
       if (o == "green") shipped++
@@ -3071,22 +3084,90 @@ cmd_run_tally() {
         n = (p in alive) ? alive[p] : 0
         decisions += (n < ask[p]) ? n : ask[p]
       }
+      # One per still-live retry-past-limit stop, counted directly -- it is a
+      # distinct question from any ask-operator/hand-off-feature line for the
+      # same packet, so it is never hand-off-excluded or capped against a
+      # digest count the way the ask-operator tally above is.
+      decisions += retry_live
       printf "SHIPPED=%d\nFAILED=%d\nUNFINISHED=%d\nDECISIONS=%d\n", shipped, failed, unfinished, decisions
     }
   ' <<<"$(printf '%s\n%s' "$live" "$digest")"
 }
 
-# --- run-tally: which ask-operator questions are still awaiting an answer
-# --- (stop-report-decision-liveness T1) -------------------------------------
-# Prints `live\t<packet>` once per ask-operator routing record that no record
-# in any session's outcomes log answers. An answer is, for the same packet, a
-# `start` or `continue` record or an `abandoned` outcome whose _rs_ts_key is
-# STRICTLY greater than the question's. A tie does not answer (fails toward
-# over-reporting). A `blocked` outcome never answers: it is what /gaffer:pause
-# records for the stop the question itself caused. Keys come from
-# _rs_ts_key, never the raw string -- "...:08.311Z" sorts below "...:08Z".
-# Liveness lives here and not in run-digest because a digest decision line
-# carries no timestamp, and the digest's four line kinds are frozen.
+# --- unanswered: filter (packet, ts, tag) question entries down to those
+# --- with no later answering outcomes record (answered-question-expiry T1) --
+# Reads `packet\tts\ttag` lines from stdin -- one caller's own questions,
+# tagged however it likes -- and prints `live\t<tag>\t<packet>` for each still
+# unanswered. Split out of the run-tally liveness rule below so a second
+# caller (the pending_questions prune) can reuse the same answer rule against
+# its own entries, tagged with a fixed tag, instead of duplicating the
+# matching logic.
+#
+# An answer is, for the same packet, a `start` or `continue` record or an
+# `abandoned` outcome whose _rs_ts_key is STRICTLY greater than the
+# question's. A tie does not answer (fails toward over-reporting). A
+# `blocked` outcome never answers: it is what /gaffer:pause records for the
+# stop the question itself caused. Keys come from _rs_ts_key, never the raw
+# string -- "...:08.311Z" sorts below "...:08Z". Liveness lives here and not
+# in run-digest because a digest decision line carries no timestamp, and the
+# digest's four line kinds are frozen.
+_rs_unanswered_questions() {
+  local outcomes_dir="$1"
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+  local keyed=() pkt ts tag
+  while IFS="$(printf '\t')" read -r pkt ts tag; do
+    [ -n "$pkt" ] || continue
+    keyed+=("$(printf 'Q\t%s\t%s\t%s' "$pkt" "$(_rs_ts_key "$ts")" "$tag")")
+  done
+  local aline apkt ats
+  while IFS="$(printf '\t')" read -r aline apkt ats; do
+    [ -n "$aline" ] || continue
+    keyed+=("$(printf '%s\t%s\t%s\t' "$aline" "$apkt" "$(_rs_ts_key "$ats")")")
+  done <<EOF
+$(awk "$extract"'
+    { p = field_esc($0, "packet"); ts = field_esc($0, "ts")
+      if (p == "" || ts == "") next
+      k = field_esc($0, "kind"); o = field_esc($0, "outcome")
+      if (k == "start" || k == "continue" || o == "abandoned") print "A\t" p "\t" ts }
+  ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  [ "${#keyed[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${keyed[@]}" | awk -F'\t' '
+    { n++; type[n] = $1; pkt[n] = $2; key[n] = $3 + 0; tag[n] = $4 }
+    END {
+      for (i = 1; i <= n; i++) {
+        if (type[i] != "Q") continue
+        answered = 0
+        for (j = 1; j <= n; j++)
+          if (type[j] == "A" && pkt[j] == pkt[i] && key[j] > key[i]) { answered = 1; break }
+        if (!answered) print "live\t" tag[i] "\t" pkt[i]
+      }
+    }'
+}
+
+# --- run-tally: which questions are still awaiting an answer
+# --- (stop-report-decision-liveness T1, extended by answered-question-expiry
+# --- T1) ---------------------------------------------------------------------
+# Feeds `_rs_unanswered_questions` from `routing.jsonl`: every `ask-operator`
+# record, tagged `ask-operator`, plus every `retry` record routed `stop` (past
+# its attempt limit), tagged `retry` -- the record's own token, so a caller
+# splits the two counts apart by tag. Prints `live\t<tag>\t<packet>` for each
+# still-unanswered one; see `_rs_unanswered_questions` for the answer rule.
 _rs_tally_live_questions() {
   local routing_file="$1" outcomes_dir="$2"
   [ -f "$routing_file" ] || return 0
@@ -3106,35 +3187,14 @@ _rs_tally_live_questions() {
       }
       return out
     }'
-  local keyed=() type pkt ts
-  while IFS="$(printf '\t')" read -r type pkt ts; do
-    [ -n "$type" ] || continue
-    keyed+=("$(printf '%s\t%s\t%s' "$type" "$pkt" "$(_rs_ts_key "$ts")")")
-  done <<EOF
-$(awk "$extract"'
-    { t = field_esc($0, "token"); if (t != "ask-operator") next
+  awk "$extract"'
+    { t = field_esc($0, "token"); a = field_esc($0, "action")
+      if (t == "ask-operator") tag = "ask-operator"
+      else if (t == "retry" && a == "stop") tag = "retry"
+      else next
       p = field_esc($0, "packet"); ts = field_esc($0, "ts")
-      if (p != "" && ts != "") print "Q\t" p "\t" ts }
-  ' "$routing_file" 2>/dev/null)
-$(awk "$extract"'
-    { p = field_esc($0, "packet"); ts = field_esc($0, "ts")
-      if (p == "" || ts == "") next
-      k = field_esc($0, "kind"); o = field_esc($0, "outcome")
-      if (k == "start" || k == "continue" || o == "abandoned") print "A\t" p "\t" ts }
-  ' "$outcomes_dir"/*.jsonl 2>/dev/null)
-EOF
-  [ "${#keyed[@]}" -gt 0 ] || return 0
-  printf '%s\n' "${keyed[@]}" | awk -F'\t' '
-    { n++; type[n] = $1; pkt[n] = $2; key[n] = $3 + 0 }
-    END {
-      for (i = 1; i <= n; i++) {
-        if (type[i] != "Q") continue
-        answered = 0
-        for (j = 1; j <= n; j++)
-          if (type[j] == "A" && pkt[j] == pkt[i] && key[j] > key[i]) { answered = 1; break }
-        if (!answered) print "live\t" pkt[i]
-      }
-    }'
+      if (p != "" && ts != "") print p "\t" ts "\t" tag }
+  ' "$routing_file" 2>/dev/null | _rs_unanswered_questions "$outcomes_dir"
 }
 
 # --- stamp updated_at = now (UTC), atomically -------------------------------

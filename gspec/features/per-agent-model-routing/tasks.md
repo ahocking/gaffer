@@ -121,7 +121,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: The kickoff states routing that differs from defaults · Invalid entries fail safe and are reported, never dropped or fatal
   - arch: Rule: KickoffRouting
   - files: templates/report-templates.md, scripts/test-report-conventions.sh, scripts/report-lint.sh
-- [ ] **T5** [P] **P0** In `scripts/metrics.sh`, count a stamped dispatch as an override exactly when `(.model // "") != .routing_resolved`, and record `audit.configured_routing` and `by_dispatch_model_override`.
+- [x] **T5** [P] **P0** In `scripts/metrics.sh`, count a stamped dispatch as an override exactly when `(.model // "") != .routing_resolved`, and record `audit.configured_routing` and `by_dispatch_model_override`.
 
   `collect`:
   - null when any dispatch is unstamped, with the "N of M dispatches carry no routing stamp" note;

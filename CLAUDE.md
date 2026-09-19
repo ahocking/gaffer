@@ -272,13 +272,16 @@ passing sweeps.
   `duration_ms`/`tool_use_id` are native PostToolUse fields; the dispatch tool is named
   **`Agent`** (not `Task`). **Routing is ONE decision made ONCE (2026-07-23 revision):
   `tier` (a REQUIRED task-packet field, set at scope time) → **agent** (who you dispatch)
-  → **model** (that agent's `model:` frontmatter). Never pass `model` at dispatch: an
-  omitted `model` resolves to the target agent's frontmatter, and every orchestration
-  agent declares one — the frontmatter IS the routing policy. The old
+  → **model** (the `model_routing` map value for that agent when it is mapped, else its
+  `model:` frontmatter). At dispatch, pass `routing.sh resolve <agent>`'s output: a
+  non-empty value goes in as `model`, an empty one means omit `model`, which resolves to
+  the target agent's frontmatter (per-agent-model-routing). The old
   `dispatches_without_named_model` counter inverted this and **manufactured false
   positives** (the first production capture read 8 clean architect/reviewer dispatches as 8
-  violations); it is replaced by `dispatches_with_model_override`, which counts the
-  thing that actually signals a deviation. Ground truth for what a role really ran on is
+  violations); it is replaced by `dispatches_with_model_override`, where an override is a
+  passed model that **differs from the routing resolved at dispatch** (the hook stamps
+  `routing_resolved` on each Agent event) — a map-routed dispatch counts 0, and the count
+  is `null` when any dispatch is unstamped. Ground truth for what a role really ran on is
   `by_agent_role.<role>.models`, never the dispatch arg. Unlabelled packets now flag as
   `unlabelled:` rather than reading as clean — but **only in a mixed run**; a run where
   *no* packet carries a trailer is legacy, so the per-packet flags are suppressed and a

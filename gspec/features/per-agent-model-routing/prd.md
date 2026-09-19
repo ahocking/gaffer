@@ -109,7 +109,7 @@ shipped default for any agent the map does not name.
   - the map wins over frontmatter, and frontmatter applies to any agent the
     map does not name
 
-- [ ] **P0**: Run-metrics records map routing as policy, not as override
+- [x] **P0**: Run-metrics records map routing as policy, not as override
   - a dispatch increments `dispatches_with_model_override` exactly when the
     model it passes differs from the lookup's resolved value for its
     `subagent_type`: the map value when mapped, no model when unmapped. A

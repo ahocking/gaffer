@@ -1434,7 +1434,7 @@ cmd_collect() {
     --slurpfile recj "$tmp/recordjoin.json" \
     --slurpfile dmctx "$tmp/dmctx.json" \
     --arg unknown_note "$unknown_note" \
-    '
+    "${JQ_TS_MS}"'
     ($roletokens[0] // {}) as $rt
     | ($activity[0] // {active:0,idle:0}) as $act
     | ($unattr[0] // {count:0,by_agent:{}}) as $un
@@ -1463,6 +1463,31 @@ cmd_collect() {
     | (($sids[0] // []) | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))) as $edit_events
     | ($recj[0] // {outcomes:{}, started_ids:[], record_end:{}, has_start:false}) as $rj
     | ($dmctx[0] // {threshold:null,max_context:null,windows:0,turns_in_window:0}) as $dmc
+    # DISPATCH ROUTING (per-agent-model-routing, Rule: ModelOverrideCounting). A
+    # dispatch is STAMPED when the hook recorded `routing_resolved` (what routing.sh
+    # said it should pass; "" = pass nothing). An absent stamp is UNMEASURED, never
+    # read as "". Override = the passed model differs from the stamp, so a map-routed
+    # dispatch counts 0 and a mapped agent sent back to frontmatter counts 1. The count
+    # is null when ANY dispatch is unstamped (a partial count would read as clean) or
+    # the run predates the ok capture; zero dispatches is a measured 0.
+    # configured_routing = routing_table of the LATEST stamped Agent event by PARSED
+    # ts (string order inverts sub-second vs whole-second stamps); null when none.
+    | (($sids[0] // []) | map(select(.tool=="Agent" and (.subagent_type != null)))) as $rdisp
+    | ($rdisp | map(select(has("routing_resolved")))) as $rstamped
+    | ($rdisp | map(select(has("routing_resolved") | not)) | length) as $runstamped
+    | ($rstamped | map(select((.model // "") != .routing_resolved))) as $roverrides
+    | {
+        unstamped: $runstamped,
+        total: ($rdisp | length),
+        count: (if ($instrumented | not) then null elif $runstamped > 0 then null else ($roverrides | length) end),
+        by_model: (if ($instrumented | not) then null elif $runstamped > 0 then null
+                   else ($roverrides | map(.model // "(none)") | group_by(.)
+                         | map({key:.[0],value:length}) | from_entries) end),
+        configured: (($sids[0] // []) | map(select(.tool=="Agent" and has("routing_table")))
+                     | if length == 0 then null
+                       else (map({k:(.ts // "" | ts_ms), t:.routing_table}) | sort_by(.k) | last | .t) end),
+        distinct_tables: (($sids[0] // []) | map(select(.tool=="Agent" and has("routing_table")) | .routing_table) | unique | length)
+      } as $route
     | {
       schema: 2,
       run_id: $run_id,
@@ -1569,20 +1594,17 @@ cmd_collect() {
         labels_present: ($pk | any(.tier != null or .impl != null)),
         orchestrator_impl_edits: ($pk | map(.audit.orchestrator_impl_edits // 0) | add // 0),
         implementer_dispatches: ($pk | map(.dispatched["gaffer:implementer"] // 0) | add // 0),
-        # DISPATCH MODEL (corrected 2026-07-23). An omitted `model` at dispatch is
-        # the NORMAL, correct case: the Agent tool resolves it to the `model:`
-        # frontmatter of the target agent, and every orchestration agent declares
-        # one — that frontmatter is the routing policy (run-loop §3.3). Counting
-        # omissions as violations manufactured false positives (a clean run of
-        # architect/reviewer dispatches read as "8 unnamed models" when all 8
-        # resolved correctly to opus). What is actually worth seeing is the
-        # OVERRIDE: a caller deliberately deviating from a declared tier. Ground
-        # truth for what each role really ran on is `by_agent_role.<role>.models`,
-        # not this field.
+        # DISPATCH MODEL (per-agent-model-routing, superseding the 2026-07-23 rule
+        # that counted every explicit `model` arg). The dispatch site passes
+        # `routing.sh resolve <agent>`, so a passed model is now NORMAL when the map
+        # routes that agent. An override is a passed model that DIFFERS from the
+        # routing the hook stamped at dispatch time (see $route above) — including a
+        # mapped agent dispatched with no model, keyed "(none)". Ground truth for
+        # what each role really ran on is `by_agent_role.<role>.models`, not this.
         dispatches_total: ($dispatches | length),
-        dispatches_with_model_override: (if $instrumented then ($dispatches | map(select(.model != null)) | length) else null end),
-        by_dispatch_model_override: ($dispatches | map(select(.model != null)) | group_by(.model)
-                            | map({key:(.[0].model),value:length}) | from_entries),
+        dispatches_with_model_override: $route.count,
+        by_dispatch_model_override: $route.by_model,
+        configured_routing: $route.configured,
         # TIER COVERAGE (ADR 0019). run-loop §3.2 makes `tier` a required packet
         # field and §3.4 requires copying it into the commit trailer. Packets with
         # no tier trailer are unmeasurable — surface the count and the ids rather
@@ -1638,7 +1660,13 @@ cmd_collect() {
             else "same_file_overlaps=unmeasured." end)
          else empty end),
         "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
-        "audit.dispatches_with_model_override counts EXPLICIT `model` args at dispatch (a deliberate deviation). An omitted model is correct — it resolves to the `model:` frontmatter of the target agent; read by_agent_role.<role>.models for what each role actually ran on.",
+        "audit.dispatches_with_model_override counts dispatches whose passed model DIFFERS from the routing resolved at dispatch (the routing.sh resolve value the hook stamped: the model_routing map value when the agent is mapped, no model when it is not). A dispatch passing its resolved value is policy, not an override; a mapped agent dispatched with no model is keyed \"(none)\" in by_dispatch_model_override. audit.configured_routing is the routing table of the latest stamped dispatch (null = unmeasured). Read by_agent_role.<role>.models for what each role actually ran on.",
+        (if $route.unstamped > 0 then
+           "routing: \($route.unstamped) of \($route.total) dispatches carry no routing stamp, so dispatches_with_model_override and by_dispatch_model_override are null (unmeasured), NOT zero — a partial count would read as clean."
+         else empty end),
+        (if $route.distinct_tables > 1 then
+           "routing: model routing CHANGED mid-run — \($route.distinct_tables) distinct routing tables were stamped in this window; configured_routing is the latest, and each dispatch was judged against the table in force when it completed."
+         else empty end),
         (($packets[0] // []) as $pkn
          | ($pkn | any(.tier != null or .impl != null)) as $lab
          | ($pkn | map(select(.tier == null or .impl == null)) | length) as $miss
@@ -1777,7 +1805,10 @@ cmd_show() {
     "routing audit (opus orchestrator edits vs implementer dispatches; label \(if (.audit.labels_present) then "present" else "ABSENT — pre-instrumentation run" end)):",
     "  orchestrator_impl_edits=\(.audit.orchestrator_impl_edits // 0)   implementer_dispatches=\(.audit.implementer_dispatches // 0)   by_tier=\(.audit.by_tier // {})",
     "  tier labels: \((.audit.packets_total // 0) - (.audit.packets_missing_tier // 0))/\(.audit.packets_total // 0) packets labelled\(if (.audit.packets_missing_tier // 0) > 0 then "   ⚠ UNMEASURED: \(.audit.unlabelled_packet_ids // [] | join(", "))" else "" end)",
-    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-instrumentation run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
+    # No `// 0` / `// {}` here: null is UNMEASURED (pre-routing or unstamped dispatches)
+    # and must not render as a clean-looking zero or empty map (per-agent-model-routing).
+    "  dispatches=\(if .audit.dispatches_total == null then "unmeasured" else .audit.dispatches_total end) (model overrides vs routing resolved at dispatch: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-routing run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(if .audit.by_dispatch_model_override == null then "unmeasured" else (.audit.by_dispatch_model_override | tojson) end)",
+    "  configured routing: \(if .audit.configured_routing == null then "unmeasured — pre-routing run" elif (.audit.configured_routing | length) == 0 then "none" else (.audit.configured_routing | to_entries | map("\(.key) \(.value)") | join(", ")) end)",
     "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
     "",

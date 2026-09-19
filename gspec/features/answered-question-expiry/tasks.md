@@ -78,7 +78,7 @@ Every regression sweep must pass green after every task.
   - covers: A core subcommand prunes answered entries from `pending_questions` · The prune and the new count are pinned by core sweep cases
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T3** [P] **P0** In `templates/report-templates.md`, extend shape B's paragraph that opens "The core's 🔀 figure counts" so it names the retry-past-limit stop as a counted decision, aged by the same still-awaiting definition as an `ask-operator` line.
+- [x] **T3** [P] **P0** In `templates/report-templates.md`, extend shape B's paragraph that opens "The core's 🔀 figure counts" so it names the retry-past-limit stop as a counted decision, aged by the same still-awaiting definition as an `ask-operator` line.
 
   Change nothing else:
   - add no backticked all-caps token inside the tally sentence's anchor range;

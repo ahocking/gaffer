@@ -82,7 +82,7 @@ shipped default for any agent the map does not name.
   - it is a core subcommand. No prompt parses the YAML or restates the
     precedence rule. Each prompt names the subcommand
 
-- [ ] **P0**: Invalid entries fail safe and are reported, never dropped or fatal
+- [x] **P0**: Invalid entries fail safe and are reported, never dropped or fatal
   - a key naming no plugin agent, the key `loop-driver`, and a value the
     harness's `model` dispatch parameter does not accept are each reported, one
     line per entry, naming the key, the value and the reason
@@ -133,7 +133,7 @@ shipped default for any agent the map does not name.
   - a sweep case asserts that every dispatching file (defined in the third
     capability) names the lookup subcommand
 
-- [ ] **P1**: The kickoff states routing that differs from defaults
+- [x] **P1**: The kickoff states routing that differs from defaults
   - shape C carries one line naming each agent the map routes away from its
     frontmatter, with both models. An empty or all-default map adds no line
   - the line reads from the lookup's output, not from the file directly

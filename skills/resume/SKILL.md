@@ -131,6 +131,14 @@ right now — stop the same way, with the same exit call; a resume that starts
 driving beside it puts two drivers in one checkout. Both checks are no-ops
 without a gspec project.
 
+**Then the model-routing preflight, same as `/gaffer:run-loop` §1.** Run
+`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh validate` and
+`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh table` once, and keep both outputs
+for the kickoff (§4). Running them after §0's driver-mode entry is harmless:
+`routing.sh` is read-only. Both exit 0 on every config state, and **a
+`validate` report never stops the resume** — an ignored entry already falls
+back to its agent's frontmatter model. Do not read `model_routing` yourself.
+
 **Resume runs no capability-drift scan of its own** — it neither repeats
 `run-loop` §1's drifted-completion-record scan nor its drifted-capability-checkbox
 scan. The `adopt` path in §2 below reconciles the one case a crash can leave —
@@ -449,7 +457,10 @@ rendered from `runstate.sh run-digest .agents/run-state.yaml` with **no** `--sin
 its `packet` lines are what THIS run already did, across however many sessions
 drove it, so render those as one ⚠️ **Picked up** line naming what is unfinished
 rather than a second stop report, and its `enter` line gives the `▶ **Session**`
-line (model/effort/threshold), exactly as a fresh run's kickoff does. State what
+line (model/effort/threshold), exactly as a fresh run's kickoff does. Render
+`⚠️ **Routing config**` only when §1's `validate` printed something, and `▶
+**Routing**` only when §1's `table` printed something, exactly as run-loop §2
+does — empty output means no line. State what
 is **left**, not what the original run set out to do: the remaining packets in plain
 words, what is expected to need a decision, and where this session will stop. The
 human may be days removed from the run and remembers none of the ids; the checkpoint
@@ -631,7 +642,10 @@ Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,
 advance) and §4 (termination) — this resume dispatches and routes exactly as
 a fresh run does, under the session's autonomy level, for the cursor packet
-and every packet after it. Honor the same gates as before: the driver owns
+and every packet after it — including running
+`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>` immediately before
+each dispatch, passing a non-empty result as `model` and omitting `model` when
+it is empty. Honor the same gates as before: the driver owns
 routine commits above `interactive` (and merge/rebase/push onto non-`main`
 branches at `full-autonomy`); hard gates — `main`, releases, migrations,
 secrets, deploys, the danger floor — still stop for the human. Keep

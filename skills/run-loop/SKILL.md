@@ -159,6 +159,13 @@ stop never has a mark to clear.
   base the loop branches from and (at `full-autonomy`) merges back into is the
   **non-`main`** `integration_branch` from `.agents/project-overrides.yaml`
   (default `develop`, else `main`/`master`).
+- **Model routing — once, here, before driver mode.** Run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh validate` and
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh table`, and keep both outputs for
+  the kickoff (§2) — they are the only source of its two routing lines. Both
+  exit 0 on every config state; **a `validate` report never stops the run** —
+  an ignored entry already falls back to its agent's frontmatter model. Do not
+  read `model_routing` yourself.
 
 ## 2. Enter driver mode, then establish the backlog and the run
 
@@ -245,8 +252,12 @@ sentinel here stops a stale request from immediately re-halting this run.
 `enter` line (model/effort/threshold, exactly as `driver-mode enter` just
 recorded it — never restated from memory): a fresh run's digest has no
 `packet` lines yet, so the forward plan is the backlog you just resolved
-above, a file read moments old. State the one assumption most likely to be
-wrong, which packets you expect will need a decision, the hard gates this
+above, a file read moments old. Render `⚠️ **Routing config**` only when
+§1's `validate` printed something — one line, each `ROUTING-INVALID` entry's
+key and reason — and `▶ **Routing**` only when §1's `table` printed
+something — one line, each `<agent> <frontmatter> <alias>` row as `<agent>
+<frontmatter> → <alias>`; empty output means no line. State the one
+assumption most likely to be wrong, which packets you expect will need a decision, the hard gates this
 backlog gets near, the autonomy level, and where the run stops. Emit it
 **here**, after preflight and after the backlog resolves. At
 **`interactive`**, the kickoff is also the approval request: emit it and
@@ -447,14 +458,24 @@ nothing. Read the result exactly as §4 states it for the stop report.
    criteria in plan order, concatenated (T5), so one dispatch is briefed on
    the whole bundle. Its header is what tells that agent, and you, where to
    write and route.
-4. **Dispatch, then route.** Dispatch a **fresh** agent (the `--agent` from
-   §3.3) with the handoff path **only** — its body already covers the whole
+4. **Dispatch, then route.** Every dispatch in this loop resolves its model
+   immediately before it, as each site below says: a non-empty `routing.sh
+   resolve` result is passed as `model`, and an empty result means `model` is
+   omitted. A deliberate one-dispatch deviation from that result carries
+   `Model override: <alias> — <reason>` in its brief, and applies to that one
+   dispatch only.
+
+   Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>` for the
+   `--agent` from §3.3 (non-empty → `model`; empty → omit `model`), then
+   dispatch a **fresh** agent of it with the handoff path **only** — its body already covers the whole
    bundle (§3.3), so one dispatch, one review and one `route` call cover
    every member of `$MEMBERS`, exactly as they would a single task — on a
    re-attempt, also pass the review file's path (from the handoff header,
    per §3.3). Read its one
    status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); never open
-   its result file yourself. Then dispatch the `reviewer` with the handoff
+   its result file yourself. Then run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve reviewer` (non-empty →
+   `model`; empty → omit `model`) and dispatch the `reviewer` with the handoff
    path (and the review path on a re-attempt) and read its verdict the same
    way. Pass that verdict, with its status line as `--status`, to `route`,
    **using the run-state path from this packet's handoff header** and
@@ -468,11 +489,15 @@ nothing. Read the result exactly as §4 states it for the stop report.
 5. **Act on `route`'s action** (judgment for `decider` lives in
    `agents/loop-driver.md` §Routing — this is the mechanical shape):
    - **`land`** — commit green, §3.6.
-   - **`attempt`** — dispatch a fresh agent with the handoff and review
+   - **`attempt`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
+     <agent>` for the packet's `--agent` (non-empty → `model`; empty → omit
+     `model`), then dispatch a fresh agent with the handoff and review
      paths; record no start. The handoff still covers every member of
      `$MEMBERS`, so one `attempt` re-does the whole bundle, not just the
      cursor.
-   - **`decider`** — dispatch the `chief-engineer` (the interim
+   - **`decider`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
+     chief-engineer` (non-empty → `model`; empty → omit `model`), then
+     dispatch the `chief-engineer` (the interim
      `escalation-decider` stand-in) with the handoff and review paths, **plus
      the `ATTEMPTS=`/`LIMIT=` this same `route` call just printed** (so it
      knows whether a `retry` is even possible), and nothing else. Pass its
@@ -741,8 +766,10 @@ nothing. Read the result exactly as §4 states it for the stop report.
 
 ## 4. Termination
 
-- **Backlog complete** → before declaring done, dispatch **one broad
-  whole-branch review** (the `reviewer`, opus) over **this run's own
+- **Backlog complete** → before declaring done, run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve reviewer` (non-empty →
+  `model`; empty → omit `model`, and its frontmatter applies), then dispatch
+  **one broad whole-branch review** (the `reviewer`) over **this run's own
   integrated work — not everything the branch has accumulated since its
   base.** A long-lived integration branch already carries earlier runs'
   already-reviewed commits, so a plain branch-vs-base diff re-presents all
@@ -774,8 +801,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
   status line as usual.
 
   **You do not open that review file — this would be the one exception to
-  "never open a result file", so instead it stays zero: dispatch the
-  `architect` with the review file's path, `.agents/run-state.yaml`'s path,
+  "never open a result file", so instead it stays zero: run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` (non-empty →
+  `model`; empty → omit `model`), then dispatch the `architect` with the review file's path, `.agents/run-state.yaml`'s path,
   and a result path of your own choosing under the run directory** to do the
   ADR 0026 routing itself, for any Critical/Important finding, in two arms
   tried in order, never editing a completed record and never bypassing the

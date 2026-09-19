@@ -105,7 +105,7 @@ this repository, since the run that found it ended `done`.
     exceeds a line-count ceiling well above the live span, so an end anchor that
     no longer matches turns the sweep red instead of vacuously green
   - mutating one character of either end-anchor line in a scratch copy of the
-    skill turns the sweep red, and restoring it turns the sweep green, verified
+    checkout turns the sweep red, and restoring it turns the sweep green, verified
     by making both mutations
   - the sweep's existing cases over these extractions keep passing unchanged, so
     the refusal is additive and nothing already pinned is loosened

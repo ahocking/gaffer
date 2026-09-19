@@ -54,13 +54,17 @@ allowed_paths:
 #                                         # tool grant (mcp__ai-game-developer__*)
 #                                         # assumes this server name.
 
-# Model-routing overrides (optional). Only list tasks whose default tier you want
-# to change. Tiers: opus (reasoning/architecture/review/security),
-# sonnet (implementation), haiku (summarization/docs).
+# Per-agent model overrides (optional). A map keyed by agent name -- the
+# basenames of the plugin's `agents/*.md` files, with no `gaffer:` prefix --
+# to a model alias, in block form (`model_routing:` then indented
+# `implementer: opus` lines) or flow form (`{implementer: opus}`). An agent
+# you do not list keeps the `model:` in its frontmatter. `loop-driver` is
+# excluded: it is the session itself, so routing never sets its model. An
+# invalid entry falls back to that frontmatter default and is reported at
+# run-loop and resume preflight.
 model_routing: {}
-  # example:
-  # implementation: sonnet
-  # security_review: opus
+# Add model aliases the harness accepts before the plugin's list knows them:
+# extra_models: []
 
 # Extra escalation triggers specific to this project, on top of the plugin's
 # generic defaults (auth, secrets, DB schema/migrations, deps, deploys, git history).

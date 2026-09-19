@@ -58,10 +58,17 @@ allowed_paths:
 ux:
   preview_mode: none
 
-# Defaults are correct here. Routing is one decision made once —
-# tier -> agent -> that agent's `model:` frontmatter — so overriding per task is
-# how the two disagree (ADR 0019 v2, the `dispatches_with_model_override` counter).
+# Per-agent model overrides (optional). A map keyed by agent name -- the
+# basenames of the plugin's `agents/*.md` files, with no `gaffer:` prefix --
+# to a model alias, in block form (`model_routing:` then indented
+# `implementer: opus` lines) or flow form (`{implementer: opus}`). An agent
+# you do not list keeps the `model:` in its frontmatter. `loop-driver` is
+# excluded: it is the session itself, so routing never sets its model. An
+# invalid entry falls back to that frontmatter default and is reported at
+# run-loop and resume preflight.
 model_routing: {}
+# Add model aliases the harness accepts before the plugin's list knows them:
+# extra_models: []
 
 # On top of the plugin's generic defaults (auth, secrets, DB schema, deps,
 # deploys, git history). This repo's domain risk is REFLEXIVITY: the loop editing

@@ -95,7 +95,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: Run-metrics records map routing as policy, not as override
   - arch: Entity: DispatchRoutingStamp · Rule: DispatchRoutingStamp
   - files: hooks/metrics-log.sh, scripts/test-metrics.sh
-- [ ] **T3** [P] **P1** Replace the stale task/tier comment above `model_routing: {}` with the agent-keyed explanation and a commented `# extra_models: []` line, in both the consumer template and this repo's own overrides file.
+- [x] **T3** [P] **P1** Replace the stale task/tier comment above `model_routing: {}` with the agent-keyed explanation and a commented `# extra_models: []` line, in both the consumer template and this repo's own overrides file.
 
   The comment states:
   - the key is keyed by `agents/*.md` basename, in block or flow form;

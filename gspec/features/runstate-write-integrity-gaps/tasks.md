@@ -38,7 +38,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
 
-- [ ] **T2** **P0** Add the shared decoder fixture table and the round-trip contract to `scripts/test-runstate.sh`, asserting today's behaviour only, so T3 and T4 extend one table rather than each writing its own.
+- [x] **T2** **P0** Add the shared decoder fixture table and the round-trip contract to `scripts/test-runstate.sh`, asserting today's behaviour only, so T3 and T4 extend one table rather than each writing its own.
 
   - one fixture list of raw values — plain, `: `, an embedded `'`, a literal newline, a trailing `:`, a leading `-`, a backslash — each paired with its `_yaml_encode_value` output and its expected decode (newlines collapsed);
   - the contract asserted **directly**: decoding what `_yaml_encode_value` produced returns the collapsed original exactly, rather than being inferred from whichever caller happens to exercise it;

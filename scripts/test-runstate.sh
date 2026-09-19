@@ -1635,6 +1635,239 @@ assert_true "a dot in an id does not match a dash" \
   "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one --packets pkt-a >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two --packets pkt-a | grep -q '^ADDED=yes'"
 
 echo
+echo "== the decoder fixture table: one encoder, four read sites (gaps T2) =="
+# `set` and `add-finding` write through ONE encoder (_yaml_encode_value). The
+# read side is still FOUR hand-maintained decoders, and this table is what keeps
+# them in step until they are unified:
+#
+#   _yaml_decode_value    shell   single-quoted     `get`, `cursor`
+#   cmd_trim_note's awk   awk     single + double   the note's first line
+#   _findings_default     awk     single-quoted     `findings`
+#   _list_records' kv()   awk     double-quoted     `lanes`
+#
+# TODAY'S BEHAVIOUR ONLY, which is the whole scope of this case: each decoder
+# is driven over the quote shape ITS OWN caller actually produces -- not over
+# every shape, which would assert a property nothing has yet -- plus a legacy
+# BARE value, which all four must pass through untouched, since no consumer
+# repo migrates its run-state before its next run.
+#
+# THIS TABLE IS THE EXTENSION POINT. A later case adds a value by adding one
+# name to DECODER_CASES and one line to each of the three functions below; it
+# does not write a second table. The three are the RAW value, its EXPECTED
+# _yaml_encode_value output (written out LITERALLY -- an expectation derived by
+# re-running the encoder would agree with a broken encoder), and its EXPECTED
+# decode (the raw value with newlines collapsed to spaces).
+
+# rs_fn <helper> [arg...] -- call one of runstate.sh's INTERNAL helpers, in a
+# subshell, so the round-trip contract below can be asserted on the encoder and
+# decoder THEMSELVES rather than inferred from whichever subcommand happens to
+# exercise them. Sourced with $0 set to runstate.sh and the positional
+# parameters CLEARED: the dispatch at the bottom of that file reads $1, so a
+# leftover argument would be taken as a subcommand and `die` would kill the
+# subshell before the helper ran; with none it takes the help branch, whose
+# `sed -n ... "$0"` is why $0 has to be the script itself. runstate.sh's own
+# `set -euo pipefail` stays inside the subshell and never reaches this sweep.
+rs_fn() {
+  local fn="$1"; shift
+  RS_FN="$fn" bash -c '
+    args=("$@"); set --
+    . "$0" >/dev/null 2>&1
+    "$RS_FN" ${args[@]+"${args[@]}"}
+  ' "$RUNSTATE" "$@"
+}
+
+DECODER_CASES='plain colon quote newline colonend dashlead backslash'
+decoder_raw() {   # the raw value an agent hands `set` / `add-finding`
+  case "$1" in
+    plain)     printf '%s' 'an ordinary one-line value' ;;
+    colon)     printf '%s' 'guard.sh: fails closed on unreadable input' ;;
+    quote)     printf '%s' "it's got 'single' quotes" ;;
+    newline)   printf 'line one\nline two' ;;
+    colonend)  printf '%s' 'naive:' ;;
+    dashlead)  printf '%s' '- leading dash reads as a list item' ;;
+    backslash) printf '%s' 'windows path C:\nope needs \t no escaping' ;;
+  esac
+}
+decoder_enc() {   # what _yaml_encode_value must produce for it, spelled out
+  case "$1" in
+    plain)     printf '%s' "'an ordinary one-line value'" ;;
+    colon)     printf '%s' "'guard.sh: fails closed on unreadable input'" ;;
+    quote)     printf '%s' "'it''s got ''single'' quotes'" ;;
+    newline)   printf '%s' "'line one line two'" ;;
+    colonend)  printf '%s' "'naive:'" ;;
+    dashlead)  printf '%s' "'- leading dash reads as a list item'" ;;
+    backslash) printf '%s' "'windows path C:\nope needs \t no escaping'" ;;
+  esac
+}
+decoder_want() {  # what EVERY decoder must return: the raw value, newlines collapsed
+  case "$1" in
+    plain)     printf '%s' 'an ordinary one-line value' ;;
+    colon)     printf '%s' 'guard.sh: fails closed on unreadable input' ;;
+    quote)     printf '%s' "it's got 'single' quotes" ;;
+    newline)   printf '%s' 'line one line two' ;;
+    colonend)  printf '%s' 'naive:' ;;
+    dashlead)  printf '%s' '- leading dash reads as a list item' ;;
+    backslash) printf '%s' 'windows path C:\nope needs \t no escaping' ;;
+  esac
+}
+
+DT="$(mktemp -d)/.agents"; mkdir -p "$DT"
+for dc in $DECODER_CASES; do
+  DC_RAW="$(decoder_raw "$dc")"
+  DC_ENC_WANT="$(decoder_enc "$dc")"
+  DC_WANT="$(decoder_want "$dc")"
+  DC_ENC="$(rs_fn _yaml_encode_value "$DC_RAW")"
+  DC_DEC="$(rs_fn _yaml_decode_value "$DC_ENC")"
+
+  assert_true "table ($dc): _yaml_encode_value produces the encoding the table names" \
+    "[ \"\$DC_ENC\" = \"\$DC_ENC_WANT\" ]"
+  # THE CONTRACT, asserted directly on the two helpers rather than inferred
+  # from a caller: decoding what the encoder produced returns the collapsed
+  # original, exactly. Every read site below is a claim that its own decoder
+  # agrees with this one line.
+  assert_true "table ($dc): decoding what _yaml_encode_value produced returns the collapsed original" \
+    "[ \"\$DC_DEC\" = \"\$DC_WANT\" ]"
+
+  # --- site 1: _yaml_decode_value, via `get` and `cursor` (single-quoted) ----
+  DC_G="$DT/get-$dc.yaml"
+  printf 'before: 1\ntarget: %s\nbacklog:\n  cursor: %s\nafter: 1\n' "$DC_ENC" "$DC_ENC" > "$DC_G"
+  assert_true "table ($dc): the single-quoted get/cursor fixture is parseable YAML" \
+    "yamlok \"$DC_G\""
+  assert_true "table ($dc): get decodes the single-quoted shape to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" get \"$DC_G\" target)\" = \"\$DC_WANT\" ]"
+  assert_true "table ($dc): cursor decodes the single-quoted shape to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" cursor \"$DC_G\")\" = \"\$DC_WANT\" ]"
+  # A real YAML parse of the same bytes, so the expectation is anchored to what
+  # YAML itself says the fixture means -- not merely to what this file's own
+  # decoder happens to do with it.
+  assert_true "table ($dc): a real YAML parse of that fixture agrees with get" \
+    "yamlok \"$DC_G\" && [ \"\$(_yaml_value \"$DC_G\" target)\" = \"\$DC_WANT\" ]"
+
+  # --- site 2: _findings_default, via `findings` (single-quoted) -------------
+  DC_F="$DT/findings-$dc.yaml"
+  printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: %s\n    file: .agents/findings/f-1.md\n    packets: [pkt-1]\nstatus: running\n' \
+    "$DC_ENC" > "$DC_F"
+  assert_true "table ($dc): the single-quoted findings fixture is parseable YAML" \
+    "yamlok \"$DC_F\""
+  assert_true "table ($dc): findings decodes the single-quoted summary to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" findings \"$DC_F\" | cut -f2)\" = \"\$DC_WANT\" ]"
+
+  # --- site 3: cmd_trim_note's inline awk unwrap (BOTH quote shapes) ---------
+  # The unwrap only runs when the note overflows, so the bound is picked to make
+  # it fire AND to leave the value whole: the note line is `note: ` + the quoted
+  # value + a newline (at least len+9 bytes), while the block body keeps a first
+  # line of up to max-1 characters -- so max = len+2 trims for certain and cuts
+  # nothing off the value. Without the TRIMMED=yes assertion the whole case
+  # would pass VACUOUSLY on an untrimmed file, whose quoted note a YAML parser
+  # decodes correctly all by itself.
+  DC_MAX=$(( ${#DC_WANT} + 2 ))
+  DC_TS="$DT/trim-sq-$dc.yaml"
+  printf 'schema: 3\nnote: %s\nstatus: paused\n' "$DC_ENC" > "$DC_TS"
+  DC_TS_OUT="$("$RUNSTATE" trim-note "$DC_TS" "$DC_MAX")"
+  assert_true "table ($dc): trim-note really re-emitted the single-quoted note as a block" \
+    "case \"\$DC_TS_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_TS\""
+  assert_true "table ($dc): trim-note unwraps the single-quoted note to the collapsed original" \
+    "yamlok \"$DC_TS\" && [ \"\$(_yaml_value \"$DC_TS\" note | head -1)\" = \"\$DC_WANT\" ]"
+  # The legacy DOUBLE-quoted shape, which this file never writes but an older
+  # tool or a hand edit can leave behind. Today's unwrap strips the pair
+  # VERBATIM -- no escape processing -- which is why the fixture is built as
+  # `"` + the collapsed value + `"` and expects that value back unchanged, and
+  # why the pre-trim file is not itself parse-asserted: a backslash inside a
+  # real YAML double-quoted scalar means something else, and this case pins the
+  # unwrap as it behaves, not as YAML would read the same bytes. No table value
+  # carries a `"`, which this shape could not hold in the first place.
+  DC_TD="$DT/trim-dq-$dc.yaml"
+  printf 'schema: 3\nnote: "%s"\nstatus: paused\n' "$DC_WANT" > "$DC_TD"
+  DC_TD_OUT="$("$RUNSTATE" trim-note "$DC_TD" "$DC_MAX")"
+  assert_true "table ($dc): trim-note really re-emitted the double-quoted note as a block" \
+    "case \"\$DC_TD_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_TD\""
+  assert_true "table ($dc): trim-note unwraps the legacy double-quoted note to the collapsed original" \
+    "yamlok \"$DC_TD\" && [ \"\$(_yaml_value \"$DC_TD\" note | head -1)\" = \"\$DC_WANT\" ]"
+
+  # --- site 4: _list_records' kv(), via `lanes` (legacy double-quoted) -------
+  # Same verbatim-strip reading as the trim-note double-quoted case above, on
+  # the one read-only projection kept over a pre-retirement parallel run-state.
+  DC_L="$DT/lanes-$dc.yaml"
+  printf 'schema: 3\nlanes:\n  - id: pb\n    branch: "%s"\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
+    "$DC_WANT" > "$DC_L"
+  assert_true "table ($dc): lanes decodes the legacy double-quoted field to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_L\" | cut -f2)\" = \"\$DC_WANT\" ]"
+done
+
+# --- the legacy BARE value: all four sites must pass it through untouched ----
+# Nothing migrates a consumer repo's run-state before its next run, and an
+# unquoted plain scalar is what `write` still produces today, so the shape that
+# predates the encoder has to read back identically everywhere. One value,
+# carrying a backslash and spaces so a decoder that "helpfully" unescapes or
+# trims is caught; no `: ` and no wrapping quote, since a bare scalar could not
+# carry either in the first place.
+DC_BARE='a bare legacy value with a C:\path'
+DC_BG="$DT/bare-get.yaml"
+printf 'before: 1\ntarget: %s\nbacklog:\n  cursor: %s\nafter: 1\n' "$DC_BARE" "$DC_BARE" > "$DC_BG"
+assert_true "legacy bare value: the get/cursor fixture is parseable YAML" \
+  "yamlok \"$DC_BG\""
+assert_true "legacy bare value: get passes it through unchanged" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$DC_BG\" target)\" = \"\$DC_BARE\" ]"
+assert_true "legacy bare value: cursor passes it through unchanged" \
+  "[ \"\$(\"\$RUNSTATE\" cursor \"$DC_BG\")\" = \"\$DC_BARE\" ]"
+assert_true "legacy bare value: a real YAML parse agrees with get" \
+  "yamlok \"$DC_BG\" && [ \"\$(_yaml_value \"$DC_BG\" target)\" = \"\$DC_BARE\" ]"
+DC_BF="$DT/bare-findings.yaml"
+printf 'schema: 3\nfindings:\n  - id: old-1\n    summary: %s\n    file: .agents/findings/old-1.md\nstatus: running\n' \
+  "$DC_BARE" > "$DC_BF"
+assert_true "legacy bare value: the findings fixture is parseable YAML" \
+  "yamlok \"$DC_BF\""
+assert_true "legacy bare value: findings passes an unquoted summary through unchanged" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$DC_BF\" | cut -f2)\" = \"\$DC_BARE\" ]"
+DC_BT="$DT/bare-trim.yaml"
+DC_BMAX=$(( ${#DC_BARE} + 2 ))
+printf 'schema: 3\nnote: %s\nstatus: paused\n' "$DC_BARE" > "$DC_BT"
+DC_BT_OUT="$("$RUNSTATE" trim-note "$DC_BT" "$DC_BMAX")"
+assert_true "legacy bare value: trim-note really re-emitted the unquoted note as a block" \
+  "case \"\$DC_BT_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_BT\""
+assert_true "legacy bare value: trim-note passes an unquoted note through unchanged" \
+  "yamlok \"$DC_BT\" && [ \"\$(_yaml_value \"$DC_BT\" note | head -1)\" = \"\$DC_BARE\" ]"
+DC_BL="$DT/bare-lanes.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
+  "$DC_BARE" > "$DC_BL"
+assert_true "legacy bare value: lanes passes an unquoted field through unchanged" \
+  "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_BL\" | cut -f2)\" = \"\$DC_BARE\" ]"
+
+# --- and every site again with NEITHER jq NOR python3 on PATH ---------------
+# runstate.sh stays at hooks/guard.sh's dependency tier (stock Git Bash ships
+# neither), so the decoders have to hold there too -- a read path that quietly
+# returns something else where a tool is missing is the same defect class this
+# feature exists to remove. `bare`/`NOTOOLS` are the stubs established above,
+# and the scrub wraps ONLY the runstate.sh call, never the sweep's own parse
+# assertions. The `quote` case is the one used: its un-doubling is the step a
+# decoder is most likely to lose.
+DC_NT_ENC="$(decoder_enc quote)"
+DC_NT_WANT="$(decoder_want quote)"
+DC_NTG="$DT/notools-get.yaml"
+printf 'before: 1\ntarget: %s\nbacklog:\n  cursor: %s\nafter: 1\n' "$DC_NT_ENC" "$DC_NT_ENC" > "$DC_NTG"
+assert_true "no-tools host: get still decodes the single-quoted shape" \
+  "[ \"\$(bare get \"$DC_NTG\" target)\" = \"\$DC_NT_WANT\" ]"
+assert_true "no-tools host: cursor still decodes the single-quoted shape" \
+  "[ \"\$(bare cursor \"$DC_NTG\")\" = \"\$DC_NT_WANT\" ]"
+DC_NTF="$DT/notools-findings.yaml"
+printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: %s\n    packets: [pkt-1]\nstatus: running\n' \
+  "$DC_NT_ENC" > "$DC_NTF"
+assert_true "no-tools host: findings still decodes the single-quoted summary" \
+  "[ \"\$(bare findings \"$DC_NTF\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
+DC_NTT="$DT/notools-trim.yaml"
+printf 'schema: 3\nnote: %s\nstatus: paused\n' "$DC_NT_ENC" > "$DC_NTT"
+DC_NTT_OUT="$(bare trim-note "$DC_NTT" $(( ${#DC_NT_WANT} + 2 )))"
+assert_true "no-tools host: trim-note still re-emitted the note as a block" \
+  "case \"\$DC_NTT_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_NTT\""
+assert_true "no-tools host: trim-note still unwraps the single-quoted note" \
+  "yamlok \"$DC_NTT\" && [ \"\$(_yaml_value \"$DC_NTT\" note | head -1)\" = \"\$DC_NT_WANT\" ]"
+DC_NTL="$DT/notools-lanes.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: "%s"\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
+  "$DC_NT_WANT" > "$DC_NTL"
+assert_true "no-tools host: lanes still decodes the legacy double-quoted field" \
+  "[ \"\$(bare lanes \"$DC_NTL\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
+
+echo
 echo "== findings: packet-scoped and opt-in bodies (ADR 0024, T3/T4) =="
 FS="$(mktemp -d)/.agents"; mkdir -p "$FS"
 printf 'status: running\nfindings:\nnote: green\n' > "$FS/run-state.yaml"

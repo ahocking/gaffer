@@ -13,22 +13,27 @@ in the tree's status listing matches a reviewed-output pattern. That check —
 `_dirty_has_reviewed_output()` in `scripts/runstate.sh` (~:3208–3246) — ends in
 `| grep -E "$combined" >/dev/null`, and its exit status is the `elif` condition
 in `_reconcile_tree` (~:3283), reached only from `cmd_reconcile`, which
-`/gaffer:resume` runs. GNU grep detects a `/dev/null` standard output and stops
-at its first match exactly as `-q` does, so on a large dirty tree it exits while
-`git status`, `tr` and `sed` are still writing; under the file-wide `pipefail`
-setting the pipeline reports the signal, the function reads **false**, and
-reconcile picks **discard** over **escalate** for precisely the mixed tree —
-loop scratch plus reviewed output such as `.gspec/memory/pending/…` — the
-function exists to protect. The discard is a stash, so the loss is recoverable;
-that is what bounds the harm to a recoverable stash rather than data loss. The
-`-q` half is reproduced, the GNU `/dev/null` half is inferred from GNU grep's
-documented null-sink short-circuit: 20/20 misfires with `-q`, 0/20 with
-`>/dev/null`, on BSD grep and
-ugrep — which is to say the `/dev/null` form is inert on the host that observed
-it and live on Linux CI, Linux consumers and Git Bash on Windows. The comment
-inside the function (~:3232–3238) reasons "drop `-q`, redirect stdout" as the
-fix; that reasoning held only for non-GNU grep, and it must be rewritten, not
-deleted, or the next reader restores the hazard on its authority.
+`/gaffer:resume` runs. A pipe-fed `grep -q` stops at its first match, so on a
+large dirty tree it exits while `git status`, `tr` and `sed` are still writing;
+under the file-wide `pipefail` setting the pipeline reports the signal, the
+function reads **false**, and reconcile picks **discard** over **escalate** for
+precisely the mixed tree — loop scratch plus reviewed output such as
+`.gspec/memory/pending/…` — the function exists to protect. The discard is a
+stash, so the loss is recoverable; that is what bounds the harm to a
+recoverable stash rather than data loss. The `-q` half reproduces on every
+grep tested: 20/20 misfires (rc 141) on BSD grep, ugrep, and GNU grep 3.8 and
+3.11. The `>/dev/null` form that replaced it was **inferred** to short-circuit
+the same way under GNU grep, and that inference was **refuted by measurement
+on 2026-09-19** (T1's review): 0/20 misfires on GNU grep 3.8 and 3.11 against
+a 414 KB listing, with the pre-change check escalating 20/20 — GNU grep stops
+scanning on a null stdout but drains a non-seekable stdin before it exits, so
+the writer never takes SIGPIPE; only `-q` skips that drain. The redirect form
+is therefore inert on every grep in the toolchain, and it is still replaced:
+its correctness rests on an implementation courtesy no grep documents as a
+contract, and a redirect is one keystroke from `-q`. The comment inside the
+function (~:3232–3238) reasons "drop `-q`, redirect stdout" as the fix; it
+must be rewritten, not deleted, to state what was measured, or the next reader
+restores a pipe-fed grep on its authority.
 
 This is the one shape of the same reader-closes-the-pipe hazard that
 `next-state-reporting-integrity` closed elsewhere, and both of the guards that
@@ -49,9 +54,10 @@ used as a condition: the one live instance plus the detector that missed it.
 - **The resumed session obeying reconcile's decision** — reads one `DECISION=`
   and acts on it, with no second source to check it against. A wrong answer
   here is executed, not noticed.
-- **CI running under GNU grep** — the only host in the repository's own
-  toolchain where the pre-fix failure reproduces, and therefore the only place
-  a sweep case can show the fix doing anything.
+- **CI running under GNU grep** — the flavour the redirect form was assumed to
+  misfire on; measurement showed it does not, so the sweep case pins the
+  corrected form and is sharp against the `-q` shape rather than showing the
+  fix undo an observed GNU grep failure.
 - **A maintainer reading the guards' KNOWN BOUNDARY comments** — needs them to
   describe what the guards still miss, not a shape the guards now catch.
 
@@ -89,7 +95,7 @@ used as a condition: the one live instance plus the detector that missed it.
 
 ## Capabilities
 
-- [ ] **P0**: Reconcile's reviewed-output check reads its whole input before deciding
+- [x] **P0**: Reconcile's reviewed-output check reads its whole input before deciding
   - `_dirty_has_reviewed_output` in `scripts/runstate.sh` holds no pipeline
     whose reader can exit before its writers finish, so a dirty tree holding
     loop scratch plus at least one reviewed-output path yields `escalate` on
@@ -99,9 +105,10 @@ used as a condition: the one live instance plus the detector that missed it.
     does today, and `_reconcile_tree`'s `elif` and its surrounding branches
     are otherwise unchanged
   - the in-function comment is rewritten to state why `-q` is correct again
-    in the corrected form, that the `>/dev/null` form it replaced
-    short-circuits under GNU grep, and that the whole listing is held
-    deliberately — so a later reader neither restores the redirect nor
+    in the corrected form, what was measured about the `>/dev/null` form it
+    replaced (no misfire on GNU grep 3.8 or 3.11; only the pipe-fed `-q` form
+    misfires) and why it is replaced anyway, and that the whole listing is
+    held deliberately — so a later reader neither restores the redirect nor
     "optimises" the corrected form back into a pipe-fed grep
 
 - [ ] **P1**: Both source guards flag a stdout-to-`/dev/null` or `q`-after-pattern grep condition as they flag `-q`
@@ -120,16 +127,21 @@ used as a condition: the one live instance plus the detector that missed it.
     trailing comment, a pipeline split across a `\`-continuation, and any
     shape excluded by the Deferred Decision below
 
-- [ ] **P1**: A reconcile sweep case reproduces the misfire under GNU grep and pins the fix
+- [x] **P1**: A reconcile sweep case pins the corrected reviewed-output check against the reader-closes-the-pipe misfire
   - the fixture is a dirty tree with one reviewed-output path and enough
     untracked leaf files that the status listing exceeds any pipe buffer by a
     wide margin, and the case asserts `escalate` **by name** over a repeat
     loop — an assertion that the decision merely differs from `discard` passes
     on several wrong answers
-  - the case is run against the pre-change code under GNU grep and observed to
-    fail, and its comment records that observation, the host it was made on,
-    and that a green run on a BSD/ugrep host does not certify the fix — a probe
-    that cannot reproduce the failure eliminates nothing, in either direction
+  - the case is run against the pre-change code under GNU grep and its result
+    recorded — measured 2026-09-19 on GNU grep 3.8 and 3.11: the pre-change
+    `>/dev/null` form did **not** misfire (0/20, `escalate` 20/20 on a 414 KB
+    listing) while the pipe-fed `-q` form misfired 20/20 (rc 141) — and its
+    comment records that observation, the hosts it was made on, that the case
+    is sharp against the `-q` shape, and that a green run on any host
+    certifies only that the here-string form holds, never that the redirect
+    form failed — a probe that cannot reproduce a failure eliminates nothing,
+    in either direction
 
 ## Dependencies
 
@@ -159,13 +171,15 @@ used as a condition: the one live instance plus the detector that missed it.
   unrecognised one; the reviewer remains the gate there.
 - Assumption: a GNU grep host is reachable at implementation time — CI or a
   local GNU grep — for the pre-change observation the sweep case requires;
-  without one the case's comment must say the failure was not observed.
+  without one the case's comment must say the result was not observed.
+  Resolved 2026-09-19: observed in Linux containers during T1's review, and
+  the result was negative for the redirect form (see P1).
 
 ## Success Metrics
 
 - Reconcile on a mixed tree holding reviewed output returns `escalate` on every
   invocation under GNU grep — checkable by repeated invocation against a
-  fixture large enough to reproduce the pre-fix failure.
+  fixture whose status listing exceeds any pipe buffer by a wide margin.
 - Both guards flag every planted instance of every named shape and zero
   instances on the real files — checkable by running the two sweeps.
 - No reviewed-output path is ever swept into a discard stash by the recovery

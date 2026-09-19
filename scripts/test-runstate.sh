@@ -430,24 +430,61 @@ assert_true "escalate: reviewed output mixed with ordinary scratch" \
 rm -rf "$REPO/.gspec" "$REPO/scratch-mixed.txt"
 assert_true "clean again after removing the mixed tree" "[ \"\$(decision)\" = clean ]"
 
-# Large dirty tree: `grep -q` under `set -euo pipefail` exits on its first match
-# and closes the pipe, so `git status`/`sed` -- still writing -- take SIGPIPE and
-# the whole pipeline reports 141, which the old helper read as "no match" and
-# silently fell back to `discard`. `.gspec/...` sorts to the FRONT of `git status`
-# output, so a small tree could never expose this; 1600 ordinary scratch files
-# (well past the reproduced failure threshold) is what forces the producers to
-# still be writing when the match is found.
+# Large dirty tree: the reviewed-output check must read its WHOLE input before it
+# decides. Any reader that can stop at the first match leaves `git status`/`sed`
+# -- still writing on a big tree -- taking SIGPIPE (rc 141), and under
+# `set -euo pipefail` the helper reads that as "no match" and silently falls back
+# to `discard`, stashing unreviewed work away. `grep -q` did it
+# (thin-loop-driver-gaps T3); the `>/dev/null` written to replace it was assumed
+# to do the same under GNU grep and, measured, does not (below). `.gspec/...`
+# sorts to the FRONT of `git status` output, so the match is found while
+# thousands of lines are still unwritten; a small tree could never expose the
+# `-q` form.
+#
+# The fixture is sized so the listing is FAR past any pipe buffer (5000 padded
+# leaf paths, ~400 KB, against a Linux default of 64 KB and a macOS pipe that
+# starts at 16 KB and grows to 64 KB -- an order of magnitude either way)
+# and the decision is asserted to be `escalate` BY NAME on every pass of a repeat
+# loop -- never merely "not discard", which several wrong answers would satisfy.
+# The repeat matters because this failure is load- and timing-dependent: one
+# green pass is not evidence.
+#
+# WHAT WAS OBSERVED, AND ON WHAT (grep-devnull-condition T1 review, 2026-09-19):
+# the pre-change helper -- the pipe-fed `grep -E ... >/dev/null` form -- was run
+# against this exact fixture (13 reviewed-output files + 5000 padded leaves, a
+# 414,482-byte listing) in Linux aarch64 containers with GNU grep 3.8 (node:22,
+# bookworm) and GNU grep 3.11 (ubuntu:24.04, CI's flavour), bash 5.2, git
+# 2.39.5, 20 iterations each: it did NOT fail -- 0/20 nonzero pipeline status,
+# `reconcile` = escalate 20/20 -- and this case passed 10/10 against it. The
+# same probe with `grep -qE` failed 20/20 (rc 141) on GNU grep 3.8, 3.11, BSD
+# grep 2.6.0 and ugrep 7.8.4 alike. So the mechanism this case guards is real
+# and the case is sharp against it, but the redirect form never exhibited it:
+# GNU grep drains a non-seekable stdin before exiting on a null stdout, so the
+# writer never takes SIGPIPE. A GREEN RUN OF THIS CASE, ON ANY HOST, CERTIFIES
+# THAT THE HERE-STRING FORM HOLDS -- NOT THAT THE FORM IT REPLACED EVER FAILED.
+# An earlier draft of this comment, written on a macOS host with no GNU grep
+# reachable, inferred the GNU misfire from documentation; an inference from
+# documentation is not an observation either.
 mkdir -p "$REPO/.gspec/memory/pending/some-agent"
 for i in $(seq 1 13); do
   printf 'memory %s\n' "$i" > "$REPO/.gspec/memory/pending/some-agent/mem-$i.md"
 done
-for i in $(seq 1 1600); do
-  printf 'x' > "$REPO/scratch-large-$i.txt"
+# One directory so cleanup is a single `rm -rf`; `--untracked-files=all` still
+# lists every leaf inside it, which is the whole point of the fixture.
+mkdir -p "$REPO/scratch-large"
+for i in $(seq 1 5000); do
+  printf 'x' > "$REPO/scratch-large/f-$i-padded-so-the-status-listing-far-exceeds-a-pipe-buffer.txt"
 done
-assert_true "escalate: reviewed output survives a large dirty tree (SIGPIPE-under-pipefail)" \
-  "[ \"\$(decision)\" = escalate ]"
-rm -rf "$REPO/.gspec"
-for i in $(seq 1 1600); do rm -f "$REPO/scratch-large-$i.txt"; done
+large_tree_escalates() {
+  local n
+  for n in $(seq 1 10); do
+    [ "$(decision)" = escalate ] || return 1
+  done
+  return 0
+}
+assert_true "escalate: reviewed output survives a large dirty tree, 10 consecutive passes" \
+  "large_tree_escalates"
+rm -rf "$REPO/.gspec" "$REPO/scratch-large"
 assert_true "clean again after removing the large dirty tree" "[ \"\$(decision)\" = clean ]"
 
 # A reviewed-output filename containing a space and a non-ASCII byte: `git status

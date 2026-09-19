@@ -3605,7 +3605,7 @@ RECONCILE_REVIEWED_OUTPUT_PATTERNS=(
 # new path. Deliberately ANY, not ALL: a tree mixing ordinary scratch with
 # reviewed output must still escalate, since a stash would sweep both together.
 _dirty_has_reviewed_output() {
-  local wt="$1" combined="" pat extra
+  local wt="$1" combined="" pat extra listing
   for pat in "${RECONCILE_REVIEWED_OUTPUT_PATTERNS[@]}"; do
     [ -n "$pat" ] || continue
     combined="${combined:+$combined|}($pat)"
@@ -3622,26 +3622,52 @@ _dirty_has_reviewed_output() {
   # untracked DIRECTORY to one line (`?? .gspec/`), which can never match a
   # pattern anchored on a file under it -- this must see every leaf path.
   #
-  # -z (NUL-delimited, never quoted) instead of the default porcelain form,
-  # and NO `-q` on grep (thin-loop-driver-gaps T3 review): under
-  # `set -euo pipefail`, `grep -q` exits the instant it finds a match and
-  # closes the pipe, so `git status`/`sed` -- still writing on a large dirty
-  # tree -- take SIGPIPE and the whole pipeline reports 141, which this
-  # function then read as "no match" and silently fell back to `discard`. This
-  # is the exact SIGPIPE-under-pipefail shape already fixed at three other call
-  # sites in this file (see the `trim-note` history). Draining grep's input
-  # (no `-q`, redirect stdout instead) lets the producers finish writing.
-  # `-z` also sidesteps `git status --porcelain`'s C-quoting of paths with a
-  # space or a non-ASCII byte -- quoted, the leading `"` would never match a
-  # pattern anchored on `^` or `/` -- at the cost of losing the `old -> new`
-  # rename separator, which `-z` never emits anyway (a rename is two separate
+  # -z (NUL-delimited, never quoted) instead of the default porcelain form, to
+  # sidestep `git status --porcelain`'s C-quoting of paths with a space or a
+  # non-ASCII byte -- quoted, the leading `"` would never match a pattern
+  # anchored on `^` or `/` -- at the cost of losing the `old -> new` rename
+  # separator, which `-z` never emits anyway (a rename is two separate
   # NUL-terminated fields, old path then new path; the old path's first three
   # bytes get stripped by the same `^.{3}` rule, which is harmless since
   # matching is ANY and the new path is judged correctly).
-  git -C "$wt" status --porcelain --untracked-files=all -z \
+  #
+  # THE LISTING IS CAPTURED FIRST, AND grep READS IT FROM A HERE-STRING -- grep
+  # is deliberately NOT the reader of a pipe (grep-devnull-condition T1). Under
+  # `set -euo pipefail`, a reader that stops early closes the pipe, `git
+  # status`/`sed` -- still writing on a large dirty tree -- take SIGPIPE, the
+  # pipeline reports 141, and this function reads that as "no match" and falls
+  # back to `discard`, stashing unreviewed work away. `grep -q` did exactly
+  # that (thin-loop-driver-gaps T3), and the `grep -E ... >/dev/null` written
+  # to replace it was assumed to do the same under GNU grep. MEASURED, IT DOES
+  # NOT (grep-devnull-condition T1 review, 2026-09-19; Linux aarch64
+  # containers, GNU grep 3.8 and 3.11, bash 5.2, a 414 KB listing, 20 runs
+  # each): the redirect form misfired 0/20 and the pre-change function
+  # escalated 20/20, while the pipe-fed `-q` form misfired 20/20 with rc 141.
+  # GNU grep stops SCANNING on a null stdout but drains a non-seekable stdin
+  # before it exits, so the writer never takes SIGPIPE; only `-q` skips that
+  # drain. The redirect is replaced anyway: its safety rests on an
+  # undocumented courtesy of one implementation, and it is one keystroke from
+  # `-q`. Same SIGPIPE-under-pipefail shape as the `trim-note` history
+  # elsewhere in this file.
+  #
+  # With no pipe feeding grep there is nothing left to take SIGPIPE, so `-q` is
+  # correct again here and is the right thing to write: the producers have
+  # already finished (the command substitution waits for them, and pipefail
+  # still reports a `git status` failure through `|| return 1`, which keeps the
+  # never-fails, reads-false contract), and grep's only input is a here-string
+  # the shell has already materialised. So DO NOT restore the `>/dev/null`
+  # redirect, and DO NOT "simplify" this back into `git status | ... | grep`:
+  # the pipe-fed form is the hazard, and `-q` on it re-arms the bug on every
+  # grep tested.
+  #
+  # Holding the whole listing in one variable is the deliberate cost of that.
+  # A dirty tree big enough to matter here is a few hundred KB of paths (the
+  # sweep's fixture is ~400 KB), which is nothing against correctness on the
+  # one decision that can sweep away work a human has not reviewed.
+  listing="$(git -C "$wt" status --porcelain --untracked-files=all -z \
     | tr '\0' '\n' \
-    | sed -E 's/^.{3}//' \
-    | grep -E "$combined" >/dev/null
+    | sed -E 's/^.{3}//')" || return 1
+  grep -qE "$combined" <<<"$listing"
 }
 
 # The crash-recovery decision table for ONE tree/branch, factored out from

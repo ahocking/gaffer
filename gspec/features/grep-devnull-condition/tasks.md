@@ -5,15 +5,15 @@ feature: grep-devnull-condition
 
 # Plan: grep-devnull-condition
 
-**The fix and the sweep case that reproduces the bug land together, first. The wider guard lands second.** T1 changes `_dirty_has_reviewed_output` in `scripts/runstate.sh` so no reader can close the pipe before its writers finish. In the same packet it adds a repeat-loop reconcile case to `scripts/test-runstate.sh`. T2 widens `PIPE_GREP_Q_RE` in both sweeps, adds the self-proof checks for each new shape, and rewrites both KNOWN BOUNDARY comments.
+**The fix and the sweep case that pins it land together, first. The wider guard lands second.** T1 changes `_dirty_has_reviewed_output` in `scripts/runstate.sh` so no reader can close the pipe before its writers finish. In the same packet it adds a repeat-loop reconcile case to `scripts/test-runstate.sh`. T2 widens `PIPE_GREP_Q_RE` in both sweeps, adds the self-proof checks for each new shape, and rewrites both KNOWN BOUNDARY comments.
 
-**The case and the fix share one packet because either order alone leaves CI red.** CI runs on `ubuntu-latest`, which has GNU grep. The new case fails there against the old code, and that failure is the evidence the PRD asks for. If the case landed first, CI would stay red on develop until the fix landed. So T1 writes the case, runs it against the old code under GNU grep and records the failure in the case's comment, then applies the fix. It commits only when green.
+**The case and the fix share one packet.** CI runs on `ubuntu-latest`, which has GNU grep. The case was expected to fail there against the old code; measured during T1's review (2026-09-19, GNU grep 3.8 and 3.11, 414 KB listing, 20 runs each) it does not — the `>/dev/null` form never misfired and the pre-change check escalated 20/20, while only the pipe-fed `-q` form misfired (20/20, rc 141). So T1 writes the case, runs it against the old code under GNU grep and records the result, negative included, in the case's comment, then applies the fix. It commits only when green.
 
 **The guard comes after the fix, never before.** The wider guard in `scripts/test-runstate.sh` scans `scripts/runstate.sh`. Today that file still holds `| grep -E "$combined" >/dev/null` (`_dirty_has_reviewed_output`, ~:3644). This is its only stdout-to-`/dev/null` grep. `scripts/gspec-backlog.sh` has none. A guard that landed first would be red on a known instance, which the PRD rules out.
 
 **Both copies of the regex change in one packet.** `PIPE_GREP_Q_RE` must be byte-identical in the two sweeps after the change. Splitting the edit would leave a commit where the two copies differ.
 
-**Deferred decision, settled here: a redirect to any path other than `/dev/null` is not matched.** GNU grep stops at the first match only when stdout is the null device. Output to a regular file does not do that, so flagging it would be a false positive the exception list would then have to carry. The other deferred choice is left to T1's implementer: hold the listing in a captured value tested from a here-string, or fold an emptiness test into the writer. It has one constraint: whatever form T1 picks must not match T2's wider shape.
+**Deferred decision, settled here: a redirect to any path other than `/dev/null` is not matched.** The null-stdout shape is flagged because it is one keystroke from `-q` and its measured safety on GNU grep rests on grep draining its stdin before exit, an implementation courtesy rather than a documented contract. Output to a regular file has no such association, so flagging it would be a false positive the exception list would then have to carry. The other deferred choice is left to T1's implementer: hold the listing in a captured value tested from a here-string, or fold an emptiness test into the writer. It has one constraint: whatever form T1 picks must not match T2's wider shape.
 
 **No CI change is needed.** `.github/workflows/ci.yml` already runs both sweeps by name, on GNU grep.
 
@@ -36,20 +36,20 @@ Every regression sweep must pass after every task.
   - keeps its never-fails contract and its true/false meaning: a tree with no reviewed-output path reads false, and a tree that cannot be listed reads as it does today;
   - leaves `_reconcile_tree`'s `elif` and the branches around it unchanged;
   - contains no pipe-fed grep, whether with `-q` or with a `/dev/null` stdout;
-  - carries a rewritten comment (~:3621–3640), not a deleted one. It says why `-q` is correct again in the new form, that the `>/dev/null` form it replaces stops at the first match under GNU grep, and that holding the whole listing in memory is deliberate. That way no later reader restores the redirect or turns the new form back into a pipe-fed grep.
+  - carries a rewritten comment (~:3621–3640), not a deleted one. It says why `-q` is correct again in the new form, what was measured about the `>/dev/null` form it replaces (no misfire on GNU grep 3.8 or 3.11; only the pipe-fed `-q` form misfires) and why it is replaced anyway, and that holding the whole listing in memory is deliberate. That way no later reader restores the redirect or turns the new form back into a pipe-fed grep.
 
   The sweep case:
   - builds a dirty tree with one reviewed-output path plus enough untracked leaf files that the status listing is far larger than any pipe buffer;
   - asserts `[ "$(decision)" = escalate ]` on every pass of a repeat loop. It never asserts only that the decision differs from `discard`, because several wrong answers would pass that.
 
-  Before applying the fix, run the case against the old code under GNU grep (CI, or a GNU grep first on PATH) and watch it fail. The case's comment records:
+  Before applying the fix, run the case against the old code under GNU grep (CI, or a GNU grep first on PATH) and record what happens, a negative result included. The case's comment records:
   - that observation;
   - the host it was made on;
-  - that a green run on a BSD grep or ugrep host does not certify the fix.
+  - that a green run certifies only that the corrected form holds, not that the form it replaced ever failed.
 
-  If no GNU grep host was reachable, the comment says the failure was not observed.
+  If no GNU grep host was reachable, the comment says the result was not observed.
   - deps: —
-  - covers: Reconcile's reviewed-output check reads its whole input before deciding · A reconcile sweep case reproduces the misfire under GNU grep and pins the fix
+  - covers: Reconcile's reviewed-output check reads its whole input before deciding · A reconcile sweep case pins the corrected reviewed-output check against the reader-closes-the-pipe misfire
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
 - [ ] **T2** **P1** Widen `PIPE_GREP_Q_RE` in `scripts/test-runstate.sh` and `scripts/test-gspec-backlog.sh`, byte-identical in both, so it flags a pipe-fed grep whose stdout goes to `/dev/null` and a pipe-fed grep with a `q`-bearing option after its pattern. Add one self-proof check per new shape to each guard, and rewrite both KNOWN BOUNDARY comments.

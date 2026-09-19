@@ -3636,13 +3636,19 @@ _dirty_has_reviewed_output() {
   # `set -euo pipefail`, a reader that stops early closes the pipe, `git
   # status`/`sed` -- still writing on a large dirty tree -- take SIGPIPE, the
   # pipeline reports 141, and this function reads that as "no match" and falls
-  # back to `discard`, stashing unreviewed work away. Two forms have now done
-  # exactly that: `grep -q` (thin-loop-driver-gaps T3), and the
-  # `grep -E ... >/dev/null` written to replace it -- GNU grep optimises a
-  # stdout of /dev/null into the same early exit as `-q` and stops at the FIRST
-  # match, so redirecting the output was never a fix, only a fix on the
-  # flavours that lack that optimisation. Same SIGPIPE-under-pipefail shape as
-  # the `trim-note` history elsewhere in this file.
+  # back to `discard`, stashing unreviewed work away. `grep -q` did exactly
+  # that (thin-loop-driver-gaps T3), and the `grep -E ... >/dev/null` written
+  # to replace it was assumed to do the same under GNU grep. MEASURED, IT DOES
+  # NOT (grep-devnull-condition T1 review, 2026-09-19; Linux aarch64
+  # containers, GNU grep 3.8 and 3.11, bash 5.2, a 414 KB listing, 20 runs
+  # each): the redirect form misfired 0/20 and the pre-change function
+  # escalated 20/20, while the pipe-fed `-q` form misfired 20/20 with rc 141.
+  # GNU grep stops SCANNING on a null stdout but drains a non-seekable stdin
+  # before it exits, so the writer never takes SIGPIPE; only `-q` skips that
+  # drain. The redirect is replaced anyway: its safety rests on an
+  # undocumented courtesy of one implementation, and it is one keystroke from
+  # `-q`. Same SIGPIPE-under-pipefail shape as the `trim-note` history
+  # elsewhere in this file.
   #
   # With no pipe feeding grep there is nothing left to take SIGPIPE, so `-q` is
   # correct again here and is the right thing to write: the producers have
@@ -3651,7 +3657,8 @@ _dirty_has_reviewed_output() {
   # never-fails, reads-false contract), and grep's only input is a here-string
   # the shell has already materialised. So DO NOT restore the `>/dev/null`
   # redirect, and DO NOT "simplify" this back into `git status | ... | grep`:
-  # either one re-arms the bug on GNU grep.
+  # the pipe-fed form is the hazard, and `-q` on it re-arms the bug on every
+  # grep tested.
   #
   # Holding the whole listing in one variable is the deliberate cost of that.
   # A dirty tree big enough to matter here is a few hundred KB of paths (the

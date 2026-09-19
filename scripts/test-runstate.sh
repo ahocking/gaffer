@@ -434,12 +434,12 @@ assert_true "clean again after removing the mixed tree" "[ \"\$(decision)\" = cl
 # decides. Any reader that can stop at the first match leaves `git status`/`sed`
 # -- still writing on a big tree -- taking SIGPIPE (rc 141), and under
 # `set -euo pipefail` the helper reads that as "no match" and silently falls back
-# to `discard`, stashing unreviewed work away. Two forms have now done it:
-# `grep -q` (thin-loop-driver-gaps T3), and the `>/dev/null` written to replace
-# it -- GNU grep treats a stdout of /dev/null as `-q` and short-circuits just the
-# same (grep-devnull-condition T1). `.gspec/...` sorts to the FRONT of `git
-# status` output, so the match is found while thousands of lines are still
-# unwritten; a small tree could never expose either form.
+# to `discard`, stashing unreviewed work away. `grep -q` did it
+# (thin-loop-driver-gaps T3); the `>/dev/null` written to replace it was assumed
+# to do the same under GNU grep and, measured, does not (below). `.gspec/...`
+# sorts to the FRONT of `git status` output, so the match is found while
+# thousands of lines are still unwritten; a small tree could never expose the
+# `-q` form.
 #
 # The fixture is sized so the listing is FAR past any pipe buffer (5000 padded
 # leaf paths, ~400 KB, against the 64 KB buffer Linux and macOS both default to)
@@ -448,19 +448,22 @@ assert_true "clean again after removing the mixed tree" "[ \"\$(decision)\" = cl
 # The repeat matters because this failure is load- and timing-dependent: one
 # green pass is not evidence.
 #
-# WHAT WAS OBSERVED, AND ON WHAT: the pre-change helper was NOT seen to fail
-# under a real GNU grep, because no GNU grep host was reachable from the machine
-# this was written on -- macOS 25.6.0 (arm64), where `grep` on PATH is ugrep
-# 7.8.4, `/usr/bin/grep` is BSD grep 2.6.0-FreeBSD, no `ggrep` is installed and
-# the local docker daemon was down. What WAS observed there, against the
-# pre-change helper: with the `>/dev/null` replaced by the `-q` that GNU grep's
-# /dev/null optimisation is documented to apply -- an emulation of the mechanism,
-# not a reproduction under GNU grep -- this case failed (decision `discard`) and
-# the unpatched pre-change helper passed. So the emulation confirms the SHAPE and
-# confirms this case is sharp enough to catch it; it eliminates nothing about GNU
-# grep itself in either direction. A GREEN RUN OF THIS CASE ON A BSD-grep OR
-# UGREP HOST DOES NOT CERTIFY THE FIX -- only CI, or a host with GNU grep first
-# on PATH, exercises the flavour the bug needs.
+# WHAT WAS OBSERVED, AND ON WHAT (grep-devnull-condition T1 review, 2026-09-19):
+# the pre-change helper -- the pipe-fed `grep -E ... >/dev/null` form -- was run
+# against this exact fixture (13 reviewed-output files + 5000 padded leaves, a
+# 414,482-byte listing) in Linux aarch64 containers with GNU grep 3.8 (node:22,
+# bookworm) and GNU grep 3.11 (ubuntu:24.04, CI's flavour), bash 5.2, git
+# 2.39.5, 20 iterations each: it did NOT fail -- 0/20 nonzero pipeline status,
+# `reconcile` = escalate 20/20 -- and this case passed 10/10 against it. The
+# same probe with `grep -qE` failed 20/20 (rc 141) on GNU grep 3.8, 3.11, BSD
+# grep 2.6.0 and ugrep 7.8.4 alike. So the mechanism this case guards is real
+# and the case is sharp against it, but the redirect form never exhibited it:
+# GNU grep drains a non-seekable stdin before exiting on a null stdout, so the
+# writer never takes SIGPIPE. A GREEN RUN OF THIS CASE, ON ANY HOST, CERTIFIES
+# THAT THE HERE-STRING FORM HOLDS -- NOT THAT THE FORM IT REPLACED EVER FAILED.
+# An earlier draft of this comment, written on a macOS host with no GNU grep
+# reachable, inferred the GNU misfire from documentation; an inference from
+# documentation is not an observation either.
 mkdir -p "$REPO/.gspec/memory/pending/some-agent"
 for i in $(seq 1 13); do
   printf 'memory %s\n' "$i" > "$REPO/.gspec/memory/pending/some-agent/mem-$i.md"

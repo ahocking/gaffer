@@ -253,6 +253,19 @@ re-read this file per packet.
   everything else pending), atomically:
   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh write .agents/run-state.yaml`.
 
+  **When this write replaces a `done` checkpoint, carry every `findings:`
+  index entry into the new content verbatim, and carry nothing else.** It is
+  the same consequence §3.6's packet-close write states, at the write where
+  the file being replaced belongs to a *different* run: `write` REPLACES the
+  file, so an omitted entry is unlinked, not edited out — the body stays on
+  disk with nothing left pointing at it. Carry the index **inside this one
+  `write`**, never as a follow-up `add-finding` or a repair afterwards: a
+  checkpoint that exists for any interval without the index is an interval
+  in which a crash loses it. Everything else comes from the new backlog —
+  `cursor`, `pending`, `branch`, `last_green_commit` and `note` — and write
+  **no `run_id` line**, so the `begin-run` below mints this run its own id
+  rather than inheriting the finished run's directory and records.
+
 **Mark the run live, begin it, and claim the driver.**
 
 ```

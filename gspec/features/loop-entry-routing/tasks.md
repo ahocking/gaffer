@@ -42,7 +42,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: The run entry point routes on the checkpoint's lifecycle status, not on the file's existence · A status the entry point does not recognise stops the run rather than taking either branch · The routing condition and the carry-through clause each have a case in the sweep that owns this surface, and neither can pass vacuously
   - arch: —
   - files: skills/run-loop/SKILL.md, scripts/test-report-conventions.sh
-- [ ] **T2** **P0** In `skills/run-loop/SKILL.md` §2's fresh-run write, state the carry-through: when it replaces a `done` checkpoint, carry every `findings:` index entry into the new content verbatim, and carry nothing else. Add the sweep case that pins this clause to `scripts/test-report-conventions.sh`.
+- [x] **T2** **P0** In `skills/run-loop/SKILL.md` §2's fresh-run write, state the carry-through: when it replaces a `done` checkpoint, carry every `findings:` index entry into the new content verbatim, and carry nothing else. Add the sweep case that pins this clause to `scripts/test-report-conventions.sh`.
 
   The clause:
   - carries the index within the one `runstate.sh write` itself, never as a follow-up `add-finding` or repair. It names the consequence the packet-close write already states: `write` REPLACES the file, so an omitted entry is unlinked, not edited out;

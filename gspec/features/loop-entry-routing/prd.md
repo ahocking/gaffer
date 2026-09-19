@@ -117,7 +117,7 @@ loop's entry routing.
     mark, since the mark is set before this decision is reached and a stop that
     leaves it set leaves the session unable to edit
 
-- [ ] **P0**: A fresh run started over a completed checkpoint carries the findings index through, and nothing else
+- [x] **P0**: A fresh run started over a completed checkpoint carries the findings index through, and nothing else
   - the instruction for the fresh-run write states that every findings index
     entry in the file being replaced is carried into the new content verbatim —
     the same consequence the packet-close write already states, at the write
@@ -130,7 +130,7 @@ loop's entry routing.
     checkpoint that exists for any interval without the index is an interval in
     which a crash loses it
 
-- [ ] **P0**: The routing condition and the carry-through clause each have a case in the sweep that owns this surface, and neither can pass vacuously
+- [x] **P0**: The routing condition and the carry-through clause each have a case in the sweep that owns this surface, and neither can pass vacuously
   - the sweep that already asserts prose properties of both entry-point skills
     gains a case extracting the routing instruction by content anchor and
     asserting the extracted span is non-empty before scanning it, as its

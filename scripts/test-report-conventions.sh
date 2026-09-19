@@ -307,6 +307,49 @@ has 'a completed run is named in the condition' \
 has 'and takes the fresh-run branch in this same section, with no redirect' \
   'fresh-run bullet directly below' "$routing_bullet"
 
+printf '\n== the fresh-run write carries the findings index and nothing else (loop-entry-routing T2) ==\n'
+# The `done` branch above routes a session opening over a completed run into §2's
+# fresh-run write, so that write now replaces a checkpoint belonging to a DIFFERENT
+# run. `runstate.sh write` REPLACES the file, so an index entry the new content omits
+# is unlinked -- the finding body stays on disk with nothing pointing at it. The
+# clause states the carry-through, and states that nothing else crosses: the run's own
+# identity in particular, or `begin-run` would inherit the finished run's directory.
+#
+# Extracted by its own content anchor and guarded non-empty before anything is scanned
+# over it, as the extractions above are: a range matching nothing yields an empty span
+# that satisfies every scan. Removing the clause is exactly what empties this range --
+# the mutation check, verified by making that removal. Both anchors sit on ONE wrapped
+# line of the paragraph; an end anchor spanning a line wrap matches nothing and the
+# range runs on to swallow the rest of the file, which is the vacuous pass the
+# non-empty guard alone cannot catch.
+_extract_fresh_run_write() { # file -> §2's fresh-run findings carry-through clause
+  sed -n "/When this write replaces a/,/inheriting the finished run's directory and records/p" "$1"
+}
+fresh_run_write="$(_extract_fresh_run_write "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$fresh_run_write" ] && ok 'run-loop fresh-run carry-through clause extracted (anchor holds)' \
+  || bad 'run-loop fresh-run carry-through clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the carry-through clause is gone'
+
+has 'the clause fires on a write that replaces a completed checkpoint' \
+  '`done` checkpoint' "$fresh_run_write"
+has 'what crosses is the findings index' \
+  '`findings:`' "$fresh_run_write"
+has 'and it crosses verbatim' \
+  'verbatim' "$fresh_run_write"
+# Needles stay short enough to sit on ONE wrapped line of the paragraph: `has` is a
+# plain substring match over the multi-line span, so a phrase broken by a wrap (and
+# its two leading indent spaces) matches nothing and fails a clause that is present.
+has 'the write is stated to replace, not edit' \
+  'REPLACES' "$fresh_run_write"
+has 'so an omitted entry is a loss, not a removal' \
+  'unlinked, not edited out' "$fresh_run_write"
+has 'the carry happens inside the write, not as a follow-up repair' \
+  'add-finding' "$fresh_run_write"
+has "the run's own identity is explicitly not carried" \
+  'no `run_id` line' "$fresh_run_write"
+has 'so the run beginning mints its own id rather than inheriting one' \
+  'begin-run' "$fresh_run_write"
+
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
 # hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never

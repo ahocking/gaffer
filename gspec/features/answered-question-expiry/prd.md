@@ -65,7 +65,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
   - entries already in the list are carried through with their `asked_at`
     unchanged
 
-- [ ] **P0**: A core subcommand prunes answered entries from `pending_questions`
+- [x] **P0**: A core subcommand prunes answered entries from `pending_questions`
   - an entry is dropped when its `packet` has a start, continuation or
     `abandoned` record whose `_rs_ts_key` is strictly later than its
     `asked_at`. This is the parent's liveness rule, unchanged. A tie or a
@@ -94,7 +94,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
   - the 🔀 definition in `templates/report-templates.md` names the
     retry-past-limit stop as a counted decision
 
-- [ ] **P0**: The prune and the new count are pinned by core sweep cases
+- [x] **P0**: The prune and the new count are pinned by core sweep cases
   - `scripts/test-runstate.sh` has one prune case per answering kind (start,
     continuation, `abandoned`), each dropping the entry. It also has cases
     keeping an unanswered entry, a tied entry, an entry with no `packet:` and

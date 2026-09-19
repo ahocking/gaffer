@@ -2991,6 +2991,206 @@ assert_true "run-tally liveness: one packet with a live ask-operator question AN
   "[ \"\$(lv_decisions \"\${LV_Q}\${LV_RETRY_STOP}\" '')\" = 2 ]"
 
 echo
+echo "== prune-questions: drops pending_questions entries the SAME liveness rule"
+echo "   reports as answered (answered-question-expiry T2) =="
+
+# pq_entry <id> <packet> <question> [asked_at] -- one block-entry list item in
+# the shape templates/run-state.yaml documents. Omits packet:/asked_at: when
+# passed empty -- the "no packet:"/"no asked_at:" always-keep cases feed this
+# an empty 2nd/4th argument.
+pq_entry() {
+  local id="$1" pkt="$2" q="$3" asked="${4:-}"
+  printf '  - id: %s\n    severity: blocking\n' "$id"
+  [ -z "$pkt" ] || printf '    packet: %s\n' "$pkt"
+  printf "    question: '%s'\n" "$q"
+  [ -z "$asked" ] || printf "    asked_at: '%s'\n" "$asked"
+}
+
+# pq_fixture <entries> -- a fresh git repo + run-state.yaml carrying <entries>
+# (one or more pq_entry blocks, newline-joined by the caller) under
+# pending_questions:, plus an UNTOUCHED findings: entry and note: so the
+# "everything else survives" assertions below are never vacuous. Echoes the
+# repo dir. Same pwd -P / git init shape as lv_decisions above.
+pq_fixture() {
+  local d
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  mkdir -p "$d/.agents/metrics/outcomes"
+  printf "schema: 3\nstatus: running\npending_questions:\n%s\nfindings:\n  - id: pq-untouched\n    summary: 'unaffected by prune'\n    packets: [pq-other]\nnote: pq fixture note\n" \
+    "$1" > "$d/.agents/run-state.yaml"
+  printf '%s' "$d"
+}
+pq_outcomes() { printf '%s' "$2" > "$1/.agents/metrics/outcomes/PQ.jsonl"; }
+pq_rs()  { printf '%s/.agents/run-state.yaml' "$1"; }
+pq_run() { (cd "$1" && "$RUNSTATE" prune-questions .agents/run-state.yaml); }
+# The region no prune can touch -- from findings: through EOF -- captured
+# before/after for the dedicated byte-identical case below.
+pq_tail() { sed -n '/^findings:/,$p' "$(pq_rs "$1")"; }
+
+echo "-- one case per answering kind: each drops the entry it answers --"
+PQ_START="$(pq_fixture "$(pq_entry q-start pq-start 'answered by a start' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_START" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-start","session":"PQ","kind":"start"}
+'
+PQ_START_OUT="$(pq_run "$PQ_START")"
+assert_true "prune-questions: a later start answers the question -- PRUNED=yes, DROPPED=1, KEPT=0" \
+  "[ \"\$PQ_START_OUT\" = \"\$(printf 'PRUNED=yes\nDROPPED=1\nKEPT=0')\" ]"
+assert_true "prune-questions: the answered (start) entry is gone" \
+  "! grep -qxF '  - id: q-start' \"$(pq_rs "$PQ_START")\""
+assert_true "prune-questions: the answered (start) entry's WHOLE block is gone, not just its header line" \
+  "! grep -qxF '    packet: pq-start' \"$(pq_rs "$PQ_START")\""
+assert_true "prune-questions: the run-state still parses as real YAML after the (start) prune" \
+  "yamlok \"$(pq_rs "$PQ_START")\""
+
+PQ_CONT="$(pq_fixture "$(pq_entry q-cont pq-cont 'answered by a continuation' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_CONT" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-cont","session":"PQ","kind":"continue"}
+'
+PQ_CONT_OUT="$(pq_run "$PQ_CONT")"
+assert_true "prune-questions: a later continuation answers the question -- PRUNED=yes, DROPPED=1, KEPT=0" \
+  "[ \"\$PQ_CONT_OUT\" = \"\$(printf 'PRUNED=yes\nDROPPED=1\nKEPT=0')\" ]"
+assert_true "prune-questions: the answered (continuation) entry is gone" \
+  "! grep -qxF '  - id: q-cont' \"$(pq_rs "$PQ_CONT")\""
+assert_true "prune-questions: the answered (continuation) entry's WHOLE block is gone, not just its header line" \
+  "! grep -qxF '    packet: pq-cont' \"$(pq_rs "$PQ_CONT")\""
+assert_true "prune-questions: the run-state still parses as real YAML after the (continuation) prune" \
+  "yamlok \"$(pq_rs "$PQ_CONT")\""
+
+PQ_ABAN="$(pq_fixture "$(pq_entry q-aban pq-aban 'answered by an abandoned outcome' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_ABAN" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-aban","session":"PQ","outcome":"abandoned"}
+'
+PQ_ABAN_OUT="$(pq_run "$PQ_ABAN")"
+assert_true "prune-questions: a later abandoned outcome answers the question -- PRUNED=yes, DROPPED=1, KEPT=0" \
+  "[ \"\$PQ_ABAN_OUT\" = \"\$(printf 'PRUNED=yes\nDROPPED=1\nKEPT=0')\" ]"
+assert_true "prune-questions: the answered (abandoned) entry is gone" \
+  "! grep -qxF '  - id: q-aban' \"$(pq_rs "$PQ_ABAN")\""
+assert_true "prune-questions: the answered (abandoned) entry's WHOLE block is gone, not just its header line" \
+  "! grep -qxF '    packet: pq-aban' \"$(pq_rs "$PQ_ABAN")\""
+assert_true "prune-questions: the run-state still parses as real YAML after the (abandoned) prune" \
+  "yamlok \"$(pq_rs "$PQ_ABAN")\""
+
+echo "-- entries the liveness rule does NOT answer are kept, and the file is left untouched --"
+PQ_LIVE="$(pq_fixture "$(pq_entry q-live pq-live 'still unanswered' '2026-04-01T00:00:10Z')")"
+PQ_LIVE_BEFORE="$(cat "$(pq_rs "$PQ_LIVE")")"
+PQ_LIVE_OUT="$(pq_run "$PQ_LIVE")"
+assert_true "prune-questions: an unanswered entry (no outcomes at all) keeps it -- PRUNED=no, DROPPED=0" \
+  "[ \"\$PQ_LIVE_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+assert_true "prune-questions: an unanswered entry's file is left byte-unchanged" \
+  "[ \"\$PQ_LIVE_BEFORE\" = \"\$(cat "$(pq_rs "$PQ_LIVE")")\" ]"
+assert_true "prune-questions: the run-state still parses as real YAML after a no-drop run (unanswered)" \
+  "yamlok \"$(pq_rs "$PQ_LIVE")\""
+
+PQ_TIE="$(pq_fixture "$(pq_entry q-tie pq-tie 'tied timestamp does not answer' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_TIE" '{"ts":"2026-04-01T00:00:10Z","packet":"pq-tie","session":"PQ","kind":"start"}
+'
+PQ_TIE_OUT="$(pq_run "$PQ_TIE")"
+assert_true "prune-questions: an answer whose ts TIES the question's does not answer it -- PRUNED=no, DROPPED=0" \
+  "[ \"\$PQ_TIE_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+assert_true "prune-questions: the tied entry is still present" \
+  "grep -qxF '  - id: q-tie' \"$(pq_rs "$PQ_TIE")\""
+assert_true "prune-questions: the run-state still parses as real YAML after a no-drop run (tied)" \
+  "yamlok \"$(pq_rs "$PQ_TIE")\""
+
+PQ_NOPKT="$(pq_fixture "$(pq_entry q-nopkt '' 'no packet: at all' '2026-04-01T00:00:10Z')")"
+PQ_NOPKT_OUT="$(pq_run "$PQ_NOPKT")"
+assert_true "prune-questions: an entry with no packet: is ALWAYS kept -- PRUNED=no, DROPPED=0" \
+  "[ \"\$PQ_NOPKT_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+assert_true "prune-questions: the no-packet: entry is still present" \
+  "grep -qxF '  - id: q-nopkt' \"$(pq_rs "$PQ_NOPKT")\""
+assert_true "prune-questions: the run-state still parses as real YAML after a no-drop run (no packet:)" \
+  "yamlok \"$(pq_rs "$PQ_NOPKT")\""
+
+PQ_NOASK="$(pq_fixture "$(pq_entry q-noask pq-noask 'no asked_at: at all')")"
+PQ_NOASK_OUT="$(pq_run "$PQ_NOASK")"
+assert_true "prune-questions: an entry with no asked_at: is ALWAYS kept -- PRUNED=no, DROPPED=0" \
+  "[ \"\$PQ_NOASK_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+assert_true "prune-questions: the no-asked_at: entry is still present" \
+  "grep -qxF '  - id: q-noask' \"$(pq_rs "$PQ_NOASK")\""
+assert_true "prune-questions: the run-state still parses as real YAML after a no-drop run (no asked_at:)" \
+  "yamlok \"$(pq_rs "$PQ_NOASK")\""
+
+echo "-- a key line PRESENT but with an empty or unparseable value is kept, never read as answered --"
+# pq_check_kept <label> <dir> <id> -- the four keep assertions shared by the
+# value-level cases below: PRUNED=no/DROPPED=0, the entry still present, the
+# file byte-unchanged, and a real YAML parse.
+pq_check_kept() {
+  local label="$1" d="$2" id="$3"
+  PQ_KEPT_BEFORE="$(cat "$(pq_rs "$d")")"
+  PQ_KEPT_OUT="$(pq_run "$d")"
+  assert_true "prune-questions: $label is ALWAYS kept -- PRUNED=no, DROPPED=0" \
+    "[ \"\$PQ_KEPT_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+  assert_true "prune-questions: $label -- the entry is still present" \
+    "grep -qxF '  - id: $id' \"$(pq_rs "$d")\""
+  assert_true "prune-questions: $label -- the file is byte-unchanged" \
+    "[ \"\$PQ_KEPT_BEFORE\" = \"\$(cat \"$(pq_rs "$d")\")\" ]"
+  assert_true "prune-questions: $label -- the run-state still parses as real YAML" \
+    "yamlok \"$(pq_rs "$d")\""
+}
+
+# packet: '' -- empty value, with an answering start for ANOTHER packet.
+PQ_EPKT="$(pq_fixture "$(pq_entry q-epkt "''" 'empty packet value' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_EPKT" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-other","session":"PQ","kind":"start"}
+'
+pq_check_kept "an entry with packet: '' (empty value)" "$PQ_EPKT" q-epkt
+
+# asked_at: '' -- empty value, with a later start on the SAME packet.
+PQ_EASK="$(pq_fixture "$(printf "  - id: q-eask\n    severity: blocking\n    packet: pq-eask\n    question: 'empty asked_at value'\n    asked_at: ''")")"
+pq_outcomes "$PQ_EASK" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-eask","session":"PQ","kind":"start"}
+'
+pq_check_kept "an entry with asked_at: '' (empty value)" "$PQ_EASK" q-eask
+
+# asked_at double-quoted and LATER than the start on the same packet -- the
+# live second question; the decoder strips single quotes only, so the
+# still-quoted stamp is unparseable and must not read as epoch 0.
+PQ_DQASK="$(pq_fixture "$(printf "  - id: q-dqask\n    severity: blocking\n    packet: pq-dqask\n    question: 'double-quoted asked_at'\n    asked_at: \"2026-04-01T00:02:00Z\"")")"
+pq_outcomes "$PQ_DQASK" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-dqask","session":"PQ","kind":"start"}
+'
+pq_check_kept "an entry whose asked_at is double-quoted (unparseable after decode) and later than the start" "$PQ_DQASK" q-dqask
+
+echo "-- one packet stopped twice: the answered first question is dropped, the live second one is kept --"
+PQ_TWICE_ENTRIES="$(pq_entry q-first pq-twice 'first stop' '2026-04-01T00:00:10Z')
+$(pq_entry q-second pq-twice 'second stop' '2026-04-01T00:02:00Z')"
+PQ_TWICE="$(pq_fixture "$PQ_TWICE_ENTRIES")"
+pq_outcomes "$PQ_TWICE" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-twice","session":"PQ","kind":"start"}
+'
+PQ_TWICE_OUT="$(pq_run "$PQ_TWICE")"
+assert_true "prune-questions: one packet stopped twice -- PRUNED=yes, DROPPED=1, KEPT=1" \
+  "[ \"\$PQ_TWICE_OUT\" = \"\$(printf 'PRUNED=yes\nDROPPED=1\nKEPT=1')\" ]"
+assert_true "prune-questions: the answered FIRST question is gone" \
+  "! grep -qxF '  - id: q-first' \"$(pq_rs "$PQ_TWICE")\""
+assert_true "prune-questions: the answered FIRST question's WHOLE block is gone, not just its header line" \
+  "! grep -qxF \"    question: 'first stop'\" \"$(pq_rs "$PQ_TWICE")\""
+assert_true "prune-questions: the still-live SECOND question survives" \
+  "grep -qxF '  - id: q-second' \"$(pq_rs "$PQ_TWICE")\""
+assert_true "prune-questions: the run-state still parses as real YAML after the two-stops prune" \
+  "yamlok \"$(pq_rs "$PQ_TWICE")\""
+
+echo "-- findings: (and everything after it) is byte-identical after a prune --"
+PQ_FIND="$(pq_fixture "$(pq_entry q-find pq-find 'answered, to force a real prune' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_FIND" '{"ts":"2026-04-01T00:01:00Z","packet":"pq-find","session":"PQ","kind":"start"}
+'
+PQ_FIND_TAIL_BEFORE="$(pq_tail "$PQ_FIND")"
+PQ_FIND_OUT="$(pq_run "$PQ_FIND")"
+assert_true "prune-questions (findings case): a real drop actually happened, so this case is not vacuous" \
+  "[ \"\$PQ_FIND_OUT\" = \"\$(printf 'PRUNED=yes\nDROPPED=1\nKEPT=0')\" ]"
+assert_true "prune-questions: findings: (and note: after it) is byte-identical to before the prune" \
+  "[ \"\$PQ_FIND_TAIL_BEFORE\" = \"\$(pq_tail "$PQ_FIND")\" ]"
+assert_true "prune-questions: the run-state still parses as real YAML after the findings-preserving prune" \
+  "yamlok \"$(pq_rs "$PQ_FIND")\""
+assert_true "prune-questions: a real drop goes through cmd_write, which backs up the pre-write file to run-state-prev.yaml" \
+  "[ -f \"$PQ_FIND/.agents/run-state-prev.yaml\" ]"
+
+echo "-- nothing to drop: the file is left completely unchanged (no-drop case) --"
+PQ_NODROP="$(pq_fixture "$(pq_entry q-nodrop pq-nodrop 'nothing here should be dropped' '2026-04-01T00:00:10Z')")"
+pq_outcomes "$PQ_NODROP" '{"ts":"2026-03-31T00:00:00Z","packet":"pq-nodrop","session":"PQ","kind":"start"}
+'
+PQ_NODROP_BEFORE="$(cat "$(pq_rs "$PQ_NODROP")")"
+PQ_NODROP_OUT="$(pq_run "$PQ_NODROP")"
+assert_true "prune-questions (no-drop case): an EARLIER start does not answer a LATER question -- PRUNED=no, DROPPED=0" \
+  "[ \"\$PQ_NODROP_OUT\" = \"\$(printf 'PRUNED=no\nDROPPED=0')\" ]"
+assert_true "prune-questions: the no-drop file is byte-identical to before the call" \
+  "[ \"\$PQ_NODROP_BEFORE\" = \"\$(cat "$(pq_rs "$PQ_NODROP")")\" ]"
+assert_true "prune-questions: the run-state still parses as real YAML after the no-drop call" \
+  "yamlok \"$(pq_rs "$PQ_NODROP")\""
+
+echo
 echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of
 # scripts/test-gspec-backlog.sh. The construct this feature removed is a

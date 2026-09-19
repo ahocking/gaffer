@@ -98,7 +98,7 @@ this repository, since the run that found it ended `done`.
     the line after the clause, or a line-count ceiling — from the start; removing the
     source sentence turns the sweep red, verified by making that mutation
 
-- [ ] **P1**: Both sweep extractions of the run entry point refuse an end-anchor overrun
+- [x] **P1**: Both sweep extractions of the run entry point refuse an end-anchor overrun
   - each of the two existing range extractions — the routing bullet and the
     carry-through clause — is followed by a negative assertion that fails when
     the extracted span contains the line that follows the bullet's true end, or

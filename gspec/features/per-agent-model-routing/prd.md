@@ -138,7 +138,7 @@ shipped default for any agent the map does not name.
     frontmatter, with both models. An empty or all-default map adds no line
   - the line reads from the lookup's output, not from the file directly
 
-- [ ] **P1**: The consumer template documents the key
+- [x] **P1**: The consumer template documents the key
   - `templates/spec-driven-base/.agents/project-overrides.yaml` explains
     `model_routing` next to the key: keyed by agent name, unlisted agents
     keep their frontmatter default, `loop-driver` is excluded, and invalid

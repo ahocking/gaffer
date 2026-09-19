@@ -37,7 +37,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
 
 ## Plan
 
-- [ ] **T1** [P] **P0** Add `scripts/routing.sh` with its `resolve`/`validate`/`table` subcommands, and `scripts/test-routing.sh`, and wire the new sweep into CI and CLAUDE.md's sweep list.
+- [x] **T1** [P] **P0** Add `scripts/routing.sh` with its `resolve`/`validate`/`table` subcommands, and `scripts/test-routing.sh`, and wire the new sweep into CI and CLAUDE.md's sweep list.
 
   `routing.sh`:
   - executable, `set -uo pipefail` with no `-e`, parsing config by `awk` token-scan only (no `jq` or `python3`);

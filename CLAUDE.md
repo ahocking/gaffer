@@ -1053,10 +1053,11 @@ scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversio
                                 # cleanup (retire-unused-loop-modes T5), the packet-count check, and
                                 # the CLAUDE.md conventions stamp
 scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies
+scripts/test-routing.sh        # per-agent-model-routing lookup: resolve/validate/table, every fallback and report reason, VALID_MODELS pin
 ```
 
 When adding a new risky pattern to `guard.sh`, add a matching allow/deny pair to
-`scripts/test-guard.sh` so regressions are caught. Same rule for the other seven
+`scripts/test-guard.sh` so regressions are caught. Same rule for the other eight
 scripts: a behavior worth having is a behavior worth a test in its sweep.
 
 ## Ground rules for changes here

@@ -72,7 +72,7 @@ shipped default for any agent the map does not name.
 
 ## Capabilities
 
-- [ ] **P0**: One deterministic lookup resolves an agent's model
+- [x] **P0**: One deterministic lookup resolves an agent's model
   - given an agent name, it yields the map's value when `model_routing` names
     that agent, and otherwise yields "frontmatter default". A missing file,
     a missing key or an empty map yields the frontmatter default for every

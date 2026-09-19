@@ -818,6 +818,137 @@ case "$ctl_dec" in
     ;;
 esac
 
+printf '\n== a report after a second stop lints clean once answered questions are pruned (answered-question-expiry T5) ==\n'
+# A run that stops on a question, resumes (the resume's start answers it), and stops
+# on a second question for the same packet. Before prune-questions existed, the
+# run-state's pending_questions list kept BOTH entries, so a body rendered one
+# decision block per entry (two) under a header whose 🔀 figure run-tally correctly
+# ages down to one -- the header/body mismatch decision-count exists to catch.
+#
+# Session 1 is hand-written at fixed year-2000 stamps (start, the ask-operator
+# routing record, the blocked stop), so every later real record is strictly after
+# it and the real resume start is guaranteed to answer question 1. Session 2 is
+# real scripts: record-start (the answer), route ask-operator (question 2), and
+# record-outcome blocked. Question 2 is raised AFTER the answering start, so that
+# start can at most tie it -- and a tie never answers -- so question 2 stays live.
+# asked_at for question 2 is read from the routing record the real route wrote,
+# the same source /gaffer:pause stamps from.
+SQ="$TMP/second-stop"; mkdir -p "$SQ/.agents/metrics/outcomes"; git -C "$SQ" init -q
+printf 'schema: 3\nstatus: running\n' > "$SQ/.agents/run-state.yaml"
+sq_id="$(cd "$SQ" && "$RS" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+[ -n "$sq_id" ] && ok 'second-stop fixture: begin-run minted a run id' \
+  || bad 'second-stop fixture: begin-run minted a run id' 'no RUN_ID'
+sq_dir="$SQ/.agents/loop/$sq_id"
+mkdir -p "$sq_dir/sq-t1"
+printf '# sq-t1: Settle split payments\n' > "$sq_dir/sq-t1/handoff.md"
+sq_q1_ts='2000-01-01T00:00:01Z'
+{
+  printf '{"ts":"2000-01-01T00:00:00Z","packet":"sq-t1","session":"SQ1","kind":"start"}\n'
+  printf '{"ts":"2000-01-01T00:00:02Z","packet":"sq-t1","session":"SQ1","outcome":"blocked"}\n'
+} > "$SQ/.agents/metrics/outcomes/SQ1.jsonl"
+printf '{"ts":"%s","packet":"sq-t1","token":"ask-operator","action":"stop","status":""}\n' "$sq_q1_ts" \
+  > "$sq_dir/routing.jsonl"
+(cd "$SQ" && "$RS" record-start sq-t1 SQ2 \
+  && "$RS" route .agents/run-state.yaml sq-t1 ask-operator \
+  && "$RS" record-outcome sq-t1 blocked SQ2) >/dev/null 2>&1 \
+  && ok 'second-stop fixture: the resume start, the second question and the second stop recorded by the real scripts' \
+  || bad 'second-stop fixture: the resume start, the second question and the second stop recorded by the real scripts' 'a runstate.sh call failed'
+sq_q2_ts="$(tail -n 1 "$sq_dir/routing.jsonl" | sed -n 's/^{"ts":"\([^"]*\)".*/\1/p')"
+[ -n "$sq_q2_ts" ] && [ "$sq_q2_ts" != "$sq_q1_ts" ] && ok 'second-stop fixture: the second question has its own routing timestamp' \
+  || bad 'second-stop fixture: the second question has its own routing timestamp' "q2 ts=[$sq_q2_ts]"
+
+# The run-state the second stop persists, before any prune: both questions, in the
+# block-entry shape templates/run-state.yaml documents, with a findings index after
+# them that the prune must carry through.
+cat > "$SQ/.agents/run-state.yaml.new" <<EOF
+schema: 3
+status: paused
+run_id: '$sq_id'
+pending_questions:
+  - id: q-001
+    severity: normal
+    packet: 'sq-t1'
+    asked_at: '$sq_q1_ts'
+    question: 'Should a split payment settle each leg on its own date?'
+  - id: q-002
+    severity: normal
+    packet: 'sq-t1'
+    asked_at: '$sq_q2_ts'
+    question: 'Should a refunded leg reopen the whole split?'
+findings:
+EOF
+mv "$SQ/.agents/run-state.yaml.new" "$SQ/.agents/run-state.yaml"
+cp "$SQ/.agents/run-state.yaml" "$TMP/sq-run-state-unpruned.yaml"
+
+sq_prune="$(cd "$SQ" && "$RS" prune-questions .agents/run-state.yaml 2>&1)"
+case "$sq_prune" in
+  *'PRUNED=yes'*'DROPPED=1'*) ok 'second-stop: prune-questions drops exactly the answered first question' ;;
+  *) bad 'second-stop: prune-questions drops exactly the answered first question' "$sq_prune" ;;
+esac
+
+# One decision block per surviving pending_questions entry, numbered in list order.
+# $1 = run-state to read the list from, $2 = DECISIONS figure, $3 = UNFINISHED
+# figure, $4 = output file. Each bucket is omitted at 0.
+_sq_report() {
+  local hdr='⏸️ **PAUSED** · Split payments' questions n=0 q
+  [ "${3:-0}" -gt 0 ] && hdr="$hdr · ⚠️ **$3 unfinished**"
+  if [ "${2:-0}" -gt 0 ]; then
+    if [ "$2" = 1 ]; then hdr="$hdr · 🔀 **1 decision**"; else hdr="$hdr · 🔀 **$2 decisions**"; fi
+  fi
+  questions="$(awk '
+    /^pending_questions:[[:space:]]*$/ { inq = 1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inq = 0 }
+    inq && /^[[:space:]]*question:/ {
+      line = $0; sub(/^[[:space:]]*question:[[:space:]]*/, "", line)
+      gsub(/^'"'"'|'"'"'$/, "", line); print line
+    }' "$1")"
+  {
+    printf '%s\n\n' "$hdr"
+    printf 'Stopped after 1 packet. Nothing at risk, nothing half-written.\n\n'
+    printf '⚠️ **Unfinished**\n\n'
+    printf '> ⚠️ **Settle split payments** (`sq-t1`) — stopped on your question, not yet landed\n\n'
+    printf '🔀 **Decisions** — reply `1A`\n'
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      n=$((n + 1))
+      printf '\n> **%d · %s**\n>\n' "$n" "$q"
+      printf '> - **A ›** Yes\n>   → each leg reconciles independently\n'
+      printf '> - **B ›** No\n>   → the split stays one unit\n>\n'
+      printf '> **→ Pick A** — matches how the bank reports legs.\n'
+    done <<<"$questions"
+  } > "$4"
+}
+
+(cd "$SQ" && "$RS" run-digest .agents/run-state.yaml) > "$TMP/sq-digest" 2>/dev/null
+sq_tally="$(cd "$SQ" && "$RS" run-tally .agents/run-state.yaml 2>&1)"
+sq_dec="$(_rr_fig DECISIONS "$sq_tally")"; sq_unf="$(_rr_fig UNFINISHED "$sq_tally")"
+[ "$sq_dec" = 1 ] && ok 'second-stop: run-tally ages the answered question out and prints DECISIONS=1' \
+  || bad 'second-stop: run-tally ages the answered question out and prints DECISIONS=1' "$sq_tally"
+case "$sq_unf" in ''|*[!0-9]*) sq_unf=0 ;; esac
+case "$sq_dec" in
+  ''|*[!0-9]*)
+    bad 'second-stop: the body rendered from the pruned list yields no decision-count finding' "no numeric DECISIONS: $sq_tally"
+    bad 'second-stop control: the body rendered from the unpruned list yields a decision-count finding' "no numeric DECISIONS: $sq_tally"
+    ;;
+  *)
+    _sq_report "$SQ/.agents/run-state.yaml" "$sq_dec" "$sq_unf" "$TMP/sq-report.md"
+    sq_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/sq-report.md")"
+    [ "$sq_blocks" = 1 ] && ok 'second-stop: the pruned body carries one decision block, for the surviving entry' \
+      || bad 'second-stop: the pruned body carries one decision block, for the surviving entry' "blocks=$sq_blocks"
+    not_fires 'second-stop: the body rendered from the pruned list under a header built from the printed DECISIONS figure yields no decision-count finding' \
+      decision-count "$(_lint B "$TMP/sq-report.md" "$TMP/sq-digest")"
+
+    # Control: skip the prune -- the same run, the same header recipe, but the body
+    # rendered from the unpruned list still carries the answered first question.
+    _sq_report "$TMP/sq-run-state-unpruned.yaml" "$sq_dec" "$sq_unf" "$TMP/sq-report-ctl.md"
+    sq_ctl_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/sq-report-ctl.md")"
+    [ "$sq_ctl_blocks" = 2 ] && ok 'second-stop control: the unpruned body carries both decision blocks' \
+      || bad 'second-stop control: the unpruned body carries both decision blocks' "blocks=$sq_ctl_blocks"
+    fires 'second-stop control: the body rendered from the unpruned list yields a decision-count finding' \
+      decision-count "$(_lint B "$TMP/sq-report-ctl.md" "$TMP/sq-digest")"
+    ;;
+esac
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

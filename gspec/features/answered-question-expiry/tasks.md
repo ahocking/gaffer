@@ -107,7 +107,7 @@ Every regression sweep must pass green after every task.
   - covers: Each `pending_questions` entry records when it was asked · The prune runs wherever the list is re-persisted
   - arch: —
   - files: templates/run-state.yaml, skills/pause/SKILL.md, skills/resume/SKILL.md, skills/run-loop/SKILL.md
-- [ ] **T5** [P] **P1** In `scripts/test-report-conventions.sh`, add a fixture for a run that stops, resumes, answers the first question with a later start and stops a second time.
+- [x] **T5** [P] **P1** In `scripts/test-report-conventions.sh`, add a fixture for a run that stops, resumes, answers the first question with a later start and stops a second time.
 
   Run T2's subcommand over its run-state, then assert against its real `run-digest` output:
   - a shape B body rendered with one decision block per surviving `pending_questions` entry;

@@ -41,7 +41,9 @@ install command. Raising the pin is a reviewable change to
 here, per-project.
 
 ## 1. Gather inputs (Chief Engineer)
-Delegate to the **chief-engineer**. From "$ARGUMENTS" determine:
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve chief-engineer` immediately
+before the dispatch (non-empty → pass it as `model`; empty → omit `model`).
+Then delegate to the **chief-engineer**. From "$ARGUMENTS" determine:
 - **project name** (kebab-case for the directory),
 - **one-line purpose**,
 - **target parent directory** (default: `~/workspace`), so the repo path is

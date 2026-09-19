@@ -240,5 +240,69 @@ OUT="$(ORCH_ROUTING_AGENTS_DIR= "$ROUTING" --root "$R" validate 2>/dev/null)"; R
 assert_eq "real agents dir: implementer valid, loop-driver reported" \
   "ROUTING-INVALID key=loop-driver value=opus reason=loop-driver" "$OUT"
 
+# --- dispatching-file sweep (arch Rule: DispatchSiteRouting) --------------------
+# A dispatching file is a skills/*/SKILL.md or agents/*.md that (a) lists `Task`
+# on its frontmatter `tools:` line, or (b) matches the dispatch/delegate regex
+# over the agent set DERIVED from <root>/agents/*.md. Every one must contain the
+# literal `routing.sh resolve`. File-reading greps only — no pipe-fed `grep -q`.
+
+# dispatch_files <root>: print every dispatching file under <root>, repo-relative.
+dispatch_files() {
+  local root="$1" f n agents="" re
+  for f in "$root"/agents/*.md; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .md)"
+    agents="${agents:+$agents|}$n"
+  done
+  [ -n "$agents" ] || return 0
+  re="(dispatch(es|ed|ing)?|delegat(e|es|ed|ing) to)[[:space:]]+([[:alnum:]-]+[[:space:]]+){0,2}(\\*\\*|\`)(gaffer:)?($agents)(\\*\\*|\`)"
+  for f in "$root"/skills/*/SKILL.md "$root"/agents/*.md; do
+    [ -f "$f" ] || continue
+    if awk 'NR == 1 && $0 != "---" { exit 1 }
+            NR > 1 && $0 == "---" { exit 1 }
+            /^tools:/ && /(^|[^[:alnum:]_])Task([^[:alnum:]_]|$)/ { found = 1; exit 0 }
+            END { exit !found }' "$f"; then
+      printf '%s\n' "${f#"$root"/}"
+    elif grep -Eiq -- "$re" "$f"; then
+      printf '%s\n' "${f#"$root"/}"
+    fi
+  done
+}
+
+# missing_resolve <root> <file-list>: print each listed file lacking the literal.
+missing_resolve() {
+  local root="$1" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    grep -Fq 'routing.sh resolve' "$root/$f" || printf '%s\n' "$f"
+  done <<EOF
+$2
+EOF
+}
+
+REPO="$(cd "$HERE/.." && pwd -P)"
+DSET="$(dispatch_files "$REPO")"
+for want in skills/run-loop/SKILL.md skills/review-change/SKILL.md agents/chief-engineer.md; do
+  case "$NL$DSET$NL" in
+    *"$NL$want$NL"*) ok "dispatching set includes $want" ;;
+    *) bad "dispatching set includes $want" "set: $(printf '%s' "$DSET" | tr '\n' ' ')" ;;
+  esac
+done
+MISS="$(missing_resolve "$REPO" "$DSET")"
+assert_eq "every dispatching file names routing.sh resolve" "" "$MISS"
+
+# negative control: a fixture dispatching file lacking the literal fails the check
+FX="$WORK/fixture-repo"
+mkdir -p "$FX/agents" "$FX/skills/lacks" "$FX/skills/has" "$FX/skills/inert"
+printf -- '---\nname: implementer\nmodel: sonnet\n---\nbody\n' > "$FX/agents/implementer.md"
+printf -- '---\nname: lacks\n---\nThen dispatch a fresh `implementer` with the path.\n' > "$FX/skills/lacks/SKILL.md"
+printf -- '---\nname: has\n---\nRun `routing.sh resolve implementer`, then dispatch the **implementer**.\n' > "$FX/skills/has/SKILL.md"
+printf -- '---\nname: inert\n---\nNo delegation here.\n' > "$FX/skills/inert/SKILL.md"
+FSET="$(dispatch_files "$FX")"
+assert_eq "fixture: dispatching set is exactly the two dispatching skills" \
+  "skills/has/SKILL.md${NL}skills/lacks/SKILL.md" "$FSET"
+FMISS="$(missing_resolve "$FX" "$FSET")"
+assert_eq "fixture: file lacking routing.sh resolve fails the check" "skills/lacks/SKILL.md" "$FMISS"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

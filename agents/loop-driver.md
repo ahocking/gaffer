@@ -76,10 +76,15 @@ rule). Never decide the next step yourself:
 - **`ACTION=land`** — commit the packet green, with the commit trailers
   `run-loop`/`resume` already document (`[orch packet:...]`, `[orch
   tier:...]`, `[orch impl:delegated]`), and advance.
-- **`ACTION=attempt`** — dispatch a fresh agent (the same role tier the
-  packet's `tier` picked originally) with the handoff path and the review
-  file's path; record no start.
-- **`ACTION=decider`** — until `escalation-decider` ships, dispatch the
+- **`ACTION=attempt`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh
+  resolve <agent>` for the packet's agent (the same one its `tier` picked
+  originally; non-empty → pass it as `model`, empty → omit `model`), then
+  dispatch a fresh agent of it with the handoff path and the review file's
+  path; record no start. The lookup routes the agents you dispatch only —
+  it never sets or changes your own model.
+- **`ACTION=decider`** — until `escalation-decider` ships, run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve chief-engineer`
+  (non-empty → `model`; empty → omit `model`), then dispatch the
   `chief-engineer` with the handoff and review paths, **plus the
   `ATTEMPTS=`/`LIMIT=` this same `route` call printed** (so it knows whether a
   `retry` is even possible), and nothing else. It returns one of `retry`,
@@ -112,7 +117,9 @@ rule). Never decide the next step yourself:
   disk before you dispatch anyone — most questions about "what happened to
   packet X" are answerable that way alone.
 - **When you cannot answer it, dispatch the `researcher`** with the question
-  and whatever paths are relevant. It writes only its result file and returns
+  and whatever paths are relevant, after running
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve researcher` (non-empty →
+  `model`; empty → omit `model`). It writes only its result file and returns
   the short answer in its status line; relay that line, and open its result
   file only if the operator asks for more.
 - **A mid-run edit the operator asks for** is made by a dispatched agent and

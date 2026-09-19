@@ -154,7 +154,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: Run-metrics records map routing as policy, not as override · The lookup, its fallbacks and the counting are pinned by sweep cases
   - arch: Rule: ModelOverrideCounting · Entity: ConfiguredRouting · Entity: DispatchRoutingStamp
   - files: scripts/metrics.sh, scripts/test-metrics.sh, CLAUDE.md
-- [ ] **T6** [P] **P0** In `skills/run-loop/SKILL.md` and `skills/resume/SKILL.md`, run `routing.sh validate` and `table` once at preflight — before driver mode is entered in run-loop (§1), and at resume's §1 preflight (after its §0 driver-mode entry, which is harmless because `routing.sh` is read-only) — and render T4's two kickoff lines from their output.
+- [x] **T6** [P] **P0** In `skills/run-loop/SKILL.md` and `skills/resume/SKILL.md`, run `routing.sh validate` and `table` once at preflight — before driver mode is entered in run-loop (§1), and at resume's §1 preflight (after its §0 driver-mode entry, which is harmless because `routing.sh` is read-only) — and render T4's two kickoff lines from their output.
 
   In `run-loop` §3 (the `handoff --agent` packet agent, the `reviewer`, the `chief-engineer` decider stand-in) and §4 (the end-of-run `reviewer` and `architect`), add the sentence naming `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>` immediately before each dispatch. A non-empty result is passed as `model`, and an empty result means `model` is omitted.
 

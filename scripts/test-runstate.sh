@@ -1494,6 +1494,112 @@ assert_true "set over an ordinary single-line target preserves the key before" \
 assert_true "set over an ordinary single-line target preserves the key after" \
   "grep -q '^after: 1' \"$OS\""
 
+echo
+echo "== set: a target it CANNOT address at column 0 is refused, writing nothing (gaps T1) =="
+# Two shapes `set` was never able to address, and wrote anyway:
+#   nested-only     `cursor` lives under `backlog:`; the old `grep -qE '^cursor:'`
+#                   found nothing, took the APPEND branch, and created a second,
+#                   column-0 `cursor:` at exit 0 while `cmd_cursor` kept reading
+#                   the nested one. Two sources of truth, no signal.
+#   column0-mapping `backlog:` is at column 0, so the replace branch fired and
+#                   overwrote the header with a scalar, stranding its indented
+#                   children. NOT the same defect as the block scalar above: a
+#                   block header's remainder (`|`/`>`) declares a body and its
+#                   end, a mapping header's remainder is empty and declares
+#                   nothing, which is why T10 could consume its body and this
+#                   one is refused instead.
+# Each case asserts the four things a refusal owes: non-zero exit, a target
+# checksum identical to its pre-call value, no new column-0 key, and the key
+# named in the message. The checksum is the load-bearing one -- "it refused"
+# and "it refused having already rewritten the file" look identical from the
+# exit status alone, and a partial write here is the failure being removed.
+RF="$(mktemp -d)/.agents"; mkdir -p "$RF"
+for refuse_case in nested-only column0-mapping; do
+  case "$refuse_case" in
+    nested-only)     refuse_key=cursor  ;;
+    column0-mapping) refuse_key=backlog ;;
+  esac
+  RFF="$RF/rs-refuse-$refuse_case.yaml"
+  printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n  pending:\n    - feature-002\nbranch: orch/x\n' > "$RFF"
+  RF_SUM_BEFORE="$(cksum < "$RFF")"
+  RF_KEYS_BEFORE="$(_top_key_count "$RFF")"
+  RF_RC=0
+  RF_MSG="$("$RUNSTATE" set "$RFF" "$refuse_key" 'a flat scalar' 2>&1)" || RF_RC=$?
+  assert_true "set on a $refuse_case target ($refuse_key) exits non-zero" \
+    "[ \"\$RF_RC\" != 0 ]"
+  assert_true "set on a $refuse_case target ($refuse_key) leaves the file byte-identical (checksum)" \
+    "[ \"\$(cksum < \"$RFF\")\" = \"\$RF_SUM_BEFORE\" ]"
+  assert_true "set on a $refuse_case target ($refuse_key) adds no column-0 key" \
+    "[ \"\$(_top_key_count \"$RFF\")\" = \"\$RF_KEYS_BEFORE\" ]"
+  assert_true "set on a $refuse_case target ($refuse_key) names the key in the message" \
+    "case \"\$RF_MSG\" in *\"'$refuse_key'\"*) true;; *) false;; esac"
+  assert_true "set on a $refuse_case target ($refuse_key) points the caller at \`write\`" \
+    "case \"\$RF_MSG\" in *'\`write\`'*) true;; *) false;; esac"
+  assert_true "set on a $refuse_case target ($refuse_key) leaves a parseable run-state" \
+    "yamlok \"$RFF\""
+  # The refusal happens BEFORE mktemp, so nothing is left in the directory
+  # either -- the one observable that separates "refused" from "refused after
+  # already staging a rewrite".
+  assert_true "set on a $refuse_case target ($refuse_key) leaves no temp file behind" \
+    "[ -z \"\$(ls -A '$RF' | grep '^\\.run-state\\.' || true)\" ]"
+done
+# The two messages must not be interchangeable: the reasons are different
+# (a key out of reach vs. a body with no boundary), and one message covering
+# both is how the second reason stops being read.
+RF_MSG_NESTED="$("$RUNSTATE" set "$RF/rs-refuse-nested-only.yaml" cursor x 2>&1 || true)"
+RF_MSG_MAPPING="$("$RUNSTATE" set "$RF/rs-refuse-column0-mapping.yaml" backlog x 2>&1 || true)"
+assert_true "the two refusals give different reasons, not one shared message" \
+  "[ \"\$RF_MSG_NESTED\" != \"\$RF_MSG_MAPPING\" ]"
+
+# THE OTHER SIDE OF THE RULE. A key ABSENT from the file entirely is not the
+# nested case and must still be created at column 0 -- otherwise the refusal
+# could be (wrongly) implemented as "refuse what is not already there", which
+# would break the loop's own driver claim on a fresh run-state. All four
+# driver_* keys, from a run-state that has none of them.
+RFD="$RF/rs-fresh-driver.yaml"
+printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n' > "$RFD"
+assert_true "claim-driver against a FRESH run-state succeeds" \
+  "\"\$RUNSTATE\" claim-driver \"$RFD\" 4242 >/dev/null"
+for dk in driver_host driver_since driver_heartbeat driver_pid; do
+  assert_true "  it inserted $dk at column 0 (absence is not nesting)" \
+    "[ -n \"\$(\"\$RUNSTATE\" get \"$RFD\" $dk)\" ] && grep -q \"^$dk:\" \"$RFD\""
+done
+assert_true "  and the nested cursor it did NOT touch still reads back" \
+  "[ \"\$(\"\$RUNSTATE\" cursor \"$RFD\")\" = feature-002 ]"
+assert_true "  the fresh-claim run-state still parses" "yamlok \"$RFD\""
+
+# Every key `set` is called with in this plugin -- no skill, sweep fixture or
+# caller may be touched by the refusal. Kept as an explicit list rather than a
+# grep so that adding a seventh caller means adding a line here on purpose.
+RFL="$RF/rs-live-keys.yaml"
+printf 'schema: 3\nstatus: running\nnote: an old note\nupdated_at: 2026-01-01T00:00:00Z\nlast_green_commit: deadbeef\nbranch: orch/x\ndriver_heartbeat: 2026-01-01T00:00:00Z\nbacklog:\n  cursor: feature-002\n' > "$RFL"
+for live_key in status note updated_at last_green_commit branch driver_heartbeat; do
+  assert_true "set on the live key $live_key is unaffected by the refusal" \
+    "\"\$RUNSTATE\" set \"$RFL\" $live_key 'live value' >/dev/null"
+  assert_true "  $live_key round-trips after the set" \
+    "[ \"\$(\"\$RUNSTATE\" get \"$RFL\" $live_key)\" = 'live value' ]"
+done
+assert_true "the six live keys leave a parseable run-state" "yamlok \"$RFL\""
+assert_true "and none of them disturbed the nested cursor" \
+  "[ \"\$(\"\$RUNSTATE\" cursor \"$RFL\")\" = feature-002 ]"
+
+# The refusal must hold on a host with no jq and no python3 -- `runstate.sh`
+# stays at hooks/guard.sh's dependency tier (stock Git Bash ships neither), and
+# a check that quietly disables itself where a tool is missing is the defect
+# this feature exists to remove, one file over. `bare`/`NOTOOLS` are the same
+# stubs T8 established above; the scrub wraps ONLY the runstate.sh call.
+RFN="$RF/rs-notools.yaml"
+printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n' > "$RFN"
+RFN_SUM_BEFORE="$(cksum < "$RFN")"
+assert_true "no-tools host: the nested-only refusal still fires" \
+  "! bare set '$RFN' cursor 'a flat scalar' 2>/dev/null"
+assert_true "no-tools host: the column0-mapping refusal still fires" \
+  "! bare set '$RFN' backlog 'a flat scalar' 2>/dev/null"
+assert_true "no-tools host: neither refusal changed a byte of the target" \
+  "[ \"\$(cksum < \"$RFN\")\" = \"\$RFN_SUM_BEFORE\" ]"
+assert_true "no-tools host: an ordinary set on the same file still lands" \
+  "bare set '$RFN' status paused >/dev/null && [ \"\$(bare get '$RFN' status)\" = paused ]"
+
 # Anti-drift pin: `set` and `add-finding` now call the SAME encoder, so the
 # same hostile value must come out byte-identical from both -- pinned
 # mechanically, not by comment, so a future change that hardens one and not

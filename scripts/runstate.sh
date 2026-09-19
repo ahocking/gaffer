@@ -754,14 +754,92 @@ _yaml_decode_value() {
 # most reachable `set` call (overwriting `note:` right after a trim) into a
 # hard stop for every caller, forcing a full `write` reassembly for what is
 # otherwise an ordinary one-line update.
+#
+# --- what shape is the TARGET in? (runstate-write-integrity-gaps T1) ---------
+# `set` addresses ONE thing: a flat scalar on a column-0 `key:` line. Two target
+# shapes are outside that reach and, until this task, both were written anyway:
+#
+#   nested-only     the key exists but ONLY at an indentation greater than zero
+#                   -- `cursor` under `backlog:` is the live example. The old
+#                   `grep -qE "^key:"` found nothing, fell through to the append
+#                   branch, and created a SECOND, column-0 `cursor:` while
+#                   `cmd_cursor` kept reading the nested one. Exit 0, two
+#                   sources of truth, no signal.
+#   column0-mapping the key IS at column 0 but heads a nested mapping or list
+#                   (`backlog:`, `findings:`, `pending_questions:`). Replacing
+#                   that header with a scalar strands its children as orphaned
+#                   indentation -- and unlike the block-scalar case above there
+#                   is NO body boundary to reuse: a block header's remainder is
+#                   `|`/`>`, which says "a body follows and here is where it
+#                   ends"; a mapping header's remainder is EMPTY and says
+#                   nothing at all. That is why T10 could handle its case and
+#                   this one is refused rather than folded into it.
+#
+# REFUSAL, NOT ADDRESSING, and deliberately so: writing YAML path addressing in
+# POSIX shell -- no jq, no parser, against the loop's only durable state -- is a
+# large new correctness surface bought to remove a trap that a loud non-zero exit
+# closes just as well. This file already has the cautionary precedent one
+# function up: the plain-scalar allowlist in _yaml_encode_value was built and
+# deleted the same day, because it made a claim about every FUTURE value and was
+# wrong twice in one afternoon. A refusal makes a claim about none.
+#
+# The third shape, ABSENT, is explicitly NOT refused: `claim-driver` creates all
+# four of its `driver_*` keys by appending them at column 0 against a fresh
+# run-state, and `begin-run` mints `run_id` the same way. "Refuse what is not
+# already there" would break both -- absence and nesting are different answers.
+#
+# _set_target_shape <file> <key> -- prints exactly one of:
+#   absent | column0-scalar | column0-mapping | nested-only
+# Literal prefix matching via index() throughout, never a regex built from the
+# key, so a key carrying a regex metacharacter cannot widen its own match. A
+# `- ` list-item key (`  - id: x`) is NOT nested-only for key `id`: it is an
+# element of a sequence, not a child mapping key, and `set` was never going to
+# address it either way.
+_set_target_shape() {
+  KEY="$2" awk '
+    BEGIN { k = ENVIRON["KEY"] ":"; shape = "absent"; nested = 0; want = 0 }
+    # Looking for the first non-blank line AFTER a column-0 header whose
+    # remainder was empty: indented => that header owns a nested body.
+    want == 1 {
+      if ($0 ~ /^[[:space:]]*$/) next
+      if ($0 ~ /^[[:space:]]/) shape = "column0-mapping"
+      exit
+    }
+    shape == "absent" && index($0, k) == 1 {
+      rest = substr($0, length(k) + 1)
+      sub(/^[[:space:]]+/, "", rest)
+      shape = "column0-scalar"
+      if (rest == "") { want = 1; next }     # empty remainder: look below
+      exit                                   # a value (incl. a block indicator)
+    }
+    {
+      if ($0 ~ /^[[:space:]]/) {
+        t = $0; sub(/^[[:space:]]+/, "", t)
+        if (index(t, k) == 1) nested = 1
+      }
+    }
+    END { if (shape == "absent" && nested == 1) shape = "nested-only"; print shape }
+  ' "$1"
+}
+
 cmd_set() {
   local f="${1:-}" key="${2:-}" val="${3:-}"
   [ -n "$f" ] && [ -n "$key" ] || die "usage: set <file> <key> <value>"
   need_file "$f"
+  # Decided BEFORE the temp file exists, so a refusal leaves the target (and
+  # this directory) byte-identical -- the whole point of refusing rather than
+  # discovering the problem halfway through a rewrite.
+  local shape; shape="$(_set_target_shape "$f" "$key")"
+  case "$shape" in
+    nested-only)
+      die "set refused: '${key}' exists only INSIDE a nested block in '${f}', not as a column-0 key -- \`set\` writes flat top-level scalars only, and appending it at column 0 would create a second '${key}' that readers do not use. Edit the nested value with \`write\` (whole file on stdin) instead." ;;
+    column0-mapping)
+      die "set refused: '${key}' is a column-0 key whose value is a nested mapping or list in '${f}' -- replacing its header with a scalar would strand the indented lines below it. Unlike a block scalar, a mapping header carries no body boundary to consume. Rewrite the whole file with \`write\` (contents on stdin) instead." ;;
+  esac
   local dir tmp enc; dir="$(dirname "$f")"
   tmp="$(mktemp "${dir}/.run-state.XXXXXX")" || die "cannot create temp file in ${dir}"
   enc="$(_yaml_encode_value "$val")"
-  if grep -qE "^${key}:" "$f"; then
+  if [ "$shape" = column0-scalar ]; then
     # Literal-prefix match in awk, interpolated through ENVIRON -- never `-v`,
     # which expands `\n` IN THE VALUE (the exact hazard ADR 0022 names), and
     # never sed replacement text, which expands `&` to the whole match and

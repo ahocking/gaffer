@@ -83,10 +83,16 @@ backlog:
 # severity: blocking = the loop cannot continue until answered;
 #           high     = proceed on other packets, but this needs an answer soon;
 #           normal   = informational / can wait.
+# asked_at: the quoted `ts` of the routing.jsonl record that raised the question
+#           (the packet's latest record routed `stop`), stamped by /gaffer:pause
+#           and carried through unchanged afterwards. `runstate.sh
+#           prune-questions` uses it with `packet` to drop answered entries; an
+#           entry without it is always kept.
 pending_questions:
   - id: <q-001>
     severity: <blocking | high | normal>
     packet: <feature-001-scope>
+    asked_at: '<ts of the routing record that raised it>'
     question: <what you need decided, in one or two sentences>
 
 # ═══════════════════════════════════════════════════════════════════════════

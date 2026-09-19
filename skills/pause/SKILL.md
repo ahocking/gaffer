@@ -93,7 +93,20 @@ session. Fill in truthfully:
 - `branch` — the `orch/<task-id>` branch,
 - `last_green_commit` — the SHA you verified in step 2,
 - `backlog.cursor` / `pending` — where the loop stopped and what remains,
-- `pending_questions` — every unanswered blocking/high question, with severity.
+- `pending_questions` — every unanswered blocking/high question, with severity,
+  in the block-entry shape the template documents. **Run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh prune-questions .agents/run-state.yaml`
+  first, before you compose the list** (skip it only when the file does not
+  exist yet). Then carry through the existing entries exactly as they stand in
+  that pruned file on disk — read them after the prune, never from an earlier
+  read — with each entry's `asked_at` unchanged. Add new entries after them:
+  - the question the `stop` action handed over gets `asked_at:` set to the
+    `ts` of the cursor's latest record routed `stop` in
+    `$RUN_DIR/routing.jsonl`, copied verbatim and written **quoted**
+    (`asked_at: '<ts>'`);
+  - any other new entry — a `hand-off-feature` question, or one carried by a
+    plain pause — gets **no** `asked_at:` line at all, so `prune-questions`
+    always keeps it.
 
 **When the `status` you are about to write is `blocked` because the `stop`
 action (`skills/run-loop/SKILL.md` §3.5) handed a question here, this pause
@@ -160,7 +173,12 @@ last_green_commit: <verified-green-sha>
 backlog:
   cursor: <next-packet>
   pending: [ ... ]
-pending_questions: [ ... ]
+pending_questions:
+  - id: <carry every entry left by prune-questions through verbatim>
+    severity: <blocking | high | normal>
+    packet: <packet id>
+    asked_at: '<ts of the routing record routed stop; omit on any other new entry>'
+    question: <...>
 findings:
   - id: <carry EVERY existing index entry through verbatim>
     summary: <...>

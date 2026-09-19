@@ -56,7 +56,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
 
 ## Capabilities
 
-- [ ] **P0**: Each `pending_questions` entry records when it was asked
+- [x] **P0**: Each `pending_questions` entry records when it was asked
   - pause's persist step stamps each new entry with `asked_at`, the `ts` of the
     routing record that raised it (the latest record for that packet routed
     `stop`), written as a quoted field
@@ -78,7 +78,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
     including `findings:`, is carried through byte-identical. When nothing is
     dropped, the file is left unchanged
 
-- [ ] **P0**: The prune runs wherever the list is re-persisted
+- [x] **P0**: The prune runs wherever the list is re-persisted
   - pause's persist step and resume's entry each run the subcommand before the
     list is written or rendered
   - those two sites and run-loop's "carrying every existing entry through"

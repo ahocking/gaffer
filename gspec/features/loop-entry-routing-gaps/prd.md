@@ -79,7 +79,7 @@ this repository, since the run that found it ended `done`.
 
 ## Capabilities
 
-- [ ] **P0**: The carried findings index is copied line-for-line from the on-disk findings block, and the projection is named as not a source
+- [x] **P0**: The carried findings index is copied line-for-line from the on-disk findings block, and the projection is named as not a source
   - the clause names `.agents/run-state.yaml` as the file and its `findings:`
     block as the span, read from disk — a `Read` of the file or a line-range
     extraction of that block — and copied line-for-line into the new content,

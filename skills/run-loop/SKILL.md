@@ -261,7 +261,20 @@ re-read this file per packet.
   disk with nothing left pointing at it. Carry the index **inside this one
   `write`**, never as a follow-up `add-finding` or a repair afterwards: a
   checkpoint that exists for any interval without the index is an interval
-  in which a crash loses it. Everything else comes from the new backlog —
+  in which a crash loses it. **Read the index from disk — the `findings:`
+  block of the `.agents/run-state.yaml` you are about to replace — and copy
+  those lines line-for-line into the new content**: a `Read` of the file, or a
+  line-range extraction of that block. The quoting the file carries is then
+  the quoting the new file carries. The span is the `findings:` key through
+  its last indented entry, stopping at the next column-0 key; an absent or
+  empty block carries nothing.
+  **`runstate.sh findings` is not a source for it** — that subcommand prints a
+  tab-separated projection for one caller, and it strips the single-quoting
+  the durable-state writer applies (ADR 0027), so re-emitting its output as
+  index lines re-opens the `": "` corruption that quoting exists to prevent,
+  in the one file whose parse failure is unrecoverable. This says where the
+  index is read from, never when it lands — the carry stays inside the one
+  `write` above. Everything else comes from the new backlog —
   `cursor`, `pending`, `branch`, `last_green_commit` and `note` — and write
   **no `run_id` line**, so the `begin-run` below mints this run its own id
   rather than inheriting the finished run's directory and records.

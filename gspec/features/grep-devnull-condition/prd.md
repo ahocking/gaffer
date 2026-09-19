@@ -111,7 +111,7 @@ used as a condition: the one live instance plus the detector that missed it.
     held deliberately — so a later reader neither restores the redirect nor
     "optimises" the corrected form back into a pipe-fed grep
 
-- [ ] **P1**: Both source guards flag a stdout-to-`/dev/null` or `q`-after-pattern grep condition as they flag `-q`
+- [x] **P1**: Both source guards flag a stdout-to-`/dev/null` or `q`-after-pattern grep condition as they flag `-q`
   - `PIPE_GREP_Q_RE` in `scripts/test-runstate.sh` and
     `scripts/test-gspec-backlog.sh` is byte-identical across the two files
     after the change, and matches each of `>/dev/null`, `> /dev/null`,

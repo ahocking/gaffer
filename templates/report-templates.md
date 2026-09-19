@@ -326,11 +326,15 @@
 
 ⚠️ **Assuming** — <the one assumption most likely to be wrong, and what it costs if it is>
 
+⚠️ **Routing config** — <n> entr(y|ies) ignored: <key> (<reason>), …
+
 🔀 **Will need you** — <the packets expected to stop for a decision, by title, and why>
 
 > **Won't touch:** <only the hard gates this backlog realistically approaches>
 
 ▶ **Session** <model> · effort <effort> · compaction <threshold>
+
+▶ **Routing** <agent> <frontmatter> → <alias> · …
 
 ▶ **Autonomy** <level> · **Stops at** <branch ready for review | integrated on <branch>>
 
@@ -353,6 +357,16 @@
 #   explainable afterwards, not to open a negotiation at the top of a report. A
 #   run that would genuinely be better on another model is a thing to say once,
 #   in conversation, never as a line in this shape.
+# - **`⚠️ Routing config` and `▶ Routing` are rendered only from `routing.sh
+#   validate` and `routing.sh table` output, run once at preflight — never from the
+#   `model_routing` YAML itself — and neither asks the operator to change anything.**
+#   `⚠️ Routing config` appears only when `validate` printed something: one line
+#   total, naming each ignored entry's key and reason (an ignored entry falls back to
+#   its agent's frontmatter model, and the run continues). `▶ Routing` appears only
+#   when `table` printed something: one line total, each agent the map routes away
+#   from its frontmatter with both models. An empty or all-default map adds no line.
+#   Like `▶ Session`, these explain a run's cost and routing afterwards; they do not
+#   open a negotiation about configuration.
 # - **Group by phase or theme, not as a numbered list of every packet.** Up to six
 #   packets may be listed individually; past that, three to five themed lines with
 #   their packets inline. A 30-line numbered list is not a plan the human can check,
@@ -393,5 +407,7 @@
 #   > rather than adding a column, so no migration.
 #
 #   ▶ **Session** claude-opus-5[1m] · effort unknown
+#
+#   ▶ **Routing** implementer sonnet → opus
 #
 #   ▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review

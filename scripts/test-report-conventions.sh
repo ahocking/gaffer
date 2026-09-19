@@ -587,6 +587,39 @@ out="$(_lint C "$LD/c-ok.md" "$LD/digest")"
 [ "$out" = 'REPORT_LINT=clean' ] && ok 'the same kickoff against a populated digest is clean too' \
   || bad 'the same kickoff against a populated digest is clean too' "$out"
 
+# The kickoff's two optional routing lines (per-agent-model-routing T4): the
+# `⚠️ Routing config` line after `⚠️ Assuming`, and the `▶ Routing` line after
+# `▶ Session`, rendered from `routing.sh validate`/`table`. Both are conformant.
+cat > "$LD/c-routing.md" <<'EOF'
+▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **5 packets** · 2 phases
+
+> **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
+> **Phase 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
+
+⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.
+
+⚠️ **Routing config** — 1 entry ignored: loop-driver (loop-driver)
+
+🔀 **Will need you** — none
+
+> **Won't touch:** the transactions table schema, so no migration.
+
+▶ **Session** claude-opus-5[1m] · effort unknown
+
+▶ **Routing** implementer sonnet → opus · researcher sonnet → haiku
+
+▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+EOF
+out="$(_lint C "$LD/c-routing.md" "$LD/digest-empty")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'a kickoff carrying ⚠️ Routing config and ▶ Routing is clean against an EMPTY digest' \
+  || bad 'a kickoff carrying ⚠️ Routing config and ▶ Routing is clean against an EMPTY digest' "$out"
+out="$(_lint C "$LD/c-routing.md" "$LD/digest")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'the same routing kickoff is clean against a populated digest' \
+  || bad 'the same routing kickoff is clean against a populated digest' "$out"
+# Control: the `▶ Routing` line is a one-glyph line like any other; a second glyph fires.
+sed 's/^▶ \*\*Routing\*\* implementer/▶ ✅ **Routing** implementer/' "$LD/c-routing.md" > "$LD/v-routing-two.md"
+fires 'two-glyphs: a ▶ Routing line carrying a second glyph is named' two-glyphs "$(_lint C "$LD/v-routing-two.md" "$LD/digest-empty")"
+
 # The shape-defined constructs, one assertion each, against the rule each would
 # otherwise trip -- so an exemption that silently widens or vanishes shows here.
 b_ok="$(_lint B "$LD/b-ok.md" "$LD/digest")"

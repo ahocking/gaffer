@@ -108,7 +108,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: The consumer template documents the key
   - arch: Rule: RoutingTemplateDocs · Entity: ModelRoutingConfig
   - files: templates/spec-driven-base/.agents/project-overrides.yaml, .agents/project-overrides.yaml
-- [ ] **T4** [P] **P1** In `templates/report-templates.md` shape C, add the optional `⚠️ **Routing config**` line after `⚠️ **Assuming**` and the optional `▶ **Routing**` line after `▶ **Session**`.
+- [x] **T4** [P] **P1** In `templates/report-templates.md` shape C, add the optional `⚠️ **Routing config**` line after `⚠️ **Assuming**` and the optional `▶ **Routing**` line after `▶ **Session**`.
 
   Add one comment rule to the shape: both lines are rendered only from `routing.sh validate`/`table` output, and neither asks the operator to change anything.
 

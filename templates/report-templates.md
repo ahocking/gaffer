@@ -156,15 +156,23 @@
 # The core's 🔀 figure counts one per `handoff-feature` line, plus one per
 # `decision` line whose token is `hand-off-feature`, plus one per still-awaiting
 # `ask-operator` `decision` line — each EXCEPT one whose id already has a
-# `handoff-feature` line of its own. **Still awaiting** is defined here, once, and
-# the rules below refer to it: an `ask-operator` line counts until the same packet
-# has a start, continuation or `abandoned` record in the outcomes log whose parsed
-# timestamp is STRICTLY later than the question's. A tie does not answer (the
-# count fails toward over-reporting), and the `blocked` outcome the pause records
-# for the stop the question itself caused does not answer either — only the
-# `ask-operator` lines are aged this way; the other two kinds count for the whole
-# run. The digest's `decision` line carries no timestamp, so this is the core's
-# judgement, not something to re-derive from the digest.
+# `handoff-feature` line of its own — plus one per still-awaiting
+# retry-past-limit stop: a routing record whose `retry` token was routed `stop`
+# because the packet was already at its attempt limit. **Still awaiting** is
+# defined here, once, and the rules below refer to it: an `ask-operator` line, or
+# a retry-past-limit stop, counts until the same packet has a start, continuation
+# or `abandoned` record in the outcomes log whose parsed timestamp is STRICTLY
+# later than the question's. A tie does not answer (the count fails toward
+# over-reporting), and the `blocked` outcome the pause records for the stop the
+# question itself caused does not answer either — only the `ask-operator` lines
+# and the retry-past-limit stops are aged this way; the other two kinds count for
+# the whole run. A retry-past-limit stop has no digest line of its own (the
+# digest's line kinds are unchanged) and is a distinct question from any
+# `ask-operator` or `hand-off-feature` line for the same packet, so the core
+# counts it directly: it is never excluded by a `handoff-feature` line and never
+# capped against a digest count. The digest's `decision` line carries no
+# timestamp, so this is the core's judgement, not something to re-derive from
+# the digest.
 #
 # A packet routed `hand-off-feature` always
 # emits BOTH records for the same question (the digest's two records — left

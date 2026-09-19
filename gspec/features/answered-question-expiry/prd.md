@@ -85,7 +85,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
     sentence name the subcommand instead of restating the rule. The change at
     each site is prose only
 
-- [ ] **P0**: `run-tally` counts a retry-past-limit stop as a decision
+- [x] **P0**: `run-tally` counts a retry-past-limit stop as a decision
   - a routing record whose `retry` token was routed `stop` counts as one 🔀
     decision while it is still awaiting, by the same liveness rule as an
     `ask-operator` line

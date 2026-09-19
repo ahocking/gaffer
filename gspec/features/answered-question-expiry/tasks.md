@@ -52,7 +52,7 @@ Every regression sweep must pass green after every task.
   - covers: `run-tally` counts a retry-past-limit stop as a decision · The prune and the new count are pinned by core sweep cases
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** [P] **P0** In `scripts/runstate.sh`, add a subcommand (for example `prune-questions <run-state>`) that keeps only the `pending_questions` entries T1's helper reports as unanswered, plus those with no `packet:` or no `asked_at`.
+- [x] **T2** [P] **P0** In `scripts/runstate.sh`, add a subcommand (for example `prune-questions <run-state>`) that keeps only the `pending_questions` entries T1's helper reports as unanswered, plus those with no `packet:` or no `asked_at`.
 
   What it drops and keeps:
   - it parses the block-entry shape `templates/run-state.yaml` documents; a list in any other shape is kept unchanged;

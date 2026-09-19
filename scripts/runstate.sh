@@ -473,6 +473,26 @@
 #                                    No queued figure: that is the pending
 #                                    count `summary` reports, not a digest
 #                                    fact. Dies exactly where run-digest dies.
+#   prune-questions <run-state>     answered-question-expiry T2: drop entries
+#                                    from `pending_questions:` that the same
+#                                    liveness rule above (_rs_unanswered_
+#                                    questions) reports as answered. Parses
+#                                    ONLY the block-entry shape templates/run-
+#                                    state.yaml documents (`  - id: ...` plus
+#                                    indented `packet:`/`asked_at:` siblings,
+#                                    quotes stripped symmetrically as `cmd_get`
+#                                    does); a list in any other shape, or no
+#                                    `pending_questions:` block at all, is left
+#                                    byte-untouched. An entry with no `packet:`
+#                                    or no `asked_at:`, or an empty or
+#                                    unparseable value in either, is ALWAYS
+#                                    kept (fails toward over-reporting). Writes through
+#                                    `cmd_write`, carrying every other key
+#                                    (including `findings:`) through byte-
+#                                    identical; when nothing is dropped, the
+#                                    file is not written at all. Prints
+#                                    PRUNED=yes|no, DROPPED=<n> and, when
+#                                    PRUNED=yes, KEPT=<n>.
 #
 # Exit codes: 0 = success (reconcile always 0 when it can decide), non-zero =
 # usage / unreadable-file / unreadable-work-tree error (stderr explains).
@@ -3197,6 +3217,161 @@ _rs_tally_live_questions() {
   ' "$routing_file" 2>/dev/null | _rs_unanswered_questions "$outcomes_dir"
 }
 
+# --- prune-questions: drop answered entries from pending_questions: ---------
+# --- (answered-question-expiry T2) -------------------------------------------
+# Same liveness rule as run-tally's header 🔀 figure (_rs_unanswered_questions),
+# applied to the OTHER source that renders a decision block: run-state's
+# `pending_questions:` list. Without this, a run that resumes, answers a
+# question and stops a second time keeps rendering a block for the answered
+# question forever -- the header/body mismatch report-lint's decision-count
+# rule exists to catch.
+#
+# Parses ONLY the documented block-entry shape (`  - id: ...` followed by
+# indented sibling keys, one of them `packet:`, one `asked_at:`). A list in
+# any other shape -- a legacy plain-scalar list, a flow list, anything mixing
+# non-`- id:` items in -- is left byte-untouched: guessing at an unrecognized
+# shape risks silently dropping a question a human still needs to answer,
+# which is the one thing this subcommand must never do.
+#
+# An entry with no `packet:` line or no `asked_at:` line at all (legacy,
+# crash-recovered, or hand-supplied) is ALWAYS kept -- it never reaches the
+# liveness helper, so it fails toward over-reporting exactly like an unknown
+# packet does in `findings --stale`.
+_rs_pending_extract() {
+  awk '
+    BEGIN { inq = 0; block = 0; other = 0; n = 0; hp = 0; ha = 0; pkt = ""; asked = "" }
+    /^pending_questions:[[:space:]]*$/ { inq = 1; block = 1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inq = 0 }
+    inq && /^[[:space:]]*-/ && $0 !~ /^[[:space:]]*- id:/ { other = 1 }
+    inq && /^[[:space:]]*- id:/ {
+      if (n > 0) print "E\t" n "\t" hp "\t" ha "\t" pkt "\t" asked
+      n++; hp = 0; ha = 0; pkt = ""; asked = ""
+      next
+    }
+    inq && /^[[:space:]]*packet:/ {
+      line = $0; sub(/^[[:space:]]*packet:[[:space:]]*/, "", line); pkt = line; hp = 1; next
+    }
+    inq && /^[[:space:]]*asked_at:/ {
+      line = $0; sub(/^[[:space:]]*asked_at:[[:space:]]*/, "", line); asked = line; ha = 1; next
+    }
+    END {
+      if (n > 0) print "E\t" n "\t" hp "\t" ha "\t" pkt "\t" asked
+      print "S\t" block "\t" other "\t" n
+    }
+  ' "$1"
+}
+
+cmd_prune_questions() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ "$#" -eq 1 ] || die "usage: prune-questions <run-state>"
+  need_file "$f"
+
+  local raw
+  raw="$(_rs_pending_extract "$f")"
+
+  local block other total
+  block="$(awk -F'\t' '$1 == "S" { print $2 }' <<<"$raw")"
+  other="$(awk -F'\t' '$1 == "S" { print $3 }' <<<"$raw")"
+  total="$(awk -F'\t' '$1 == "S" { print $4 }' <<<"$raw")"
+
+  # No block at all, an unrecognized shape, or a recognized-but-empty list:
+  # nothing this subcommand can safely act on. Untouched, not even opened for
+  # write.
+  if [ "$block" != 1 ] || [ "$other" = 1 ] || [ "${total:-0}" = 0 ]; then
+    printf 'PRUNED=no\nDROPPED=0\n'
+    return 0
+  fi
+
+  local main_root outcomes_dir
+  main_root="$(_rs_main_checkout_root)" || die "prune-questions: not a git repo"
+  outcomes_dir="${main_root}/.agents/metrics/outcomes"
+
+  # keep_always/feed_idx are comma-bounded sets (",1,3,"), same convention as
+  # _normalize_id_list above -- membership is a literal `*",$idx,"*` match,
+  # never a regex, since an idx is a plain integer with no metacharacters at
+  # stake, but consistency with the rest of this file's id-set handling still
+  # matters here.
+  local keep_always="," feed_idx="," feed=""
+  local tag idx hp ha pkt_raw asked_raw pkt asked
+  while IFS="$(printf '\t')" read -r tag idx hp ha pkt_raw asked_raw; do
+    [ "$tag" = "E" ] || continue
+    if [ "$hp" != 1 ] || [ "$ha" != 1 ]; then
+      keep_always="${keep_always}${idx},"
+      continue
+    fi
+    pkt="$(_yaml_decode_value "$pkt_raw")"
+    asked="$(_yaml_decode_value "$asked_raw")"
+    # Keep-always is decided on the decoded VALUES too, not just the key lines:
+    # the helper skips an empty-packet row (never echoed live) and _rs_ts_key
+    # reads an empty or unparseable stamp as 0 (so ANY later record answers
+    # it) -- either way "not reported live" would read as "answered" and drop
+    # a question a human may still owe an answer to.
+    if [ -z "$pkt" ] || [ -z "$asked" ] || [ "$(_rs_ts_key "$asked")" = 0 ]; then
+      keep_always="${keep_always}${idx},"
+      continue
+    fi
+    feed_idx="${feed_idx}${idx},"
+    # NOT `feed="${feed}$(printf ...)"` -- command substitution strips ALL
+    # trailing newlines, so successive appends would run two entries
+    # together onto one line and corrupt the packet/ts/tag split downstream.
+    # ANSI-C quoting embeds a literal tab/newline with no subshell involved.
+    feed="${feed}${pkt}"$'\t'"${asked}"$'\t'"${idx}"$'\n'
+  done <<<"$raw"
+
+  local live="" live_csv="," tagf pktf
+  if [ -n "$feed" ]; then
+    live="$(printf '%s' "$feed" | _rs_unanswered_questions "$outcomes_dir")"
+    while IFS="$(printf '\t')" read -r _ tagf pktf; do
+      [ -n "$tagf" ] || continue
+      live_csv="${live_csv}${tagf},"
+    done <<<"$live"
+  fi
+
+  # Dropped = fed (had both packet: and asked_at:) but NOT reported live --
+  # i.e. answered. Everything else (keep_always, or fed-and-still-live) is
+  # kept, in original order, by simply never being named in dropped_csv.
+  local dropped_csv="," dropped_count=0 i=1
+  while [ "$i" -le "$total" ]; do
+    case "$feed_idx" in
+      *",${i},"*)
+        case "$live_csv" in
+          *",${i},"*) : ;;
+          *) dropped_csv="${dropped_csv}${i},"; dropped_count=$((dropped_count + 1)) ;;
+        esac
+        ;;
+    esac
+    i=$((i + 1))
+  done
+
+  if [ "$dropped_count" -eq 0 ]; then
+    printf 'PRUNED=no\nDROPPED=0\n'
+    return 0
+  fi
+
+  # Same skip-while-inside-the-entry technique as cmd_drop_finding's rebuild
+  # awk above, generalized from one target id to a whole dropped-index set.
+  # `skip` persists across every indented sibling line of a dropped entry
+  # (severity:/question:/asked_at:/anything else) until the next `- id:` line
+  # or the block's end resets it -- so a dropped entry's WHOLE block goes,
+  # never just its header line.
+  local new_content
+  new_content="$(DROP="$dropped_csv" awk '
+    /^pending_questions:[[:space:]]*$/ { print; inq = 1; n = 0; next }
+    inq && /^[A-Za-z_][A-Za-z0-9_]*:/ { inq = 0; skip = 0; print; next }
+    inq && /^[[:space:]]*- id:/ {
+      n++
+      skip = (index(ENVIRON["DROP"], "," n ",") > 0) ? 1 : 0
+      if (!skip) print
+      next
+    }
+    inq && skip { next }
+    { print }
+  ' "$f")"
+
+  printf '%s\n' "$new_content" | cmd_write "$f"
+  printf 'PRUNED=yes\nDROPPED=%d\nKEPT=%d\n' "$dropped_count" "$((total - dropped_count))"
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -3702,7 +3877,8 @@ case "$cmd" in
   periodic-pause)    cmd_periodic_pause    "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;
   run-tally)         cmd_run_tally         "$@" ;;
+  prune-questions)   cmd_prune_questions   "$@" ;;
   bundle-cap)        cmd_bundle_cap        "$@" ;;
-  -h|--help|help|"") sed -n '2,448p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help|"") sed -n '2,498p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

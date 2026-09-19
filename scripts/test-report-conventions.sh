@@ -262,6 +262,51 @@ else
       "run-loop=$count_runloop resume=$count_resume shapes=$count_shapes"
 fi
 
+printf '\n== the run entry point routes on the checkpoint status, not its existence (loop-entry-routing T1) ==\n'
+# §2's first decision used to be a test on `.agents/run-state.yaml` EXISTING, which
+# sent a session opening after a completed run into the resume skill -- a skill whose
+# decision table has no branch for `done`, and whose every branch assumes work
+# remains. The condition now names its redirect set POSITIVELY, so a value outside
+# that set falls to the stop below rather than into a resume that cannot resolve it.
+#
+# Extracted by its own content anchor -- deliberately NOT `_extract_ct_block`, which
+# matches a different, fenced span in the same file -- and guarded non-empty before
+# anything is scanned over it, as the extractions above are: a range matching nothing
+# yields an empty span that satisfies every scan. Reverting the condition to an
+# existence test is exactly what empties this range, which is what makes the guard the
+# mutation check rather than ceremony. Asserted on what the condition must NAME, never
+# on the absence of the removed phrase -- an absence assertion passes forever from the
+# moment the removal lands. No assertion here for the unrecognised-status stop: the
+# PRD defers that coverage, with the reviewer as its gate.
+#
+# BOTH anchors must be phrases that sit on ONE wrapped line of the bullet. An end
+# anchor spanning a line wrap matches nothing, so the range runs on to the next line
+# that does contain it and the span silently swallows the rest of the file -- every
+# assertion below then passes on text from outside the bullet, which is the vacuous
+# pass the guard alone cannot catch (it only sees a non-empty span).
+_extract_entry_routing() { # file -> §2's status-routing bullet
+  sed -n '/route on its status, not on the file/,/leaves the session unable to edit/p' "$1"
+}
+routing_bullet="$(_extract_entry_routing "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$routing_bullet" ] && ok 'run-loop entry-routing bullet extracted (anchor holds)' \
+  || bad 'run-loop entry-routing bullet extracted (anchor holds)' \
+      'empty -- anchor moved, or the condition is back to a test on the file existing'
+
+has 'the status is read through the state reader, not parsed by eye' \
+  'runstate.sh get .agents/run-state.yaml status' "$routing_bullet"
+has 'the redirect set names a clean pause' \
+  '`paused`' "$routing_bullet"
+has 'the redirect set names a stop on a blocking question' \
+  '`blocked`' "$routing_bullet"
+has 'the redirect set names a session left mid-flight' \
+  '`running`' "$routing_bullet"
+has 'the redirect set points at the resume entry point' \
+  'skills/resume/SKILL.md' "$routing_bullet"
+has 'a completed run is named in the condition' \
+  '`done`' "$routing_bullet"
+has 'and takes the fresh-run branch in this same section, with no redirect' \
+  'fresh-run bullet directly below' "$routing_bullet"
+
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
 # hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never

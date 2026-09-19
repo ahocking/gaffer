@@ -610,8 +610,8 @@ mkdir -p "$DREPO/.agents/metrics/events"
 # and blank lines and take only the level (regression: slurping yielded the manual).
 printf '# Default autonomy level for this repo (ADR 0004).\n#   interactive | supervised | autonomous\n\nautonomous\n' > "$DREPO/.agents/autonomy"
 # d-one window (:01,:05]: 3 `dotnet test` runs of which 2 FAILED (ok:false) = rework;
-# one dispatch WITH an explicit model OVERRIDE, one plain (which correctly resolves
-# to the agent's frontmatter model — NOT a violation); one human question.
+# one dispatch passing a model, one plain — both UNSTAMPED (no routing_resolved),
+# so the override count is unmeasured here; one human question.
 cat > "$DREPO/.agents/metrics/events/D1.jsonl" <<'JSON'
 {"ts":"2026-07-21T14:00:01Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}
 {"ts":"2026-07-21T14:00:02Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"dotnet test","ok":false}
@@ -631,12 +631,12 @@ check "pkt failed_tool_calls"      "2"          "$(jq -r '.packets[]|select(.id=
 check "pkt human_interactions"     "1"          "$(jq -r '.packets[]|select(.id=="d-one").human_interactions' "$DOUT")"
 # rework proxy: 3 dotnet test invocations inside one packet
 check "pkt rework proxy (test x3)" "3"          "$(jq -r '.packets[]|select(.id=="d-one").by_command_class["dotnet test"]' "$DOUT")"
-# dispatch-model OVERRIDES (§3.3). An omitted model is correct (frontmatter
-# resolution), so only the explicit override counts here — the reviewer dispatch
-# with no `model` must NOT be counted.
+# dispatch-model OVERRIDES (per-agent-model-routing). These D1 Agent events carry
+# NO routing stamp (pre-routing hook), so the override count is UNMEASURED: judging
+# them would need the routing resolved at dispatch, which was never recorded.
 check "dispatches_total"           "2"          "$(jq -r '.audit.dispatches_total' "$DOUT")"
-check "dispatch model overrides"   "1"          "$(jq -r '.audit.dispatches_with_model_override' "$DOUT")"
-check "by_dispatch_model_override" "1"          "$(jq -r '.audit.by_dispatch_model_override.sonnet' "$DOUT")"
+check "dispatch model overrides null (Agent events unstamped, pre-routing)" "null" "$(jq -r '.audit.dispatches_with_model_override' "$DOUT")"
+check "by_dispatch_model_override null (Agent events unstamped, pre-routing)" "null" "$(jq -r '.audit.by_dispatch_model_override' "$DOUT")"
 check "no stale unnamed-model key" "null"       "$(jq -r '.audit.dispatches_without_named_model' "$DOUT")"
 # d-one carries NO tier/impl trailer and NO packet in the run does -> a wholesale
 # unlabelled run. The counts still report it as UNMEASURED, but the per-packet
@@ -659,6 +659,80 @@ check "S1 pre-instrumentation note" "1" \
 # ...and the instrumented run must NOT carry that note
 check "D1 no pre-instr note"       "0" \
   "$(jq -r '[.notes[]|select(startswith("instrumentation:"))]|length' "$DOUT")"
+
+echo "== routing audit: override = passed model differs from the stamped routing (per-agent-model-routing T5) =="
+# Each case is its own throwaway repo + one session so a count isolates ONE dispatch
+# shape. Fixture routing: implementer (frontmatter sonnet) mapped to opus; reviewer
+# (frontmatter opus) unmapped. routing_resolved "" = the dispatch should pass nothing.
+rcollect() { # rcollect <name> <events-jsonl> -> prints the run-metrics.json path
+  local r="$ROOT/route-$1"; mkdir -p "$r/.agents/metrics/events"
+  git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+  echo a > "$r/f"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="2026-07-22T09:00:05Z" GIT_COMMITTER_DATE="2026-07-22T09:00:05Z" \
+    git -C "$r" commit -q -m "work
+
+[orch packet:$1-p]"
+  printf '%s\n' "$2" > "$r/.agents/metrics/events/R$1.jsonl"
+  "$METRICS" collect --main-root "$r" --projects-dir "$ROOT/none" --out "$r/out.json" >/dev/null 2>&1 \
+    || bad "routing $1: collect exits 0" "collect returned nonzero"
+  printf '%s\n' "$r/out.json"
+}
+RT_MAP='"routing_table":{"implementer":"opus"}'
+RB='"ts":"2026-07-22T09:00:01Z","session_id":"R","agent_id":"","agent_type":"main","ok":true'
+R0="$(rcollect maprouted "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: map-routed dispatch counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$R0")"
+check "routing: map-routed by_dispatch_model_override empty" "{}" "$(jq -c '.audit.by_dispatch_model_override' "$R0")"
+R1="$(rcollect offmap "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"haiku\",\"routing_resolved\":\"\",$RT_MAP}")"
+check "routing: off-map model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R1")"
+check "routing: off-map keyed by passed model" "1" "$(jq -r '.audit.by_dispatch_model_override.haiku' "$R1")"
+R2="$(rcollect backtofm "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"sonnet\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: mapped agent sent back to its frontmatter model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R2")"
+R3="$(rcollect ownfm "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"opus\",\"routing_resolved\":\"\",$RT_MAP}")"
+check "routing: unmapped agent passed its own frontmatter model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R3")"
+check "routing: unmapped own-frontmatter keyed by passed model" "1" "$(jq -r '.audit.by_dispatch_model_override.opus' "$R3")"
+R4="$(rcollect nomodel "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: mapped agent passed nothing counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R4")"
+check "routing: passed-nothing override keyed (none)" "1" "$(jq -r '.audit.by_dispatch_model_override["(none)"]' "$R4")"
+R5="$(rcollect unmappedplain "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"routing_resolved\":\"\",\"routing_table\":{}}")"
+check "routing: unmapped agent passing nothing counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$R5")"
+check "routing: empty table records as {}" "{}" "$(jq -c '.audit.configured_routing' "$R5")"
+# configured_routing = the LATEST stamped table by PARSED ts. 09:00:02.500Z is later
+# than 09:00:02Z but sorts BEFORE it as a string ("." < "Z"), so a string sort would
+# pick the reviewer-less first table; the parse must pick the later one.
+RCFG="$(rcollect latest "{\"ts\":\"2026-07-22T09:00:02.500Z\",\"session_id\":\"R\",\"agent_id\":\"\",\"agent_type\":\"main\",\"ok\":true,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"fable\",\"routing_resolved\":\"fable\",\"routing_table\":{\"implementer\":\"opus\",\"reviewer\":\"fable\"}}
+{\"ts\":\"2026-07-22T09:00:02Z\",\"session_id\":\"R\",\"agent_id\":\"\",\"agent_type\":\"main\",\"ok\":true,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: configured_routing equals the latest stamped table" '{"implementer":"opus","reviewer":"fable"}' "$(jq -c '.audit.configured_routing' "$RCFG")"
+check "routing: both dispatches map-routed across a mid-run change" "0" "$(jq -r '.audit.dispatches_with_model_override' "$RCFG")"
+check "routing: mid-run change note names 2 distinct tables" "1" \
+  "$(jq -r '[.notes[]|select(startswith("routing: model routing CHANGED mid-run") and contains("2 distinct routing tables"))]|length' "$RCFG")"
+check "routing: single-table run has no mid-run note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("routing: model routing CHANGED"))]|length' "$R0")"
+# legacy: instrumented (ok present) but the hook predates the routing stamp
+RLEG="$(rcollect legacy "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"sonnet\"}")"
+check "routing: legacy unstamped configured_routing null" "null" "$(jq -r '.audit.configured_routing' "$RLEG")"
+check "routing: legacy unstamped override count null" "null" "$(jq -r '.audit.dispatches_with_model_override' "$RLEG")"
+RMIX="$(rcollect mixed "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}
+{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"sonnet\"}")"
+check "routing: mixed-stamp run override count null" "null" "$(jq -r '.audit.dispatches_with_model_override' "$RMIX")"
+check "routing: mixed-stamp run note (1 of 2 unstamped)" "1" \
+  "$(jq -r '[.notes[]|select(contains("1 of 2 dispatches carry no routing stamp"))]|length' "$RMIX")"
+check "routing: mixed-stamp configured_routing from the stamped event" '{"implementer":"opus"}' "$(jq -c '.audit.configured_routing' "$RMIX")"
+RNONE="$(rcollect nodispatch "{$RB,\"tool\":\"Bash\",\"cmd_class\":\"git status\"}")"
+check "routing: no dispatches counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$RNONE")"
+check "routing: no dispatches configured_routing null" "null" "$(jq -r '.audit.configured_routing' "$RNONE")"
+check "routing: fully-stamped run carries no unstamped note" "0" \
+  "$(jq -r '[.notes[]|select(contains("carry no routing stamp"))]|length' "$R0")"
+# show: null must render as unmeasured, {} as none, a table as "<agent> <alias>"
+check "show routing: null renders unmeasured — pre-routing run" "1" \
+  "$("$METRICS" show "$RLEG" 2>/dev/null | grep -c 'configured routing: unmeasured — pre-routing run')"
+check "show routing: {} renders none" "1" \
+  "$("$METRICS" show "$R5" 2>/dev/null | grep -c 'configured routing: none$')"
+check "show routing: table renders agent alias" "1" \
+  "$("$METRICS" show "$RCFG" 2>/dev/null | grep -c 'configured routing: implementer opus, reviewer fable')"
+check "show routing: null override count not rendered as 0" "1" \
+  "$("$METRICS" show "$RMIX" 2>/dev/null | grep -c 'model overrides vs routing resolved at dispatch: unmeasured')"
+check "show routing: no // {} or // 0 fallback on routing fields" "0" \
+  "$(grep -cE '(configured_routing|dispatches_with_model_override|by_dispatch_model_override) // (\{\}|0)' "$METRICS")"
 
 # =============================================================================
 # ADR 0019 v3 — phantom-packet window bound, by_tool, sticky by_skill
@@ -924,13 +998,13 @@ echo "== v3.3: show reports unmeasured counters as unmeasured, not as clean zero
 # that predates the counter) as 0, which reads as "checked, nothing found".
 SHOW_OUT="$("$METRICS" show "$EOUT" 2>/dev/null)"
 check "show: audit present"        "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^routing audit')"
-check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'explicit model overrides')"
+check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'model overrides vs routing resolved at dispatch')"
 # audit must come BEFORE the packets table, not be buried under it
 check "show: audit above packets"  "before" \
   "$(printf '%s\n' "$SHOW_OUT" | awk '/^routing audit/{a=NR} /^packets \(id/{p=NR} END{print (a>0 && a<p) ? "before" : "after"}')"
 # a legacy run must read as UNMEASURED, never as a clean zero
 SHOW_LEG="$("$METRICS" show "$OUT" 2>/dev/null)"
-check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'explicit model overrides: unmeasured')"
+check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'model overrides vs routing resolved at dispatch: unmeasured')"
 # the retracted cost claim must not come back in the by_tool heading
 check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
 # ...nor the retracted DENOMINATOR. 279M was the pre-dedup inflated figure (v3.3);

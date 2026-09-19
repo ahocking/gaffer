@@ -205,10 +205,34 @@ loaded at session start (`hooks.json`, a settings file that registers hooks,
 or an agent/skill's frontmatter). §3.3 applies these per packet; do not
 re-read this file per packet.
 
-- If **`.agents/run-state.yaml` exists**, you are resuming — `Read`
-  `${CLAUDE_PLUGIN_ROOT}/skills/resume/SKILL.md` and follow it instead of the
-  rest of this section (it keeps `run_id` via its own `begin-run` call;
-  calling `driver-mode enter` again there is harmless — idempotent).
+- If **`.agents/run-state.yaml` exists**, route on its status, not on the file
+  being there — a completed run leaves its checkpoint on disk, so existence
+  alone cannot tell a run to continue from a run already finished. Read the
+  value once, through the reader, and never parse the file by eye:
+  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh get .agents/run-state.yaml status`.
+  Then:
+  - **`paused`, `blocked` or `running`** — you are resuming. `Read`
+    `${CLAUDE_PLUGIN_ROOT}/skills/resume/SKILL.md` and follow it instead of the
+    rest of this section (it keeps `run_id` via its own `begin-run` call;
+    calling `driver-mode enter` again there is harmless — idempotent). These are
+    exactly the three that entry point's own decision table resolves:
+    **`paused`** a run that called `/gaffer:pause` and verified a clean
+    checkpoint, **`blocked`** the same but stopped on a blocking question, and
+    **`running`** a run left mid-flight by a session that did not pause — a
+    crash, which that skill reconciles before it trusts the tree.
+  - **`done`** — the backlog is complete, so there is nothing to resume: take
+    the **fresh-run bullet directly below**, with no redirect. A `done`
+    checkpoint that still carries a cursor or pending packets disagrees with
+    itself; the status is the authority, so it takes that same branch.
+  - **Any other value, including an absent or empty status** — **stop** with a
+    report naming the value you read and `.agents/run-state.yaml`. **Write
+    nothing first**: no `set`, no `write`, no `begin-run`, no `claim-driver`,
+    and no kickoff or lint files, since no run directory exists yet. The
+    checkpoint is not tracked by version control, so guessing at a file whose
+    state you cannot read is the least recoverable move available at this point
+    in the run. Run `runstate.sh driver-mode exit` immediately after that stop
+    report — this section entered driver mode above, and a stop that leaves the
+    mark set leaves the session unable to edit.
 - Otherwise build the backlog **through the adapter** — the single place this
   plugin reads gspec (ADR 0020 D2). Never parse `gspec/` yourself:
   - `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` picks the feature —

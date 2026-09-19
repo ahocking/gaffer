@@ -90,7 +90,7 @@ loop's entry routing.
 
 ## Capabilities
 
-- [ ] **P0**: The run entry point routes on the checkpoint's lifecycle status, not on the file's existence
+- [x] **P0**: The run entry point routes on the checkpoint's lifecycle status, not on the file's existence
   - the redirect to the resume entry point is taken for exactly three statuses,
     each named in the condition: a run paused cleanly, a run stopped on a
     blocking question, and a run left mid-flight by a session that did not pause
@@ -105,7 +105,7 @@ loop's entry routing.
     and a session that legitimately reaches it sees the same decision table it
     sees today
 
-- [ ] **P0**: A status the entry point does not recognise stops the run rather than taking either branch
+- [x] **P0**: A status the entry point does not recognise stops the run rather than taking either branch
   - a checkpoint whose status is absent, empty, or outside the documented set
     produces a stop naming the value read and the file it was read from, and the
     run neither redirects nor starts a fresh backlog over it

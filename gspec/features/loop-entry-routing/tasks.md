@@ -21,7 +21,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
 
 ## Plan
 
-- [ ] **T1** **P0** In `skills/run-loop/SKILL.md` §2, replace the "If `.agents/run-state.yaml` exists, you are resuming" redirect with a three-way routing on its status, and add the sweep case that pins the condition to `scripts/test-report-conventions.sh`.
+- [x] **T1** **P0** In `skills/run-loop/SKILL.md` §2, replace the "If `.agents/run-state.yaml` exists, you are resuming" redirect with a three-way routing on its status, and add the sweep case that pins the condition to `scripts/test-report-conventions.sh`.
 
   The routing instruction:
   - reads the status with `runstate.sh get .agents/run-state.yaml status`, and never parses the file by eye;

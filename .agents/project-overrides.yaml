@@ -66,7 +66,14 @@ ux:
 # excluded: it is the session itself, so routing never sets its model. An
 # invalid entry falls back to that frontmatter default and is reported at
 # run-loop and resume preflight.
-model_routing: {}
+model_routing:
+  reviewer: fable
+  architect: fable
+  chief-engineer: fable
+  ux-designer: fable
+  doc-writer: fable
+  implementer: opus
+  researcher: opus
 # Add model aliases the harness accepts before the plugin's list knows them:
 # extra_models: []
 

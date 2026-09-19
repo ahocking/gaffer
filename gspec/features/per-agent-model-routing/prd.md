@@ -94,7 +94,7 @@ shipped default for any agent the map does not name.
   - `run-loop` and `resume` run the validation at preflight, and the kickoff
     carries any report as a ⚠️ line
 
-- [ ] **P0**: Every plugin dispatch uses the resolved model
+- [x] **P0**: Every plugin dispatch uses the resolved model
   - a dispatching file is every `skills/*/SKILL.md` and `agents/*.md` that
     instructs an Agent/Task dispatch. Each one names the lookup at its
     dispatch sites and passes its result
@@ -102,7 +102,7 @@ shipped default for any agent the map does not name.
     passes the mapped model, and a reviewer dispatch passes no model
   - the `loop-driver` session's model is never set or changed by the lookup
 
-- [ ] **P0**: Precedence is explicit deviation, then map, then frontmatter
+- [x] **P0**: Precedence is explicit deviation, then map, then frontmatter
   - a dispatch that passes a model other than the resolved one, and states
     its reason in the dispatch brief, wins over the map for that one dispatch
     only
@@ -120,7 +120,7 @@ shipped default for any agent the map does not name.
   - `by_agent_role.<role>.models` is unchanged and remains the ground truth
     for what a role actually ran on
 
-- [ ] **P0**: The lookup, its fallbacks and the counting are pinned by sweep cases
+- [x] **P0**: The lookup, its fallbacks and the counting are pinned by sweep cases
   - the owning sweep covers: a mapped agent, an unmapped agent, a missing
     file, an empty map, an unknown agent key, a `loop-driver` key, an
     unrecognized model value, and an unparseable block, each asserting the

@@ -165,7 +165,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: Every plugin dispatch uses the resolved model · Precedence is explicit deviation, then map, then frontmatter · The kickoff states routing that differs from defaults · Invalid entries fail safe and are reported, never dropped or fatal
   - arch: Rule: DispatchSiteRouting · Rule: RoutingPrecedence · Rule: KickoffRouting
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md
-- [ ] **T7** **P0** Add the `routing.sh resolve` sentence at every dispatch site in the five remaining dispatching files, and add the dispatching-file sweep case to `scripts/test-routing.sh`.
+- [x] **T7** **P0** Add the `routing.sh resolve` sentence at every dispatch site in the five remaining dispatching files, and add the dispatching-file sweep case to `scripts/test-routing.sh`.
 
   The five files and their sites:
   - `skills/metrics/SKILL.md`: the `architect` it delegates to for a deep `analyze`.

@@ -208,7 +208,8 @@ form every other ask in this plugin takes. A bullet that hides a cost reads as f
 For a single small packet, reasoning inline is fine. For a deep or multi-run analysis,
 delegate to the **architect** (the optimization/architecture authority) via `Task`,
 handing it the packet path to `Read` — a dispatched agent has no `Skill` tool, so give
-it the file path, not this command (ADR 0012).
+it the file path, not this command (ADR 0012). Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` immediately
+before the dispatch (non-empty → pass it as `model`; empty → omit `model`).
 
 ## 6. `spend` — machine-wide API-equivalent spend report
 

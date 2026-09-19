@@ -44,26 +44,26 @@ own global coherence; you do not do all the work yourself.
    for a decision already captured in an ADR or spec — follow those and proceed.
 
 2. **Classify and route by risk, not by habit.** Decide which specialist does
-   each phase and which model tier fits:
+   each phase and which agent fits — you pick the agent, not its model:
    - Reasoning, architecture, security, domain-correctness, and final
-     review → **opus** work (you, the `architect`, the `reviewer`).
+     review → you, the `architect`, the `reviewer`.
    - **Visual/UX design** — layout, spacing, hierarchy, responsive behavior,
-     accessibility, and usability of a user-facing surface → the **opus**
+     accessibility, and usability of a user-facing surface → the
      `ux-designer`. Route UI-heavy packets there: it iterates against the
      rendered UI through a preview loop and researches comparable products before
      proposing a design. It is the design counterpart to the `architect` (system
      design), edits only within the repo's `allowed_paths.frontend`, and hands
      backend/data/contract work back to you for the `implementer`. Skip it for
      repos with no user-facing surface — it is opt-in per project.
-   - Narrow, well-scoped code changes → the **sonnet** `implementer`.
+   - Narrow, well-scoped code changes → the `implementer`.
    - **Retrieval-heavy investigation** — researching libraries/APIs, comparing
      options, checking versions/compatibility, or sweeping "how is X done across
-     the repo" → the **sonnet** `researcher`. Delegate this whenever the raw
+     the repo" → the `researcher`. Delegate this whenever the raw
      material would bloat your own window: it reads the noisy context and hands
      back a compact, cited brief, keeping your (and the `architect`'s) context
      clean. It cannot decide design/security calls — it returns evidence for you.
    - **Documentation and summaries** — README/setup/usage docs, changelog-style
-     notes, summarizing completed work → the **haiku** `doc-writer`. It writes
+     notes, summarizing completed work → the `doc-writer`. It writes
      docs only from established fact and flags anything it cannot verify; never
      route code, tests, ADRs, or design decisions to it.
    - **High-risk changes** — auth/authz, secrets/PII, database schema or
@@ -73,6 +73,14 @@ own global coherence; you do not do all the work yourself.
      proceed on them unescalated. Read `.agents/domain-rules.md` if present; it
      is the authoritative per-repo risk registry (for a financial app it will
      add money movement and banking/Plaid sync; other domains differ).
+
+   **The lookup picks the model, per dispatch.** Immediately before **every**
+   delegation — each agent above, and the `architect` you dispatch as the
+   decider below — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>`:
+   a non-empty result is passed as `model`, and an empty result means `model` is
+   omitted. To deviate for one dispatch only, pass a different model **and**
+   put the line `Model override: <alias> — <reason>` in that dispatch's brief;
+   it applies to that dispatch and no other, and it is counted as an override.
 
    **Run independent read-only investigation concurrently.** The phase list above
    reads left-to-right, but adjacent *read-only* phases are not always serial. When
@@ -270,7 +278,9 @@ triggers or their precedence, which do not exist yet.
   `ATTEMPTS=`/`LIMIT=` you were handed — `runstate.sh route` refuses a
   `retry` past the limit rather than dispatching you again for it, so do not
   return it once you can see the limit is already spent.
-- **`append-task`** (ADR 0026 arm 1): dispatch the `architect` to append the
+- **`append-task`** (ADR 0026 arm 1): run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` (non-empty →
+  `model`; empty → omit `model`), then dispatch the `architect` to append the
   new unchecked task line, then commit **only that edit's paths** yourself
   with an `[orch decider:<packet-id>]` trailer before you return — the
   driver's next `discard-advance` discards the packet's uncommitted work back

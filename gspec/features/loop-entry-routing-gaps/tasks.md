@@ -39,7 +39,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: skills/run-loop/SKILL.md, scripts/test-report-conventions.sh
 
-- [ ] **T2** **P1** In `scripts/test-report-conventions.sh`, apply T1's line-count ceiling to `_extract_entry_routing` as well, and verify both extractions now refuse an end-anchor overrun by mutating each end anchor in a scratch copy of the skill.
+- [x] **T2** **P1** In `scripts/test-report-conventions.sh`, apply T1's line-count ceiling to `_extract_entry_routing` as well, and verify both extractions now refuse an end-anchor overrun by mutating each end anchor in a scratch copy of the skill.
 
   - place the ceiling immediately after the routing bullet's existing non-empty guard, so both extractions are guarded the same way by the same helper, and update the comment block beside each to say what the ceiling catches that the non-empty guard cannot — a span that swallows the rest of the file and passes every prose pin on text from outside the bullet;
   - leave both `sed` ranges and every existing assertion unchanged: the refusal is additive, and nothing already pinned is loosened.

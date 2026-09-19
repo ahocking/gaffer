@@ -298,8 +298,11 @@ printf '\n== the run entry point routes on the checkpoint status, not its existe
 # BOTH anchors must be phrases that sit on ONE wrapped line of the bullet. An end
 # anchor spanning a line wrap matches nothing, so the range runs on to the next line
 # that does contain it and the span silently swallows the rest of the file -- every
-# assertion below then passes on text from outside the bullet, which is the vacuous
-# pass the guard alone cannot catch (it only sees a non-empty span).
+# assertion below then passes on text from outside the bullet. That is the vacuous
+# pass the non-empty guard cannot catch: it only sees that the span is non-empty, and
+# an overrun span is the least empty thing there is. The ceiling below is what catches
+# it -- a span that ran on to end of file is far over it, while the live span sits well
+# under, so a dead end anchor turns this section red instead of green on foreign text.
 _extract_entry_routing() { # file -> §2's status-routing bullet
   sed -n '/route on its status, not on the file/,/leaves the session unable to edit/p' "$1"
 }
@@ -307,6 +310,8 @@ routing_bullet="$(_extract_entry_routing "$ROOT/skills/run-loop/SKILL.md")"
 [ -n "$routing_bullet" ] && ok 'run-loop entry-routing bullet extracted (anchor holds)' \
   || bad 'run-loop entry-routing bullet extracted (anchor holds)' \
       'empty -- anchor moved, or the condition is back to a test on the file existing'
+under_ceiling 'the entry-routing span stays inside its ceiling (end anchor still matches)' \
+  "$routing_bullet"
 
 has 'the status is read through the state reader, not parsed by eye' \
   'runstate.sh get .agents/run-state.yaml status' "$routing_bullet"
@@ -336,8 +341,11 @@ printf '\n== the fresh-run write carries the findings index and nothing else (lo
 # that satisfies every scan. Removing the clause is exactly what empties this range --
 # the mutation check, verified by making that removal. Both anchors sit on ONE wrapped
 # line of the paragraph; an end anchor spanning a line wrap matches nothing and the
-# range runs on to swallow the rest of the file, which is the vacuous pass the
-# non-empty guard alone cannot catch.
+# range runs on to swallow the rest of the file. That is the vacuous pass the non-empty
+# guard cannot catch: it only sees that the span is non-empty, and an overrun span is
+# the least empty thing there is. The ceiling below is what catches it -- a span that
+# ran on to end of file is far over it, while the live span sits well under, so a dead
+# end anchor turns this section red instead of green on text from outside the clause.
 _extract_fresh_run_write() { # file -> §2's fresh-run findings carry-through clause
   sed -n "/When this write replaces a/,/inheriting the finished run's directory and records/p" "$1"
 }

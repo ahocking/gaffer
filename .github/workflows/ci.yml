@@ -50,6 +50,9 @@ jobs:
       - name: Machine-wide spend report sweep (loop-measurement T9/T10)
         run: bash scripts/test-spend.sh
 
+      - name: Model routing sweep
+        run: bash scripts/test-routing.sh
+
       - name: Validate plugin manifest & structure (best-effort)
         run: |
           if command -v claude >/dev/null 2>&1; then

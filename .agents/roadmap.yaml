@@ -221,3 +221,8 @@ features:
     why: "DEFERRED — accepted in ADR 0007 but entirely unbuilt; large, self-contained, and single-harness is not currently costing anything, so it waits until a second harness is actually wanted"
     depends_on: []
     deferred: true
+
+  - slug: per-agent-model-routing
+    order: 21
+    why: "operator request 2026-09-19: agents/*.md frontmatter model: is the only routing, so a repo that wants other models per role passes model by hand on every dispatch -- error-prone (run 20260918T225857-0baa dispatched three agents without the operator's interim overrides) and counted as dispatches_with_model_override when it is the repo's own policy. Fills the unread model_routing: key in project-overrides.yaml, keyed by agent, applied at every dispatch but the loop-driver session, counted as policy in metrics. The implementer model comparison is out of scope and becomes its future source of values. Ordered 21, right behind the in-flight answered-question-expiry, because the manual overrides it replaces are live cost today"
+    depends_on: []

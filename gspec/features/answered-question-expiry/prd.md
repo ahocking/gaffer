@@ -106,7 +106,7 @@ re-persisted, and `run-tally` counts the retry-past-limit stop as a decision.
     `attempt` yields `DECISIONS=0`
   - the existing `run-tally` fixture figures are unchanged
 
-- [ ] **P1**: A report after a second stop lints clean
+- [x] **P1**: A report after a second stop lints clean
   - a `scripts/test-report-conventions.sh` fixture has a run that resumes,
     answers a question and stops a second time. Its body is rendered from the
     pruned list and its header from `run-tally`, and it yields no

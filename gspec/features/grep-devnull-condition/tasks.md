@@ -52,7 +52,7 @@ Every regression sweep must pass after every task.
   - covers: Reconcile's reviewed-output check reads its whole input before deciding · A reconcile sweep case pins the corrected reviewed-output check against the reader-closes-the-pipe misfire
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** **P1** Widen `PIPE_GREP_Q_RE` in `scripts/test-runstate.sh` and `scripts/test-gspec-backlog.sh`, byte-identical in both, so it flags a pipe-fed grep whose stdout goes to `/dev/null` and a pipe-fed grep with a `q`-bearing option after its pattern. Add one self-proof check per new shape to each guard, and rewrite both KNOWN BOUNDARY comments.
+- [x] **T2** **P1** Widen `PIPE_GREP_Q_RE` in `scripts/test-runstate.sh` and `scripts/test-gspec-backlog.sh`, byte-identical in both, so it flags a pipe-fed grep whose stdout goes to `/dev/null` and a pipe-fed grep with a `q`-bearing option after its pattern. Add one self-proof check per new shape to each guard, and rewrite both KNOWN BOUNDARY comments.
 
   The regex:
   - matches `>/dev/null`, `> /dev/null`, `1>/dev/null` and `&>/dev/null` on a pipe-fed grep;

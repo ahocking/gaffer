@@ -3228,7 +3228,7 @@ assert_true "prune-questions: the run-state still parses as real YAML after the 
   "yamlok \"$(pq_rs "$PQ_NODROP")\""
 
 echo
-echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the deterministic core =="
+echo "== source guard: no pipe-fed \`grep\` that can exit early used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of
 # scripts/test-gspec-backlog.sh. The construct this feature removed is a
 # pipeline whose final stage is an early-exiting reader used as a condition:
@@ -3241,72 +3241,79 @@ echo "== source guard: no pipe-fed \`grep -q\` used as a condition in the determ
 # 20). This case is what stops a new one being added to the loop's single
 # writer unnoticed.
 #
-# THE SHAPE (settled in the plan preamble; PIPE_GREP_Q_RE below is a VERBATIM
-# copy of T3's, not an import — the two sweeps share no file, and this repo's
-# precedent is to reimplement a small helper rather than add a dependency two
-# standalone CI sweeps both need). A NON-COMMENT source line containing a
-# SINGLE `|` (never `||`) immediately followed by `grep` whose flag cluster
-# contains `q`. Because it is a copy, any change to the shape is TWO edits:
-# here and in scripts/test-gspec-backlog.sh. They must not drift.
+# THE SHAPE (settled in the plan preamble, widened by grep-devnull-condition
+# T2; PIPE_GREP_Q_RE below is a VERBATIM copy of T3's, not an import — the two
+# sweeps share no file, and this repo's precedent is to reimplement a small
+# helper rather than add a dependency two standalone CI sweeps both need). A
+# NON-COMMENT source line containing a SINGLE `|` (never `||`) immediately
+# followed by `grep`, where that grep either (a) is given a `q`-bearing option
+# ANYWHERE among its arguments, or (b) sends its STDOUT to `/dev/null`. Because
+# it is a copy, any change to the shape is TWO edits: here and in
+# scripts/test-gspec-backlog.sh. They must not drift.
 #
 # Each half of that earns its place, verified against this file's own subject:
 #   - non-comment: without it the scan flags prose that merely NAMES the
-#     construct (verified: dropping the leading `[^#[:space:]]` flags
-#     scripts/runstate.sh:893 and :3325, both comments explaining the fix, and
-#     nothing else). Prose that mentions the shape is not the shape.
+#     construct (verified 2026-09-19: dropping the leading `[^#[:space:]]`
+#     flags scripts/runstate.sh:969 and :3750, both comments explaining the
+#     fix, and nothing else). Prose that mentions the shape is not the shape.
 #   - single `|`, not `||`: `cmd || grep -q x` is a branch, not a pipeline.
 #   - `grep` immediately after the pipe: the construct is about the FINAL stage
 #     being the condition. A value-producing `… | head -1 | … || true` has a
 #     different final stage and is outside the shape by the PRD's definition,
-#     which is why `orphan_packet_tag` (scripts/runstate.sh:3337) is documented
-#     by T2 rather than listed as an exception here.
-#   - `q` anywhere in the cluster: catches `-q`, `-qx`, `-qxF`, `-n -q` and
-#     `--quiet`. A here-string test (`grep -qxF … <<< "$v"`) has no pipe and is
-#     correctly NOT flagged — that is the form T2 moved this file's three
-#     instances to (scripts/runstate.sh:899, :1016, :1131), so a scan that
+#     which is why `orphan_packet_tag` in scripts/runstate.sh is documented by
+#     next-state-reporting-integrity T2 rather than listed as an exception here.
+#   - `q` ANYWHERE in the arguments, not just in the leading flag cluster:
+#     catches `-q`, `-qx`, `-qxF`, `-n -q` and `--quiet`, and — T2's widening —
+#     a `q`-bearing option placed AFTER the pattern (`… | grep -E "$pat" -q`),
+#     which GNU option permutation makes exactly as early-exiting as the same
+#     option in front. A here-string test (`grep -qxF … <<< "$v"`) has no pipe
+#     and is correctly NOT flagged — that is the form the fixes in the scanned
+#     file moved to, `_dirty_has_reviewed_output` among them, so a scan that
 #     flagged it would fail on the fix itself.
+#   - stdout to `/dev/null` — `>/dev/null`, `> /dev/null`, `1>/dev/null`,
+#     `&>/dev/null` — even with no `q` on the line. This half is flagged on a
+#     DEFENSIVE rationale, and the distinction matters enough to state twice:
+#     it is NOT a measured failure. Measured (grep-devnull-condition T1's
+#     review, 2026-09-19, Linux aarch64 containers, GNU grep 3.8 and 3.11, a
+#     414 KB listing, 20 runs each) the redirect form misfired 0/20 while the
+#     pipe-fed `-q` form misfired 20/20 with rc 141: GNU grep stops SCANNING on
+#     a null stdout but drains a non-seekable stdin before it exits, so the
+#     writer never takes SIGPIPE, and only `-q` skips that drain. The shape is
+#     flagged because that safety is an undocumented courtesy of one
+#     implementation and the line is one keystroke from `-q` — never because a
+#     short-circuit was observed. Do not restate it as one.
+#   - a BARE `2>/dev/null` is deliberately NOT matched: stderr to null neither
+#     exits early nor closes the pipe, and the scanned file's own
+#     `git … 2>/dev/null` lines are not this hazard.
 #
-# KNOWN BOUNDARY — and in THIS file it is not hypothetical, so do NOT read the
-# empty exception list below as "scripts/runstate.sh is clean". GNU grep
-# short-circuits on a `/dev/null` stdout the same way `-q` does (it detects the
-# null sink and sets done-on-match), so `… | grep pat >/dev/null` used as a
-# condition is the same hazard — and this scan does NOT catch it, because the
-# line carries no `q`. One such line exists here today:
-#
-#     scripts/runstate.sh:3245     | grep -E "$combined" >/dev/null
-#
-# and it IS condition-shaped: it is the last command of
-# `_dirty_has_reviewed_output` (:3208), so its status is that function's return
-# value, and the function is the condition of the `elif` at :3283. The comment
-# above it dropped `-q` specifically to let the producers finish writing — a
-# fix that holds only for a grep WITHOUT the /dev/null short-circuit, so the
-# original hazard may still be live there under GNU grep. It is NAMED, not
-# excepted: excepting it would misfile an instance the scan never saw, and the
-# exception list is for instances the scan DOES flag. Not reproduced on the
-# implementation host, which has no GNU grep (`/usr/bin/grep` is BSD grep
-# 2.6.0-FreeBSD; `grep` on PATH is ugrep 7.8.4) — and a probe that does not
-# reproduce the phenomenon eliminates nothing (CLAUDE.md), which is exactly why
-# it is recorded here rather than dismissed. Widening the shape to cover stdout
-# redirection is a deliberate edit to PIPE_GREP_Q_RE in BOTH sweeps.
-# Two narrower boundaries, same footing: a line whose TRAILING comment contains
-# the construct is flagged (the scan reads whole lines, not shell tokens), and
-# a pipeline split across a `\`-continuation is not (the two halves are two
-# lines). Both would be caught by review rather than here.
-#
-# Line numbers above are as of this case's implementation (2026-09-18); they
-# are orientation for a reader, never something the scan depends on.
-PIPE_GREP_Q_RE='^[[:space:]]*[^#[:space:]].*[^|]\|[[:space:]]*grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[^[:space:]]*q'
+# KNOWN BOUNDARY, stated rather than silently excluded. The empty exception
+# list below says the scan finds nothing, not that scripts/runstate.sh cannot
+# hold this hazard in a form the scan cannot see. Three limits remain:
+#   - a line whose TRAILING COMMENT contains the construct is flagged: the scan
+#     reads whole lines, not shell tokens. That is a false positive rather than
+#     a miss, and the exception list is where it would be absorbed.
+#   - a pipeline split across a `\`-continuation is NOT flagged: the `|` and
+#     the `grep` land on two different lines, and neither half alone is the
+#     shape. This one is a genuine miss.
+#   - a stdout redirect to a path OTHER than `/dev/null` is NOT flagged. That
+#     is the plan's settled Deferred Decision, not an oversight: output to a
+#     regular file has no association with early exit at all, so matching it
+#     would be a false positive the exception list would then have to carry.
+# All three are caught by review rather than here.
+PIPE_GREP_Q_RE='^[[:space:]]*[^#[:space:]].*[^|]\|[[:space:]]*grep([^|]*[[:space:]]-[^[:space:]]*q|[^|]*([^|0-9&]|[[:space:]][1&])>[[:space:]]*/dev/null)'
 
 scan_pipe_grep_q() { # scan_pipe_grep_q <file> -> one `<lineno>:<text>` per unexcepted hit
   local line
   while IFS= read -r line; do
     case "$line" in
       # --- REVIEWED EXCEPTIONS: EMPTY, and that is the record ---------------
-      # T2 converted all three of this file's instances to here-strings
-      # (`grep -qxF … <<< "$v"`), so there is nothing to except. The empty list
-      # is deliberate: a hit here is a failure, not a warning. It is also NOT a
+      # next-state-reporting-integrity T2 converted all three of this file's
+      # `-q` instances to here-strings (`grep -qxF … <<< "$v"`), and
+      # grep-devnull-condition T1 converted the one `>/dev/null` instance to
+      # the same form, so there is nothing to except. The empty list is
+      # deliberate: a hit here is a failure, not a warning. It is also NOT a
       # statement that the file carries no SIGPIPE-shaped condition at all —
-      # see the KNOWN BOUNDARY above, which names one the shape cannot see.
+      # see the KNOWN BOUNDARY above for the forms this shape cannot see.
       #
       # To add one, add a branch ABOVE the `*)` catch-all, most specific
       # fragment first, with the reason on the same line:
@@ -3329,8 +3336,9 @@ scan_pipe_grep_q() { # scan_pipe_grep_q <file> -> one `<lineno>:<text>` per unex
   done < <(grep -nE "$PIPE_GREP_Q_RE" "$1" || true)
 }
 
-# Run against the real deterministic core. Recorded at implementation time
-# (2026-09-18, after T2): 0 hits, exception list empty.
+# Run against the real deterministic core. Recorded at the widening's
+# implementation time (2026-09-19, after grep-devnull-condition T1): 0 hits
+# with the wider shape, exception list still empty.
 #
 # The scan feeds its reader by process substitution, not a pipe, and every
 # assertion below goes through `assert_true`, which evaluates with `pipefail`
@@ -3344,31 +3352,48 @@ if [ -n "$GQ_HITS" ]; then
   printf '     value, or use a here-string) or add each to the exception list above with\n'
   printf '     the bound that makes it unable to misreport:\n%s\n' "$GQ_HITS"
 fi
-assert_true "scripts/runstate.sh contains no pipe-fed \`grep -q\` condition outside the (empty) exception list" \
+assert_true "scripts/runstate.sh contains no pipe-fed \`grep -q\` or \`grep … >/dev/null\` condition outside the (empty) exception list" \
   "[ -z \"\$GQ_HITS\" ]"
 
 # --- self-proof: the guard fails when an instance is introduced --------------
 # An assertion that finds nothing proves nothing on its own — it passes just as
 # happily against a scan that can never match. So the same case injects the
-# construct into a copy of scripts/runstate.sh, in the two places it could
-# appear, and asserts the identical scan flags exactly those two lines: one
-# INSIDE a function body (where every real instance lived) and one at END OF
-# FILE (the position a line-anchored or early-terminating scan would miss).
-# Run at implementation time: both flagged, nothing else.
+# construct into a copy of scripts/runstate.sh and asserts the identical scan
+# flags exactly the injected lines and nothing else. Injections are planted in
+# the two places such a line could appear: INSIDE a function body (where every
+# real instance lived) and at END OF FILE (the position a line-anchored or
+# early-terminating scan would miss).
 #
-# Both carry a `__guard_selfproof_*` marker so that no future exception
-# fragment, however broadly written, can accidentally except the proof itself.
+# One injection per shape the guard claims to catch — grep-devnull-condition T2
+# added the second and third:
+#   - `-q` in the leading flag cluster: GQ_INJ_FN, planted inside a function
+#     body, and GQ_INJ_EOF, planted as the file's last line.
+#   - stdout to `/dev/null` with no `q` on the line: GQ_INJ_DEVNULL, planted
+#     mid-file inside a function body.
+#   - a `q`-bearing option AFTER the pattern: GQ_INJ_QAFTER, planted at end of
+#     file.
+# The two new shapes take one position each so that between them both positions
+# are exercised, and the `want` comparison below is what shows each one turns
+# the guard red where it lands. Run at the widening's implementation time
+# (2026-09-19): all four flagged, nothing else — and re-run against the
+# pre-widening regex, which flagged only the two `-q` lines, so the widening is
+# load-bearing rather than decorative.
+#
+# All four carry a `__guard_selfproof_*` marker so that no future exception
+# fragment, however broadly written, can accidentally except a proof itself.
 GQ_INJ_FN='  ls "$root" | grep -q __guard_selfproof_fn__ && return 0'
+GQ_INJ_DEVNULL='  ls "$root" | grep __guard_selfproof_devnull_fn__ >/dev/null && return 0'
+GQ_INJ_QAFTER='printf "%s\n" "$x" | grep -E __guard_selfproof_qafter_eof__ -q'
 GQ_INJ_EOF='printf "%s\n" "$x" | grep -qxF __guard_selfproof_eof__'
 GQ_DIR="$(mktemp -d)"
 GQ_INJECTED="$GQ_DIR/injected-runstate.sh"
-export GQ_INJ_FN GQ_INJ_EOF
+export GQ_INJ_FN GQ_INJ_DEVNULL GQ_INJ_QAFTER GQ_INJ_EOF
 awk '
   { print }
   !placed && /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$/ {
-      print ENVIRON["GQ_INJ_FN"]; placed = 1
+      print ENVIRON["GQ_INJ_FN"]; print ENVIRON["GQ_INJ_DEVNULL"]; placed = 1
   }
-  END { print ENVIRON["GQ_INJ_EOF"] }
+  END { print ENVIRON["GQ_INJ_QAFTER"]; print ENVIRON["GQ_INJ_EOF"] }
 ' "$RUNSTATE" > "$GQ_INJECTED"
 
 GQ_GOT="$(scan_pipe_grep_q "$GQ_INJECTED")"
@@ -3376,22 +3401,23 @@ GQ_GOT="$(scan_pipe_grep_q "$GQ_INJECTED")"
 # runs with `pipefail` on outside `assert_true`, and the whole point of the
 # case is not to hand a producer to a reader through a pipe.
 GQ_GOT_TEXT="$(sed 's/^[0-9]*://' <<< "$GQ_GOT")"
-GQ_WANT="$(printf '%s\n%s' "$GQ_INJ_FN" "$GQ_INJ_EOF")"
+GQ_WANT="$(printf '%s\n%s\n%s\n%s' "$GQ_INJ_FN" "$GQ_INJ_DEVNULL" "$GQ_INJ_QAFTER" "$GQ_INJ_EOF")"
 if [ "$GQ_GOT_TEXT" != "$GQ_WANT" ]; then
   printf '     got:\n%s\n     want (without line numbers):\n%s\n' "$GQ_GOT" "$GQ_WANT"
 fi
-assert_true "the same scan flags exactly the two injected instances, and only those" \
+assert_true "the same scan flags exactly the four injected instances — one per shape, two shapes new — and only those" \
   "[ \"\$GQ_GOT_TEXT\" = \"\$GQ_WANT\" ]"
 
-# And the two really are where this case claims: the first sits on the line
-# after a multi-line function opening, the second is the file's last line.
+# And they really are where this case claims: the first sits on the line after
+# a multi-line function opening, and the end-of-file injection is the file's
+# last line.
 GQ_LINE="$(sed -n '1s/^\([0-9][0-9]*\):.*/\1/p' <<< "$GQ_GOT")"
 GQ_PREV=''
 [ -n "$GQ_LINE" ] && [ "$GQ_LINE" -gt 1 ] \
   && GQ_PREV="$(sed -n "$((GQ_LINE - 1))p" "$GQ_INJECTED")"
 assert_true "the first injected instance sits inside a function body" \
   "case \"\$GQ_PREV\" in *'() {') true;; *) false;; esac"
-assert_true "the second injected instance is the last line of the file" \
+assert_true "the end-of-file injection is the last line of the file" \
   "[ \"\$(tail -n 1 '$GQ_INJECTED')\" = \"\$GQ_INJ_EOF\" ]"
 # The injected copy is left in its own `mktemp -d`, like every other scratch
 # dir in this sweep bar $REPO: a recursive delete in a test file is a line the

@@ -141,7 +141,12 @@ end-of-run scan to reconcile when it terminates. That is the only phrasing of
 the rule this file carries — reconciling judgeable drift is the loop's job,
 never the human's, and this file assigns it nowhere else.
 
-Read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status`,
+When the run-state file exists, first run
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh prune-questions .agents/run-state.yaml`
+(or the path in $ARGUMENTS), before `pending_questions` is read or rendered
+anywhere below.
+
+Then read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `status`,
 `branch`, `last_green_commit`, `backlog.cursor`/`pending`, and
 `pending_questions`.
 

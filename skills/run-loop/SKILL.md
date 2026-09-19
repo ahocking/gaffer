@@ -521,7 +521,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
      question, with severity `blocking` and `packet: <cursor>`, to
      `/gaffer:pause` — **do not write run-state yourself here**; pause's own
      step 3 persists it into `pending_questions` (carrying every existing
-     entry through), verifies the checkpoint, sets `status: blocked`, renders
+     entry through as `runstate.sh prune-questions` leaves it), verifies the checkpoint, sets `status: blocked`, renders
      the stop report, and runs `driver-mode exit` itself (§4 "Blocked" is the
      one-line pointer back to this).
 6. **Land (the `land` action).** Flip every member's checkbox first, in plan

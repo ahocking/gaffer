@@ -90,7 +90,7 @@ Every regression sweep must pass green after every task.
   - covers: `run-tally` counts a retry-past-limit stop as a decision
   - arch: —
   - files: templates/report-templates.md
-- [ ] **T4** [P] **P0** Add `asked_at` to the `pending_questions` entry shape in `templates/run-state.yaml`, and change the skill prose at the three list sites.
+- [x] **T4** [P] **P0** Add `asked_at` to the `pending_questions` entry shape in `templates/run-state.yaml`, and change the skill prose at the three list sites.
 
   In `skills/pause/SKILL.md`, the persist step:
   - runs T2's subcommand first, before the list is written;

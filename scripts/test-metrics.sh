@@ -290,6 +290,37 @@ check "hook subagent_type"         "general-purpose"     "$(jq -r 'select(.tool=
 # privacy: NO args / env / paths / secret leak into the log (head-only classifier)
 if grep -qiE 'API_KEY|xyz|porcelain|/Users/|HEAD' "$HL"; then bad "hook cmd_class leaks args/paths/secret"; else ok "hook cmd_class leaks nothing (no args/env/paths/secret)"; fi
 
+echo "== hook routing stamp: routing_resolved + routing_table on Agent events (per-agent-model-routing T2) =="
+# Run from inside a throwaway checkout (no ORCH_METRICS_DIR) so the hook resolves
+# main_root and passes `--root` to routing.sh; the real agents/ dir supplies the
+# frontmatter (implementer: sonnet), so `implementer: opus` is a table entry.
+RTREPO="$ROOT/rtrepo"; mkdir -p "$RTREPO/.agents"; git -C "$RTREPO" init -q
+printf 'model_routing:\n  implementer: opus\n' > "$RTREPO/.agents/project-overrides.yaml"
+rt() { ( cd "$RTREPO" && printf '%s' "$1" | "$HOOK" >/dev/null 2>&1 ); }
+rt '{"session_id":"RT1","tool_name":"Agent","agent_id":"","agent_type":"main","tool_use_id":"rt-mapped","tool_input":{"subagent_type":"gaffer:implementer"}}'
+rt '{"session_id":"RT1","tool_name":"Agent","agent_id":"","agent_type":"main","tool_use_id":"rt-unmapped","tool_input":{"subagent_type":"reviewer"}}'
+rt '{"session_id":"RT1","tool_name":"Bash","agent_id":"","agent_type":"main","tool_use_id":"rt-bash","tool_input":{"command":"git status"}}'
+RTL="$RTREPO/.agents/metrics/events/RT1.jsonl"
+check "routing stamp: mapped agent resolves to the alias" "opus" \
+  "$(jq -r 'select(.tool_use_id=="rt-mapped").routing_resolved' "$RTL")"
+check "routing stamp: mapped agent carries the table" '{"implementer":"opus"}' \
+  "$(jq -c 'select(.tool_use_id=="rt-mapped").routing_table' "$RTL")"
+check "routing stamp: unmapped agent resolves to explicit \"\"" '""' \
+  "$(jq -c 'select(.tool_use_id=="rt-unmapped").routing_resolved' "$RTL")"
+check "routing stamp: unmapped agent still carries the table" '{"implementer":"opus"}' \
+  "$(jq -c 'select(.tool_use_id=="rt-unmapped").routing_table' "$RTL")"
+check "routing stamp: non-Agent event carries neither field" "false false" \
+  "$(jq -r 'select(.tool_use_id=="rt-bash") | "\(has("routing_resolved")) \(has("routing_table"))"' "$RTL")"
+# routing.sh unavailable: CLAUDE_PLUGIN_ROOT at an empty dir -> both fields absent,
+# stdout empty, exit 0.
+RTEMPTY="$ROOT/rt-empty-plugin-root"; mkdir -p "$RTEMPTY"
+RTOUT="$( cd "$RTREPO" && printf '%s' '{"session_id":"RT2","tool_name":"Agent","agent_id":"","agent_type":"main","tool_input":{"subagent_type":"implementer"}}' \
+  | CLAUDE_PLUGIN_ROOT="$RTEMPTY" "$HOOK" 2>/dev/null )"; RTRC=$?
+check "routing stamp: script missing -> hook exits 0" "0" "$RTRC"
+check "routing stamp: script missing -> hook stdout empty" "" "$RTOUT"
+check "routing stamp: script missing -> both fields absent (event still logged)" "Agent false false" \
+  "$(jq -r '"\(.tool) \(has("routing_resolved")) \(has("routing_table"))"' "$RTREPO/.agents/metrics/events/RT2.jsonl" 2>/dev/null)"
+
 echo "== no events + no repo trailers -> empty-but-valid packet =="
 BARE="$ROOT/bare"; mkdir -p "$BARE"; git -C "$BARE" init -q
 OUT3="$ROOT/rm3.json"

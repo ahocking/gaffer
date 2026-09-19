@@ -186,6 +186,34 @@ esac
 # fragile, deliberately not used.)
 model="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_input.model // empty) else empty end' 2>/dev/null)"
 
+# `routing_resolved` / `routing_table` (per-agent-model-routing, ### Rule:
+# DispatchStamping) — what `routing.sh` said this dispatch SHOULD pass, recorded at
+# dispatch time so metrics.sh counts an override as "passed model != resolved", not
+# "a model was passed". Stamped only on an Agent event with a non-empty
+# subagent_type. BOTH fields or NEITHER: if the script is missing / not executable,
+# or either call exits non-zero, both are omitted — an absent stamp reads as
+# UNMEASURED, whereas a wrong one would be silently miscounted. `routing_resolved`
+# is written as an explicit "" when the agent is unmapped, so "" never means absent.
+# All call output is captured: the hook still prints nothing and exits 0.
+rstamp=""; rres=""; rtab=""
+if [ "$tool" = "Agent" ] && [ -n "$subtype" ]; then
+  _hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+  _rs="${CLAUDE_PLUGIN_ROOT:-${_hook_dir}/..}/scripts/routing.sh"
+  if [ -f "$_rs" ] && [ -x "$_rs" ]; then
+    _rargs=()
+    [ -n "$main_root" ] && _rargs=(--root "$main_root")
+    if rres="$("$_rs" ${_rargs[@]+"${_rargs[@]}"} resolve "$subtype" 2>/dev/null | tr -d '\r')" \
+      && _rt="$("$_rs" ${_rargs[@]+"${_rargs[@]}"} table 2>/dev/null | tr -d '\r')" \
+      && rtab="$(printf '%s\n' "$_rt" | jq -Rnc \
+           '[inputs | select(length > 0) | split(" ") | select(length >= 3) | {(.[0]): .[2]}] | add // {}' 2>/dev/null)" \
+      && [ -n "$rtab" ]; then
+      rstamp="1"
+    else
+      rres=""; rtab=""
+    fi
+  fi
+fi
+
 # `ok` — did the call succeed? PROBED (2026-07-22): the payload carries NO exit code
 # and no is_error field. The RESPONSE SHAPE is the signal: a successful call returns
 # an OBJECT ({stdout,stderr,interrupted,...} for Bash, {filePath,...} for Edit); a
@@ -255,6 +283,7 @@ line="$(jq -cn \
   --arg dur "$dur" --arg tuid "$tuid" --arg skill "$skill" --arg subtype "$subtype" --arg cc "$cmd_class" \
   --arg lane "$lane" --arg model "$model" --arg ok "$ok" --arg fh "$fh" \
   --arg ad "$agents_dir" --arg dm "$driver_mode" \
+  --arg rstamp "$rstamp" --arg rres "$rres" --arg rtab "$rtab" \
   '{ts:$ts,session_id:$sid,agent_id:$aid,agent_type:$at,tool:$tool}
    + (if $dur!=""     then {duration_ms:($dur|tonumber?)} else {} end)
    + (if $tuid!=""    then {tool_use_id:$tuid}            else {} end)
@@ -266,7 +295,8 @@ line="$(jq -cn \
    + (if $ok!=""      then {ok:($ok=="true")}             else {} end)
    + (if $fh!=""      then {file_hash:$fh}                else {} end)
    + (if $ad!=""      then {agents_dir:($ad=="true")}     else {} end)
-   + (if $dm!=""      then {driver_mode:($dm=="true")}    else {} end)' 2>/dev/null)" || exit 0
+   + (if $dm!=""      then {driver_mode:($dm=="true")}    else {} end)
+   + (if $rstamp!=""  then {routing_resolved:$rres, routing_table:($rtab|fromjson)} else {} end)' 2>/dev/null)" || exit 0
 [ -n "$line" ] || exit 0
 
 # Append. Concurrent parallel lanes may be subagents that SHARE the parent session

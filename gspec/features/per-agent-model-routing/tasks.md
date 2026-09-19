@@ -78,7 +78,7 @@ Every regression sweep must pass green after every task, and `claude plugin vali
   - covers: One deterministic lookup resolves an agent's model · Invalid entries fail safe and are reported, never dropped or fatal · The lookup, its fallbacks and the counting are pinned by sweep cases
   - arch: Rule: RoutingLookup · Rule: ModelRoutingParse · Rule: RoutingValidation · Entity: ModelRoutingConfig · Rule: RoutingPrecedence · Rule: RoutingSweeps
   - files: scripts/routing.sh, scripts/test-routing.sh, .github/workflows/ci.yml, CLAUDE.md
-- [ ] **T2** [P] **P0** In `hooks/metrics-log.sh`, stamp `routing_resolved` and `routing_table` onto every `Agent` event with a non-empty `subagent_type`, by calling `routing.sh resolve` and `table`.
+- [x] **T2** [P] **P0** In `hooks/metrics-log.sh`, stamp `routing_resolved` and `routing_table` onto every `Agent` event with a non-empty `subagent_type`, by calling `routing.sh resolve` and `table`.
 
   How the hook calls the script:
   - the path is `${CLAUDE_PLUGIN_ROOT:-<hook dir>/..}/scripts/routing.sh`;

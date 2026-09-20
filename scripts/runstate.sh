@@ -230,6 +230,29 @@
 #                                    written before the mechanism existed; a
 #                                    file that is PRESENT but unreadable is
 #                                    refused exactly as a missing template is.
+#   check-status --status "<line>"   loop-driver-run-gaps T1: the ONE mechanical
+#                                    reading of templates/status-line.md, run by
+#                                    the driver on every returned line. Prints
+#                                    STATUS_LINE=ok and exits 0 when <line> is
+#                                    ONE line carrying no backtick and no `$`,
+#                                    its first field (everything before the
+#                                    first ` · `) is one word, the field between
+#                                    its second-to-last and last ` · ` is
+#                                    literally `result: needs-reading` or
+#                                    `result: no`, and its last field
+#                                    (everything after the last ` · `) is
+#                                    non-empty and whitespace-free. Otherwise
+#                                    exits non-zero with ONE reason naming the
+#                                    RULE that failed — never a generic
+#                                    "malformed status line", which would leave
+#                                    the driver's single re-dispatch nothing
+#                                    actionable to pass back. Boundaries come
+#                                    from the FIRST and LAST separator, NOT a
+#                                    field count: the two middle fields are free
+#                                    text and may carry their own ` · `, so a
+#                                    four-way split would refuse a line the
+#                                    template explicitly permits. Reads no file
+#                                    and needs no run-state.
 #   write-result <run-state> <path> --status "<line>"
 #                                    atomically writes the (newline-collapsed)
 #                                    status line followed by stdin to <path>.
@@ -2792,6 +2815,114 @@ cmd_handoff() {
   printf 'HANDOFF=%s\n' "$target"
 }
 
+# =============================================================================
+# check-status (loop-driver-run-gaps T1)
+# =============================================================================
+
+# --- the ONE mechanical reading of templates/status-line.md ------------------
+# Prints ONE reason and returns 1 when <line> is off-grammar; prints nothing
+# and returns 0 when it is well-formed. The reason names the RULE that failed,
+# never a generic "malformed status line": the driver's only move on a refusal
+# is to re-dispatch the same agent once passing the reason back, and a generic
+# message leaves that re-dispatch nothing actionable.
+#
+# The boundaries come from the FIRST and LAST separator, never from a field
+# count. Splitting on ` · ` into exactly four fields would refuse a line
+# templates/status-line.md explicitly permits: the two middle fields are free
+# text and may carry their own ` · `. Only `<status>` (before the first
+# separator), the next-to-last field (between the last two) and `<path>`
+# (after the last) are load-bearing.
+#
+# Pure string operations -- `case` and parameter expansion, no pipe, no
+# subshell per rule -- so this stays callable from any refusal path (T2 wires
+# `route`/`write-result` to the same reasons) without a fork per call, and so
+# it does not add an instance of the pipe-fed-`grep` construct the sweep's
+# source guard polices.
+_rs_status_line_reason() {
+  local line="$1"
+  local sep=' · '
+  local nl='
+'
+  local cr; cr="$(printf '\r')"
+  local first last pre mid
+  local want="must be literally 'result: needs-reading' or 'result: no'"
+
+  # One line. A CR counts as a break too: a status line that renders as two
+  # lines breaks the contract the same way regardless of which byte did it,
+  # and this file has been bitten by an invisible CR before (ADR 0019 v3.1).
+  case "$line" in
+    *"$nl"*|*"$cr"*)
+      printf '%s' 'status line must be exactly one line; this one contains a line break'
+      return 1 ;;
+  esac
+  # No backtick, no `$` -- the line is passed to a shell as `--status '<line>'`
+  # and nothing legitimate in a one-clause status report needs either.
+  case "$line" in
+    *'`'*)
+      printf '%s' 'status line must contain no backtick'
+      return 1 ;;
+  esac
+  case "$line" in
+    *'$'*)
+      printf '%s' 'status line must contain no dollar sign'
+      return 1 ;;
+  esac
+
+  first="${line%%"$sep"*}"
+  if [ "$first" = "$line" ]; then
+    printf '%s' "status line carries no ' · ' separator at all; expected <status> · <what changed> · result: <needs-reading|no> · <path>"
+    return 1
+  fi
+  case "$first" in
+    ''|*[[:space:]]*)
+      printf '%s' "status line's first field (everything before the first ' · ') must be one word, not '${first}'"
+      return 1 ;;
+  esac
+
+  # The next-to-last field: between the second-to-last separator and the last.
+  # With only ONE separator there is no such field -- same rule, reported as
+  # what it is rather than as an empty value.
+  pre="${line%"$sep"*}"
+  if [ "${pre%%"$sep"*}" = "$pre" ]; then
+    printf '%s' "status line's next-to-last field ${want}; this line has only one ' · ' separator, so it has no such field"
+    return 1
+  fi
+  mid="${pre##*"$sep"}"
+  case "$mid" in
+    'result: needs-reading'|'result: no') ;;
+    *)
+      printf '%s' "status line's next-to-last field ${want}, not '${mid}'"
+      return 1 ;;
+  esac
+
+  last="${line##*"$sep"}"
+  case "$last" in
+    ''|*[[:space:]]*)
+      printf '%s' "status line's last field (everything after the last ' · ') must be a non-empty path with no whitespace, not '${last}'"
+      return 1 ;;
+  esac
+  return 0
+}
+
+# Refuses via `die` with the bare reason and NO command-specific prefix, so
+# every caller that refuses a line refuses it with a byte-identical message.
+cmd_check_status() {
+  local status="" seen=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)   status="${2:-}"; seen=1; shift 2 ;;
+      --status=*) status="${1#--status=}"; seen=1; shift ;;
+      --*) die "usage: check-status --status \"<line>\" (unknown option: $1)" ;;
+      *)   die "usage: check-status --status \"<line>\" (unexpected argument: $1)" ;;
+    esac
+  done
+  [ "$seen" = 1 ] && [ -n "$status" ] || die "usage: check-status --status \"<line>\""
+
+  local reason=""
+  reason="$(_rs_status_line_reason "$status")" && { printf 'STATUS_LINE=ok\n'; return 0; }
+  die "$reason"
+}
+
 # --- write-result: the ONE write a read-only-tooled agent gets, via a script -
 # thin-loop-driver T8. Refuses any <path> that resolves OUTSIDE the current
 # run directory (lexically, before touching disk — see _rs_lexical_abspath).
@@ -4227,6 +4358,7 @@ case "$cmd" in
   driver-mode)   cmd_driver_mode   "$@" ;;
   begin-run)     cmd_begin_run     "$@" ;;
   handoff)       cmd_handoff       "$@" ;;
+  check-status)  cmd_check_status  "$@" ;;
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;

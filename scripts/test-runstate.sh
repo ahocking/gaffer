@@ -4112,6 +4112,190 @@ assert_true "prune-questions: the run-state still parses as real YAML after the 
   "yamlok \"$(pq_rs "$PQ_NODROP")\""
 
 echo
+echo "== check-status: the mechanical reading of templates/status-line.md, one reason"
+echo "   per rule (loop-driver-run-gaps T1) =="
+# Every case below was verified by MUTATION, not inspection. The two wrong
+# implementations they exist to rule out are named on the cases that rule them
+# out: splitting on ` · ` into exactly four fields (which refuses a line the
+# template explicitly permits), and one generic "malformed status line" message
+# (which leaves the driver's single re-dispatch nothing actionable to pass
+# back).
+#
+# check-status reads no file and takes no run-state, so this runs from a plain
+# temp dir that is NOT a git repo and holds no .agents/ at all -- if the
+# subcommand ever grows a file dependency, these go red rather than silently
+# reading the sweep's own fixtures.
+CS_DIR="$(mktemp -d)"
+cs_run() { (cd "$CS_DIR" && "$RUNSTATE" check-status --status "$1" 2>&1); }
+
+# One canonical well-formed line, and the same line with a `<what changed>`
+# clause that carries its own ` · `.
+CS_OK='done · added the check · result: needs-reading · /tmp/run/pkt/implementer.md'
+CS_OK_MIDDOT='done · added the check · and its sweep cases · result: no · /tmp/run/pkt/implementer.md'
+# The two shapes the PRD's Overview names, observed on real packets of run
+# 20260919T224810-6fc6: a free-form reply with no fields, no `result:` and no
+# path; and a line whose first field is the packet id and which carries no
+# `result:`.
+CS_FREEFORM='I reformatted the status line as you asked, nothing else changed.'
+CS_PKTID='loop-driver-run-gaps-t1 · added check-status and its sweep cases · /tmp/run/pkt/implementer.md'
+
+echo "-- the well-formed line passes --"
+CS_OK_RC=0; CS_OK_OUT="$(cs_run "$CS_OK")" || CS_OK_RC=$?
+assert_true "check-status: a well-formed status line exits 0" \
+  "[ \"\$CS_OK_RC\" = 0 ]"
+assert_true "check-status: and prints STATUS_LINE=ok" \
+  "[ \"\$CS_OK_OUT\" = 'STATUS_LINE=ok' ]"
+
+echo "-- a <what changed> clause carrying its OWN ' · ' still passes --"
+# THE case that rules out splitting on ` · ` into exactly four fields:
+# templates/status-line.md says the two middle fields are free text and may
+# contain the separator, and that only the FIRST and LAST boundaries are
+# load-bearing. A four-way split refuses this line.
+CS_MID_RC=0; CS_MID_OUT="$(cs_run "$CS_OK_MIDDOT")" || CS_MID_RC=$?
+assert_true "check-status: a five-field line (the clause carries its own ' · ') still exits 0 -- boundaries come from the first and last separator, not a field count" \
+  "[ \"\$CS_MID_RC\" = 0 ]"
+assert_true "check-status: and prints STATUS_LINE=ok for it too" \
+  "[ \"\$CS_MID_OUT\" = 'STATUS_LINE=ok' ]"
+
+echo "-- Overview shape 1: a free-form reply with no fields, no result:, no path --"
+CS_FREE_RC=0; CS_FREE_MSG="$(cs_run "$CS_FREEFORM")" || CS_FREE_RC=$?
+CS_WANT_FREE="runstate.sh: status line carries no ' · ' separator at all; expected <status> · <what changed> · result: <needs-reading|no> · <path>"
+assert_true "check-status: the free-form reply is refused (non-zero)" \
+  "[ \"\$CS_FREE_RC\" != 0 ]"
+assert_true "check-status: its reason names the missing-separator rule, verbatim" \
+  "[ \"\$CS_FREE_MSG\" = \"\$CS_WANT_FREE\" ]"
+
+echo "-- Overview shape 2: the packet id as first field, no result: --"
+CS_PKT_RC=0; CS_PKT_MSG="$(cs_run "$CS_PKTID")" || CS_PKT_RC=$?
+CS_WANT_PKT="runstate.sh: status line's next-to-last field must be literally 'result: needs-reading' or 'result: no', not 'added check-status and its sweep cases'"
+assert_true "check-status: the packet-id-first line is refused (non-zero)" \
+  "[ \"\$CS_PKT_RC\" != 0 ]"
+assert_true "check-status: its reason names the result-field rule and quotes what it found, verbatim" \
+  "[ \"\$CS_PKT_MSG\" = \"\$CS_WANT_PKT\" ]"
+
+echo "-- two different failures give two different reasons --"
+# THE case that rules out one generic "malformed status line" message: both
+# lines above are refused, and the driver's one re-dispatch passes the printed
+# reason and nothing else, so a shared message makes the re-dispatch blind.
+assert_true "check-status: the two Overview shapes print DIFFERENT reasons (not one generic 'malformed status line')" \
+  "[ \"\$CS_FREE_MSG\" != \"\$CS_PKT_MSG\" ]"
+assert_true "check-status: and neither reason is empty" \
+  "[ -n \"\$CS_FREE_MSG\" ] && [ -n \"\$CS_PKT_MSG\" ]"
+
+echo "-- one rule at a time, each with its own reason --"
+CS_NL_RC=0; CS_NL_MSG="$(cs_run "$(printf 'done · added the check · result: no · /tmp/r\nand a second line')")" || CS_NL_RC=$?
+assert_true "check-status: a two-line status line is refused" \
+  "[ \"\$CS_NL_RC\" != 0 ]"
+assert_true "check-status: the one-line rule is named" \
+  "[ \"\$CS_NL_MSG\" = 'runstate.sh: status line must be exactly one line; this one contains a line break' ]"
+# A lone CR is a line break too -- it renders as two lines on the host this
+# repo has already been bitten on (ADR 0019 v3.1, the CRLF-in-jq bug).
+CS_CR_RC=0; CS_CR_MSG="$(cs_run "$(printf 'done · added the check\r · result: no · /tmp/r')")" || CS_CR_RC=$?
+assert_true "check-status: a bare CR is refused by the same one-line rule" \
+  "[ \"\$CS_CR_RC\" != 0 ] && [ \"\$CS_CR_MSG\" = 'runstate.sh: status line must be exactly one line; this one contains a line break' ]"
+
+CS_BT_RC=0; CS_BT_MSG="$(cs_run 'done · touched `runstate.sh` · result: no · /tmp/r')" || CS_BT_RC=$?
+assert_true "check-status: a backtick is refused" \
+  "[ \"\$CS_BT_RC\" != 0 ]"
+assert_true "check-status: the no-backtick rule is named" \
+  "[ \"\$CS_BT_MSG\" = 'runstate.sh: status line must contain no backtick' ]"
+
+CS_DOL_RC=0; CS_DOL_MSG="$(cs_run 'done · spent $(id) · result: no · /tmp/r')" || CS_DOL_RC=$?
+assert_true "check-status: a dollar sign is refused" \
+  "[ \"\$CS_DOL_RC\" != 0 ]"
+assert_true "check-status: the no-dollar rule is named, and differs from the backtick reason" \
+  "[ \"\$CS_DOL_MSG\" = 'runstate.sh: status line must contain no dollar sign' ] && [ \"\$CS_DOL_MSG\" != \"\$CS_BT_MSG\" ]"
+
+CS_W2_RC=0; CS_W2_MSG="$(cs_run 'all done · added the check · result: no · /tmp/r')" || CS_W2_RC=$?
+assert_true "check-status: a two-word first field is refused" \
+  "[ \"\$CS_W2_RC\" != 0 ]"
+assert_true "check-status: the one-word rule is named and quotes what it found" \
+  "[ \"\$CS_W2_MSG\" = \"runstate.sh: status line's first field (everything before the first ' · ') must be one word, not 'all done'\" ]"
+
+CS_1SEP_RC=0; CS_1SEP_MSG="$(cs_run 'done · /tmp/r')" || CS_1SEP_RC=$?
+assert_true "check-status: a line with only ONE separator has no next-to-last field, and is refused" \
+  "[ \"\$CS_1SEP_RC\" != 0 ]"
+assert_true "check-status: that refusal says so, rather than reporting an empty field" \
+  "[ \"\$CS_1SEP_MSG\" = \"runstate.sh: status line's next-to-last field must be literally 'result: needs-reading' or 'result: no'; this line has only one ' · ' separator, so it has no such field\" ]"
+
+CS_RTOK_RC=0; CS_RTOK_MSG="$(cs_run 'done · added the check · result: maybe · /tmp/r')" || CS_RTOK_RC=$?
+assert_true "check-status: a result: field with a token outside {needs-reading,no} is refused" \
+  "[ \"\$CS_RTOK_RC\" != 0 ]"
+assert_true "check-status: the result-field rule is named and quotes the bad field" \
+  "[ \"\$CS_RTOK_MSG\" = \"runstate.sh: status line's next-to-last field must be literally 'result: needs-reading' or 'result: no', not 'result: maybe'\" ]"
+
+CS_LEMPTY_RC=0; CS_LEMPTY_MSG="$(cs_run 'done · added the check · result: no · ')" || CS_LEMPTY_RC=$?
+assert_true "check-status: an empty last field is refused" \
+  "[ \"\$CS_LEMPTY_RC\" != 0 ]"
+assert_true "check-status: the path rule is named" \
+  "[ \"\$CS_LEMPTY_MSG\" = \"runstate.sh: status line's last field (everything after the last ' · ') must be a non-empty path with no whitespace, not ''\" ]"
+
+CS_LWS_RC=0; CS_LWS_MSG="$(cs_run 'done · added the check · result: no · /tmp/r and a trailing remark')" || CS_LWS_RC=$?
+assert_true "check-status: a last field carrying whitespace is refused (the path must be the whole field)" \
+  "[ \"\$CS_LWS_RC\" != 0 ]"
+assert_true "check-status: the same path rule is named, quoting the whole field" \
+  "[ \"\$CS_LWS_MSG\" = \"runstate.sh: status line's last field (everything after the last ' · ') must be a non-empty path with no whitespace, not '/tmp/r and a trailing remark'\" ]"
+
+echo "-- every rule above gives a DISTINCT reason --"
+# The generic-message failure is not ruled out by two reasons differing once;
+# count the distinct reasons across every rule this check enforces.
+CS_ALL_REASONS="$(printf '%s\n' "$CS_FREE_MSG" "$CS_PKT_MSG" "$CS_NL_MSG" "$CS_BT_MSG" "$CS_DOL_MSG" "$CS_W2_MSG" "$CS_1SEP_MSG" "$CS_LEMPTY_MSG")"
+CS_DISTINCT="$(sort -u <<< "$CS_ALL_REASONS" | wc -l | tr -d ' ')"
+assert_true "check-status: eight refusals across eight rules print eight distinct reasons" \
+  "[ \"\$CS_DISTINCT\" = 8 ]"
+
+echo "-- usage: --status is required, and a missing one is not a silent pass --"
+CS_NOARG_RC=0; CS_NOARG_MSG="$( (cd "$CS_DIR" && "$RUNSTATE" check-status 2>&1) )" || CS_NOARG_RC=$?
+assert_true "check-status: no --status at all exits non-zero" \
+  "[ \"\$CS_NOARG_RC\" != 0 ]"
+assert_true "check-status: and says what it wanted" \
+  "[ \"\$CS_NOARG_MSG\" = 'runstate.sh: usage: check-status --status \"<line>\"' ]"
+CS_EMPTY_RC=0; (cd "$CS_DIR" && "$RUNSTATE" check-status --status '' >/dev/null 2>&1) || CS_EMPTY_RC=$?
+assert_true "check-status: an EMPTY --status exits non-zero too" \
+  "[ \"\$CS_EMPTY_RC\" != 0 ]"
+
+echo "-- it reads nothing: no run-state, no .agents/, not even a git repo --"
+assert_true "check-status: the directory it ran from really is not a git repo and holds no .agents/" \
+  "[ ! -d \"\$CS_DIR/.git\" ] && [ ! -d \"\$CS_DIR/.agents\" ]"
+assert_true "check-status: and it left that directory empty (a pure reader writes nothing)" \
+  "[ -z \"\$(ls -A \"\$CS_DIR\")\" ]"
+
+echo "-- and every one of them again with NEITHER jq NOR python3 on PATH --"
+# The owning-sweep rule inherited from runstate-write-integrity-gaps: a case
+# that only holds where the author's tools are installed is a case stock Git
+# Bash never runs. `bare`/`NOTOOLS` are the stubs established at T8 above.
+cs_bare() { (cd "$CS_DIR" && PATH="$NOTOOLS:$PATH" "$RUNSTATE" check-status --status "$1" 2>&1); }
+CS_NT_OK_RC=0; CS_NT_OK_OUT="$(cs_bare "$CS_OK")" || CS_NT_OK_RC=$?
+assert_true "no-tools host: a well-formed status line still passes, byte-identically" \
+  "[ \"\$CS_NT_OK_RC\" = 0 ] && [ \"\$CS_NT_OK_OUT\" = \"\$CS_OK_OUT\" ]"
+CS_NT_MID_RC=0; CS_NT_MID_OUT="$(cs_bare "$CS_OK_MIDDOT")" || CS_NT_MID_RC=$?
+assert_true "no-tools host: the clause carrying its own ' · ' still passes" \
+  "[ \"\$CS_NT_MID_RC\" = 0 ] && [ \"\$CS_NT_MID_OUT\" = \"\$CS_MID_OUT\" ]"
+CS_NT_FREE_RC=0; CS_NT_FREE_MSG="$(cs_bare "$CS_FREEFORM")" || CS_NT_FREE_RC=$?
+assert_true "no-tools host: the free-form reply is refused with the SAME reason" \
+  "[ \"\$CS_NT_FREE_RC\" != 0 ] && [ \"\$CS_NT_FREE_MSG\" = \"\$CS_FREE_MSG\" ]"
+CS_NT_PKT_RC=0; CS_NT_PKT_MSG="$(cs_bare "$CS_PKTID")" || CS_NT_PKT_RC=$?
+assert_true "no-tools host: the packet-id-first line is refused with the SAME reason" \
+  "[ \"\$CS_NT_PKT_RC\" != 0 ] && [ \"\$CS_NT_PKT_MSG\" = \"\$CS_PKT_MSG\" ]"
+assert_true "no-tools host: the two reasons still differ" \
+  "[ \"\$CS_NT_FREE_MSG\" != \"\$CS_NT_PKT_MSG\" ]"
+CS_NT_NL_MSG="$(cs_bare "$(printf 'done · added the check · result: no · /tmp/r\nand a second line')" || true)"
+CS_NT_CR_MSG="$(cs_bare "$(printf 'done · added the check\r · result: no · /tmp/r')" || true)"
+CS_NT_BT_MSG="$(cs_bare 'done · touched `runstate.sh` · result: no · /tmp/r' || true)"
+CS_NT_DOL_MSG="$(cs_bare 'done · spent $(id) · result: no · /tmp/r' || true)"
+CS_NT_W2_MSG="$(cs_bare 'all done · added the check · result: no · /tmp/r' || true)"
+CS_NT_1SEP_MSG="$(cs_bare 'done · /tmp/r' || true)"
+CS_NT_RTOK_MSG="$(cs_bare 'done · added the check · result: maybe · /tmp/r' || true)"
+CS_NT_LEMPTY_MSG="$(cs_bare 'done · added the check · result: no · ' || true)"
+CS_NT_LWS_MSG="$(cs_bare 'done · added the check · result: no · /tmp/r and a trailing remark' || true)"
+assert_true "no-tools host: all nine remaining refusal reasons are byte-identical to the full-PATH ones" \
+  "[ \"\$CS_NT_NL_MSG\" = \"\$CS_NL_MSG\" ] && [ \"\$CS_NT_CR_MSG\" = \"\$CS_CR_MSG\" ] \
+   && [ \"\$CS_NT_BT_MSG\" = \"\$CS_BT_MSG\" ] && [ \"\$CS_NT_DOL_MSG\" = \"\$CS_DOL_MSG\" ] \
+   && [ \"\$CS_NT_W2_MSG\" = \"\$CS_W2_MSG\" ] && [ \"\$CS_NT_1SEP_MSG\" = \"\$CS_1SEP_MSG\" ] \
+   && [ \"\$CS_NT_RTOK_MSG\" = \"\$CS_RTOK_MSG\" ] && [ \"\$CS_NT_LEMPTY_MSG\" = \"\$CS_LEMPTY_MSG\" ] \
+   && [ \"\$CS_NT_LWS_MSG\" = \"\$CS_LWS_MSG\" ]"
+
+echo
 echo "== source guard: no pipe-fed \`grep\` that can exit early used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of
 # scripts/test-gspec-backlog.sh. The construct this feature removed is a

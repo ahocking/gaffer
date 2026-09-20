@@ -932,6 +932,35 @@ nothing. Read the result exactly as §4 states it for the stop report.
   The architect returns one status line summarizing what it routed and
   where; relay that, not the review file's contents.
 
+  **When that status line reports an arm-2 proposal in its free-text
+  clause, record it through the core.** You judge that from the line you
+  already relay and from nothing else: arm 2 introduces
+  **no new status token**, so there is nothing mechanical to match on and
+  nothing further to ask the architect for. Run
+  `runstate.sh route .agents/run-state.yaml end-of-run-review hand-off-feature --status '<that status line>'`,
+  quoting the line by `templates/status-line.md`'s `'\''` rule.
+  `end-of-run-review` is a **fixed id naming this run's termination review,
+  never a packet**: it satisfies the packet-id charset, carries no `..`,
+  reads as a title where the stop report renders it, and can collide with
+  no packet — every gspec-sourced packet id is `<slug>-t<n>`. The call
+  prints `ACTION=discard-advance`, and
+  **that `ACTION` is not to be acted on**: there is no packet to discard
+  and no cursor to advance at termination, and the routing record the call
+  writes is the whole purpose of the call. **Record no outcome for that id** — `end-of-run-review` is
+  not a packet, has no handoff file and no start record, so
+  `record-outcome` is never called for it and it earns no `packet` line in
+  the digest.
+
+  **The record goes in as you read the architect's status line — and
+  before the stop report reads `run-tally` below**, which is what counts
+  it: a proposal recorded after that read prints `DECISIONS=0` beside a
+  rendered decision block, the defect this step exists to close. The stop
+  report then carries the proposal as the `handoff-feature` line
+  `run-digest` already emits for that id, and the operator gate is
+  unchanged — you still never run `/gspec-feature` yourself. **An
+  architect that routed everything to arm 1, or found nothing to route,
+  records nothing at all** — no call, no record, and no figure changes.
+
   **Before declaring done, also account for any branch left behind by a
   `discard-advance` carrying a decider commit** (§3.5): `git branch --list
   'orch/*'` and check each for a `[orch decider:` trailer beyond `<base>`.

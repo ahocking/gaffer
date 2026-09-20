@@ -544,6 +544,85 @@ the driver never substitutes a line of its own|never substitutes a line of its o
 and the reviewer stays the content gate|reviewer's content gate is unchanged
 REFUSAL_NEEDLES
 
+printf '\n== the end-of-run arm-2 proposal is recorded through the core (loop-driver-run-gaps T5) ==\n'
+# ADR 0026 arm 2 ends at a question for the operator, and until now that question
+# existed only as prose the driver typed into the stop report: nothing recorded it,
+# so `run-tally` counted no decision for it and the header read `🔀 0` beside a
+# rendered decision block. The fix is a routing record for a FIXED id --
+# `end-of-run-review`, which is not a packet -- written from the architect's own
+# status line. This section pins the clause that tells the driver to write it.
+#
+# Four things in it are each the whole point, and each is a needle below: the fixed
+# id (any other id either collides with a packet or is a path-traversal segment);
+# the `hand-off-feature` token with that status line as `--status` (the record is
+# what `run-digest` renders and `run-tally` counts); the printed `ACTION` being NOT
+# acted on (it reads `discard-advance`, verified by running it -- there is no packet
+# to discard and no cursor to advance at termination, and a driver that obeyed it
+# would try to advance a finished backlog); and NO outcome recorded for that id
+# (`record-outcome` for a non-packet is how the outcomes log grows a start-less
+# record `_rs_open_packets` would later read as an open packet).
+#
+# The ORDERING needles are the ones that rule out the defect itself: a driver told
+# to record the proposal without being told WHEN can record it after the stop
+# report has already read `run-tally`, which prints `DECISIONS=0` beside a decision
+# block -- exactly the state this feature exists to remove, reached by following
+# the clause. Asserted twice over: the clause states the ordering, and the route
+# call physically precedes the `run-tally` read in the file.
+#
+# Extracted by its own content anchor and guarded non-empty before anything is
+# scanned over it, as the extractions above are: a range matching nothing yields an
+# empty span that satisfies every scan, and deleting the clause is exactly what
+# empties this range -- the mutation check, verified by making that deletion. Both
+# anchors sit on ONE wrapped line of the clause; an end anchor spanning a line wrap
+# matches nothing and the range runs on to swallow the rest of the file. That is
+# the vacuous pass the non-empty guard cannot catch: it only sees that the span is
+# non-empty, and an overrun span is the least empty thing there is. The ceiling
+# below is what catches it, and the margin is measured, not assumed: the live span
+# is 28 lines, while a span run on to end of file is 221.
+_extract_termination_record() { # file -> §4's arm-2 termination routing record clause
+  sed -n '/When that status line reports an arm-2 proposal/,/no call, no record, and no figure changes/p' "$1"
+}
+term_record="$(_extract_termination_record "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$term_record" ] && ok 'run-loop §4 termination-record clause extracted (anchor holds)' \
+  || bad 'run-loop §4 termination-record clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the arm-2 proposal is again recorded nowhere'
+under_ceiling 'the termination-record span stays inside its ceiling (end anchor still matches)' \
+  "$term_record"
+
+# Needles stay short enough to sit on ONE wrapped line of the clause: `has` is a
+# plain substring match over the multi-line span, so a phrase broken by a wrap
+# matches nothing and fails a clause that is present. No pipe into the loop -- a
+# `while read` on the right of one runs in a subshell and every ok/bad it counted
+# would be discarded.
+while IFS='|' read -r tr_label tr_needle; do
+  [ -n "$tr_label" ] || continue
+  has "run-loop §4 termination record: $tr_label" "$tr_needle" "$term_record"
+done <<'TERM_RECORD_NEEDLES'
+the fixed termination id|end-of-run-review
+which is stated not to be a packet|never a packet
+the routing token|hand-off-feature
+one invocation carrying the id, the token and the status argument|end-of-run-review hand-off-feature --status
+passing the architect's own line as --status|'<that status line>'
+judged from the line already relayed, with nothing new to match on|no new status token
+the printed ACTION is not acted on|is not to be acted on
+and no outcome is recorded for the id|Record no outcome for that id
+the record is written as the status line is read|as you read the architect's status line
+and before the stop report reads the tally|before the stop report reads `run-tally`
+an arm-1-only or empty routing result records nothing|records nothing at all
+TERM_RECORD_NEEDLES
+
+# The stated ordering above is prose; this is the same rule read off the file's own
+# structure, so a clause that says "before" while sitting after the tally step fails
+# here even with every needle green.
+tr_route_ln="$(grep -n 'end-of-run-review hand-off-feature --status' "$ROOT/skills/run-loop/SKILL.md" | head -1 | cut -d: -f1)"
+tr_tally_ln="$(grep -n 'runstate.sh run-tally' "$ROOT/skills/run-loop/SKILL.md" | head -1 | cut -d: -f1)"
+if [ -n "$tr_route_ln" ] && [ -n "$tr_tally_ln" ] && [ "$tr_route_ln" -lt "$tr_tally_ln" ]; then
+  ok 'run-loop §4: the route call is stated before the stop report reads run-tally'
+else
+  bad 'run-loop §4: the route call is stated before the stop report reads run-tally' \
+    "route line=${tr_route_ln:-none}, run-tally line=${tr_tally_ln:-none}"
+fi
+
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
 # hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never

@@ -460,7 +460,12 @@ nothing. Read the result exactly as §4 states it for the stop report.
    the union of every member's scope** — `$MEMBERS`'s own `BUNDLE_FILES=`
    line when it bundles (T5; absent, and irrelevant, for a single-member
    packet, whose own `FILES=` line is the whole scope exactly as today) —
-   never only the cursor's own scope. Then write the handoff:
+   never only the cursor's own scope. Those two conditional lines are the
+   whole of what you append — nothing from the verification contract block,
+   which `runstate.sh handoff` adds itself, on every handoff it writes, from
+   `${CLAUDE_PLUGIN_ROOT}/templates/handoff-required.md`; a driver that
+   forgets this step entirely still produces a handoff carrying all six of
+   that block's lines. Then write the handoff:
    ```
    { gspec-backlog.sh handoff "$MEMBERS"
      printf '%s\n' "REQUIRED: the regression sweep covering <area> passes, with a new case for this change"   # only if applicable

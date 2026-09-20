@@ -113,6 +113,13 @@ context:
 # guard/policy script, CI logic — the matching regression sweep MUST be listed
 # here as its own acceptance criterion — not implied by "tests pass". A sweep is
 # what makes a change to enforcement code reviewable, so this is not optional.
+#
+# Six further REQUIRED lines — the verification contract — reach every handoff
+# by construction, not by anyone copying them: `runstate.sh handoff` appends
+# the block itself, read from `templates/handoff-required.md`, which is the
+# block's one source. Nothing from it is restated here or written by whoever
+# fills this packet in; the sweep rule above and `session_boundary` are the
+# driver's own two conditional lines and stay in the task text as they are.
 acceptance_criteria:
   - <detects monthly recurring transactions>
   - <supports merchant normalization>

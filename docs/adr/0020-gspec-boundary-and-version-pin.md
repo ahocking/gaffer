@@ -408,6 +408,59 @@ blocks editing them, and it is right to.
 Sweeps re-run for this revision: `test-gspec-backlog.sh` (257) and
 `test-migrate.sh` (234), plus the other eight, all green.
 
+### D3 revision (2026-09-20) — raised to gspec 3.2.0; nothing in the consumed contract moved
+
+gspec 3.2.0 ("cut build time and tokens end to end", upstream PR #17) is pinned
+as of this revision. Before bumping, the four things this adapter and
+`/gaffer:migrate` actually touch were checked at the tag, not from the release
+notes:
+
+- **Layout and `spec-version`: unchanged.** `_plan_paths`/`_prd_paths` and
+  `GSPEC_SPEC_VERSIONS=v1 v2` stand as they are.
+- **`.gspec/build/status.json`: unchanged.** Same file, same keys, same five
+  `state` values (`running`, `complete`, `paused_review`, `failed`, `crashed`),
+  still carries `pid`. The new `paused_limit` is a `--notify` hook state only; a
+  usage-limit stop still writes `failed`. `cmd_interlock` needs no change.
+- **`templates/preamble.md`: byte-identical** to 3.1.1, so the `gspec:preamble`
+  markers, the conventions-card stamp and `_report_stale_lines` are unaffected.
+- **New on-disk things all fall under existing ignores** (`.gspec/build/screens/`,
+  extra `run.json` fields) or are installer-owned (`.claude/hooks/floors/
+  named-paths.mjs`, `render-lint.mjs`, revised agent and skill briefs).
+
+So the bump is the pin, the runbook rename, the migrate skill's strings, and one
+addition: **`migrate.sh detect` now prints `GSPEC_INSTALLED=`**, read from the
+`gspecVersion` stamp gspec writes into `.gspec/config.json` at install. That
+corrects a premise D3 stated — "gspec does not stamp its version into a project"
+— which has been false since 3.1.1 (the D9 note that the adapter *ignores* the
+stamp still holds for the version pin itself; a stamp says which tool was last
+installed, not which format the specs on disk carry). The line is informational
+and never a `FINDING=`: the pin exists to catch a format the adapter cannot
+parse, and a stale install parses fine — what it runs is the old writer,
+validator and orchestrator briefs. That is exactly why it is worth printing: a
+repo already on the 3.x folder layout is otherwise indistinguishable from an
+up-to-date one, and every gain 3.2.0 puts into its agents and skills is absent
+there until someone re-emits.
+
+**What 3.2.0 changes for a gaffer consumer, and what it does not.** Nearly all
+of its measured saving (−27% cost, −54% implementer input per run, upstream
+figures) lives in the `gspec build` driver — a 120-turn implementer cap with
+continuation, continuation briefs that inline only the cited spec blocks (spec
+reads per continuation ~14 → 1.4), a first slice briefed on dependency group 1
+only, mechanical auto-repair of lint findings, anchored revision briefs, and a
+proof-based parallel merge. gaffer does not run that driver (D1, D5), so none of
+that fires in a `/gaffer:run-loop` packet. What a consumer gets from the bump is
+the shared brief text (`gspec-engineer`'s plan floors, `gspec-qa`'s `anchor:`
+contract, the writer self-checks), which makes `/gspec-feature` and
+`/gspec-plan` revision rounds cheaper. The three driver-side mechanisms whose
+finding gaffer's own metrics independently reproduced (an implementer taking most
+of the input; uncapped runs; re-reads on continuation) are filed as features to
+port into the handoff and implementer, not adopted by switching drivers:
+`handoff-spec-inlining`, `implementer-continuation`, `dispatch-progress-metrics`.
+The `- **route:**` convention 3.2.0 adds to `arch.md` Screen blocks is invisible
+to this adapter today (`arch.md` is outside the consumed contract) and becomes
+relevant only when `handoff-spec-inlining` pulls anchored sections of it inside —
+at which point it gets a resolver and a sweep case like the other two files.
+
 ### D4 — gspec is the only supported spec source, but is not required
 
 **One spec source, three backlog sources.** Do not build or accept a second spec
@@ -679,7 +732,8 @@ report about `Promise.all`, not as a feature request) and a suggested order.
   agent has no `Skill` tool, so briefs must carry file paths
 - gspec 2.7.0: `README.md`, `docs/gspec-v2-design.md`, `docs/harness-parity.md`,
   `lib/build.js`, `plugin/hooks/floors/`, `plugin/skills/personas/gspec-engineer.md`
-- gspec 3.1.1 (the D3 revision): `lib/spec-version.js` (`SPEC_VERSION = 'v2'`),
+- gspec 3.2.0 (the 2026-09-20 D3 revision): `lib/build.js` (`STATUS_PATH`, `STATE_LABEL`, unchanged from 3.1.1), `lib/notify.js` (`paused_limit` is a notify state), `templates/preamble.md` (byte-identical), upstream PR #17 and `website/src/pages/releases.astro` (the measured figures)
+- gspec 3.1.1 (the 2026-08-23 D3 revision): `lib/spec-version.js` (`SPEC_VERSION = 'v2'`),
   `plugin/hooks/floors/paths.mjs` (the layout vocabulary, and its own both-layouts
   rationale), `dist/claude/commands/gspec-migrate.md` (the relocation it performs),
   `dist/claude/commands/gspec-plan.md` and `agents/feature-architect.md` (where the

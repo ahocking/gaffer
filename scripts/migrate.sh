@@ -746,6 +746,35 @@ _findings() {
   printf 'FINDINGS=%s\n' "$n"
 }
 
+# The gspec last installed here, against the plugin's pin. gspec stamps
+# `gspecVersion` into .gspec/config.json at install (3.1.1 onward). This is
+# INFORMATIONAL and never a FINDING: the pin exists to catch a format the
+# adapter cannot parse, and a stale install parses fine -- what it runs is the
+# OLD writer/validator/orchestrator briefs, so every gain a gspec release puts
+# into its agents and skills is absent until someone re-emits. A repo already
+# on the 3.x folder layout is otherwise indistinguishable from an up-to-date
+# one, which is how 3.2.0 would have gone unnoticed here. Parsed with jq when
+# it works, else a one-shot awk match -- no `head -1` on a live pipe (SIGPIPE
+# under pipefail reads a true answer as a failure; see runstate.sh trim-note).
+_installed_gspec_line() { # <root>
+  local cfg="$1/.gspec/config.json" pin installed=""
+  pin="$("$ADAPTER" pin 2>/dev/null | sed -n 's/^GSPEC_PINNED_VERSION=//p' | tr -d '\r')"
+  if [ -f "$cfg" ]; then
+    if command -v jq >/dev/null 2>&1 && jq -e . "$cfg" >/dev/null 2>&1; then
+      installed="$(jq -r '.gspecVersion // empty' "$cfg" 2>/dev/null | tr -d '\r')"
+    else
+      installed="$(awk 'match($0, /"gspecVersion"[[:space:]]*:[[:space:]]*"[^"]*"/) { s = substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", s); sub(/"$/, "", s); print s; exit }' "$cfg" 2>/dev/null)"
+    fi
+  fi
+  if [ -z "$installed" ]; then
+    printf 'GSPEC_INSTALLED=unknown\tno gspecVersion stamp in .gspec/config.json (a pre-3.1.1 install, or gspec is not installed in this repo)\n'
+  elif [ "$installed" = "$pin" ]; then
+    printf 'GSPEC_INSTALLED=%s\n' "$installed"
+  else
+    printf 'GSPEC_INSTALLED=%s\tdiffers from the plugin pin %s: the installed commands, agents, skills and hook floors are the %s briefs; re-emit with: npx --yes gspec@%s --target claude\n' "$installed" "$pin" "$installed" "$pin"
+  fi
+}
+
 cmd_detect() {
   local root; root="$(_root "${1:-}")"
   [ -d "$root" ] || die "no such directory: $root"
@@ -754,6 +783,7 @@ cmd_detect() {
   ls "$root"/gspec/features/*.plan.md >/dev/null 2>&1 && state='pre-2.0'
   [ -d "$root/gspec" ] || state='no-gspec'
   printf 'ROOT=%s\nFROM=%s\n' "$root" "$state"
+  _installed_gspec_line "$root"
   local out; out="$(_findings "$root")"
   printf '%s\n' "$out"
   local n; n="$(printf '%s\n' "$out" | sed -n 's/^FINDINGS=//p')"

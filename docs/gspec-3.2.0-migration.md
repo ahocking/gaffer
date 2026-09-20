@@ -1,4 +1,4 @@
-# Migrating a consumer repo to gspec 3.1.1
+# Migrating a consumer repo to gspec 3.2.0
 
 The ordered sequence for moving a repo onto gspec 3.x's feature-folder layout
 without breaking the guided loop.
@@ -80,10 +80,10 @@ ADR 0020 exists to prevent. Measured on two real repos before the adapter learne
 their legacy task shapes: **0 packets from 31 plan files**. Step 8 is where this
 baseline pays off.
 
-### 3. Install gspec 3.1.1 — *before* touching any spec
+### 3. Install gspec 3.2.0 — *before* touching any spec
 
 ```bash
-npx --yes gspec@3.1.1 --target claude
+npx --yes gspec@3.2.0 --target claude
 ```
 
 > **Do not reorder this.** A repo still on old gspec has the **old**
@@ -96,7 +96,7 @@ Confirm the plugin agrees on the pin:
 
 ```bash
 scripts/gspec-backlog.sh pin
-# GSPEC_PINNED_VERSION=3.1.1
+# GSPEC_PINNED_VERSION=3.2.0
 # GSPEC_SPEC_VERSIONS=v1 v2
 ```
 

@@ -218,6 +218,22 @@ printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/drive
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
 has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
+# The installed-gspec report (pin bump to 3.2.0, 2026-09-20). Informational, so it
+# must never turn a clean repo into FINDINGS>0 -- a stale install parses fine; it
+# only runs the old briefs. Three states: no stamp, matches the pin, differs.
+PIN_NOW="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+has 'no .gspec/config.json reads as an unknown install' 'GSPEC_INSTALLED=unknown' "$out"
+mkdir -p "$R/.gspec"; printf '{\n  "target": "claude",\n  "gspecVersion": "%s"\n}\n' "$PIN_NOW" > "$R/.gspec/config.json"
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+has 'an install matching the pin is reported bare' "GSPEC_INSTALLED=$PIN_NOW" "$out"
+case "$out" in *re-emit*) bad 'and carries no re-emit hint' "$out" ;; *) ok 'and carries no re-emit hint' ;; esac
+printf '{ "target": "claude", "gspecVersion": "3.1.1" }\n' > "$R/.gspec/config.json"
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+has 'a stale install names the re-emit command with the pin' "re-emit with: npx --yes gspec@$PIN_NOW --target claude" "$out"
+has 'and states the installed version' 'GSPEC_INSTALLED=3.1.1' "$out"
+has 'but a stale install is NOT a finding' 'FINDINGS=0' "$out"
+[ "$rc" = 0 ] && ok 'and detect still exits 0' || bad 'stale install exit 0' "rc=$rc"
+rm -rf "$R/.gspec"
 out="$("$MIG" plan "$R" 2>&1)"
 has 'plan says there is nothing to do' 'Nothing to do' "$out"
 out="$("$MIG" verify "$R" 2>&1)"

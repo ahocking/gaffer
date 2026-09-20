@@ -1038,8 +1038,8 @@ passing sweeps.
   <path> .md` — what every call site did before the seam — yields the literal
   `"prd"`/`"tasks"` for every feature at once, and N features read as one.
 
-  The pin has **two axes** because gspec does not stamp its version into a
-  project: the TOOL pin (`GSPEC_PINNED_VERSION`, currently **3.1.1**) and the
+  The pin has **two axes** because the artifact format and the tool version move independently (gspec does stamp `gspecVersion` into `.gspec/config.json` since 3.1.1, and `migrate.sh detect` now reports it against the pin, but that stamp says which tool was last installed, not which format the specs on disk carry): so there is the
+  TOOL pin (`GSPEC_PINNED_VERSION`, currently **3.2.0**) and the
   ARTIFACT pin (`spec-version`, asserted by `gspec-backlog.sh check`, which fails
   LOUD). The artifact pin deliberately accepts **`v1 v2`, not `v2` alone** —
   narrowing it would make `check` return rc=3 and stop the loop on a repo whose
@@ -1050,13 +1050,13 @@ passing sweeps.
   set, re-run the sweeps, amend ADR 0020. **gspec is optional** — four and a half
   of the five pillars have no spec dependency, so a backlog may equally come from
   run-state or an explicit argument.
-- **The human-facing migration sequence is `docs/gspec-3.1.1-migration.md`**, and
+- **The human-facing migration sequence is `docs/gspec-3.2.0-migration.md`**, and
   it is a SECOND document on purpose: `skills/migrate/SKILL.md` §2b is what an
   agent runs mid-task, the runbook is what a person follows across sessions and
   repos. They share exactly one hard fact — the pinned version — and
   `test-migrate.sh` asserts it in both (including the filename, which carries the
   version), so a pin bump that forgets the runbook fails the sweep instead of
-  leaving a document that still tells someone to `npx gspec@3.1.1`. Everything
+  leaving a document that still tells someone to `npx gspec@3.1.1` after the pin has moved on. Everything
   else in the runbook is prose no test can judge, which is exactly why the one
   checkable fact is checked.
 - **The gspec 3.x relocation is `/gspec-migrate`'s move, and `/gaffer:migrate`
@@ -1068,7 +1068,7 @@ passing sweeps.
   move are the ones that get missed), it must reformat each file to the v2 body
   through gspec's own `spec-migrator`, and it edits files gspec's
   `task-immutability` floor is watching — a shell `mv` racing that floor loses
-  intermittently. **The ordering is load-bearing**: install gspec 3.1.1 *before*
+  intermittently. **The ordering is load-bearing**: install the pinned gspec *before*
   running `/gspec-migrate`, because a repo on old gspec has the OLD
   `/gspec-migrate` in `.claude/commands/`, which migrates *toward* `gspec/tasks/`
   — the exact layout you are leaving — and reports success doing it.

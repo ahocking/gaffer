@@ -82,8 +82,8 @@ mk_plan_v2() { # mk_plan_v2 <root> <slug> <<<body
 # =============================================================================
 printf '\n== pin ==\n'
 out="$("$ADAPTER" pin)"
-check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=3.1.1' "$out"
-check 'pin reports the install command'      'npx gspec@3.1.1' "$out"
+check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=3.2.0' "$out"
+check 'pin reports the install command'      'npx gspec@3.2.0' "$out"
 # BOTH artifact versions, deliberately: v2 is what gspec 3.x writes, v1 is what
 # every unmigrated consumer repo still has on disk, and the adapter reads both.
 check 'pin supports both artifact versions'  'GSPEC_SPEC_VERSIONS=v1 v2' "$out"

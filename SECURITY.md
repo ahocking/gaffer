@@ -1,8 +1,9 @@
 # Security Policy
 
 This plugin's core value is a **safety guardrail**: a PreToolUse hook
-(`hooks/guard.sh`) and an autonomy model that gate what a Claude Code agent may
-do on your behalf. Because that surface is security-relevant, we take reports
+(`hooks/guard.sh`) enforcing one fixed rule set — hard-deny floors, an ask tier,
+and git gates that keep `main`/`master` the human's — on what a Claude Code agent
+may do on your behalf. Because that surface is security-relevant, we take reports
 about it seriously — and we're explicit below about what it does and does not
 protect against, so reports land on the right things.
 
@@ -48,9 +49,9 @@ when deciding whether something is a vulnerability.
 - A payload that makes `guard.sh` **fail open** on input it is designed to deny
   (e.g. an envelope shape or quoting trick that slips past parsing into an
   allow).
-- A bypass of the **autonomy resolution or config-root discovery** that *loosens*
-  the guard — e.g. making a higher autonomy level or a permissive `guard-extra`
-  apply when the restrictive merge rule should have clamped it down (adding a
+- A bypass of **config-root discovery** that *loosens* the guard — e.g. making a
+  permissive `guard-extra-*` set or a `bypass-ask-tier` opt-in apply when the
+  restrictive merge rule should have kept the stricter root's rules (adding a
   config root must only ever *tighten*).
 - Any committed **secret, token, or credential**, or a path that leaks one.
 - Path-traversal or injection in the deterministic cores (`guard.sh`,

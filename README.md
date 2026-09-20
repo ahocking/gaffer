@@ -3,8 +3,8 @@
 A reusable **Claude Code plugin** that installs a small orchestration layer into
 any application repo: a coordinated subagent team, workflow chains, a
 task-packet template, a **single-checkout feature-branch workflow** (a `develop`
-integration branch with `orch/*` packet branches), a **graduated autonomy dial**
-with a pausable/resumable guided loop, an MCP config, and an
+integration branch with `orch/*` packet branches), a **pausable/resumable guided
+loop**, an MCP config, and an
 **approval guardrail hook** that gates the risks common to *any* codebase (auth,
 secrets, DB schema/migrations, dependency installs, deploys, and git history).
 Domain-specific risk (money movement, PHI, grading, …) is not baked in — each
@@ -13,8 +13,7 @@ repo declares its own in `.agents/guard-extra-paths` / `.agents/guard-extra-bash
 It is a portable "global orchestration layer":
 you act as technical lead and the agents handle research, architecture,
 implementation, testing, and review — with a human approval gate on anything
-risky, and (when you opt in) unattended commits of routine green work on a
-feature branch. Built generic and reusable for any kind of application; the
+risky, and unattended commits of routine green work on a feature branch. Built generic and reusable for any kind of application; the
 first consumer repo is a .NET / React / Postgres app.
 
 ## Spec-driven development with gspec
@@ -34,7 +33,7 @@ rather than an error.
 
 The seam is deliberate ([ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md)):
 **gspec owns *what to build and in what order*; gaffer owns *how a unit of work is
-safely executed*** — guardrail, autonomy, branch isolation, checkpointing, and
+safely executed*** — guardrail, branch isolation, checkpointing, and
 measurement. Every gspec read goes through the single adapter
 `scripts/gspec-backlog.sh`; nothing else in the plugin parses `gspec/`, so an upstream
 format change lands in one file. Because gspec does not stamp its version into a
@@ -46,8 +45,8 @@ would stop the loop on a repo whose backlog the adapter reads perfectly well. Th
 pin exists to catch a format the code *cannot parse*, not to nag a repo into
 migrating.
 
-**gspec is optional.** The guardrail, the autonomy dial, the pause/resume
-checkpointing, and run-metrics have no spec dependency at all. A backlog may
+**gspec is optional.** The guardrail, the pause/resume checkpointing, and
+run-metrics have no spec dependency at all. A backlog may
 equally come from `.agents/run-state.yaml` or from an explicit argument to
 `/gaffer:run-loop`, and a repo with no `gspec/` directory loses only the
 spec-derived backlog, not the execution layer. (A fifth pillar,
@@ -60,7 +59,7 @@ but is retired; see `retire-unused-loop-modes`.)
 | --- | --- |
 | `.claude-plugin/plugin.json` | Plugin manifest (name, version, author). |
 | `agents/loop-driver.md` | **inherit** — the role the session *driving* the loop takes (ADR 0028). Passes paths, reads one status line per agent, never opens a result file, routes every verdict through `runstate.sh route`. Declares no `tools:` restriction, so `claude --agent gaffer:loop-driver` keeps `Task`/`Bash`/`Read` for the run and `Edit`/`Write` for after the stop report. |
-| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits above `interactive`. Also the **interim stand-in escalation decider** the loop dispatches on `ACTION=decider`, until `escalation-decider` ships. |
+| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits on non-`main` branches. Also the **interim stand-in escalation decider** the loop dispatches on `ACTION=decider`, until `escalation-decider` ships. |
 | `agents/architect.md` | **opus** read-mostly design authority and spec author; writes design/spec prose under `docs/**`, `adr/**`, and any doc/spec paths the repo declares in `.agents/project-overrides.yaml` (`allowed_paths.docs`/`.specs`, e.g. `gspec/**`) — never code; flags security/auth/financial concerns. |
 | `agents/ux-designer.md` | **opus** visual/UX design specialist; iterates against the rendered UI via a **context-adaptive** preview loop — a web DOM preview or a live Unity Editor (via the Unity MCP), selected by `ux.preview_mode` in `.agents/project-overrides.yaml` (auto-detected, **web** default; ADR 0010) — and researches comparable products; writes presentation only under `allowed_paths.frontend` + `.agents/ux-references.md` + `.claude/launch.json` (web). Opt-in for repos with a user-facing surface. |
 | `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. Returns one of three verdicts on exclusive triggers — `pass` / `fix` / `escalate` — which is what the loop routes on. |
@@ -72,17 +71,16 @@ but is retired; see `retire-unused-loop-modes`.)
 | `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). One sequential mode; backlog size no longer switches execution modes (ADR 0012, superseded). The session running it is in **driver mode** (ADR 0028) — it dispatches rather than edits, and no packet is implemented inline. |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
 | `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session, from wherever it left off. |
-| `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
 | `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), clean up the retired parallel-mode/rate-limit-pause footprint, then **verify the backlog actually parses**. |
 | `skills/metrics/SKILL.md` | Assemble / show / analyze a run-metrics packet (ADR 0019): where a run's compute went, per packet, agent, model, tool, and skill. |
 | `scripts/migrate.sh` | Deterministic half of `/gaffer:migrate`: detect / plan / apply / verify. Refuses a dirty tree, never deletes, never overwrites, and ends by counting packets. |
 | `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, the fingerprint-guarded file-scope sidecar, and `handoff` — a packet's whole brief, including the acceptance criteria its `covers:` names. Nothing else may parse `gspec/`. |
-| `templates/task-packet.yaml` | Fillable contract handed to a specialist agent (includes the packet `autonomy` level). |
+| `templates/task-packet.yaml` | Fillable contract handed to a specialist agent. |
 | `templates/run-state.yaml` | Schema for the durable `.agents/run-state.yaml` checkpoint file. |
 | `templates/status-line.md` | The one line every loop-dispatched agent returns (ADR 0028): status · what changed · whether the result file needs reading · its path. The same line opens the result file. |
 | `templates/check-in.md` | The two check-in shapes — status update, severity-tagged blocking question. **The loop no longer uses them** (ADR 0028); they are for a Chief Engineer dispatched for self-contained work outside a loop packet. |
 | `templates/spec-driven-base/` | The stack-agnostic overlay `new-project` copies into a fresh repo. |
-| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; refuses a driver-mode session's own main-thread writes outside `.agents/` (ADR 0028); autonomy-aware soft gates for `git commit` (≥ supervised) and `git merge`/`rebase`/`push` onto non-`main` (full-autonomy). |
+| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; refuses a driver-mode session's own main-thread writes outside `.agents/` (ADR 0028); one fixed set of git gates — `git commit` on a non-`main` branch with no secret path staged, and `git merge`/`rebase`/`push` onto a non-`main` target, never forced — with everything onto `main`/`master` denied. |
 | `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005), and clears the reopened session's own driver-mode mark. |
 | `hooks/driver-mode-compact.sh` | SessionStart hook on `compact` only: if the compacted session still holds a driver-mode mark, points it back at `agents/loop-driver.md` so it keeps driving (ADR 0028). Silent otherwise. |
 | `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
@@ -115,10 +113,9 @@ as before.
 **Ask tier — routine-but-notable (`permissionDecision:"ask"`):** dependency
 installs/upgrades, DB migrations (EF/flyway/alembic/prisma), and deploys (docker/
 kubectl/terraform/fly/vercel/cloud CLIs) surface Claude Code's native one-click
-approval instead of a dead end. An *ask* is never auto-approved by autonomy — an
-unattended loop still stops at the prompt.
+approval instead of a dead end. An unattended loop still stops at the prompt.
 
-**Hard gates — denied at every autonomy level (exit 2, matched rule on stderr):**
+**Hard gates — always denied (exit 2, matched rule on stderr):**
 
 - **Irreversible Bash:** git history destruction — `force`-push/`reset --hard`/
   `clean -f`/`--amend`/interactive rebase (including `git -C … ` and `git -c … `
@@ -141,14 +138,14 @@ secret floor and **before** the ask tier, and it is a hard deny — `bypass-ask-
 not skip it. See ["Driver mode"](#driver-mode-the-loop-session-stops-editing-adr-0028)
 below for what it is for.
 
-**Soft gates — autonomy-aware git (ADR 0004 / 0006).** `git commit` is allowed when
-**all** hold: the resolved level is ≥ `supervised`, the branch is not `main`/`master`,
-and the staged diff touches no sensitive path. **At `full-autonomy` only,
-`git merge` / `rebase` / `push` are likewise allowed** — but only onto a **non-`main`**
-target, never forced, and a merge carrying a sensitive path re-escalates. Anything
-else denies with an explanation and fails **closed** on any error (not a repo,
-detached HEAD, unreadable diff). At the default `interactive` level every commit
-still requires the human — the conservative posture is opt-out, not opt-in.
+**Soft gates — one fixed git rule set (ADR 0004 / 0006, levels retired).** `git commit`
+is allowed when **both** hold: the branch is not `main`/`master`, and the staged diff
+(plus what `-a` sweeps in) touches no sensitive path. **`git merge` / `rebase` / `push`
+are likewise allowed** — but only onto a **non-`main`** target, never forced or
+interactive, and a merge carrying a sensitive path re-escalates. Anything else denies
+with an explanation and fails **closed** on any error (not a repo, detached HEAD,
+unreadable diff). The same rules apply in every repository and every session; there
+is no level to set and nothing to opt into (`retire-autonomy-levels`).
 
 Everything else is allowed (exit 0). The built-in patterns live in labeled arrays
 (`DENY_BASH_PATTERNS`, `ASK_BASH_PATTERNS`, `BASH_WRITE_PATTERNS`,
@@ -181,41 +178,36 @@ repo at runtime and appends them to its arrays, so risk **declared** in
 `.agents/domain-rules.md` becomes risk **enforced** by the hook. The template
 ships commented example files.
 
-## Autonomy & the guided loop
+## The guided loop
 
-The autonomy level decides how much the Chief Engineer may do without you
-(ADR 0004 / 0006). Resolution order: env **`ORCH_AUTONOMY`** → **`.agents/autonomy`**
-→ default **`interactive`** — then clamped down to `autonomy_ceiling:` in
-`.agents/project-overrides.yaml` if the repo sets one.
+What the Chief Engineer may do without you is the same in every repository and
+every session (ADR 0004 / 0006, whose level definitions are superseded in part by
+`retire-autonomy-levels`): it commits routine green work on a feature branch, and
+the loop merges, rebases and pushes onto **non-`main`** branches — integrating
+feature branches into the integration branch and pushing them for CI on its own.
+There is no level to set — the levels and the controls that selected them are
+retired (`retire-autonomy-levels`), and `/gaffer:migrate` removes their leftovers
+from a consumer repo.
 
 *Which* `.agents/` is consulted is not simply "the repo you are in" (ADR 0011). The
 guard walks up from both `CLAUDE_PROJECT_DIR` and the shell's cwd, collecting every
 ancestor that declares an `.agents/` directory — so a command run from a
 subdirectory, a submodule, or a package cache still finds the project's rules. When
-that walk finds more than one root, they are merged **restrictively**: the
-**lowest** autonomy any root declares wins, the lowest `autonomy_ceiling` clamps,
-and `guard-extra-*` patterns are **unioned**. Adding a root can only tighten the
-guard, never loosen it — so ambiguity fails closed by construction.
-
-| Level | What it means |
-| --- | --- |
-| `interactive` (default) | Human approves every mutation gate — the original block-everything posture. |
-| `supervised` | The Chief Engineer commits routine green work on a feature branch itself; checks in between packets. |
-| `autonomous` | Same, and it drives across the whole backlog without stopping between green landings. |
-| `full-autonomy` | Same, **plus** merge/rebase/push onto **non-`main`** branches — the loop integrates feature branches into the integration branch and pushes them for CI on its own. |
+that walk finds more than one root, they are merged **restrictively**:
+`guard-extra-*` patterns are **unioned**, and `bypass-ask-tier` applies only when
+every root opts in. Adding a root can only tighten the guard, never loosen it — so
+ambiguity fails closed by construction.
 
 Hard gates (commit/merge/push to **`main`**, migrations, secrets, deploys,
-dependency installs, sensitive paths, history rewrite) require the human at
-**every** level, including `full-autonomy`. Below `full-autonomy` the loop stops at
-"branch ready for review"; at `full-autonomy` it integrates onto a non-`main` branch
-and stops at "ready for the human to release." **Merging to `main`, releasing, and
-opening a PR are never automated.**
+dependency installs, sensitive paths, history rewrite) always require the human.
+The loop integrates onto a non-`main` branch and stops at "ready for the human to
+release." **Merging to `main`, releasing, and opening a PR are never automated.**
 
 A semi-attended run looks like:
 
 ```bash
 cd ~/workspace/your-app
-ORCH_AUTONOMY=supervised claude
+claude
 #   ...then inside the session:
 #   /gaffer:run-loop        # drive the backlog (gspec features or run-state)
 #   /gaffer:pause           # stop at a safe green checkpoint, any time
@@ -239,23 +231,6 @@ retired and the loop runs its one mode regardless.
 > even the original threshold. This is a scope decision, not a retraction of
 > that measurement — see [ADR 0012](docs/adr/0012-delegated-loop-driver.md) for
 > the full record, including the v2 measurement revision.
-
-**Setting autonomy on Claude Desktop (no terminal).** The `ORCH_AUTONOMY=… claude`
-form above is terminal-only — the Desktop app launches from Finder/Dock and
-cannot take an inline env var. Two Desktop-native ways to set the level instead:
-
-- **In-session:** run **`/gaffer:set-autonomy supervised`** (or
-  `interactive` / `autonomous`, or no argument to just show the current level). It
-  writes the repo's `.agents/autonomy` and reports the effective level after any
-  `autonomy_ceiling` clamp. This is the direct equivalent of the env-var launch.
-- **Persistently, per project:** add `"env": { "ORCH_AUTONOMY": "supervised" }` to
-  the repo's `.claude/settings.json`. Claude Code injects it into the session
-  environment, and the guard already reads `ORCH_AUTONOMY` first — so this works
-  with no plugin change, and env still wins over the file.
-
-Note this only affects the *soft* commit gate: a commit to **main**/master is a
-hard gate and always requires you to run it yourself, at every autonomy level —
-raising autonomy does not change that.
 
 Each packet runs on its own feature branch (`orch/<task-id>`) in the single local
 checkout ([ADR 0009](docs/adr/0009-single-directory-feature-branch-workflow.md) —
@@ -386,8 +361,8 @@ run by copying its `run-metrics.json` out. See
 [ADR 0019](docs/adr/0019-run-metrics-observability.md).
 
 **Tests.** `scripts/test-guard.sh` is the guardrail regression sweep (allow/deny
-pairs for every category, the closed cross-tree bypasses, the autonomy×branch×diff
-commit matrix, and the `guard-extra` loading); run it after any change to
+pairs for every category, the closed cross-tree bypasses, the branch×diff commit
+matrix, and the `guard-extra` loading); run it after any change to
 `guard.sh`. `scripts/test-runstate.sh` is the pause/resume + crash-recovery sweep
 (the reconcile decision table, atomic writes, the SessionStart hook; ADR
 0004/0005/0009 — plus read-only compatibility cases proving a legacy
@@ -488,7 +463,7 @@ Try it out inside the session:
 
 - Skills are **namespaced by plugin**: `/gaffer:new-project`,
   `/gaffer:review-change`, `/gaffer:run-loop`,
-  `/gaffer:pause`, `/gaffer:resume`, `/gaffer:set-autonomy`,
+  `/gaffer:pause`, `/gaffer:resume`,
   `/gaffer:metrics`, `/gaffer:migrate`.
 - Agents appear as `chief-engineer`, `architect`, `ux-designer`, `reviewer`,
   `implementer` (delegate to them via the Task tool or let a skill drive them).

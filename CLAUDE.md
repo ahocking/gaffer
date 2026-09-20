@@ -72,7 +72,7 @@ passing sweeps.
   its registration (`hooks/hooks.json`, `.claude/settings.json`) crosses a session
   boundary; `agents/*.md` and `skills/*/SKILL.md` are read at dispatch.
   `hooks/guard.sh` is the sharpest case: it is the plugin's own safety floor, and
-  here it is a first-class edit target at `full-autonomy` — a packet weakening the
+  here it is a first-class edit target — a packet weakening the
   guard is live on the next matching tool call, in the same run, not caught by a
   loop still running an old copy. Closing this is
   `self-host-hardening`, and it is ordered first for that reason. Its T1/T2
@@ -100,11 +100,12 @@ passing sweeps.
   `test-guard.sh` still pins its behaviour, and one line re-arms it. **What
   specifically stopped, and it is the sharpest part:** T2 added ask cases for the
   guard's own *configuration* on the rationale that a rule which can be silently
-  deleted is not a rule. All four of those are now silent-allow here —
+  deleted is not a rule. All three of those are now silent-allow here —
   `.agents/guard-extra-*`, `project-overrides.yaml` (which carries the bypass
-  itself), `.agents/autonomy`, and `.claude/settings.json`. That is the control
-  over the control, so the reviewer and the PR boundary are not a second line of
-  defence for this surface; they are the only one.
+  itself), and `.claude/settings.json`; the fourth, `.agents/autonomy`, was deleted
+  with the levels (`retire-autonomy-levels` T7, `5a43a17`), along with its ask rule.
+  That is the control over the control, so the reviewer and the PR boundary are not
+  a second line of defence for this surface; they are the only one.
 - **Hard-denying `hooks/guard.sh` was proposed and rejected — and the flip above
   does not touch that.** This repo exists to develop the guard, so a hard floor
   over it makes the repo's central artifact unmaintainable. Same for
@@ -704,7 +705,7 @@ passing sweeps.
   write forms it recognises when **all three** hold: that session has a mark, the payload
   has **no `agent_id`**, and the target is outside `.agents/`. Everything else runs
   untouched — its **subagents**, `git` (so the loop's own checkpoint commits, merges and
-  pushes on `orch/*`/`develop` are unaffected at `full-autonomy`), gaffer's own scripts,
+  pushes on `orch/*`/`develop` are unaffected), gaffer's own scripts,
   and any command with no recognised write form. **Never branch on `agent_type`** — ADR 0028's probe found a `claude --agent` MAIN thread carries
   `agent_type` with no `agent_id`, so `agent_type` is not a main-thread test, and the
   same trap is live in `metrics-log.sh`'s role attribution. Four more things are
@@ -891,7 +892,7 @@ passing sweeps.
   for running it; **`ASK_BASH_PATTERNS`** (deps, migrations, deploys) returns a
   PreToolUse `permissionDecision:"ask"` for a one-click native prompt; and
   **`DENY_BASH_PATTERNS`** + `BASH_WRITE_PATTERNS` hard-deny (exit 2, matched rule
-  on stderr) the irreversible bash surface at every autonomy level. Extend coverage
+  on stderr) the irreversible bash surface, always. Extend coverage
   in those arrays; the code below them is mechanism. **It fails CLOSED when it
   cannot READ its input (ADR 0021)** — the hook only ever runs for the five
   mutating tools, and every one of those calls carries a command or a path, so an
@@ -929,17 +930,50 @@ passing sweeps.
   `.agents/project-overrides.yaml` (ADR 0015)** makes the guard skip the ASK tier
   entirely — both `ASK_BASH_PATTERNS` and REVIEW-path writes run without a prompt —
   while every hard-deny floor and the git soft gates still enforce. Default false;
-  resolved restrictively (every discovered config root must opt in, mirroring the
-  autonomy vote), so a nested/foreign `.agents/` can only keep the prompts on.
+  resolved restrictively (every discovered config root must opt in, the same
+  restrictive merge that unions `guard-extra-*`), so a nested/foreign `.agents/` can
+  only keep the prompts on.
   **Driver mode (ADR 0028) adds a THIRD write tier, between those two**: it is checked
   after the secret floor and before the ask tier, and it is a `deny()`, so
   `bypass-ask-tier` does **not** skip it. It is the only tier keyed to *who is calling*
   rather than *what is being touched*. The full rule, and the reason each half of it is
   shaped the way it is, are in the driver-mode bullet above.
+- **There is ONE guard rule set and no autonomy level** (`retire-autonomy-levels`,
+  2026-09-20; supersedes in part ADR 0004 and ADR 0006). The four levels —
+  `interactive` / `supervised` / `autonomous` / `full-autonomy` — and everything that
+  selected among them (`ORCH_AUTONOMY`, `.agents/autonomy`, the `autonomy_ceiling`
+  clamp, `/gaffer:set-autonomy`, the per-level cases in `test-guard.sh`, the level
+  branches in the loop skills and the `chief-engineer`/`architect`/`implementer`
+  prompts) are gone. `hooks/guard.sh` now allows in every repository exactly what
+  `full-autonomy` allowed: `git commit` on a branch other than `main`/`master` with
+  no secret path staged, and `git merge` into, `git rebase` of, or `git push` to such
+  a branch. **Unchanged:** every hard-deny floor (secrets and key material, history
+  rewrite, recursive deletes), the ASK tier and `bypass-ask-tier`, and the git gates
+  on `main`/`master` — a commit there, a merge into it, a rebase of it, a push to it,
+  `--amend`, a forced or interactive rewrite, and a commit that stages a secret path
+  all still deny. The reason is that the dial was never turned: all ten repositories
+  on the operator's machine sat at `full-autonomy`, none set a ceiling, and no
+  transcript shows `/gaffer:set-autonomy` typed — a setting held at one value
+  everywhere is not a choice, but it still cost a policy branch in the guard,
+  per-level sweep cases, and a level branch in every loop and agent prompt that each
+  later loop-cost change would have had to carry too. **A stricter mode is not
+  coming back as a restored ladder**: if a repository ever needs one, it is specced
+  fresh against that need, not by reinstating the four levels (the PRD's deferred
+  decision). Two consequences to hold in mind: a repository that relied on the old
+  `interactive` default to gate commits has lost that gate, and an ad hoc session in
+  any repo with the plugin installed can now commit, merge, rebase and push onto
+  non-`main` branches without the guard stopping it — releases and PRs stay the
+  human's by convention and remote branch protection, not by the guard.
+  `/gaffer:migrate` deletes a consumer repo's `.agents/autonomy` and strips
+  `autonomy_ceiling` from `project-overrides.yaml`, and only *reports* a level named
+  in the repo's own `CLAUDE.md` or `spec-setup.md` or an `ORCH_AUTONOMY` entry in
+  its `.claude/settings.json`, because those belong to the human. Metrics keep the
+  field so runs stay comparable: a run collected after the install records
+  `full-autonomy`; re-collecting an older run records `unknown`.
 
 - **gspec is a pinned, optional dependency behind ONE adapter** (ADR 0020). The seam:
   **gspec owns *what to build and in what order*; this plugin owns *how a unit of work
-  is safely executed*** — guardrail, autonomy, checkpointing, isolation, measurement.
+  is safely executed*** — guardrail, checkpointing, isolation, measurement.
   Every gspec read goes through `scripts/gspec-backlog.sh`; **never parse `gspec/`
   anywhere else**, or a format change breaks seven files again (it did — gspec 2.x
   moved `features/<slug>.plan.md` to `tasks/<slug>.md` and nothing checked). The
@@ -1105,11 +1139,11 @@ scripts: a behavior worth having is a behavior worth a test in its sweep.
 ## Ground rules for changes here
 
 - **Commit, push, and merge onto `orch/*` and `develop` are ALLOWED** — that is the
-  loop's own checkpoint mechanism at `full-autonomy` (`run-loop` §3.4), and a
+  loop's own checkpoint mechanism (`run-loop` §3.4), and a
   resume has nothing to adopt without per-packet green commits (ADR 0005). Every
   packet commit carries its `[orch packet:<id>]` trailer, which is what makes the
   work recoverable and measurable. **`main`/`master`, releases, PRs and deploys
-  stay the human's hard gate at every autonomy level** — `hooks/guard.sh` enforces
+  stay the human's hard gate** — `hooks/guard.sh` enforces
   that floor and `test-guard.sh` pins it; the earlier claim here that the guardrail
   blocked *all* commits was simply wrong, since it returns exit 0 for a commit on a
   non-`main` branch. Note this file is read by the harness's auto-mode classifier,
@@ -1197,13 +1231,13 @@ or they are silently lost on the next install.
 It is correct about specs and **wrong about execution in this repo**, because it
 is written for a generic consumer that does not have this plugin. ADR 0020 draws
 the seam: **gspec owns _what to build and in what order_; this plugin owns _how a
-unit of work is safely executed_** — guardrail, autonomy levels, checkpointing,
+unit of work is safely executed_** — guardrail, checkpointing,
 worktree isolation, measurement. The preamble's routing advice claims that second
 half for gspec. In this repo:
 
 - **`gspec-implement` and `gspec-build` are NOT the execution path.** Execution is
   `/gaffer:run-loop` (and `/gaffer:resume`), which runs packets through the guard,
-  the autonomy gates, and run-state checkpointing. `gspec-build` in particular
+  its fixed git gates, and run-state checkpointing. `gspec-build` in particular
   drives profile → … → implementation unattended, which would bypass every one of
   those. The adapter's `interlock` subcommand exists precisely because two drivers
   must not run at once.

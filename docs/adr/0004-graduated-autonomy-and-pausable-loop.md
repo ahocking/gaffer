@@ -19,6 +19,17 @@
   "Phase 3 worktree isolation is a prerequisite" no longer holds — isolation is now
   a per-packet `orch/<task-id>` branch in the one checkout, and a pause sets scratch
   aside with `git stash` rather than resetting a throwaway worktree.
+- Superseded in part by: the `retire-autonomy-levels` feature (2026-09-20), which
+  removes the **four level definitions** — §2's `interactive` / `supervised` /
+  `autonomous` and ADR 0006's `full-autonomy` — and the graduated dial that
+  selected among them (`ORCH_AUTONOMY`, `.agents/autonomy`, the `autonomy_ceiling`
+  clamp, `/gaffer:set-autonomy`). `hooks/guard.sh` now enforces one fixed rule set
+  in every repository: what `full-autonomy` allowed. The **hard/soft gate split**
+  (§1), the Chief Engineer's ownership of routine commits (§3, now unconditional
+  rather than "above `interactive`"), the pausable loop and its durable checkpoints
+  (§4), and the check-in contract (§5) all stand. Every mention below of a level,
+  a ceiling, or "at every level" is the historical record of how the gates were
+  selected, not of what they gate.
 
 ## Context
 

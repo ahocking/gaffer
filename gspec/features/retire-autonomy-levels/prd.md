@@ -32,12 +32,12 @@ This feature is part of the 2026-09-14 loop-cost redesign. It removes the levels
 
 ## Capabilities
 
-- [ ] **P0**: One fixed rule set
+- [x] **P0**: One fixed rule set
   - in every repository, including one with no `.agents/autonomy` (which today defaults to `interactive`), `hooks/guard.sh` allows exactly what `full-autonomy` allows today. That means `git commit` on a branch other than `main`/`master`, and a `git merge` into, `git rebase` of, or `git push` to such a branch
   - in every repository it still denies a commit on `main`/`master`; a merge into, rebase of, or push to `main`/`master`; history rewrites such as `git commit --amend`; and a commit that stages a secret path. Secret-path writes still hard-deny, and the ASK tier (dependencies, migrations, deploys, review paths) and every hard-deny floor are unchanged
   - the level definitions in ADRs 0004 and 0006 are marked superseded in part; the gate split, pausable loop and integration onto non-main branches they decide stay in force
 
-- [ ] **P0**: Level controls are removed
+- [x] **P0**: Level controls are removed
   - `/gaffer:set-autonomy` (`skills/set-autonomy`) is gone from the shipped plugin, and the guard no longer reads `ORCH_AUTONOMY`, `.agents/autonomy` or `autonomy_ceiling`. A lower level left in any of them changes no guard decision
   - the `run-loop`, `resume` and `pause` instructions and the `chief-engineer`, `architect` and `implementer` agents no longer branch on a level or tell an agent to check one
   - `scripts/test-guard.sh` drops every per-level case, meaning one that expects a denial only a level below `full-autonomy` produces, or that tests how the level is resolved (precedence, the ceiling clamp), and every case that exists only for `.agents/autonomy` or `ORCH_AUTONOMY`. It keeps every other case, including every always-denied, ask and `full-autonomy` allow case outside the dropped set, with its level setting removed

@@ -128,7 +128,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: .agents/autonomy, .agents/project-overrides.yaml, .agents/guard-extra-review
 
-- [ ] **T8** **P0** Mark the level definitions in ADRs 0004 and 0006 superseded in part, and bring `README.md`, `CLAUDE.md` and `SECURITY.md` down to the one fixed rule set.
+- [x] **T8** **P0** Mark the level definitions in ADRs 0004 and 0006 superseded in part, and bring `README.md`, `CLAUDE.md` and `SECURITY.md` down to the one fixed rule set.
 
   - `docs/adr/0004-graduated-autonomy-and-pausable-loop.md`: add a "Superseded in part by" bullet beside the existing ones, in their established shape, naming the `retire-autonomy-levels` feature and saying precisely what falls and what stands — the four level definitions and the graduated dial are gone; the **hard/soft gate split**, the pausable loop, the check-in contract and the checkpoint semantics stay in force. Do not rewrite the body; an ADR is a record;
   - `docs/adr/0006-full-autonomy-branch-integration.md`: the same bullet, stating that the fourth level is gone while the decision it carried — merge, rebase and push delegated onto **non-`main`** branches under a preserved danger floor — is now unconditional and stands;

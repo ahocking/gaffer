@@ -2,8 +2,9 @@
 
 Thanks for your interest in improving the **gaffer** plugin. This is a
 portable, domain-agnostic Claude Code plugin — a reusable orchestration layer
-(subagent team, skill chains, task-packet template, autonomy dial, and an
-approval guardrail hook) that installs on top of any application repo. Keeping it
+(subagent team, skill chains, task-packet template, a pausable guided loop, and an
+approval guardrail hook enforcing one fixed rule set) that installs on top of any
+application repo. Keeping it
 generic and safe is the whole point, so a few conventions matter more than usual.
 
 For the deep, authoritative developer brief — the structure rules, the guard's
@@ -26,7 +27,7 @@ is the quick-start and the etiquette; `CLAUDE.md` is the reference.
 - **Record decisions.** Anything that changes the design, a safety boundary, or a
   measured tradeoff gets an ADR under `docs/adr/` (copy the numbering/format of
   the existing ones). If your change invalidates a measured claim in an ADR
-  (e.g. a guard threshold or an autonomy default), update the ADR **and** the
+  (e.g. a guard threshold or a git soft-gate rule), update the ADR **and** the
   skills that cite it in the same PR.
 
 ## Repo structure (do not violate)

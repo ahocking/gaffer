@@ -691,7 +691,7 @@ Paused after 3 packets. Nothing at risk, nothing half-written.
 > `orch/txn-t4` @ `c40aa11` · tree clean · `/gaffer:resume`
 EOF
 
-# A conforming shape C: phase lines, `▶ Session`/`▶ Autonomy` headings, and a
+# A conforming shape C: phase lines, `▶ Session`/`▶ Stops at` headings, and a
 # `Will need you` section whose "nothing expected" value is real information.
 cat > "$LD/c-ok.md" <<'EOF'
 ▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **5 packets** · 2 phases
@@ -707,18 +707,44 @@ cat > "$LD/c-ok.md" <<'EOF'
 
 ▶ **Session** claude-opus-5[1m] · effort unknown
 
-▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+▶ **Stops at** `orch/txn-import` ready for review
 EOF
 
 out="$(_lint B "$LD/b-ok.md" "$LD/digest")"
 [ "$out" = 'REPORT_LINT=clean' ] && ok 'a conforming shape B (tally line, ▶ Next, branch+sha state line) is clean' \
   || bad 'a conforming shape B (tally line, ▶ Next, branch+sha state line) is clean' "$out"
 out="$(_lint C "$LD/c-ok.md" "$LD/digest-empty")"
-[ "$out" = 'REPORT_LINT=clean' ] && ok 'a conforming kickoff with an EMPTY digest is judged, and clean (phase lines, ▶ Session/Autonomy, Will need you)' \
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'a conforming kickoff with an EMPTY digest is judged, and clean (phase lines, ▶ Session/Stops at, Will need you)' \
   || bad 'a conforming kickoff with an EMPTY digest is judged, and clean' "$out"
 out="$(_lint C "$LD/c-ok.md" "$LD/digest")"
 [ "$out" = 'REPORT_LINT=clean' ] && ok 'the same kickoff against a populated digest is clean too' \
   || bad 'the same kickoff against a populated digest is clean too' "$out"
+
+# retire-autonomy-levels T4: the kickoff no longer states an autonomy level, so its
+# final line is `▶ **Stops at** …` alone. The ▶-heading exemption is generic over the
+# heading's words, and these two pin that from both ends — a rendered kickoff carrying
+# no autonomy segment lints clean, and the shipped shape does not grow the line back.
+cat > "$LD/c-no-autonomy.md" <<'EOF'
+▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **5 packets** · 2 phases
+
+> **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
+
+⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.
+
+🔀 **Will need you** — none
+
+▶ **Session** claude-opus-5[1m] · effort unknown
+
+▶ **Stops at** `orch/txn-import` ready for review
+EOF
+out="$(_lint C "$LD/c-no-autonomy.md" "$LD/digest-empty")"
+[ "$out" = 'REPORT_LINT=clean' ] && ok 'a kickoff whose last line is ▶ Stops at, with no autonomy segment before it, is clean' \
+  || bad 'a kickoff whose last line is ▶ Stops at, with no autonomy segment before it, is clean' "$out"
+case "$(cat "$ROOT/templates/report-templates.md")" in
+  *'**Autonomy**'*) bad "shape C's kickoff ships no ▶ Autonomy line" 'templates/report-templates.md still renders an autonomy segment';;
+  *'▶ **Stops at** <branch ready for review'*) ok "shape C's kickoff ships no ▶ Autonomy line — ▶ Stops at is that line's whole content";;
+  *) bad "shape C's kickoff ships no ▶ Autonomy line" 'no ▶ Stops at line found in templates/report-templates.md';;
+esac
 
 # The kickoff's two optional routing lines (per-agent-model-routing T4): the
 # `⚠️ Routing config` line after `⚠️ Assuming`, and the `▶ Routing` line after
@@ -741,7 +767,7 @@ cat > "$LD/c-routing.md" <<'EOF'
 
 ▶ **Routing** implementer sonnet → opus · researcher sonnet → haiku
 
-▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+▶ **Stops at** `orch/txn-import` ready for review
 EOF
 out="$(_lint C "$LD/c-routing.md" "$LD/digest-empty")"
 [ "$out" = 'REPORT_LINT=clean' ] && ok 'a kickoff carrying ⚠️ Routing config and ▶ Routing is clean against an EMPTY digest' \
@@ -761,7 +787,7 @@ not_fires 'the tally line may carry many glyphs (shape-defined)' two-glyphs "$b_
 not_fires "▶ Next is outside the tally's order (shape-defined)" section-order "$b_ok"
 not_fires 'a branch naming an id, and a bare sha, in the state line never fire (shape-defined)' untitled-id "$b_ok"
 not_fires "the kickoff's phase lines may carry many glyphs (shape-defined)" two-glyphs "$c_ok"
-not_fires "the kickoff's ▶ Session and ▶ Autonomy headings are not out of order (shape-defined)" section-order "$c_ok"
+not_fires "the kickoff's ▶ Session and ▶ Stops at headings are not out of order (shape-defined)" section-order "$c_ok"
 not_fires "the kickoff's Will need you may say none (rule 3's exception)" empty-section "$c_ok"
 # ...and the phase-line exemption belongs to shape C: the same line in a B is two glyphs.
 { head -1 "$LD/b-ok.md"; printf '\n> **Phase 1 — speed** · ⬚ Stream · ⬚ Page\n'; } > "$LD/b-phase.md"

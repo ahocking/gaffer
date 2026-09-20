@@ -45,7 +45,7 @@ Use the following workflow for substantial features:
 
 For small changes, it is acceptable to skip research, architecture, and ADR creation, but the agent must still honor the existing gspec documents and ADRs.
 
-AI coding agents must not create checkpoint commits or otherwise commit code automatically. They may only run `git commit` when the user explicitly requests a commit (or as delegated by the autonomy level; see `CLAUDE.md`).
+AI coding agents commit under one fixed rule set: `git commit` is theirs on a branch other than `main`/`master` — when the user explicitly requests a commit, and for the guided loop's own green checkpoints — while commits, merges and pushes to `main`/`master`, and releases, stay the human's gate (see `CLAUDE.md`).
 
 ---
 
@@ -471,7 +471,7 @@ Use gspec `analyze` to check for contradictions between profile, stack, practice
 
 Implement from the plan. The orchestration loop reads `.agents/roadmap.yaml` to pick
 the next feature, then walks that feature's `gspec/features/<slug>/tasks.md` tasks, honoring
-the gate tags and the session autonomy level. Implementation must comply with:
+the gate tags. Implementation must comply with:
 
 - `gspec/stack.md`
 - `gspec/practices.md`

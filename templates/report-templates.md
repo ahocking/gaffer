@@ -336,7 +336,7 @@
 
 ▶ **Routing** <agent> <frontmatter> → <alias> · …
 
-▶ **Autonomy** <level> · **Stops at** <branch ready for review | integrated on <branch>>
+▶ **Stops at** <branch ready for review | integrated on <branch>>
 
 # - **`▶ Session` states model and effort, and the auto-compaction threshold only
 #   when one is in effect, asking for nothing.** Model and effort are taken
@@ -410,4 +410,4 @@
 #
 #   ▶ **Routing** implementer sonnet → opus
 #
-#   ▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+#   ▶ **Stops at** `orch/txn-import` ready for review

@@ -94,19 +94,15 @@ actions); it never auto-fixes. Enable it once with
 `/plugin install brooks-lint@brooks-lint-marketplace`, or delete
 `.brooks-lint.yaml` to opt out.
 
-**Stop and get explicit human approval before:** commits, merges, pushes,
-database migrations, destructive filesystem operations, dependency
+**Stop and get explicit human approval before:** commit/merge/push to
+`main`/`master`, database migrations, destructive filesystem operations, dependency
 installs/upgrades, deploys, and any change to auth/authz, secrets, or the risk
-boundaries listed in `.agents/domain-rules.md`. This repo ships at the conservative
-default — per `spec-setup.md`, agents create no automatic commits until the human
-raises the autonomy level. **Which git steps are delegated is governed by the
-autonomy level** (ADR 0004 / 0006, set via `/gaffer:set-autonomy` or
-`ORCH_AUTONOMY`, clamped by `autonomy_ceiling`): `supervised`/`autonomous` delegate
-routine commits on a feature branch; `full-autonomy` additionally delegates
-merge/rebase/push onto **non-`main`** branches. **Commit/merge/push to `main`,
-releases, migrations, secrets, deploys, and the danger floor stay human at every
-level.** The guardrail hook blocks the most dangerous calls, but it is a backstop,
-not your only defense.
+boundaries listed in `.agents/domain-rules.md`. **Which git steps are delegated is
+one fixed rule set, the same in every repository** (ADR 0004 / 0006): routine
+commits on a feature branch are delegated, as are merge, rebase and push onto
+**non-`main`** branches. **Commit/merge/push to `main`, releases, PRs, migrations,
+secrets, deploys, and the danger floor always stay human.** The guardrail hook
+blocks the most dangerous calls, but it is a backstop, not your only defense.
 
 ---
 

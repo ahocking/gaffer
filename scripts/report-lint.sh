@@ -38,7 +38,7 @@
 # Constructs the shapes themselves define are conformant, not findings: the
 # tally line (the report's first non-blank line) may carry many glyphs; shape
 # C's `> **Phase N — …**` lines may too; ▶ headings (`▶ Next`, C's `▶ Session`
-# and `▶ Autonomy`) are outside the tally's order; and the state line
+# and `▶ Stops at`) are outside the tally's order; and the state line
 # (`` `<branch>` @ `<sha>` ``) is never searched for ids.
 #
 # DERIVED, NOT FROZEN: the glyph vocabulary is read from the conventions' glyph

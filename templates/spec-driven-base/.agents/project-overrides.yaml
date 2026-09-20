@@ -73,15 +73,6 @@ escalate_to_human_on: []
   # example:
   # - "changes to <domain-critical module>"
 
-# Highest autonomy this repo will EVER allow the Chief Engineer to reach, no
-# matter what a session env var or .agents/autonomy requests (ADR 0004 / 0006). The
-# guardrail clamps the resolved level DOWN to this ceiling. Omit for no cap.
-#   interactive   — every commit is human-gated here (most conservative)
-#   supervised    — CE may auto-commit green work on a feature branch
-#   autonomous    — CE may drive the loop across packets
-#   full-autonomy — CE may also merge/rebase/push onto NON-main branches
-# autonomy_ceiling: supervised
-
 # Opt this repo OUT of the guardrail's ASK tier (ADR 0015). Default false.
 # When true, the guard SKIPS all one-click "ask" prompts — routine-but-notable bash
 # (dependency installs, migrations, deploys) AND review-worthy writes (auth CODE,
@@ -95,7 +86,7 @@ escalate_to_human_on: []
 
 # The non-main integration branch for the single-checkout feature-branch workflow
 # (ADR 0009). The guided loop cuts each packet's `orch/<task-id>` branch FROM this
-# base, and at `full-autonomy` merges/rebases those branches back INTO it and pushes
+# base, merges/rebases those branches back INTO it and pushes
 # it for CI (ADR 0006). If unset, the loop falls back to `develop`, then
 # `main`/`master`. main/master merges, releases, and the danger floor ALWAYS stay
 # human, whatever this says. Recommended default for develop-flow repos:

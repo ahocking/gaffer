@@ -76,7 +76,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md, agents/chief-engineer.md, agents/architect.md, agents/implementer.md, agents/loop-driver.md, hooks/session-start.sh
 
-- [ ] **T4** [P] **P0** Stop shipping a level in any template — the packet contract, the kickoff shape, and the consumer-facing base — and update the two report fixtures that pin the kickoff's autonomy line.
+- [x] **T4** [P] **P0** Stop shipping a level in any template — the packet contract, the kickoff shape, and the consumer-facing base — and update the two report fixtures that pin the kickoff's autonomy line.
 
   - `templates/task-packet.yaml`: delete the `autonomy: interactive` field and the comment block above it that documents the four levels and the resolution order. It is a required-at-scope-time field today, so removing it is the change; nothing else in the packet moves;
   - `templates/report-templates.md`: in shape C (kickoff), delete `▶ **Autonomy** autonomous · ` from the final line, leaving `▶ **Stops at** …` as that line's whole content. The glyph vocabulary, the section order and the tally are untouched — ▶ still means "next". `scripts/report-lint.sh`'s comment at its head lists `▶ Autonomy` among the headings outside the tally's order: drop that name from the parenthetical — a comment-only edit, the rule is generic over `▶` headings;

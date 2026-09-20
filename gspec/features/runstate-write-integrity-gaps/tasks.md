@@ -49,7 +49,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/test-runstate.sh
 
-- [ ] **T3** **P1** Make one decode rule canonical in two expressions — the `_yaml_decode_value` shell function and one shared awk function text — and migrate the shell readers and `trim-note`'s inline unwrap to them.
+- [x] **T3** **P1** Make one decode rule canonical in two expressions — the `_yaml_decode_value` shell function and one shared awk function text — and migrate the shell readers and `trim-note`'s inline unwrap to them.
 
   - extend `_yaml_decode_value` to the legacy double-quoted shape as well as the single-quoted one, still a no-op on a bare value, so `cmd_get` and `cmd_cursor` decode both without a flag day;
   - add the awk expression once, as a shell variable prepended to an awk program (resolved in the preamble: no per-record shell-out inside `trim-note`'s single pass), and replace `cmd_trim_note`'s hand-written unwrap with a call to it, applied **after** its block-indicator check so an already-block note is still skipped;

@@ -1635,21 +1635,26 @@ assert_true "a dot in an id does not match a dash" \
   "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one --packets pkt-a >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two --packets pkt-a | grep -q '^ADDED=yes'"
 
 echo
-echo "== the decoder fixture table: one encoder, four read sites (gaps T2) =="
+echo "== the decoder fixture table: one encoder, four read sites (gaps T2/T3) =="
 # `set` and `add-finding` write through ONE encoder (_yaml_encode_value). The
-# read side is still FOUR hand-maintained decoders, and this table is what keeps
-# them in step until they are unified:
+# read side is four call sites, and this table is what keeps them in step while
+# they are unified one at a time:
 #
-#   _yaml_decode_value    shell   single-quoted     `get`, `cursor`
-#   cmd_trim_note's awk   awk     single + double   the note's first line
+#   _yaml_decode_value    shell   single + double   `get`, `cursor`
+#   _YAML_AWK_DECODE      awk     single + double   the note's first line (trim-note)
 #   _findings_default     awk     single-quoted     `findings`
 #   _list_records' kv()   awk     double-quoted     `lanes`
 #
-# TODAY'S BEHAVIOUR ONLY, which is the whole scope of this case: each decoder
-# is driven over the quote shape ITS OWN caller actually produces -- not over
-# every shape, which would assert a property nothing has yet -- plus a legacy
-# BARE value, which all four must pass through untouched, since no consumer
-# repo migrates its run-state before its next run.
+# The first two are ONE rule in two expressions as of gaps T3 -- the shell
+# function and the awk function text it prepends to trim-note's pass -- so this
+# table asserts that they agree, value by value, rather than a comment asking a
+# maintainer to keep them in step. The last two still carry their own copy until
+# T4 migrates them; theirs are the rows below that drive one quote shape only.
+#
+# Each decoder is otherwise driven over the shapes its own caller can actually
+# hand it -- not over every shape, which would assert a property nothing has yet
+# -- plus a legacy BARE value, which all four must pass through untouched, since
+# no consumer repo migrates its run-state before its next run.
 #
 # THIS TABLE IS THE EXTENSION POINT. A later case adds a value by adding one
 # name to DECODER_CASES and one line to each of the three functions below; it
@@ -1743,6 +1748,24 @@ for dc in $DECODER_CASES; do
   assert_true "table ($dc): a real YAML parse of that fixture agrees with get" \
     "yamlok \"$DC_G\" && [ \"\$(_yaml_value \"$DC_G\" target)\" = \"\$DC_WANT\" ]"
 
+  # --- site 1 again, over the LEGACY double-quoted shape (NEW in gaps T3) ----
+  # Until T3, _yaml_decode_value knew only the single-quoted shape it was the
+  # inverse of, so a legacy double-quoted value came back out of `get`/`cursor`
+  # with its quotes still attached. It strips that pair too now, VERBATIM -- the
+  # same reading the awk decoders have always given those bytes.
+  #
+  # Deliberately NOT parse-asserted, for the reason the trim-note double-quoted
+  # case below already states: a backslash inside a REAL YAML double-quoted
+  # scalar means something else, and this cell pins the unwrap as it behaves,
+  # not as YAML would read the same bytes. No table value carries a `"`, which
+  # this shape could not hold unescaped in the first place.
+  DC_GD="$DT/get-dq-$dc.yaml"
+  printf 'before: 1\ntarget: "%s"\nbacklog:\n  cursor: "%s"\nafter: 1\n' "$DC_WANT" "$DC_WANT" > "$DC_GD"
+  assert_true "table ($dc): get decodes the legacy double-quoted shape to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" get \"$DC_GD\" target)\" = \"\$DC_WANT\" ]"
+  assert_true "table ($dc): cursor decodes the legacy double-quoted shape to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" cursor \"$DC_GD\")\" = \"\$DC_WANT\" ]"
+
   # --- site 2: _findings_default, via `findings` (single-quoted) -------------
   DC_F="$DT/findings-$dc.yaml"
   printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: %s\n    file: .agents/findings/f-1.md\n    packets: [pkt-1]\nstatus: running\n' \
@@ -1783,6 +1806,24 @@ for dc in $DECODER_CASES; do
     "case \"\$DC_TD_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_TD\""
   assert_true "table ($dc): trim-note unwraps the legacy double-quoted note to the collapsed original" \
     "yamlok \"$DC_TD\" && [ \"\$(_yaml_value \"$DC_TD\" note | head -1)\" = \"\$DC_WANT\" ]"
+
+  # --- one rule, two expressions: the awk and shell decoders AGREE (T3) ------
+  # The anti-drift property this capability exists for, pinned mechanically for
+  # the two sites T3 unified (T4 widens it to all four). Read back through the
+  # sweep's own awk rather than through _yaml_value, on purpose: this is an
+  # assertion about the AWK decoder, and gating it on PyYAML would turn a
+  # parser-less host into a loud skip of exactly the property being pinned --
+  # while the parse-anchored assertions two lines up already say what the bytes
+  # mean to YAML. `getline` takes the first body line of the block trim-note
+  # wrote; the two-space de-indent is the block indentation trim-note adds.
+  DC_TS_AWK="$(awk '/^note: \|-$/ { getline; sub(/^  /, ""); print; exit }' "$DC_TS")"
+  DC_TD_AWK="$(awk '/^note: \|-$/ { getline; sub(/^  /, ""); print; exit }' "$DC_TD")"
+  DC_SH_SQ="$(rs_fn _yaml_decode_value "$DC_ENC")"
+  DC_SH_DQ="$(rs_fn _yaml_decode_value "\"$DC_WANT\"")"
+  assert_true "table ($dc): the awk and shell expressions of the rule agree on the single-quoted shape" \
+    "[ \"\$DC_TS_AWK\" = \"\$DC_SH_SQ\" ] && [ \"\$DC_TS_AWK\" = \"\$DC_WANT\" ]"
+  assert_true "table ($dc): the awk and shell expressions of the rule agree on the legacy double-quoted shape" \
+    "[ \"\$DC_TD_AWK\" = \"\$DC_SH_DQ\" ] && [ \"\$DC_TD_AWK\" = \"\$DC_WANT\" ]"
 
   # --- site 4: _list_records' kv(), via `lanes` (legacy double-quoted) -------
   # Same verbatim-strip reading as the trim-note double-quoted case above, on
@@ -1832,6 +1873,41 @@ printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\
   "$DC_BARE" > "$DC_BL"
 assert_true "legacy bare value: lanes passes an unquoted field through unchanged" \
   "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_BL\" | cut -f2)\" = \"\$DC_BARE\" ]"
+DC_B_AWK="$(awk '/^note: \|-$/ { getline; sub(/^  /, ""); print; exit }' "$DC_BT")"
+assert_true "legacy bare value: the awk and shell expressions of the rule both pass it through" \
+  "[ \"\$DC_B_AWK\" = \"\$DC_BARE\" ] && [ \"\$(rs_fn _yaml_decode_value \"\$DC_BARE\")\" = \"\$DC_BARE\" ]"
+
+# --- the branch ORDER is load-bearing (gaps T3) ------------------------------
+# One rule now serves both quote shapes, and the two branches do different work:
+# the single-quoted one un-doubles `''` back to `'`, the double-quoted one
+# strips its pair verbatim. A decoder that tested "is it wrapped in a matching
+# pair of quotes" without caring WHICH quote, or that ran the un-doubling
+# unconditionally after stripping, passes every case above and still silently
+# eats two characters out of a value already on disk. Neither shell nor awk may
+# do it, so both are asserted, and the expectation is spelled out literally.
+DC_DQ_IN="he said ''hi'' twice"
+DC_DQG="$DT/order-get.yaml"
+printf 'schema: 3\ntarget: "%s"\n' "$DC_DQ_IN" > "$DC_DQG"
+assert_true "branch order: get leaves '' inside a legacy double-quoted value alone" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$DC_DQG\" target)\" = \"\$DC_DQ_IN\" ]"
+DC_DQT="$DT/order-trim.yaml"
+printf 'schema: 3\nnote: "%s"\nstatus: paused\n' "$DC_DQ_IN" > "$DC_DQT"
+DC_DQT_OUT="$("$RUNSTATE" trim-note "$DC_DQT" $(( ${#DC_DQ_IN} + 2 )))"
+assert_true "branch order: trim-note really re-emitted that note as a block" \
+  "case \"\$DC_DQT_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_DQT\""
+assert_true "branch order: trim-note leaves '' inside a legacy double-quoted note alone" \
+  "[ \"\$(awk '/^note: \\|-\$/ { getline; sub(/^  /, \"\"); print; exit }' \"$DC_DQT\")\" = \"\$DC_DQ_IN\" ]"
+# And the inverse: a SINGLE-quoted value's `''` must still be un-doubled -- the
+# same two bytes, the other branch, so a decoder cannot satisfy both by doing
+# nothing.
+DC_SQ_ENC="'he said ''hi'' twice'"
+DC_SQ_WANT="he said 'hi' twice"
+DC_SQG="$DT/order-get-sq.yaml"
+printf 'schema: 3\ntarget: %s\n' "$DC_SQ_ENC" > "$DC_SQG"
+assert_true "branch order: the single-quoted counterpart is still un-doubled by get" \
+  "[ \"\$(\"\$RUNSTATE\" get \"$DC_SQG\" target)\" = \"\$DC_SQ_WANT\" ]"
+assert_true "branch order: a real YAML parse agrees with that un-doubling" \
+  "yamlok \"$DC_SQG\" && [ \"\$(_yaml_value \"$DC_SQG\" target)\" = \"\$DC_SQ_WANT\" ]"
 
 # --- and every site again with NEITHER jq NOR python3 on PATH ---------------
 # runstate.sh stays at hooks/guard.sh's dependency tier (stock Git Bash ships

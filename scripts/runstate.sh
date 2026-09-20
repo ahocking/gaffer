@@ -526,8 +526,10 @@ cmd_get() {
   grep -qE "^${key}:" "$f" || return 0
   raw="$({ grep -E "^${key}:" "$f" || true; } | head -1 | sed -E "s/^${key}:[[:space:]]*//")"
   # _yaml_decode_value (defined below, with cmd_set) is the inverse of the
-  # single-quoted encoding `set` writes -- a no-op on anything it didn't
-  # write, so a bare/legacy value round-trips exactly as before. The trailing
+  # single-quoted encoding `set` writes, and also strips the legacy
+  # double-quoted shape an older tool or a hand edit can leave behind -- a
+  # no-op on a bare value, so a legacy unquoted value round-trips exactly as
+  # before and no run-state has to be migrated first. The trailing
   # `\n` restores the one-line-of-output shape every caller here (and every
   # internal cmd_get/cmd_cursor consumer below) already expects.
   printf '%s\n' "$(_yaml_decode_value "$raw")"
@@ -711,28 +713,78 @@ _yaml_encode_value() {
 
 # _yaml_decode_value <value already stripped of its "key:" prefix and leading
 #                      whitespace, as cmd_get/cmd_cursor already do>
-#   The exact inverse of _yaml_quote: if <value> is wrapped in a single pair
-#   of matching single quotes, strip them and un-double `''` back to `'`.
-#   A NO-OP on anything else, EXCEPT a legacy value that already happened to
-#   be wrapped in single quotes on its own (never written by this file, but
-#   possible by hand or by an older tool) -- that is decoded exactly as YAML
-#   would read it, same as anything cmd_set now writes. Every other bare/
-#   legacy value -- everything cmd_write ever produces (it validates
-#   structure, not per-value encoding), and every value that happened to
-#   round-trip bare before this task existed -- passes through unchanged.
-#   That direction matters more than the forward one: every consumer repo
-#   already has a run-state on disk, and it must keep reading correctly.
+#   THE one decode rule, in its shell expression (_YAML_AWK_DECODE below is the
+#   same rule in awk, for the read sites that run inside an awk pass and cannot
+#   shell out per record). Three branches, tried in this order:
+#
+#     '...'   the inverse of _yaml_quote: strip the wrapping pair and un-double
+#             `''` back to `'`. This is what cmd_set and cmd_add_finding write.
+#     "..."   LEGACY only -- never written by this file, but left behind by an
+#             older tool or a hand edit, and stripped VERBATIM (no escape
+#             processing) because that is what the awk readers this rule
+#             replaces have always done with it. Decoding `\n`/`\"` the way a
+#             real YAML double-quoted scalar defines them would change what
+#             those on-disk bytes mean today, which is a different decision
+#             than unifying the rule; it is not made here.
+#     bare    everything else passes through UNCHANGED -- everything cmd_write
+#             produces (it validates structure, not per-value encoding), and
+#             every value that happened to round-trip bare before the encoder
+#             existed. That direction matters more than the forward one: every
+#             consumer repo already has a run-state on disk and must keep
+#             reading correctly, with no flag day.
+#
+#   A value that is only one character long cannot be a wrapped pair: the two
+#   quotes would have to be the same byte. Both shell patterns below already
+#   require two, and _YAML_AWK_DECODE's `n >= 2` says it explicitly.
 _yaml_decode_value() {
+  local body="$1"
   case "$1" in
     \'*\')
-      local body="$1"
       body="${body#\'}"; body="${body%\'}"
       printf '%s' "$body" | sed "s/''/'/g"
+      ;;
+    \"*\")
+      body="${body#\"}"; body="${body%\"}"
+      printf '%s' "$body"
       ;;
     *)
       printf '%s' "$1" ;;
   esac
 }
+
+# _YAML_AWK_DECODE -- the SAME rule as _yaml_decode_value, expressed once as awk
+# source text and PREPENDED to each awk program that needs it:
+#
+#   awk -v s=... "$_YAML_AWK_DECODE"'
+#     ... { $0 = rs_decode($0) }
+#   ' "$f"
+#
+# Shared TEXT rather than a shared process, deliberately: the readers that need
+# it (cmd_trim_note's first-line unwrap, and the findings/lanes parsers) run
+# inside a single awk pass over the file, and a shell-out per record to
+# _yaml_decode_value would put a fork on every line of the loop's own state file
+# on every read. Two expressions of one rule are what remain after this -- shell
+# and awk -- and the decoder fixture table in scripts/test-runstate.sh is what
+# keeps them honest, by driving both over the same values and demanding the same
+# answer. That table, not a comment, is the anti-drift mechanism.
+#
+# `\047` is a single quote: the text below is itself a single-quoted shell
+# string, so a literal `'` cannot appear in it, and an octal escape in an awk
+# string literal is POSIX. gsub's first argument is a STRING here, converted to
+# a regex by awk -- `''` carries no metacharacter, so there is nothing to quote.
+_YAML_AWK_DECODE='
+function rs_decode(v,   n) {
+  n = length(v)
+  if (n >= 2 && substr(v, 1, 1) == "\047" && substr(v, n, 1) == "\047") {
+    v = substr(v, 2, n - 2)
+    gsub("\047\047", "\047", v)
+    return v
+  }
+  if (n >= 2 && substr(v, 1, 1) == "\"" && substr(v, n, 1) == "\"")
+    return substr(v, 2, n - 2)
+  return v
+}
+'
 
 # --- atomic set/insert of a flat top-level key -------------------------------
 # The only write path that takes an arbitrary agent-supplied VALUE as an
@@ -944,25 +996,16 @@ cmd_trim_note() {
     # and unwrap a surrounding quote pair. What is left is verbatim text that cannot
     # carry YAML meaning once it is indented inside the block.
     #
-    # This is the SAME encoding _yaml_decode_value (above cmd_set) undoes, kept
-    # as its own awk implementation rather than shelling out per-line, since it
-    # runs inline inside this one larger awk pass. It must stay in step by hand:
-    # a double-quoted wrap strips its surrounding quotes (legacy shape, never
-    # written by this file); a SINGLE-quoted wrap -- what cmd_set now always
-    # writes -- must ALSO un-double `''` back to `'`, which the previous version
-    # did not do (it stripped only a leading quote, via a `sub(/^'"'"'$/, "")`
-    # that could only ever match a string consisting of nothing but one quote
-    # character, so a trailing quote and any doubled `''` survived straight
-    # into the trimmed note).
-    awk -v s="$start" -v e="$end" -v m="$max" '
+    # The unwrap is rs_decode from _YAML_AWK_DECODE (defined with
+    # _yaml_decode_value, above cmd_set) -- the one decode rule, not a copy of
+    # it maintained here. It runs AFTER the block-indicator test, so a note that
+    # is already a block scalar is skipped before any unwrap is attempted: its
+    # first line is `|-`, not a value, and rs_decode has no business seeing it.
+    awk -v s="$start" -v e="$end" -v m="$max" "$_YAML_AWK_DECODE"'
       NR<s || NR>e { next }
       NR==s { sub(/^note:[[:space:]]*/, "")
               if ($0 ~ /^[|>][-+]?[0-9]*[[:space:]]*$/) next   # was already a block
-              if ($0 ~ /^".*"$/) { sub(/^"/, ""); sub(/"$/, "") }
-              else if ($0 ~ /^'"'"'.*'"'"'$/) {
-                $0 = substr($0, 2, length($0) - 2)
-                gsub(/'"''"'/, "'"'"'")
-              } }
+              $0 = rs_decode($0) }
       { line = $0
         sub(/^[[:space:]][[:space:]]/, "", line)               # de-indent old block body
         if (n + length(line) + 1 > m) {                        # cut INSIDE the block

@@ -126,7 +126,7 @@ contract the parent never had rather than a defect in one it shipped.
   - the verdict vocabulary (`pass` / `fix` / `escalate`) and the routing of
     each are unchanged; prose only — no sweep case
 
-- [ ] **P1**: A repository extends the block with `.agents/handoff-extra`
+- [x] **P1**: A repository extends the block with `.agents/handoff-extra`
   - each non-blank, non-`#` line of `.agents/handoff-extra` in every discovered
     config root is appended after the six as a further `REQUIRED` line, unioned
     across roots with the same discovery and restrictive union

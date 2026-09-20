@@ -217,7 +217,19 @@
 #                                    fixtures). No option omits it: a missing,
 #                                    unreadable or whitespace-only template
 #                                    exits non-zero naming that path and writes
-#                                    no handoff file at all.
+#                                    no handoff file at all. After those six
+#                                    lines it appends one `REQUIRED: <line>` per
+#                                    non-blank, non-`#` line of
+#                                    `.agents/handoff-extra` in EVERY discovered
+#                                    config root (ADR 0011's bounded upward
+#                                    walk, reimplemented here — see
+#                                    _rs_handoff_extra_lines), unioned so a
+#                                    nested or foreign root can only add lines.
+#                                    No such file anywhere ⇒ nothing is emitted
+#                                    and the handoff is byte-identical to one
+#                                    written before the mechanism existed; a
+#                                    file that is PRESENT but unreadable is
+#                                    refused exactly as a missing template is.
 #   write-result <run-state> <path> --status "<line>"
 #                                    atomically writes the (newline-collapsed)
 #                                    status line followed by stdin to <path>.
@@ -2549,6 +2561,91 @@ _rs_handoff_title() {
   printf '%s' "${title:-$fallback}"
 }
 
+# --- config roots: ADR 0011's bounded upward walk, reimplemented here -------
+# `hooks/guard.sh` performs exactly this discovery for its `.agents/guard-extra-*`
+# files, and this is a REIMPLEMENTATION rather than a shared helper because the
+# guard is a hook BODY: it reads a JSON payload on stdin, decides, and exits —
+# it has no callable form this script could source without also running its
+# policy. The rules are the guard's, and a change to them belongs in both
+# places:
+#   - candidates are $CLAUDE_PROJECT_DIR (the harness's project root, when set)
+#     and the cwd, plus every ancestor of either that declares a `.agents/`
+#     directory. The upward walk — not `git rev-parse --show-toplevel` — is what
+#     finds the root: it works in a git-free repo and does not stop at a NESTED
+#     checkout's boundary.
+#   - bounded by $HOME and `/` (and capped at 40 levels) so a stray dotfile
+#     above the workspace can never be picked up.
+#   - deduped by RESOLVED path, because the two walks routinely meet at the same
+#     root (the driver's cwd is usually the project root itself).
+_RS_CONFIG_ROOTS=()
+_rs_add_config_root() {
+  local d="${1:-}" r e
+  [ -n "$d" ] && [ -d "${d}/.agents" ] || return 0
+  r="$(cd "$d" 2>/dev/null && pwd -P)" || return 0
+  # `if` rather than `[ … ] && return 0`: this script runs under `set -e`, and a
+  # bare test as the loop body's last command makes the whole `for` return
+  # non-zero on the common no-match path.
+  for e in ${_RS_CONFIG_ROOTS[@]+"${_RS_CONFIG_ROOTS[@]}"}; do
+    if [ "$e" = "$r" ]; then return 0; fi
+  done
+  _RS_CONFIG_ROOTS+=("$r")
+}
+_rs_walk_up_for_config() {
+  local d n=0
+  d="$(cd "${1:-/nonexistent}" 2>/dev/null && pwd -P)" || return 0
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "${HOME:-}" ] && [ "$n" -lt 40 ]; do
+    _rs_add_config_root "$d"
+    d="$(dirname "$d")"
+    n=$((n + 1))
+  done
+}
+
+# --- .agents/handoff-extra: the repository's OWN REQUIRED lines -------------
+# handoff-verification-contract T3. Prints one `REQUIRED: <line>` per non-blank,
+# non-`#` line of `.agents/handoff-extra` in EVERY discovered config root, in
+# discovery order. The merge is a restrictive UNION, the same shape the guard
+# applies to `guard-extra-*`: a nested or foreign root can only ADD lines, never
+# remove or override another root's — so ambiguity can never yield a weaker
+# contract than the real project's. Identical lines from two roots collapse to
+# one, since a line repeated verbatim reads as two criteria rather than one.
+#
+# Absent in every root ⇒ prints nothing, and the caller emits nothing: a
+# repository without the file gets a handoff byte-identical to one written with
+# this mechanism absent — no header, no empty section, no warning.
+#
+# PRESENT but unreadable ⇒ refuses the handoff, exactly as an unreadable
+# verification-contract template does: the repository declared extra criteria
+# and an agent cannot tell a handoff that dropped them from one that never had
+# any. Presence is `-e` OR `-L`, so a dangling symlink counts as present-and-
+# unreadable rather than absent, and readability is probed by EXECUTION (`cat`)
+# rather than by `[ -r ]`, which answers `true` for root on a mode-000 file.
+_rs_handoff_extra_lines() {
+  _RS_CONFIG_ROOTS=()
+  _rs_walk_up_for_config "${CLAUDE_PROJECT_DIR:-}"
+  _rs_walk_up_for_config "$PWD"
+
+  local root file body line seen
+  seen=$'\n'
+  for root in ${_RS_CONFIG_ROOTS[@]+"${_RS_CONFIG_ROOTS[@]}"}; do
+    file="${root}/.agents/handoff-extra"
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+    if ! body="$(cat "$file" 2>/dev/null)"; then
+      die "handoff: cannot read the extension file '${file}' — a present-but-unreadable .agents/handoff-extra refuses the handoff rather than dropping the lines it declares"
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      # The comment/blank filter is the WHOLE syntax of this file (the feature's
+      # own risk note): everything else is repository prose appended verbatim.
+      case "$line" in \#*) continue ;; esac
+      case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+      case "$seen" in *$'\n'"$line"$'\n'*) continue ;; esac
+      seen="${seen}${line}"$'\n'
+      printf 'REQUIRED: %s\n' "$line"
+    done <<< "$body"
+  done
+  return 0
+}
+
 # --- handoff: write the packet's brief into its run directory --------------
 # thin-loop-driver T8. Refuses (rather than dies) a packet whose LATEST
 # routing record (T9) in this run is `hand-off-feature` — the packet has been
@@ -2645,6 +2742,19 @@ cmd_handoff() {
     *) die "handoff: the verification contract template at '${req_tpl}' is empty — every handoff carries it and there is no option to omit it" ;;
   esac
 
+  # --- the repository's own extension lines, read at the SAME point ----------
+  # Same two reasons as the template above: after stdin is drained, and before
+  # mktemp, so a refusal leaves nothing on disk. Empty is the normal case and
+  # emits nothing at all (see _rs_handoff_extra_lines).
+  local extra="" _rs_x=""
+  if ! extra="$(_rs_handoff_extra_lines)"; then
+    # The helper runs in a command substitution, so its `die` exits only THAT
+    # subshell — the message naming the file it could not read is already on
+    # stderr, but the refusal has to be re-raised here or the handoff would be
+    # written without the lines the repository declared.
+    exit 1
+  fi
+
   # GLOBAL, not local -- an EXIT trap referencing a function-LOCAL is
   # bash-version-dependent while the shell unwinds under `set -e` (see
   # gspec-backlog.sh's cmd_check_task for the same fix and its measured
@@ -2669,6 +2779,13 @@ cmd_handoff() {
     # there is no window in which the template changes between the check and
     # the write.
     printf '\n%s\n' "$required"
+    # The repository's own lines, AFTER the six and in the same shape, each
+    # separated by a blank line exactly as the template separates its own. When
+    # there are none this emits nothing — not a heading, not a blank section —
+    # so the file is byte-identical to one written before this existed.
+    if [ -n "$extra" ]; then
+      while IFS= read -r _rs_x; do printf '\n%s\n' "$_rs_x"; done <<< "$extra"
+    fi
   } > "$_rs_tmp"
   mv -f "$_rs_tmp" "$target"
   trap - EXIT

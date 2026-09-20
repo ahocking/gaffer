@@ -3038,6 +3038,139 @@ for HR_NAME in $HR_NAMES; do
     "grep -q \"^REQUIRED ${HR_NAME}: \" \"$HW_RUN_DIR/pkt-farcwd/handoff.md\""
 done
 
+echo "-- handoff: .agents/handoff-extra extends the block, unioned across config roots (handoff-verification-contract T3) --"
+# A FRESH fixture repo, with CLAUDE_PROJECT_DIR pinned to it on every call, so
+# the discovered config roots are exactly the ones each case sets up. Without
+# the pin the developer's own checkout (which has an .agents/ of its own) is a
+# discovered root, and every case below would silently depend on whether THAT
+# repo happens to carry a handoff-extra file.
+HE="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$HE" init -q
+git -C "$HE" config user.email t@t; git -C "$HE" config user.name t
+mkdir -p "$HE/.agents"
+printf 'schema: 3\nstatus: running\n' > "$HE/.agents/run-state.yaml"
+HE_RUN_ID="$(cd "$HE" && CLAUDE_PROJECT_DIR="$HE" "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+HE_RUN_DIR="$HE/.agents/loop/$HE_RUN_ID"
+HE_XFILE="$HE/.agents/handoff-extra"
+# he_handoff <pkt> [cwd] -- reads the body on stdin, like the real caller.
+he_handoff() {
+  ( cd "${2:-$HE}" && CLAUDE_PROJECT_DIR="$HE" \
+      "$RUNSTATE" handoff "$HE/.agents/run-state.yaml" "$1" --tier integration --agent implementer )
+}
+
+# --- no file in any discovered root: identical to the mechanism being absent --
+# This handoff is kept as the BASELINE the comments-only case is compared
+# against byte for byte. Same fixture, same packet id and same stdin, so every
+# header line (run-state path, result path, title) is identical by construction
+# and a byte difference can only come from the extension mechanism.
+printf 'TEXT=no extension file\n' | he_handoff pkt-extra >/dev/null
+HE_NONE="$HE/baseline-handoff.md"; cp "$HE_RUN_DIR/pkt-extra/handoff.md" "$HE_NONE"
+assert_true "with no .agents/handoff-extra in any root the handoff carries exactly the template's six REQUIRED lines" \
+  "[ \"\$(grep -c '^REQUIRED [a-z-]*: ' \"$HE_NONE\")\" = 6 ]"
+assert_true "with no .agents/handoff-extra anywhere the handoff carries no repository REQUIRED line" \
+  "[ \"\$(grep -c '^REQUIRED: ' \"$HE_NONE\")\" = 0 ]"
+assert_true "nothing follows the sixth line: no section header, no empty section, no warning" \
+  "grep -v '^[[:space:]]*\$' \"$HE_NONE\" | tail -1 | grep -q '^REQUIRED second-run: '"
+
+# --- a root holding only comments and blank lines -----------------------------
+# MUTATION RULED OUT: dropping the comment/blank filter. Emit every line of the
+# file (guard.sh's `case "$line" in ''|\#*) continue` removed from
+# _rs_handoff_extra_lines) and this turns red -- the stub's comment lines arrive
+# as REQUIRED lines and the handoff is no longer byte-identical to the no-file
+# one. The fixture is the SHIPPED consumer stub itself, not a hand-written
+# imitation of it, so "the stub changes no handoff" is checked against the real
+# file a consumer receives rather than against a copy that could drift from it.
+cp "${PLUGIN_ROOT}/templates/spec-driven-base/.agents/handoff-extra" "$HE_XFILE"
+assert_true "the shipped consumer stub is comments and blank lines only" \
+  "! grep -qv -e '^#' -e '^[[:space:]]*\$' \"${PLUGIN_ROOT}/templates/spec-driven-base/.agents/handoff-extra\""
+printf 'TEXT=no extension file\n' | he_handoff pkt-extra >/dev/null
+assert_true "a comments-and-blank-lines-only handoff-extra yields a handoff BYTE-IDENTICAL to the no-file one" \
+  "cmp -s \"$HE_NONE\" \"$HE_RUN_DIR/pkt-extra/handoff.md\""
+
+# --- a root with real lines ---------------------------------------------------
+# MUTATION RULED OUT: appending the lines without the `REQUIRED: ` prefix.
+# Change the helper's `printf 'REQUIRED: %s\n'` to `printf '%s\n'` and the two
+# prefix assertions turn red -- the repository's criteria are still in the file
+# but read as loose prose rather than as criteria in the same form the six and
+# the driver's own conditional lines use.
+printf '# a commented line that is not a criterion\n\nthe fixture is regenerated with the project command and its output reported\n   \nthe money invariant is named and observed holding\n' > "$HE_XFILE"
+printf 'TEXT=with an extension file\n' | he_handoff pkt-extra-lines >/dev/null
+HE_LINES="$HE_RUN_DIR/pkt-extra-lines/handoff.md"
+assert_true "the first extension line is appended as a REQUIRED line, verbatim" \
+  "grep -qx 'REQUIRED: the fixture is regenerated with the project command and its output reported' \"$HE_LINES\""
+assert_true "the second extension line is appended as a REQUIRED line, verbatim" \
+  "grep -qx 'REQUIRED: the money invariant is named and observed holding' \"$HE_LINES\""
+assert_true "a commented line in handoff-extra is not appended" \
+  "! grep -q 'a commented line that is not a criterion' \"$HE_LINES\""
+assert_true "blank and whitespace-only lines add no empty REQUIRED lines" \
+  "[ \"\$(grep -c '^REQUIRED: ' \"$HE_LINES\")\" = 2 ]"
+assert_true "the template's six lines are all still there alongside them" \
+  "[ \"\$(grep -c '^REQUIRED [a-z-]*: ' \"$HE_LINES\")\" = 6 ]"
+HE_SIXTH_LN="$(grep -n '^REQUIRED second-run: ' "$HE_LINES" | head -1 | cut -d: -f1)"
+HE_FIRST_X_LN="$(grep -n '^REQUIRED: ' "$HE_LINES" | head -1 | cut -d: -f1)"
+assert_true "the extension lines come AFTER the six, never among them" \
+  "[ -n \"$HE_SIXTH_LN\" ] && [ -n \"$HE_FIRST_X_LN\" ] && [ \"$HE_SIXTH_LN\" -lt \"$HE_FIRST_X_LN\" ]"
+
+# --- two nested roots: the union, not a winner --------------------------------
+# MUTATION RULED OUT: narrowing the union to one root. Break out of
+# _rs_handoff_extra_lines' loop after the first root that has the file (the
+# "nearest root wins" reading of the merge) and one of these two turns red
+# whichever root it picks -- which is the point: a nested or foreign root may
+# ADD criteria, and may never remove the outer repository's.
+mkdir -p "$HE/inner/.agents"
+printf 'the inner root line is a criterion too\n' > "$HE/inner/.agents/handoff-extra"
+printf 'TEXT=nested roots\n' | he_handoff pkt-extra-nested "$HE/inner" >/dev/null
+HE_NESTED="$HE_RUN_DIR/pkt-extra-nested/handoff.md"
+assert_true "with two nested roots the OUTER root's line is present" \
+  "grep -qx 'REQUIRED: the money invariant is named and observed holding' \"$HE_NESTED\""
+assert_true "with two nested roots the INNER root's line is present" \
+  "grep -qx 'REQUIRED: the inner root line is a criterion too' \"$HE_NESTED\""
+# A line declared by both roots is one criterion, not two: the roots are deduped
+# by resolved path, and so are the lines they contribute.
+printf 'the money invariant is named and observed holding\nthe inner root line is a criterion too\n' > "$HE/inner/.agents/handoff-extra"
+printf 'TEXT=nested roots, overlapping lines\n' | he_handoff pkt-extra-dup "$HE/inner" >/dev/null
+assert_true "a line declared by both roots is appended once, not twice" \
+  "[ \"\$(grep -cx 'REQUIRED: the money invariant is named and observed holding' \"$HE_RUN_DIR/pkt-extra-dup/handoff.md\")\" = 1 ]"
+
+# --- present but unreadable: refused, exactly as a missing template is --------
+# MUTATION RULED OUT: skipping the file instead of refusing. Replace the `die`
+# in _rs_handoff_extra_lines with `continue` (the "be lenient, carry on" reading)
+# and these turn red -- the command exits 0 and a handoff.md appears carrying the
+# six lines but none of the repository's, which is the one state the refusal
+# exists to prevent: an agent cannot tell a handoff whose extension lines were
+# dropped from a repository that declared none.
+mv "$HE/inner" "$HE/inner-disabled"          # one root for this case, not two
+printf 'a criterion that must not be silently dropped\n' > "$HE_XFILE"
+chmod 000 "$HE_XFILE"
+HE_MODE_UNREADABLE=no
+if ! cat "$HE_XFILE" >/dev/null 2>&1; then HE_MODE_UNREADABLE=yes; fi
+if [ "$HE_MODE_UNREADABLE" = yes ]; then
+  HE_REFUSE_ERR="$(printf 'TEXT=x\n' | he_handoff pkt-extra-unreadable 2>&1 >/dev/null || true)"
+  assert_true "handoff exits non-zero when a present .agents/handoff-extra cannot be read (mode 000)" \
+    "! (printf 'TEXT=x\n' | he_handoff pkt-extra-unreadable) 2>/dev/null"
+  assert_true "the refusal names the extension file it could not read" \
+    "printf '%s\n' \"\$HE_REFUSE_ERR\" | grep -qF \"$HE_XFILE\""
+  assert_true "a handoff refused over the extension file writes no handoff.md at all" \
+    "[ ! -f \"$HE_RUN_DIR/pkt-extra-unreadable/handoff.md\" ]"
+  assert_true "a handoff refused over the extension file leaves no temp file beside it either" \
+    "[ -z \"\$(ls -A \"$HE_RUN_DIR/pkt-extra-unreadable\" 2>/dev/null)\" ]"
+else
+  # NOT RUN, and said so rather than passed quietly: as uid 0 a mode-000 file is
+  # still readable, so this host cannot create the condition. The directory shape
+  # below is unreadable for every uid and covers the same refusal.
+  printf 'note this host reads a mode-000 file (uid %s) — the mode-000 shape of the extension refusal was NOT run; the directory shape below was\n' "$(id -u)"
+fi
+chmod 644 "$HE_XFILE"
+# The second unreadable shape, which no uid can read: a DIRECTORY where the file
+# is expected. Present (so not skippable as absent) and impossible to cat.
+mv "$HE_XFILE" "$HE/.agents/handoff-extra-saved"; mkdir -p "$HE_XFILE"
+HE_DIR_ERR="$(printf 'TEXT=x\n' | he_handoff pkt-extra-dir 2>&1 >/dev/null || true)"
+assert_true "handoff exits non-zero when .agents/handoff-extra is present but is a directory" \
+  "! (printf 'TEXT=x\n' | he_handoff pkt-extra-dir) 2>/dev/null"
+assert_true "that refusal names the extension file too" \
+  "printf '%s\n' \"\$HE_DIR_ERR\" | grep -qF \"$HE_XFILE\""
+assert_true "and writes no handoff.md at all" \
+  "[ ! -f \"$HE_RUN_DIR/pkt-extra-dir/handoff.md\" ]"
+
 echo "-- handoff/write-result: charset and traversal refusals (review fixes 3/12/13) --"
 assert_true "handoff refuses a packet id of '.'" \
   "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml . --tier integration --agent implementer)) 2>/dev/null"

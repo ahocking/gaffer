@@ -289,6 +289,74 @@
 #                                    refused with the byte-identical reason
 #                                    `check-status` prints and routing.jsonl is
 #                                    left byte-unchanged (T2).
+#   record-decision <run-state> <packet-id> <decision> --trigger <name>
+#                   [--finding <id>] [--summary <text>]
+#   record-review <run-state> --bytes-before <n> --bytes-after <n>
+#                 --merged <n> --routed <n> --dropped <n>
+#                                    escalation-decider T1: each appends ONE
+#                                    JSONL record to a THIRD log,
+#                                    .agents/metrics/decisions/<session>.jsonl
+#                                    — a new sibling of the driver-mode log,
+#                                    and BOTH halves of that placement are
+#                                    load-bearing. Not
+#                                    .agents/loop/<run_id>/, which begin-run
+#                                    prunes to the current run plus one, so a
+#                                    decision would stop being auditable two
+#                                    runs later. Not
+#                                    .agents/metrics/outcomes/, where
+#                                    _rs_open_packets reads ANY record that
+#                                    carries a `packet` and a non-empty `kind`
+#                                    as a packet START (see its own `if (kind
+#                                    != "")` branch): a decision record there
+#                                    would REOPEN a packet that had already
+#                                    ended, sweep-open would then close it as
+#                                    `interrupted`, and run-digest would
+#                                    report that outcome for a packet nothing
+#                                    interrupted. Both records DO carry
+#                                    `kind` — `decision`/`review` — which is
+#                                    safe only because of where they are
+#                                    written; that is the whole reason the log
+#                                    is separate rather than a new field shape
+#                                    in an existing one.
+#                                    <decision> is one of the five the
+#                                    escalation decider returns —
+#                                    reorder append-task retry ask-operator
+#                                    hand-off-feature — never a reviewer
+#                                    verdict (pass/fix/escalate are what ROUTE
+#                                    to the decider, not what it decides), and
+#                                    anything else is refused.
+#                                    Record shapes (fixed field set, absent
+#                                    optional values written as empty strings
+#                                    so a reader using the same plain
+#                                    index()/substr() extraction as every
+#                                    other log here sees one shape):
+#                                      {"ts":…,"session":…,"run_id":…,
+#                                       "kind":"decision","packet":…,
+#                                       "decision":…,"trigger":…,
+#                                       "finding":…,"summary":…}
+#                                      {"ts":…,"session":…,"run_id":…,
+#                                       "kind":"review","bytes_before":…,
+#                                       "bytes_after":…,"merged":…,
+#                                       "routed":…,"dropped":…}
+#                                    `run_id` is stamped from run-state (which
+#                                    is why both take it) because this log is
+#                                    SESSION-keyed and a session outlives a
+#                                    run: without it a reader could not tell
+#                                    this run's decisions from the previous
+#                                    run's. Both die when run-state has no
+#                                    run_id, same as route/handoff/run-digest.
+#                                    record-review's five values are each a
+#                                    non-negative integer or the literal
+#                                    `unmeasured`, written as JSON STRINGS
+#                                    (the same `<n|unknown>`-as-a-string shape
+#                                    driver-mode's `threshold` already uses):
+#                                    a count that could not be read must be
+#                                    reportable as unmeasured rather than as
+#                                    0, which would read as a measurement.
+#                                    Argument validation dies BEFORE anything
+#                                    is written; a write failure is NON-fatal
+#                                    and prints RECORDED=no + REASON=, exactly
+#                                    as record-outcome/record-start do.
 #   compact-threshold                prints THRESHOLD=<n|unknown>,
 #                                    SOURCE=repo|operator|unknown
 #                                    and APPLIED=no ALWAYS (thin-loop-driver
@@ -3252,6 +3320,208 @@ cmd_route() {
 }
 
 # =============================================================================
+# The decision log (escalation-decider T1)
+# =============================================================================
+# A THIRD append-only JSONL log, .agents/metrics/decisions/<session>.jsonl,
+# holding what the escalation decider decided and what a periodic review did.
+# It is deliberately neither of the two that already exist:
+#
+#   - NOT .agents/loop/<run_id>/ (where routing.jsonl lives). `begin-run`
+#     prunes that directory to the current run plus the single newest other,
+#     so a decision recorded there stops being readable two runs later — and
+#     the audit these records exist for is exactly the question asked after
+#     the fact.
+#   - NOT .agents/metrics/outcomes/. `_rs_open_packets` classifies a record
+#     there by FIELD SHAPE: any line carrying a `packet` and a NON-EMPTY
+#     `kind` is a packet BOUNDARY (its `if (kind != "")` branch — it does not
+#     test for the values `start`/`continue`). A decision record carrying both
+#     would reopen a packet whose green outcome was already recorded;
+#     `sweep-open` would then write it an `interrupted` terminal record, and
+#     `run-digest` would report a packet nothing interrupted as interrupted.
+#     ADR 0028 names that same trap for the driver-mode records.
+#
+# Both records here DO carry `kind` (`decision`/`review`), which is safe only
+# because of where they are written. That is the point: the placement is the
+# mechanism, not a filing preference.
+#
+# `run_id` is stamped into every record. This log is SESSION-keyed and a
+# session outlives a run (begin-run mints `run_id` once and a resume keeps
+# it), so without that field a reader could not separate this run's decisions
+# from the previous run's — which is precisely what the routing.jsonl records
+# get for free by living in the run directory, and what these give up by
+# living outside it.
+
+# --- append one line to the decision log ------------------------------------
+# Mirrors _rs_append_outcomes_line/_rs_append_driver_mode_line rather than
+# sharing with them: those two are called by shipped writers this task does not
+# touch, and the only difference is the directory each bakes in. Same
+# atomicity argument as both (one short line, O_APPEND, well under PIPE_BUF).
+#
+# CALLERS MUST INVOKE THIS IN AN `||` OR `if` CONTEXT, NEVER BARE — this file
+# runs under `set -e`, which a bare `return 1` would turn into a hard exit,
+# destroying the non-fatal RECORDED=no contract (the same warning
+# _rs_append_outcomes_line carries, for the same reason).
+_rs_append_decisions_line() {
+  local sess="$1" line="$2"
+  local main_root dir
+  main_root="$(_rs_main_checkout_root)" || { printf 'RECORDED=no\nREASON=not-a-git-repo\n'; return 1; }
+  dir="${main_root}/.agents/metrics/decisions"
+  mkdir -p "$dir" 2>/dev/null || { printf 'RECORDED=no\nREASON=cannot-create-dir\n'; return 1; }
+  printf '%s\n' "$line" >> "${dir}/${sess}.jsonl" 2>/dev/null \
+    || { printf 'RECORDED=no\nREASON=cannot-append\n'; return 1; }
+  return 0
+}
+
+# --- the run_id both commands stamp, validated the same way every other
+# --- reader of run_id validates it (_rs_check_run_id) -----------------------
+# Callers assign with `local x; x="$(...)"` on two lines, never
+# `local x="$(...)"`, so a `die` in here propagates under `set -e` instead of
+# being swallowed by the assignment's exit status (the trap documented on
+# _rs_split_pkt_ids).
+_rs_decision_run_id() {
+  local f="$1" label="$2" run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "${label}: run-state has no run_id (begin-run has not been called)"
+  _rs_check_run_id "$run_id"
+  printf '%s' "$run_id"
+}
+
+# --- a review count: a non-negative integer, or `unmeasured` ----------------
+# `unmeasured` is accepted, and 0 is NOT its substitute: a review whose index
+# bytes or counts could not be read must be able to say so, because 0 reads as
+# a measurement that happens to be zero. Same `<n|unknown>` shape driver-mode
+# `enter` already takes for --threshold.
+_rs_check_review_count() {
+  local opt="$1" v="$2"
+  case "$v" in
+    unmeasured) return 0 ;;
+    ''|*[!0-9]*) die "record-review: ${opt} must be a non-negative integer or the literal 'unmeasured'" ;;
+  esac
+  return 0
+}
+
+_RS_RECORD_DECISION_USAGE="usage: record-decision <run-state> <packet-id> <reorder|append-task|retry|ask-operator|hand-off-feature> --trigger <name> [--finding <id>] [--summary <text>]"
+
+cmd_record_decision() {
+  local f="" pkt="" decision="" trigger="" finding="" summary="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trigger)   [ $# -ge 2 ] || die "$_RS_RECORD_DECISION_USAGE"; trigger="$2"; shift 2 ;;
+      --trigger=*) trigger="${1#--trigger=}"; shift ;;
+      --finding)   [ $# -ge 2 ] || die "$_RS_RECORD_DECISION_USAGE"; finding="$2"; shift 2 ;;
+      --finding=*) finding="${1#--finding=}"; shift ;;
+      --summary)   [ $# -ge 2 ] || die "$_RS_RECORD_DECISION_USAGE"; summary="$2"; shift 2 ;;
+      --summary=*) summary="${1#--summary=}"; shift ;;
+      --*) die "$_RS_RECORD_DECISION_USAGE (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) pkt="$1" ;;
+          2) decision="$1" ;;
+          *) die "$_RS_RECORD_DECISION_USAGE (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  # EVERY argument check runs before the record is built and before anything
+  # touches disk -- the same ordering rule record-outcome/route follow, so a
+  # refused call leaves the log byte-unchanged rather than recording a decision
+  # that was never made.
+  [ -n "$f" ] && [ -n "$pkt" ] && [ -n "$decision" ] || die "$_RS_RECORD_DECISION_USAGE"
+  [ -n "$trigger" ] || die "$_RS_RECORD_DECISION_USAGE (--trigger is required: a decision with no trigger cannot be audited against the decider's trigger list)"
+  need_file "$f"
+  _rs_check_pkt_id "$pkt"
+  case "$decision" in
+    reorder|append-task|retry|ask-operator|hand-off-feature) ;;
+    *) die "record-decision: decision must be one of: reorder append-task retry ask-operator hand-off-feature (pass/fix/escalate are reviewer verdicts that route TO the decider, not decisions it returns)" ;;
+  esac
+  # Same charset as cmd_add_finding's own check -- this names an entry in the
+  # findings index whose body is <id>.md, so an id this file would refuse
+  # there must not become readable here.
+  if [ -n "$finding" ]; then
+    case "$finding" in
+      *[!a-zA-Z0-9._-]*) die "record-decision: finding id must be [a-zA-Z0-9._-] (it is a filename)" ;;
+    esac
+  fi
+
+  local run_id; run_id="$(_rs_decision_run_id "$f" record-decision)"
+  local sess="${CLAUDE_CODE_SESSION_ID:-adhoc}"
+  _rs_check_session_id "$sess"
+
+  # Escape once, then use the SAME escaped value for the JSON record and for
+  # the printed KEY=value lines: an un-escaped newline in a trigger would both
+  # produce invalid JSON (making `jq -s` drop every record in the file) and
+  # split this command's own output into lines a caller would misread. The
+  # consequence, deliberately accepted: what `TRIGGER=`/`FINDING=` print is the
+  # record's OWN stored form (a `"` shows as `\"`), not the raw argument -- one
+  # value, echoed exactly as recorded, rather than two that could disagree.
+  local trigger_esc finding_esc summary_esc
+  trigger_esc="$(_rs_json_escape "$trigger")"
+  finding_esc="$(_rs_json_escape "$finding")"
+  summary_esc="$(_rs_json_escape "$summary")"
+
+  local line
+  line="$(printf '{"ts":"%s","session":"%s","run_id":"%s","kind":"decision","packet":"%s","decision":"%s","trigger":"%s","finding":"%s","summary":"%s"}' \
+    "$(_rs_now_ts)" "$sess" "$run_id" "$pkt" "$decision" "$trigger_esc" "$finding_esc" "$summary_esc")"
+  _rs_append_decisions_line "$sess" "$line" || return 0
+  printf 'RECORDED=yes\nPACKET=%s\nDECISION=%s\nTRIGGER=%s\nFINDING=%s\n' \
+    "$pkt" "$decision" "$trigger_esc" "$finding_esc"
+}
+
+_RS_RECORD_REVIEW_USAGE="usage: record-review <run-state> --bytes-before <n|unmeasured> --bytes-after <n|unmeasured> --merged <n|unmeasured> --routed <n|unmeasured> --dropped <n|unmeasured>"
+
+cmd_record_review() {
+  local f="" before="" after="" merged="" routed="" dropped="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bytes-before)   [ $# -ge 2 ] || die "$_RS_RECORD_REVIEW_USAGE"; before="$2"; shift 2 ;;
+      --bytes-before=*) before="${1#--bytes-before=}"; shift ;;
+      --bytes-after)    [ $# -ge 2 ] || die "$_RS_RECORD_REVIEW_USAGE"; after="$2"; shift 2 ;;
+      --bytes-after=*)  after="${1#--bytes-after=}"; shift ;;
+      --merged)         [ $# -ge 2 ] || die "$_RS_RECORD_REVIEW_USAGE"; merged="$2"; shift 2 ;;
+      --merged=*)       merged="${1#--merged=}"; shift ;;
+      --routed)         [ $# -ge 2 ] || die "$_RS_RECORD_REVIEW_USAGE"; routed="$2"; shift 2 ;;
+      --routed=*)       routed="${1#--routed=}"; shift ;;
+      --dropped)        [ $# -ge 2 ] || die "$_RS_RECORD_REVIEW_USAGE"; dropped="$2"; shift 2 ;;
+      --dropped=*)      dropped="${1#--dropped=}"; shift ;;
+      --*) die "$_RS_RECORD_REVIEW_USAGE (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          *) die "$_RS_RECORD_REVIEW_USAGE (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] || die "$_RS_RECORD_REVIEW_USAGE"
+  # All five are REQUIRED rather than defaulted: a review that omits a count
+  # would otherwise record a 0 nobody measured, which is the one reading this
+  # record must never support.
+  [ -n "$before" ] && [ -n "$after" ] && [ -n "$merged" ] && [ -n "$routed" ] && [ -n "$dropped" ] \
+    || die "$_RS_RECORD_REVIEW_USAGE (all five values are required -- an omitted count must not be recorded as 0)"
+  need_file "$f"
+  _rs_check_review_count --bytes-before "$before"
+  _rs_check_review_count --bytes-after  "$after"
+  _rs_check_review_count --merged       "$merged"
+  _rs_check_review_count --routed       "$routed"
+  _rs_check_review_count --dropped      "$dropped"
+
+  local run_id; run_id="$(_rs_decision_run_id "$f" record-review)"
+  local sess="${CLAUDE_CODE_SESSION_ID:-adhoc}"
+  _rs_check_session_id "$sess"
+
+  # No _rs_json_escape here and none needed: every one of the five has already
+  # been reduced by _rs_check_review_count to digits or the literal
+  # `unmeasured`, so there is nothing left that could escape the string.
+  local line
+  line="$(printf '{"ts":"%s","session":"%s","run_id":"%s","kind":"review","bytes_before":"%s","bytes_after":"%s","merged":"%s","routed":"%s","dropped":"%s"}' \
+    "$(_rs_now_ts)" "$sess" "$run_id" "$before" "$after" "$merged" "$routed" "$dropped")"
+  _rs_append_decisions_line "$sess" "$line" || return 0
+  printf 'RECORDED=yes\nMERGED=%s\nROUTED=%s\nDROPPED=%s\nBYTES_BEFORE=%s\nBYTES_AFTER=%s\n' \
+    "$merged" "$routed" "$dropped" "$before" "$after"
+}
+
+# =============================================================================
 # run-digest (thin-loop-driver T11, ADR 0028 result 4)
 # =============================================================================
 
@@ -4411,12 +4681,19 @@ case "$cmd" in
   check-status)  cmd_check_status  "$@" ;;
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;
+  record-decision) cmd_record_decision "$@" ;;
+  record-review)   cmd_record_review   "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;
   run-tally)         cmd_run_tally         "$@" ;;
   prune-questions)   cmd_prune_questions   "$@" ;;
   bundle-cap)        cmd_bundle_cap        "$@" ;;
-  -h|--help|help|"") sed -n '2,498p' "$0" | sed 's/^# \{0,1\}//' ;;
+  # The header block, printed to its OWN end rather than to a hardcoded line
+  # number. The number was `498` while the header actually ran to 553, so help
+  # had been silently truncating its last 55 lines mid-sentence -- a range
+  # goes stale the moment anything is inserted above it, and this file's
+  # header grows with every subcommand added (this one added two).
+  -h|--help|help|"") awk 'NR<2 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0" ;;
   *) die "unknown subcommand '${cmd}' (try --help)" ;;
 esac

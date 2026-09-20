@@ -3779,6 +3779,160 @@ assert_true "run-digest: every line in the digest still starts with a recognized
   "! printf '%s\n' \"\$RD_BACKSLASH_OUT\" | awk -F'\t' '\$1!=\"packet\" && \$1!=\"decision\" && \$1!=\"handoff-feature\" && \$1!=\"enter\"' | grep -q ."
 
 echo
+echo "== record-decision / record-review: a THIRD log, outside begin-run's prune and outside"
+echo "   the outcomes log's boundary read (escalation-decider T1) =="
+# The two things this case exists to rule out, both of which are silent:
+#
+#  (a) writing these records into .agents/metrics/outcomes/. `_rs_open_packets`
+#      classifies a line there by FIELD SHAPE -- `if (kind != "")` makes ANY
+#      record carrying a `packet` and a non-empty `kind` a packet BOUNDARY, and
+#      it never tests for the values `start`/`continue`. A decision record there
+#      lands AFTER the packet's green outcome, so the packet reopens: sweep-open
+#      then writes it an `interrupted` terminal record and run-digest reports a
+#      packet nothing interrupted as interrupted. The fixture below therefore
+#      ends its packet GREEN before recording anything, so "still green" is a
+#      real discriminator rather than a packet that was never closed.
+#  (b) writing them into .agents/loop/<run_id>/ beside routing.jsonl, which
+#      begin-run prunes to the current run plus the single newest other. The
+#      later begin-run here is made to ACTUALLY prune (it reports REMOVED=), so
+#      the survival assertion is not vacuous against a prune that never ran.
+DL="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$DL" init -q
+git -C "$DL" config user.email t@t; git -C "$DL" config user.name t
+mkdir -p "$DL/.agents"
+printf 'schema: 3\nstatus: running\n' > "$DL/.agents/run-state.yaml"
+# Session id pinned per call rather than exported: the sweep may itself be
+# running inside a session that exports CLAUDE_CODE_SESSION_ID, and the log
+# file name is that value.
+dl_rs() { (cd "$DL" && CLAUDE_CODE_SESSION_ID=DLS "$RUNSTATE" "$@"); }
+DL_RUN_ID="$(dl_rs begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+DL_LOG="$DL/.agents/metrics/decisions/DLS.jsonl"
+
+printf 'T1 the packet a decision is recorded against\nbody\n' \
+  | dl_rs handoff .agents/run-state.yaml dl-pkt --tier mechanical --agent implementer >/dev/null
+dl_rs record-start dl-pkt >/dev/null
+dl_rs record-outcome dl-pkt green >/dev/null
+DL_OUTCOMES_BEFORE="$(cat "$DL"/.agents/metrics/outcomes/*.jsonl | wc -l | tr -d ' ')"
+assert_true "the fixture packet reads green BEFORE any decision record (so the checks below discriminate)" \
+  "dl_rs run-digest .agents/run-state.yaml | grep -qx \$'packet\tdl-pkt\tT1 the packet a decision is recorded against\tgreen'"
+
+dl_rs record-decision .agents/run-state.yaml dl-pkt retry \
+  --trigger 'the reviewer asked for a change the handoff did not state' \
+  --finding dl.f-1 --summary 'the handoff omitted the sweep case' >/dev/null
+dl_rs record-review .agents/run-state.yaml \
+  --bytes-before 4096 --bytes-after 2048 --merged 2 --routed 1 --dropped 3 >/dev/null
+
+assert_true "record-decision + record-review write to .agents/metrics/decisions/<session>.jsonl" \
+  "[ -f \"$DL_LOG\" ]"
+assert_true "each writes exactly ONE line" \
+  "[ \"\$(wc -l < \"$DL_LOG\" | tr -d ' ')\" = 2 ]"
+assert_true "the decision log parses as valid JSON end to end" \
+  "jq -s -e 'length == 2 and (map(type == \"object\") | all)' \"$DL_LOG\" >/dev/null"
+DL_DEC_LINE="$(jq -c 'select(.kind == "decision")' "$DL_LOG")"
+DL_REV_LINE="$(jq -c 'select(.kind == "review")'   "$DL_LOG")"
+assert_true "the decision record carries packet, decision, trigger and finding" \
+  "[ \"\$(jq -r '.packet + \"|\" + .decision + \"|\" + .trigger + \"|\" + .finding' <<<\"\$DL_DEC_LINE\")\" = 'dl-pkt|retry|the reviewer asked for a change the handoff did not state|dl.f-1' ]"
+assert_true "the decision record carries the summary" \
+  "[ \"\$(jq -r .summary <<<\"\$DL_DEC_LINE\")\" = 'the handoff omitted the sweep case' ]"
+assert_true "the review record carries all five values" \
+  "[ \"\$(jq -r '.bytes_before + \"|\" + .bytes_after + \"|\" + .merged + \"|\" + .routed + \"|\" + .dropped' <<<\"\$DL_REV_LINE\")\" = '4096|2048|2|1|3' ]"
+# run_id is what lets a reader separate THIS run's decisions from the previous
+# run's: the log is session-keyed, and a session outlives a run.
+assert_true "both records carry this run's run_id" \
+  "[ \"\$(jq -r .run_id <<<\"\$DL_DEC_LINE\")\" = \"$DL_RUN_ID\" ] && [ \"\$(jq -r .run_id <<<\"\$DL_REV_LINE\")\" = \"$DL_RUN_ID\" ]"
+assert_true "both records carry the session" \
+  "[ \"\$(jq -r .session <<<\"\$DL_DEC_LINE\")\" = DLS ] && [ \"\$(jq -r .session <<<\"\$DL_REV_LINE\")\" = DLS ]"
+# Checked by CONTENT and BEFORE the prune below, so a copy written beside
+# routing.jsonl is caught whatever it is called and while it still exists.
+# `grep -rq` with no pipe -- the pipe-fed `grep -q` shape is the SIGPIPE hazard
+# this sweep's own source guard scans scripts/runstate.sh for.
+assert_true "no copy of the decision record was written under .agents/loop/" \
+  "! grep -rq 'the reviewer asked for a change the handoff did not state' \"$DL/.agents/loop\" 2>/dev/null"
+
+echo "-- NOT the outcomes log: the packet stays closed, so nothing sweeps it as interrupted --"
+assert_true "neither record was appended to the outcomes log" \
+  "[ \"\$(cat \"$DL\"/.agents/metrics/outcomes/*.jsonl | wc -l | tr -d ' ')\" = \"$DL_OUTCOMES_BEFORE\" ]"
+assert_true "sweep-open --list reports no open packet after both records" \
+  "[ -z \"\$(dl_rs sweep-open --list)\" ]"
+assert_true "run-digest still reports the packet green, not open and not interrupted" \
+  "dl_rs run-digest .agents/run-state.yaml | grep -qx \$'packet\tdl-pkt\tT1 the packet a decision is recorded against\tgreen'"
+# The sweep is run for real (not only --list): a writing sweep is what would
+# actually stamp `interrupted` onto the reopened packet.
+dl_rs sweep-open >/dev/null
+assert_true "a real (writing) sweep-open adds no terminal record either" \
+  "[ \"\$(cat \"$DL\"/.agents/metrics/outcomes/*.jsonl | wc -l | tr -d ' ')\" = \"$DL_OUTCOMES_BEFORE\" ]"
+assert_true "and the packet still reads green after that sweep" \
+  "dl_rs run-digest .agents/run-state.yaml | grep -qx \$'packet\tdl-pkt\tT1 the packet a decision is recorded against\tgreen'"
+
+echo "-- NOT the run directory: the records outlive the run directory begin-run deletes --"
+# begin-run keeps the current run plus the single newest OTHER, so it takes TWO
+# later runs to delete this one -- which is exactly the "two runs later" an
+# audit of what the decider decided has to survive. A later run is modelled the
+# way a real one starts (run_id is minted once per run-state, and a resume keeps
+# it, so a new run means a new run-state); the two later ids are FABRICATED and
+# far-future rather than minted, because minting is second-resolution plus a
+# random suffix -- three ids minted in the same second would order by that
+# random suffix and this case would prune a different directory run to run.
+mkdir -p "$DL/.agents/loop/20260101T000000-aaaa"
+printf 'schema: 3\nstatus: running\nrun_id: 20991231T235959-aaaa\n' > "$DL/.agents/run-state.yaml"
+dl_rs begin-run .agents/run-state.yaml >/dev/null
+assert_true "the FIRST later run keeps this run's directory (it is still the newest other)" \
+  "[ -d \"$DL/.agents/loop/$DL_RUN_ID\" ]"
+printf 'schema: 3\nstatus: running\nrun_id: 20991231T235959-bbbb\n' > "$DL/.agents/run-state.yaml"
+DL_BEGIN3="$(dl_rs begin-run .agents/run-state.yaml)"
+assert_true "the SECOND later run deletes the run directory these decisions were recorded during" \
+  "printf '%s\n' \"\$DL_BEGIN3\" | grep -qx 'REMOVED=$DL_RUN_ID' && [ ! -d \"$DL/.agents/loop/$DL_RUN_ID\" ]"
+assert_true "both decision-log records survive that deletion" \
+  "[ \"\$(wc -l < \"$DL_LOG\" | tr -d ' ')\" = 2 ]"
+assert_true "and the log still parses after it" \
+  "jq -s -e 'length == 2 and (map(type == \"object\") | all)' \"$DL_LOG\" >/dev/null"
+assert_true "sweep-open still reports no open packet after the begin-run" \
+  "[ -z \"\$(dl_rs sweep-open --list)\" ]"
+
+echo "-- refusals: every argument check runs BEFORE anything is written --"
+DL_BYTES_BEFORE_REFUSALS="$(wc -c < "$DL_LOG" | tr -d ' ')"
+assert_true "record-decision refuses a reviewer verdict (escalate) as a decision" \
+  "! dl_rs record-decision .agents/run-state.yaml dl-pkt escalate --trigger x 2>/dev/null"
+assert_true "record-decision refuses a call with no --trigger" \
+  "! dl_rs record-decision .agents/run-state.yaml dl-pkt retry 2>/dev/null"
+assert_true "record-decision refuses a packet id that would break its JSON (same charset rule as record-start)" \
+  "! dl_rs record-decision .agents/run-state.yaml 'pkt\"; drop' retry --trigger x 2>/dev/null"
+assert_true "record-decision refuses a finding id that is not a legal filename" \
+  "! dl_rs record-decision .agents/run-state.yaml dl-pkt retry --trigger x --finding '../escape' 2>/dev/null"
+assert_true "record-review refuses a call missing one of the five values" \
+  "! dl_rs record-review .agents/run-state.yaml --bytes-before 1 --bytes-after 2 --merged 3 --routed 4 2>/dev/null"
+assert_true "record-review refuses a non-numeric count" \
+  "! dl_rs record-review .agents/run-state.yaml --bytes-before 1 --bytes-after 2 --merged three --routed 4 --dropped 5 2>/dev/null"
+assert_true "the decision log is BYTE-UNCHANGED after every refusal above" \
+  "[ \"\$(wc -c < \"$DL_LOG\" | tr -d ' ')\" = \"$DL_BYTES_BEFORE_REFUSALS\" ]"
+# A count that could not be read must be recordable as `unmeasured`. Recording
+# 0 instead would read as a measurement that happened to be zero -- the one
+# reading this record must never support.
+assert_true "record-review accepts 'unmeasured' for a value that could not be read" \
+  "dl_rs record-review .agents/run-state.yaml --bytes-before unmeasured --bytes-after unmeasured --merged 0 --routed 0 --dropped 0 >/dev/null"
+assert_true "and stores it as 'unmeasured', never as 0" \
+  "[ \"\$(jq -r 'select(.kind == \"review\") | .bytes_before' \"$DL_LOG\" | tail -1)\" = unmeasured ]"
+# Both refuse without a run_id for the same reason route/handoff/run-digest do:
+# a record that cannot name its run cannot be scoped to it afterwards.
+DLN="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$DLN" init -q
+mkdir -p "$DLN/.agents"; printf 'schema: 3\nstatus: running\n' > "$DLN/.agents/run-state.yaml"
+assert_true "record-decision refuses a run-state with no run_id (begin-run not called)" \
+  "(cd \"$DLN\" && ! CLAUDE_CODE_SESSION_ID=DLS \"\$RUNSTATE\" record-decision .agents/run-state.yaml p1 retry --trigger x 2>/dev/null)"
+assert_true "record-review refuses a run-state with no run_id" \
+  "(cd \"$DLN\" && ! CLAUDE_CODE_SESSION_ID=DLS \"\$RUNSTATE\" record-review .agents/run-state.yaml --bytes-before 1 --bytes-after 2 --merged 3 --routed 4 --dropped 5 2>/dev/null)"
+assert_true "a refused record-decision created no decisions log at all" \
+  "[ ! -e \"$DLN/.agents/metrics/decisions\" ]"
+# Free text reaches these records (a trigger quotes the reviewer; a summary
+# quotes a finding), and one unescaped byte makes `jq -s` drop EVERY record in
+# the file at once -- the same silent failure the outcomes log is guarded
+# against above.
+DL_HOSTILE='he said "no" and left a \backslash'
+dl_rs record-decision .agents/run-state.yaml dl-pkt ask-operator --trigger "$DL_HOSTILE" --summary "$DL_HOSTILE" >/dev/null
+assert_true "a trigger/summary carrying quotes and backslashes leaves the whole log parseable" \
+  "jq -s -e 'length == 4 and (map(type == \"object\") | all)' \"$DL_LOG\" >/dev/null"
+assert_true "and round-trips that text verbatim" \
+  "[ \"\$(jq -r 'select(.decision == \"ask-operator\") | .trigger' \"$DL_LOG\")\" = \"\$DL_HOSTILE\" ]"
+
+echo
 echo "== run-tally: the four digest-derived tally figures, counted from the digest's own"
 echo "   lines for the whole run (report-render-conformance T1) =="
 rd_tally() { (cd "$RD" && "$RUNSTATE" run-tally .agents/run-state.yaml "$@"); }

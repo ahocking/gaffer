@@ -99,8 +99,8 @@ rule). Never decide the next step yourself:
 - **`ACTION=discard-advance`** — check first for a decider commit on this
   branch (a `[orch decider:` trailer beyond base); if present, leave the
   branch in place unmerged rather than deleting it — the run's termination
-  step accounts for it (merges it at `full-autonomy`, lists it in the stop
-  report otherwise). Then discard the packet's uncommitted work
+  step accounts for it (merges it and names it in the stop
+  report). Then discard the packet's uncommitted work
   non-destructively: `git stash push --include-untracked -m "orch discard:
   <packet-id>"` (never `git reset --hard`/`git clean -fd` — the guard
   hard-denies both). Record `rolled-back`, and advance.

@@ -60,7 +60,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: skills/set-autonomy/, .claude-plugin/plugin.json, .claude-plugin/marketplace.json
 
-- [ ] **T3** [P] **P0** Remove every level branch from the loop skills and the three agents that carry one, restating each as the fixed rule set rather than deleting the git rule it guarded.
+- [x] **T3** [P] **P0** Remove every level branch from the loop skills and the three agents that carry one, restating each as the fixed rule set rather than deleting the git rule it guarded.
 
   - `skills/run-loop/SKILL.md`: delete the preflight **Autonomy level** bullet outright (there is nothing left to resolve); in the kickoff section drop "At **`interactive`**, the kickoff is also the approval request: emit it and wait" and the words "the autonomy level" from the list of what the kickoff states; retitle step 7 from "Integrate (only at `full-autonomy`)" to an unconditional integrate step and delete its closing "At `supervised`/`autonomous` you stop at the green commit"; in the **Branch** bullet drop "at every level" and "(at `full-autonomy`)"; retitle the closing section from "Never, at any autonomy level" to "Never" and rewrite its body so the hard gates — `main`/`master`, PRs, migrations, dependency installs, sensitive paths, deploys, history rewrite — read as unconditional, with the loop stopping at "integrated onto the non-`main` integration branch, ready for the human to release";
   - `skills/resume/SKILL.md`: rewrite the clause about "routine commits above `interactive` (and merge/rebase/push onto non-`main`…)" so it states the same permissions with no level;

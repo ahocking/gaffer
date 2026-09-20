@@ -641,13 +641,13 @@ a single call, sharing a timestamp and session, exactly as §3.3 does.
 Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
 (dispatch with the handoff path, route every verdict, land, integrate,
 advance) and §4 (termination) — this resume dispatches and routes exactly as
-a fresh run does, under the session's autonomy level, for the cursor packet
+a fresh run does, for the cursor packet
 and every packet after it — including running
 `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>` immediately before
 each dispatch, passing a non-empty result as `model` and omitting `model` when
 it is empty. Honor the same gates as before: the driver owns
-routine commits above `interactive` (and merge/rebase/push onto non-`main`
-branches at `full-autonomy`); hard gates — `main`, releases, migrations,
+routine commits, and merge/rebase/push onto non-`main`
+branches; hard gates — `main`, releases, migrations,
 secrets, deploys, the danger floor — still stop for the human. Keep
 `.agents/run-state.yaml` current as packets land, so the next pause is cheap,
 and run `runstate.sh driver-mode exit` immediately after whichever stop

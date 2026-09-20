@@ -1,6 +1,6 @@
 ---
 name: run-loop
-description: Drive the guided autonomy loop across a backlog of task packets, in driver mode (ADR 0028). For each packet — branch off the integration base, write its handoff file, dispatch a fresh agent with only that path, route the reviewer's verdict mechanically, commit on branch if green, update run-state — then pull the next. Honors the session autonomy level and the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces reports; it integrates onto a non-`main` branch at full-autonomy but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (a feature's plan under gspec/features/<slug>/) or a run-state backlog.
+description: Drive the guided autonomy loop across a backlog of task packets, in driver mode (ADR 0028). For each packet — branch off the integration base, write its handoff file, dispatch a fresh agent with only that path, route the reviewer's verdict mechanically, commit on branch if green, update run-state — then pull the next. Honors the hard/soft gate split; pauses at a safe checkpoint on any hard gate or ambiguity. Produces reports; it integrates onto a non-`main` branch but never merges/pushes to `main`, opens a PR, or crosses a hard gate. Use to run a semi-attended engineering session over the gspec backlog (a feature's plan under gspec/features/<slug>/) or a run-state backlog.
 argument-hint: (optional — a backlog source or a starting packet; else reads .agents/run-state.yaml, then the gspec backlog)
 ---
 
@@ -146,17 +146,10 @@ stop never has a mark to clear.
   wherever a run entry point states a preflight drift scan, not only at this
   one. A repo with no `gspec/` directory reads `CAPABILITY_DRIFT=none` — a
   silent no-op, same as the check above.
-- **Autonomy level.** Resolve it (env `ORCH_AUTONOMY` > `.agents/autonomy` >
-  `interactive`, clamped by `autonomy_ceiling`). The loop is meant for
-  **`supervised`**, **`autonomous`**, or **`full-autonomy`**. At **`interactive`** it
-  cannot commit unattended — either say so and stop, or run a single packet and halt
-  at the commit for human approval. `autonomous` and `full-autonomy` drive *across*
-  packets without checking in between green landings; **`full-autonomy`
-  additionally integrates** (merge/rebase/push onto non-`main` branches — see §3.7).
 - **Branch.** Never run on `main`/`master`. Work happens on `orch/<task-id>`
   feature branches **in the single local checkout**; `git commit`/`merge`/`push` to
-  a protected branch is denied by the guard at every level anyway. The integration
-  base the loop branches from and (at `full-autonomy`) merges back into is the
+  a protected branch is denied by the guard anyway. The integration
+  base the loop branches from and merges back into is the
   **non-`main`** `integration_branch` from `.agents/project-overrides.yaml`
   (default `develop`, else `main`/`master`).
 - **Model routing — once, here, before driver mode.** Run
@@ -308,10 +301,8 @@ key and reason — and `▶ **Routing**` only when §1's `table` printed
 something — one line, each `<agent> <frontmatter> <alias>` row as `<agent>
 <frontmatter> → <alias>`; empty output means no line. State the one
 assumption most likely to be wrong, which packets you expect will need a decision, the hard gates this
-backlog gets near, the autonomy level, and where the run stops. Emit it
-**here**, after preflight and after the backlog resolves. At
-**`interactive`**, the kickoff is also the approval request: emit it and
-wait.
+backlog gets near, and where the run stops. Emit it
+**here**, after preflight and after the backlog resolves.
 
 **Lint the kickoff before you emit it.** Write the digest you rendered from
 and the rendered kickoff to two files in the run directory, naming each by
@@ -787,11 +778,10 @@ nothing. Read the result exactly as §4 states it for the stop report.
      withhold it. Never write this from the dispatched agent's or
      reviewer's own words — the digest's fields are what render, not your
      memory of their status lines.
-7. **Integrate (only at `full-autonomy`).** After the packet lands green, you
+7. **Integrate.** After the packet lands green, you
    may merge the branch into the integration branch, rebase it to keep it
    current, and push feature/integration branches — never targeting `main`; a
-   merge whose incoming diff hits a hard-gate path re-escalates. At
-   `supervised`/`autonomous` you stop at the green commit.
+   merge whose incoming diff hits a hard-gate path re-escalates.
 8. **Advance.** With no blocker, pull the next packet and repeat.
    Poll the pause sentinel first — `runstate.sh pause-status .agents/pause`
    (or a `Bash`/`Edit` advisory surfacing it sooner) — at each packet boundary,
@@ -832,9 +822,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
   --reverse`) to the first one whose trailer names an id from that list,
   and diff from **that commit's own parent** to `HEAD` — `git diff
   <parent>..HEAD`, or that same parent against the integration branch's
-  `HEAD` at `full-autonomy`. **Fall back to the old branch-vs-base diff —
-  `git diff <base>...HEAD`, or the integration branch vs its base at
-  `full-autonomy` — only when the trailer walk finds nothing to anchor
+  `HEAD`. **Fall back to the old branch-vs-base diff —
+  `git diff <base>...HEAD`, or the integration branch vs its base
+  — only when the trailer walk finds nothing to anchor
   on: no commit on `<base>..HEAD` carries a trailer naming any id from
   that digest list.** This includes, but is not limited to, a digest that
   names no packet at all — it also covers a run whose packets all ended
@@ -888,10 +878,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
   **Before declaring done, also account for any branch left behind by a
   `discard-advance` carrying a decider commit** (§3.5): `git branch --list
   'orch/*'` and check each for a `[orch decider:` trailer beyond `<base>`.
-  At `full-autonomy`, merge each such branch into the integration branch
-  now, before finishing. Below `full-autonomy`, list each one (branch name,
-  commit, one-line summary of what it did) in the stop report instead of
-  merging it — the human decides whether to land it.
+  Merge each such branch into the integration branch now, before
+  finishing, and name each one (branch name, commit, one-line summary of
+  what it did) in the stop report so the human can see what landed.
 
   **Also before declaring done, re-run the same capability-drift scan §1
   states** — the same `gspec-backlog.sh capability-drift` invocation, not a
@@ -908,14 +897,12 @@ nothing. Read the result exactly as §4 states it for the stop report.
   outside any packet, message `spec: reconcile capability record
   (end-of-run)`, carrying neither an `[orch packet:]` nor an `[orch
   decider:]` trailer. If no call flipped anything, make **no commit** and
-  report no flips — not a failure. At `full-autonomy`, if §3.7 actually
-  merged this run's packets into the integration branch, that commit goes
-  there too, since checking a branch out to merge into it leaves the
-  checkout on that branch; if nothing merged — no green `orch/*` branch this
-  run, or `full-autonomy` did not apply — the commit goes on the run's own
-  branch instead, the same as below `full-autonomy`, where nothing has
-  merged — either way, a flip never reaches the integration branch ahead of
-  the work it records.
+  report no flips — not a failure. If §3.7 actually merged this run's
+  packets into the integration branch, that commit goes there too, since
+  checking a branch out to merge into it leaves the checkout on that
+  branch; if nothing merged — no green `orch/*` branch this run — the
+  commit goes on the run's own branch instead — either way, a flip never
+  reaches the integration branch ahead of the work it records.
   `complete-capabilities`'s exit codes are read exactly as at preflight:
   exit 0 whether a call flips something, flips nothing (`blocked`), or is
   skipped outright; exit 1 or exit 4 is a real failure. Either failure, or a
@@ -997,7 +984,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
   that line was written back at §3.3, before the packet even started, and
   names an intent; the commit's own trailers are the actual record of what
   landed. **Search the packet's own feature branch and the integration
-  branch together, never `<base>..HEAD` alone** — at `full-autonomy` §3.7
+  branch together, never `<base>..HEAD` alone** — §3.7
   merges a landed packet's branch into the integration branch right after
   it lands, so by stop-report time `HEAD` is wherever the *last* packet in
   the run happens to have run, and every earlier bundle's commit is only
@@ -1066,19 +1053,17 @@ nothing. Read the result exactly as §4 states it for the stop report.
   question, set `status: blocked`, rendered the stop report, and ran
   `driver-mode exit` — there is nothing further to render here.
 
-## Never, at any autonomy level
+## Never
 
 Commit/merge/**push to `main`/`master`** (or remote `main`), open a PR, run a
 migration or schema change, install/upgrade dependencies, edit a
 sensitive/hard-gate path, deploy, or rewrite history (`--amend`, interactive
 rebase, force-push, `reset --hard`). **Merging to `main`, releasing, and
-opening a PR are the human's hard gate at every level, including
-`full-autonomy`** — the loop stops at "ready for the human to release" (a
-green commit on the feature branch at `supervised`/`autonomous`; integrated
-onto the non-`main` integration branch at `full-autonomy`). Every iteration is
-a green commit on a branch, so a crash or shutdown mid-loop resumes cleanly
-from the last checkpoint.
+opening a PR are the human's hard gate** — the loop stops at "ready for the
+human to release", integrated onto the non-`main` integration branch. Every
+iteration is a green commit on a branch, so a crash or shutdown mid-loop
+resumes cleanly from the last checkpoint.
 
-At **`full-autonomy` only**, the merge/rebase/push onto **non-`main`** branches
-described in §3.7 are delegated — that is the *sole* addition; everything in
-the paragraph above still stops for the human.
+The merge/rebase/push onto **non-`main`** branches described in §3.7 are the
+loop's own; that is the *sole* thing it does beyond committing on a feature
+branch, and everything in the paragraph above still stops for the human.

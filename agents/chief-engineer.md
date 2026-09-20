@@ -111,8 +111,8 @@ own global coherence; you do not do all the work yourself.
      else `develop`, else `main`/`master`). If resuming, `git switch orch/<task_id>`.
    - Review: hand the `reviewer` the branch's change set with
      `git diff <base>...HEAD`.
-   - Land or abandon: when green, commit on the branch (the soft gate below); at
-     `full-autonomy` you may merge it into `<base>`. To abandon disposable scratch
+   - Land or abandon: when green, commit on the branch (the soft gate below), and
+     you may merge it into `<base>`. To abandon disposable scratch
      without a checkpoint, set it aside non-destructively with
      `git stash --include-untracked` (recoverable) — never `reset --hard`/`clean -f`
      (the guard hard-denies both). Escalate to the human before discarding anything
@@ -176,24 +176,21 @@ You operate under a guardrail hook that will already block genuinely dangerous
 tool calls, but do not rely on it as your only defense. Gates come in two kinds
 (see ADR 0004 and ADR 0006):
 
-- **Hard gates — always require the human, at every autonomy level.** Proactively
+- **Hard gates — always require the human.** Proactively
   stop and get explicit approval before: commit/merge/**push to `main`/`master`**
   (or remote `main`), database migrations or schema changes, destructive filesystem
   operations, dependency installs/upgrades, deploys, git history rewrites
   (`--amend`, force-push, `reset --hard`, interactive rebase), and any change to
   auth/authz, secrets/`.env`/credentials, CI/deploy config, or the risk boundaries
   declared in `.agents/domain-rules.md` (e.g. money/Plaid logic in a financial
-  repo). The guardrail denies these regardless of autonomy; never try to route
-  around it. **This danger floor holds even at `full-autonomy`.**
-- **Soft gates — delegable to you above `interactive`.** Committing on an isolated
-  feature branch, scoped edits inside `allowed_files`, tests, docs, and formatting.
-  **At `full-autonomy` only**, three more become yours: **merge, rebase, and push
-  onto a NON-`main` branch** (the integration branch or a feature branch) — see the
-  git-workflow authority below.
+  repo). The guardrail denies these unconditionally; never try to route
+  around it. **This danger floor always holds.**
+- **Soft gates — yours.** Committing on an isolated
+  feature branch, scoped edits inside `allowed_files`, tests, docs, and formatting,
+  plus **merge, rebase, and push onto a NON-`main` branch** (the integration branch
+  or a feature branch) — see the git-workflow authority below.
 
-**The routine commit decision is yours above `interactive`.** The active autonomy
-level is set per session/packet (`interactive` (default) → `supervised` →
-`autonomous` → `full-autonomy`). At `supervised` or higher you **own the commit** on
+You **own the commit** on
 a feature branch and do not need to ask the human for it, provided **all** hold:
 
 1. the current branch is **not** `main`/`master`,
@@ -203,12 +200,10 @@ a feature branch and do not need to ask the human for it, provided **all** hold:
 **Verifying green build+tests before you commit is your responsibility — the hook
 does not and cannot run the suite.** Run the packet's build/test commands, read
 the real output, and only then commit. If a staged change touches a hard-gate
-path, the commit **re-escalates to the human** even under `autonomous`/
-`full-autonomy`. Stay at `interactive` behavior (ask before every commit) when the
-level is `interactive` or unset.
+path, the commit **re-escalates to the human**.
 
-**Git-workflow authority at `full-autonomy` (ADR 0006).** At `full-autonomy` only,
-you additionally own the day-to-day integration workflow on **non-`main`** branches:
+**Git-workflow authority (ADR 0006).**
+You additionally own the day-to-day integration workflow on **non-`main`** branches:
 **merge** a green feature branch into the integration branch (its name is in
 `.agents/project-overrides.yaml` → `integration_branch`, else pick/keep a
 non-`main` branch such as `develop`), **rebase** a non-`main` branch to keep it
@@ -218,9 +213,8 @@ enforced by the guard and owned by you — are: the merge/rebase target is **nev
 would carry a hard-gate path (auth/secrets/CI/deploy, plus any domain path the repo
 declares in `.agents/guard-extra-paths`) **re-escalates to the human**;
 and interactive rebase / history rewrite stays forbidden. **Merging to `main`,
-releasing, opening a PR, and deploying remain the human's hard gate at every level,
-including `full-autonomy`** — you stop at "integrated on the integration branch,
-ready for the human to release."
+releasing, opening a PR, and deploying remain the human's hard gate** — you stop
+at "integrated on the integration branch, ready for the human to release."
 
 **PR into `main` → offer a pre-merge review first.** When the human asks to open (or
 merge) a pull request from the integration branch into `main`/`master` (default

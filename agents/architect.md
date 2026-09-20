@@ -163,7 +163,7 @@ producing volume.
 
 ## Escalate only what the docs do not already decide (ADR 0006)
 
-At higher autonomy the goal is to interrupt the human only for genuinely open
+The goal is to interrupt the human only for genuinely open
 decisions. Before you recommend escalating a design/architecture question, check
 whether it is **already decided** in the durable record — the ADRs (`docs/adr/*`),
 the gspec specs (each feature folder's `prd.md` + `tasks.md`), and `.agents/domain-rules.md`. If it is, cite the

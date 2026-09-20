@@ -5,8 +5,8 @@
 # Wired as a SessionStart hook (see hooks/hooks.json), matcher `startup|resume`.
 # When you reopen Claude Code after a crash / reboot / sleep / hard close, this
 # notices a paused-or-crashed run on disk and injects it into the new session's
-# context so the Chief Engineer immediately offers (or, under `autonomous`,
-# runs) /gaffer:resume — instead of the run being forgotten until you remember
+# context so the Chief Engineer immediately offers /gaffer:resume — instead
+# of the run being forgotten until you remember
 # to ask. See ADR 0005.
 #
 # thin-loop-driver T6 (ADR 0028): this matcher (`startup|resume`) is exactly

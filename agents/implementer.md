@@ -134,6 +134,6 @@ or sets the scratch aside. Do not start new edits.
 Do **not** commit, push, merge, rebase, migrate, install/upgrade dependencies, or
 deploy. Those are handled outside your role — leave the tree ready for review.
 **Commit authority sits with whoever dispatched you**, and so does all git-branch
-lifecycle: commit is delegable to it above `interactive`, and merge/rebase/push
-onto non-`main` branches at `full-autonomy` (ADR 0004 / ADR 0006). None of it is
-ever yours to exercise or to widen scope over, regardless of level.
+lifecycle: commit is its call, and so is merge/rebase/push
+onto non-`main` branches (ADR 0004 / ADR 0006). None of it is
+ever yours to exercise or to widen scope over.

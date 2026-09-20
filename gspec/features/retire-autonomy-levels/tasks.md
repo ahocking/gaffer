@@ -104,7 +104,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/migrate.sh, scripts/test-migrate.sh, skills/migrate/SKILL.md
 
-- [ ] **T6** [P] **P1** Record the run's level from a marker the new collector writes, not from `ORCH_AUTONOMY` or `.agents/autonomy`, so a pre-install window re-collects as `unknown`.
+- [x] **T6** [P] **P1** Record the run's level from a marker the new collector writes, not from `ORCH_AUTONOMY` or `.agents/autonomy`, so a pre-install window re-collects as `unknown`.
 
   - `hooks/metrics-log.sh`: write a zero-byte sentinel `${evdir}/_state/${sid}.fixed-rules` beside the per-session skill-state file it already maintains, created with the same `mkdir -p … && … || true` discipline. The hook must still print nothing, fail silent and exit 0; this adds no field to the event line and no growth to the log;
   - `scripts/metrics.sh`: delete the `ORCH_AUTONOMY`-then-`.agents/autonomy` resolution in `collect` and the comment explaining why a `supervised` run is not comparable to a `full-autonomy` one; set `autonomy` to `full-autonomy` only when **every** session in the selected window has a `.fixed-rules` sentinel, and `unknown` otherwise. The field name, its position in the emitted JSON and the top-level key set are unchanged, so a packet's shape does not move; `show` keeps rendering it the same way;

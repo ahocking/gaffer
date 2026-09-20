@@ -336,6 +336,11 @@ ORCH_METRICS=off ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" \
   bash -c "printf '%s' '$payload' | '$HOOK'" >/dev/null 2>&1
 [ ! -f "$HREPO/.agents/metrics/events/H1.jsonl" ] && ok "disabled hook writes nothing" \
   || bad "disabled hook writes nothing" "file should not exist"
+# ...including the fixed-rules marker (retire-autonomy-levels T6): "writes nothing"
+# means nothing, so a disabled hook must not leave a session looking post-install.
+[ ! -f "$HREPO/.agents/metrics/events/_state/H1.fixed-rules" ] \
+  && ok "disabled hook writes no fixed-rules marker" \
+  || bad "disabled hook writes no fixed-rules marker" "marker should not exist"
 
 echo "== hook appends a metadata line and prints NOTHING on stdout =="
 STDOUT="$(printf '%s' "$payload" | ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" "$HOOK" 2>/dev/null)"
@@ -348,6 +353,25 @@ check "hook line: agent_type" "main" "$(jq -r '.agent_type' "$LINE" 2>/dev/null)
 # only the 5 base keys appear (no spurious keys, and never full command text / paths).
 check "hook line: base keys only when enrichment absent" "agent_id agent_type session_id tool ts" \
   "$(jq -r 'keys|join(" ")' "$LINE" 2>/dev/null)"
+# retire-autonomy-levels T6: the same call leaves a ZERO-BYTE `_state/<sid>.fixed-rules`
+# marker — the only thing metrics.sh now reads for the run's level. It must add no field
+# to the event line (asserted by the base-key check above), no growth to the log, and
+# nothing to stdout; a second call must not grow it either (`:>>`, never a rewrite).
+MARK="$HREPO/.agents/metrics/events/_state/H1.fixed-rules"
+[ -f "$MARK" ] && ok "hook wrote the fixed-rules marker" || bad "hook wrote the fixed-rules marker"
+check "fixed-rules marker is zero-byte" "0" "$(wc -c < "$MARK" 2>/dev/null | tr -d ' ')"
+STDOUT2="$(printf '%s' "$payload" | ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" "$HOOK" 2>/dev/null)"
+HRC2=$?
+check "hook stdout still empty on the marker path" "" "$STDOUT2"
+check "hook exits 0 on the marker path"            "0" "$HRC2"
+check "fixed-rules marker stays zero-byte on re-fire" "0" "$(wc -c < "$MARK" 2>/dev/null | tr -d ' ')"
+# an UNWRITABLE _state dir must not change any of that (fail-silent, exit 0)
+RO="$ROOT/ro-hook"; mkdir -p "$RO/_state"; chmod 500 "$RO/_state"
+ROOUT="$(printf '%s' '{"session_id":"RO1","tool_name":"Bash","agent_id":"","agent_type":"main"}' \
+  | ORCH_METRICS_DIR="$RO" "$HOOK" 2>/dev/null)"; RORC=$?
+check "hook stdout empty when _state is unwritable" "" "$ROOUT"
+check "hook exits 0 when _state is unwritable"      "0" "$RORC"
+chmod 700 "$RO/_state"
 
 echo "== widened matcher: non-mutating tools (Task, Read) are logged too =="
 WREPO="$ROOT/wrepo"; mkdir -p "$WREPO"; git -C "$WREPO" init -q
@@ -596,7 +620,7 @@ check "c-nolabel unlabelled x2"  "2"     "$(jq -r '[.packets[]|select(.id=="c-no
 check "run mixed label note"     "1"     "$(jq -r '[.notes[]|select(startswith("labels: 1 of 4"))]|length' "$COUT")"
 check "run flagged ids"          "c-mech c-docs c-nolabel" "$(jq -r '[.audit.flagged_packets[].id]|join(" ")' "$COUT")"
 
-echo "== ADR 0019: ok/model/autonomy/interactivity instrumentation =="
+echo "== ADR 0019: ok/model/interactivity instrumentation =="
 DREPO="$ROOT/drepo"; mkdir -p "$DREPO"
 git -C "$DREPO" init -q
 git -C "$DREPO" config user.email t@t; git -C "$DREPO" config user.name t
@@ -606,9 +630,6 @@ GIT_AUTHOR_DATE="2026-07-21T14:00:05Z" GIT_COMMITTER_DATE="2026-07-21T14:00:05Z"
 
 [orch packet:d-one]"
 mkdir -p "$DREPO/.agents/metrics/events"
-# the real .agents/autonomy is a COMMENTED template — the parse must skip comments
-# and blank lines and take only the level (regression: slurping yielded the manual).
-printf '# Default autonomy level for this repo (ADR 0004).\n#   interactive | supervised | autonomous\n\nautonomous\n' > "$DREPO/.agents/autonomy"
 # d-one window (:01,:05]: 3 `dotnet test` runs of which 2 FAILED (ok:false) = rework;
 # one dispatch passing a model, one plain — both UNSTAMPED (no routing_resolved),
 # so the override count is unmeasured here; one human question.
@@ -624,7 +645,6 @@ JSON
 DOUT="$ROOT/drun.json"
 "$METRICS" collect --main-root "$DREPO" --projects-dir "$ROOT/none" --out "$DOUT" >/dev/null 2>&1 \
   || bad "instrumentation collect exits 0" "collect returned nonzero"
-check "autonomy recorded"          "autonomous" "$(jq -r '.autonomy' "$DOUT")"
 check "run failed_tool_calls"      "2"          "$(jq -r '.totals.failed_tool_calls' "$DOUT")"
 check "run human_interactions"     "1"          "$(jq -r '.totals.human_interactions' "$DOUT")"
 check "pkt failed_tool_calls"      "2"          "$(jq -r '.packets[]|select(.id=="d-one").failed_tool_calls' "$DOUT")"
@@ -647,9 +667,6 @@ check "d-one missing impl"         "1"          "$(jq -r '.audit.packets_missing
 check "d-one in unlabelled ids"    "d-one"      "$(jq -r '.audit.unlabelled_packet_ids[]' "$DOUT")"
 check "d-one flags suppressed"     "0"          "$(jq -r '[.packets[]|select(.id=="d-one").audit.flags[]|select(startswith("unlabelled:"))]|length' "$DOUT")"
 check "d-one wholesale note"       "1"          "$(jq -r '[.notes[]|select(startswith("labels: NO packet"))]|length' "$DOUT")"
-# env override wins over the .agents/autonomy file
-check "autonomy env override" "full-autonomy" \
-  "$(ORCH_AUTONOMY=full-autonomy "$METRICS" collect --main-root "$DREPO" --projects-dir "$ROOT/none" --out "$ROOT/drun2.json" >/dev/null 2>&1; jq -r '.autonomy' "$ROOT/drun2.json")"
 # absent ok/model fields must read as UNMEASURED (null), never as "zero failures"
 check "S1 failed_tool_calls null"  "null"       "$(jq -r '.totals.failed_tool_calls' "$OUT")"
 check "S1 model-override null"     "null"       "$(jq -r '.audit.dispatches_with_model_override' "$OUT")"
@@ -659,6 +676,59 @@ check "S1 pre-instrumentation note" "1" \
 # ...and the instrumented run must NOT carry that note
 check "D1 no pre-instr note"       "0" \
   "$(jq -r '[.notes[]|select(startswith("instrumentation:"))]|length' "$DOUT")"
+
+echo "== retire-autonomy-levels: the level comes from the hook's marker, not env or a level file =="
+# Autonomy levels are retired, so `autonomy` is no longer "what is configured now" but
+# "did every session in this window run under the one fixed rule set" — answered solely
+# by the `_state/<sid>.fixed-rules` markers hooks/metrics-log.sh writes. Two sessions in
+# one repo let a window be all-marked, part-marked or unmarked without rebuilding it.
+# NOTE the fixture name: `$ROOT/arepo` is already taken TWICE in this sweep (the adhoc
+# run_id case and the author-date case both build one), and sharing a repo means sharing
+# its events dir — a stray third session log made `--all-sessions` here read a window we
+# never wrote. Fixtures whose selection rule is "every session" need their OWN repo.
+FXREPO="$ROOT/fxrepo"; mkdir -p "$FXREPO/.agents/metrics/events/_state"
+FXST="$FXREPO/.agents/metrics/events/_state"
+git -C "$FXREPO" init -q
+git -C "$FXREPO" config user.email t@t; git -C "$FXREPO" config user.name t
+echo a > "$FXREPO/f"; git -C "$FXREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T15:00:05Z" GIT_COMMITTER_DATE="2026-07-21T15:00:05Z" \
+  git -C "$FXREPO" commit -q -m "work
+
+[orch packet:fx-one]"
+printf '{"ts":"2026-07-21T15:00:01Z","session_id":"F1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}\n' \
+  > "$FXREPO/.agents/metrics/events/F1.jsonl"
+printf '{"ts":"2026-07-21T15:00:02Z","session_id":"F2","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}\n' \
+  > "$FXREPO/.agents/metrics/events/F2.jsonl"
+acollect() { # acollect <out-name> <collect args...> -> prints .autonomy
+  local o="$ROOT/$1.json"; shift
+  "$METRICS" collect --main-root "$FXREPO" --projects-dir "$ROOT/none" --out "$o" "$@" >/dev/null 2>&1
+  jq -r '.autonomy' "$o" 2>/dev/null
+}
+# a pre-install window — no session left a marker — re-collects as UNKNOWN, which
+# means UNMEASURED, never some other level.
+check "autonomy: no marker -> unknown" "unknown" "$(acollect fx-none --session F1)"
+: > "$FXST/F1.fixed-rules"
+check "autonomy: marker present -> full-autonomy" "full-autonomy" "$(acollect fx-marked --session F1)"
+# a window MIXING a marked and an unmarked session cannot claim the marked one's
+# answer — the rule is EVERY selected session, not the newest or the majority.
+check "autonomy: mixed window -> unknown" "unknown" "$(acollect fx-mixed --all-sessions)"
+: > "$FXST/F2.fixed-rules"
+check "autonomy: every session marked -> full-autonomy" "full-autonomy" "$(acollect fx-both --all-sessions)"
+# no sessions selected at all is not vacuously full-autonomy
+check "autonomy: no sessions -> unknown" "unknown" "$(acollect fx-nosess --session NOPE)"
+# the two retired inputs are DEAD, not merely deprioritised: both present, both ignored.
+printf '# Default autonomy level for this repo.\n#   interactive | supervised | autonomous\n\nautonomous\n' \
+  > "$FXREPO/.agents/autonomy"
+check "autonomy: ORCH_AUTONOMY + .agents/autonomy ignored when marked" "full-autonomy" \
+  "$(ORCH_AUTONOMY=interactive acollect fx-env --all-sessions)"
+rm -f "$FXST/F1.fixed-rules" "$FXST/F2.fixed-rules"
+check "autonomy: ORCH_AUTONOMY + .agents/autonomy ignored when unmarked" "unknown" \
+  "$(ORCH_AUTONOMY=interactive acollect fx-env2 --all-sessions)"
+# the field keeps its name and place: `show` still renders it the same way.
+: > "$FXST/F1.fixed-rules"; : > "$FXST/F2.fixed-rules"
+acollect fx-show --all-sessions >/dev/null
+check "autonomy: show still renders the field" "1" \
+  "$("$METRICS" show "$ROOT/fx-show.json" | grep -c 'autonomy: full-autonomy')"
 
 echo "== routing audit: override = passed model differs from the stamped routing (per-agent-model-routing T5) =="
 # Each case is its own throwaway repo + one session so a count isolates ONE dispatch

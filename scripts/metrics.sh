@@ -254,19 +254,13 @@ cmd_collect() {
     integ="$(awk -F: '/^integration_branch:/{sub(/^[^:]*:[[:space:]]*/,"",$0); gsub(/[[:space:]]/,"",$0); print; exit}' "$rs" 2>/dev/null)"
     [ -n "$mode" ] || mode="unknown"
   fi
-  # Autonomy level (env > .agents/autonomy > unknown). Recorded so two runs are
-  # COMPARABLE: a `supervised` run (human answering questions, editing inline) is not
-  # comparable to `full-autonomy`, and reading a before/after across the two is how a
-  # measurement lies. Resolved at collect time — it is not in run-state.
-  local autonomy="${ORCH_AUTONOMY:-}"
-  if [ -z "$autonomy" ] && [ -f "${agents}/autonomy" ]; then
-    # The file is COMMENTED (the template documents the levels inline), so take the
-    # first non-blank, non-`#` line only — slurping the whole file yields the manual.
-    autonomy="$(awk 'NF && $0 !~ /^[[:space:]]*#/ {
-                       gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' \
-                   "${agents}/autonomy" 2>/dev/null || true)"
-  fi
-  [ -n "$autonomy" ] || autonomy="unknown"
+  # Autonomy level is resolved AFTER session selection, from the per-session
+  # `_state/<sid>.fixed-rules` marker the event hook writes — see the block just
+  # below the sids.txt build. It is deliberately NOT read from ORCH_AUTONOMY or
+  # `.agents/autonomy` any more (retire-autonomy-levels): there is one fixed rule
+  # set now, and a level read from either source would describe a policy that is no
+  # longer in force. Declared here only so the emit below always has a value.
+  local autonomy="unknown"
   # run_id from an explicit flag or an orch/<task-id> branch; the "adhoc" fallback
   # is DEFERRED to after session selection so it can be disambiguated by session id.
   if [ -z "$run_id" ]; then
@@ -464,6 +458,29 @@ cmd_collect() {
   # they need it as a jq array, not a line list a `while read` loop consumes, so the
   # CRLF hazard documented above does not apply to this particular read.
   jq -R -s 'split("\n")|map(select(length>0))' "$tmp/sids.txt" > "$tmp/sids.json" 2>/dev/null || echo '[]' > "$tmp/sids.json"
+
+  # --- autonomy: from the hook's marker, never from a level file or env ---------
+  # Autonomy levels are retired (retire-autonomy-levels): there is ONE fixed rule set,
+  # and every session that ran under a plugin carrying it leaves a zero-byte
+  # `_state/<sid>.fixed-rules` marker beside its skill state (hooks/metrics-log.sh).
+  # So the level is a property of the SESSIONS in the selected window, not of a file
+  # on disk at collect time — which is the point: `.agents/autonomy` and ORCH_AUTONOMY
+  # describe what someone configured NOW, while the question is what governed the run
+  # being measured. Claim `full-autonomy` only when EVERY selected session carries the
+  # marker; a pre-install window, a window mixing pre- and post-install sessions, and a
+  # window with no sessions at all all read `unknown` — which means UNMEASURED, never
+  # "some other level". The field name, its position in the emitted JSON and the
+  # top-level key set are unchanged, so a packet's shape does not move and `show`
+  # renders it exactly as before.
+  local _sid _seen_sid=0 _all_fixed=1
+  if [ -f "$tmp/sids.txt" ]; then
+    while IFS= read -r _sid; do
+      [ -n "$_sid" ] || continue
+      _seen_sid=1
+      if [ ! -f "${evdir}/_state/${_sid}.fixed-rules" ]; then _all_fixed=0; break; fi
+    done < "$tmp/sids.txt"
+  fi
+  if [ "$_seen_sid" -eq 1 ] && [ "$_all_fixed" -eq 1 ]; then autonomy="full-autonomy"; fi
 
   # finalize the deferred "adhoc" run_id, disambiguated so two different sessions
   # never collide on .agents/metrics/adhoc/run-metrics.json. Prefer the (first)

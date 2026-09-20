@@ -48,7 +48,7 @@ This feature is part of the 2026-09-14 loop-cost redesign. It removes the levels
   - it reports, never edits, each line in the repository's own `CLAUDE.md` and `spec-setup.md` that refers to an autonomy level or `/gaffer:set-autonomy`, and any `ORCH_AUTONOMY` entry in the repository's `.claude/settings.json`, because those belong to the human
   - its report names every change it made and everything it left in place, and a second run on the same repository changes nothing
 
-- [ ] **P1**: Metrics stay comparable
+- [x] **P1**: Metrics stay comparable
   - a run whose window starts after the plugin that ships this feature is installed records the level as `full-autonomy` in the same field as before, without reading `ORCH_AUTONOMY` or `.agents/autonomy`; re-collecting a run whose window started before that install records `unknown`
   - a run packet collected before that install and not re-collected keeps the level it recorded, `unknown` included
 

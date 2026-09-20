@@ -278,6 +278,18 @@ else
   skill="$(head -1 "${evdir}/_state/${sid}.skill" 2>/dev/null || true)"
 fi
 
+# --- fixed-rules marker (retire-autonomy-levels T6) ---------------------------
+# A zero-byte sentinel saying "this session ran under a plugin with ONE fixed rule
+# set", i.e. after autonomy levels were retired. metrics.sh reads it instead of
+# ORCH_AUTONOMY / `.agents/autonomy`, so a window collected from sessions that
+# predate this install re-collects as `unknown` rather than inheriting a level from
+# a file that is no longer the thing in force. It lives beside the per-session
+# skill-state file, is written with the same `mkdir -p … && … || true` discipline,
+# adds NO field to the event line and no growth to the log, and — like everything
+# else here — prints nothing and cannot fail the call it observes.
+mkdir -p "${evdir}/_state" 2>/dev/null \
+  && : >> "${evdir}/_state/${sid}.fixed-rules" 2>/dev/null || true
+
 line="$(jq -cn \
   --arg ts "$ts" --arg sid "$sid" --arg aid "$aid" --arg at "$atype" --arg tool "$tool" \
   --arg dur "$dur" --arg tuid "$tuid" --arg skill "$skill" --arg subtype "$subtype" --arg cc "$cmd_class" \

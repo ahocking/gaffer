@@ -34,6 +34,17 @@ schema: 1
 # loop-measurement. The guard/driver-mode holes and the other -gaps/expiry work
 # follow; none of them affects the measurement. Order numbers in individual
 # `why:` texts predate this and are historical.
+# REORDERED 2026-09-20 (operator's call, gspec 3.2.0 review): three features porting
+# 3.2.0's driver-side savings into gaffer's own handoff, implementer and collector
+# — handoff-spec-inlining (26), implementer-continuation (27),
+# dispatch-progress-metrics (28) — go immediately AFTER loop-measurement (25), so
+# the redesign's after-measurement is not disturbed by further implementer-cost
+# changes, and BEFORE the guard/driver-mode holes and the -gaps/expiry tail, because
+# the weekly token allowance is the binding constraint and these are the largest
+# remaining implementer-cost levers (upstream measured −54% implementer input).
+# Every entry that sat at 26–32 moved up by exactly 3 (26→29 … 32→35); relative
+# order among them is unchanged, and gspec-adapter-consistency at 35 still sorts
+# ahead of metrics-coverage-gaps (35) on the order-then-slug tie-break.
 features:
   - slug: run-metrics
     order: 0
@@ -88,7 +99,7 @@ features:
     depends_on: [thin-loop-driver]
 
   - slug: guard-write-target-detection
-    order: 27
+    order: 30
     why: "closes the four target-detection gaps left by thin-loop-driver P0's driver-mode refusal, found in its whole-branch review and recorded as run-state finding driver-mode-shell-write-limits. Two are escapes: a literal `<<` inside a QUOTED argument on a multi-line command is read as a real heredoc start (detection runs on raw line text, before quote collapsing), so later lines are dropped from the scan and a main-thread write in them is never seen; and only the first heredoc per line is tracked, so a second heredoc's body is scanned as command text. Two are wrong-but-safe: `sed -e SCRIPT` is not told apart from a positional file arg in `sed -i` extraction, and Windows drive-letter paths are never compared against the `pwd -W`/`cygpath -m` spellings of the config roots, so a legitimate write under the repo's own .agents/ is refused on Git Bash. ARM 2 per ADR 0026, not an append to thin-loop-driver: that PRD's capability 1 scopes driver mode to 'the write forms the guard recognises' and its Assumptions accept that other forms are not refused, so these sit outside any unchecked capability there. Slug names its scope rather than stacking a second -gaps. Ordered into the slot thin-loop-driver vacated, ahead of escalation-decider (23): the decider builds further on driver mode, and an enforcement hole in the thing it builds on should close first. Detection only — explicitly NOT a general shell parser"
     depends_on: [thin-loop-driver]
 
@@ -98,7 +109,7 @@ features:
     depends_on: [thin-loop-driver, retire-unused-loop-modes, retire-autonomy-levels]
 
   - slug: driver-mode-deletion-refusal
-    order: 26
+    order: 29
     why: "driver mode does not refuse main-thread DELETION, so the driving session can destroy repository files during a run — the one thing driver mode exists to stop. Measured 2026-09-15 by executing hooks/guard.sh against constructed payloads with a mark set and no agent_id: plain `rm`, `unlink`, `rmdir`, `shred` and git's own remove subcommand all returned rc=0 ALLOWED against a target outside `.agents/`, while `cp`, `mv`, `sed -i`, redirections, `install` and `ln -s` on the SAME target returned rc=2. A no-mark control returned rc=0 for cp, so the rc=2 results are the driver-mode refusal and not another tier, and a delete under `.agents/` returned rc=0, so the exemption already behaves. This is a MISSING VERB, which is why it is not an amendment to guard-write-target-detection (order 22): that feature's four gaps are mis-extracted targets of RECOGNISED forms, and its own Scope/Out says widening the recognised set is separate work while its Assumptions call an unrecognised form an accepted limit it does not close. Nor could it anchor onto thin-loop-driver under ADR 0026 arm 1: capability 1 is unchecked and the plan has unchecked tasks, but its wording — the guard refuses 'the shell write forms it recognises' and 'other commands without a recognised write form are not refused' — ACCEPTS this behaviour rather than covering it. That carve-out reads as written for neutral and read-only commands; deletion is a mutation, and the most destructive one. Two facts found during QA widen it slightly and are both verified: the long-flag forced and recursive spellings of rm are allowed TODAY (the hard-deny floor matches only the short-flag and combined short-flag forms), so long-form destructive deletes fall to this feature rather than the floor; and git's remove subcommand does NOT escape via the read-only git fast-path as first assumed — READ_ONLY_GIT has no entry for it, so that path is declined and it escapes for the same reason as the other four. Its real difficulty is that target extraction keys on the first word of a segment, so a two-word verb needs its subcommand excluded from the targets or the git form under `.agents/` could never be allowed. Ordered 24, between escalation-decider and packet-bundling, to sit beside its sibling at 22 while staying behind the driver-mode work it depends on. Shares the sanitization and extraction code with guard-write-target-detection, so whichever lands second rebases onto the other. No plan file — deferred work, decomposed when it comes up"
     depends_on: [thin-loop-driver]
 
@@ -138,7 +149,7 @@ features:
     depends_on: [stop-report-decision-liveness]
 
   - slug: held-gap-expiry
-    order: 30
+    order: 33
     why: "completing a feature is what files the next one: 6 of 29 features are -gaps, filed 2026-08-23 x2 then 2026-09-15, -16, -17 x2 -- two in August, four in three days -- while 16 of 29 features still have no plan, so the backlog is nowhere near draining. Today's ADR 0026 revision stopped the loop filing them autonomously (arm 2 ends at an operator question); this is the next step, on the operator's call 2026-09-17: an Important-severity gap goes to a HOLDING PEN rather than a proposal, and at each run's preflight every held gap is re-tested, the ones that no longer reproduce dropped with evidence recorded and the ones that still reproduce reported with their age. Gaps that later work incidentally fixed then disappear without anyone deciding. Precedent is in-repo and proven: .gspec/memory/pending/ holds 28 agent-written memories awaiting batch review by /gspec-memorize -- capture cheaply, decide later, in bulk. Four load-bearing constraints: a severity gate, since next-state-reporting-integrity is a reproduced ~59% misfire reporting a blocked backlog as `all features complete` and cannot sit in a pen; expiry demands POSITIVE evidence, ADR 0024's rule one level up, so a re-test that could not run is unknown and unknown keeps the gap; every held gap carries its own re-test when held -- a reproducing command, or a named concrete read where no command can reach it -- because a gap that cannot be re-tested can never expire, which is precisely what ADR 0024 removed; and the pen holds CANDIDATES not yet accepted as work, leaving it the moment the operator accepts one, so it is pre-backlog and never the shadow backlog competing with gspec that CLAUDE.md warns about. The re-test obeys preflight's standing rule: report, never halt. Ordered 19, first of that cohort by slug, behind packet-bundling (17), next-state-reporting-integrity and report-render-conformance (18)"
     depends_on: [completion-record-drift-gaps]
 
@@ -159,7 +170,7 @@ features:
 
 
   - slug: gspec-adapter-consistency
-    order: 32
+    order: 35
     why: "three internal-consistency defects review found in scripts/gspec-backlog.sh during loop-measurement-t2, none of them a live break today: the three gspec plan-layout paths are enumerated in two places (ADR 0020 says exactly one, and gspec has moved these files twice); three copies of the task-line regex were left underived when loop-measurement-t2 unified the other three, one of them in cmd_check_task's flip awk, which is the plugin's ONLY write into gspec/ — a divergence there is a checkbox the loop believes it flipped and did not; and two sweep assertions pass for the wrong reason, certifying a gate their fixtures never exercise. Its only tie to loop-measurement is that loop-measurement-t2 introduced the shared pattern blocks these capabilities build on, and that task has LANDED - so no depends_on, matching the PRD. The remaining loop-measurement work is all spend.sh and touches no file here, so the original contention reason is spent"
     depends_on: []
   - slug: loop-prose-consistency
@@ -168,12 +179,12 @@ features:
     depends_on: [thin-loop-driver-gaps]
 
   - slug: loop-prose-consistency-gaps
-    order: 31
+    order: 34
     why: "three defects the parent's own end-of-run whole-run review found, 2026-09-17. The sharp one is that the cleanup is now DEFENDED BY ITS OWN SWEEP: run-loop:101 correctly states SOURCE=repo|operator|unknown while :112 eleven lines below still reads 'When SOURCE reads gaffer-default or unknown', same pair in resume:81/:92 and report-templates:317 — and test-report-conventions.sh:255-262 asserts gaffer-default appears exactly once per file, so removing the stale clause fails the sweep. The exclusion was right when written (thin-loop-driver-gaps T5 kept both names so the suppression was real) and expired when T6 removed the branch. Also: T2's section-order case extracts BODY_B on a ^PAUSED anchor, so the comment-prefixed worked example falls outside it and reverting only the example leaves the sweep green (verified by mutation) — the example is what an agent copies; and run-loop's continuation trigger is now circular, :200 deferring to §3.3 and :255 deferring back, which is T5's criterion's cost rather than a defect against it. Arm 2 because the parent is derived-done: an unchecked capability on it would make shipped work read incomplete forever and block everything downstream. Ties with stale-finding-expiry at 19; neither depends on the other, and runstate-write-integrity at 19 is complete so that tie is inert"
     depends_on: [loop-prose-consistency]
 
   - slug: stale-finding-expiry
-    order: 29
+    order: 32
     why: "the loop can only expire a stale finding in the run that landed its last packet. run-loop §3.6 is the loop's ONLY drop path and drops a finding only 'for each STALE=yes line naming <landed>', so an entry whose packets all finished in an EARLIER run is never droppable by any future landing. The detector is already correct and already runs at every packet close — §3.6 builds FINISHED from task-status over ALL findings' packets — so only the drop rule is narrower than the detector feeding it. Measured at the close of the loop-prose-consistency run: STALE_COUNT=2, INDEX_BYTES=5647 against MAX_BYTES=4096, OVER_THRESHOLD=yes, so the loop reports its index over threshold on every packet close while holding two entries it structurally cannot drop, and run-state sits in the standing context so the cost recurs per dispatch. Expected shape is one clause. ADR 0024 capture-before-drop is UNCHANGED and applies at full strength to cross-run entries (operator's call 2026-09-17); the residual risk — judging capture from one line of summary for a run this session never saw — is stated in the PRD. Scoped narrowly to the drop rule at the packet boundary so it does not collide with escalation-decider (23), whose periodic-review capability would close this as a side effect but is blocked behind retire-autonomy-levels and is a whole new agent plus cadence where this is one clause"
     depends_on: [run-state-cleanup]
 
@@ -193,7 +204,7 @@ features:
     depends_on: [completion-record-drift]
 
   - slug: plugin-root-write-refusal
-    order: 28
+    order: 31
     why: "thin-loop-driver-gaps t4 narrowed driver mode's write refusal correctly, and in a CONSUMER repo that incidentally removed the only thing refusing writes to the installed plugin's own guard, hook bodies and agent/skill prompts — which sit outside the driven repository and are not a discovered config root. A hook body is spawned per event, so such an edit takes effect mid-run, and no other tier covers it: this is the control over the control. The control-weakened-in-aggregate class that only a whole-run review sees, not a defect against t4's criterion. Beside driver-mode-deletion-refusal (24) and guard-write-target-detection (22) on the same surface and sharing their sanitization code, so whichever lands second rebases. NOTE the trap recorded in its PRD: the pattern must never match this repository's own working tree — hardening the guard here was proposed and rejected, because this repo exists to develop it. The self-host face (a second checkout of this repo holding the plugin) was folded in at filing and then DEFERRED on measurement: the sensitive tier matches the raw path with no root awareness, two checkouts are byte-identical below their roots, so the only discriminator is an absolute root prefix — which would be committed machine-specific junk or untracked-and-unignored, and the latter is swept by the pause stash and discarded by reconcile as scratch"
     depends_on: [thin-loop-driver-gaps]
 
@@ -242,7 +253,7 @@ features:
     depends_on: [loop-entry-routing]
 
   - slug: runstate-set-shape-detection
-    order: 26
+    order: 29
     why: "ADR 0026 arm 2 from runstate-write-integrity-gaps' own whole-run review (2026-09-19, run 20260919T224810-6fc6), operator-approved 1A on 2026-09-20. Two defects in _set_target_shape (scripts/runstate.sh), the function the parent's t1 added, plus four minor gaps folded in. I-1: the mapping-header refusal skips blank lines but not column-0 comment lines when looking below an empty-remainder header, so a comment between backlog: and its body reads as a column-0 scalar and set strands the children at rc=0 -- the P0 the parent's capability 1 claims closed, reachable through write though no plugin writer emits it today. I-2: the nested-only scan has no in-block state, so a note block-body line starting driver_host:/driver_pid:/run_id: makes claim-driver refuse against a fresh run-state -- loud not corrupting, but it sends the agent to a whole-file write for four keys. Minor: pin the both-present shadow-cursor artifact as spec-conformant (M-1), reject keys outside the identifier charset before shape detection (M-2), scope the one-decoder claim in CLAUDE.md and the parent PRD to run-state and the sentinel (M-3), make test-pause.sh's reason-less sentinel case able to fail (M-4). Ordered 26 to keep the 2026-09-19 sequence (retire-autonomy-levels -> escalation-decider -> driver-context-window-default -> loop-measurement) intact: both triggers need a shape no plugin writer produces today. Ties with driver-mode-deletion-refusal at 26; neither depends on the other. The parent is derived-done, so this cannot be an appended task"
     depends_on: [runstate-write-integrity-gaps]
 
@@ -255,3 +266,18 @@ features:
     order: 17
     why: "ADR 0026 arm 2 from run-state finding handoff-needs-mutation-verification (recorded 2026-09-16 from the 8-packet thin-loop-driver run; operator approved filing 2026-09-20). Under the thin driver the reviewer is the only check on an agent's self-report, and the gate held only where the handoff stated a checkable REQUIRED line: 5 of 7 reviewed packets needed a retry on work whose status line said done, while the packet that had failed three prior attempts closed first-try once its handoff demanded mutation-verification with both observed counts. Those lines lived only in the driver's context and are gone after a compaction or a fresh session. Delivery is mechanical, not the finding's literal proposal: runstate.sh handoff appends a fixed block from templates/handoff-required.md into every handoff by construction (the implementer and reviewer read only the handoff, so a line in task-packet.yaml is a named path, not a delivered file -- ADR 0023). Six generic lines ship; the two repo-specific ones stay in CLAUDE.md / the session_boundary field; a consumer extends with .agents/handoff-extra on the guard-extra-* pattern; the reviewer treats each line as an acceptance criterion. Ordered 17, tied with thin-loop-driver-gaps: it lowers the retry rate of every packet that follows it, so it belongs ahead of everything that is not itself degrading every run"
     depends_on: [thin-loop-driver]
+
+  - slug: handoff-spec-inlining
+    order: 26
+    why: "gspec 3.2.0 review, filed 2026-09-20 on the operator's call. Upstream's continuation brief inlines only the arch.md sections a task's arch: anchors resolve to and says there is no spec file to open; spec reads per continuation fell ~14 -> 1.4 and implementer input per run -54%. gaffer runs its own driver (ADR 0020 seam) so none of that fires here, but the shape is ours: the handoff already inlines acceptance criteria via covers: yet hands arch.md and design.html as bare ARCH=/DESIGN= paths and strips the task's arch: anchors instead of resolving them, so the implementer opens whole files -- one UI-heavy consumer feature re-read ~81M tokens per packet vs 4-12M on non-UI ones, and Read is 7.6x all shell search combined. Pulls anchored SECTIONS of arch.md/design.html inside the pinned contract with a resolver at the _resolve_* seam and a sweep case (gspec has moved these files twice). Plus two implementer prompt lines: terse test output, never re-read a skill file. Ordered 26, first of the three 3.2.0 ports: largest transferable saving, smallest change. Same files as gspec-adapter-consistency (35) and packet-bundling (complete): not in flight together"
+    depends_on: [thin-loop-driver, handoff-verification-contract]
+
+  - slug: implementer-continuation
+    order: 27
+    why: "gspec 3.2.0 review, filed 2026-09-20 on the operator's call. Upstream capped implementer runs at 120 turns (one uncapped run: 419 turns, 130M tokens) and briefed every continuation and retry with a 'partial work found' block (existing files + git status: verify and continue, do not recreate). gaffer's baseline is the same tail: 60 of 242 implementer runs went >=150 turns and carried 74% of implementer cost; 27 of 98 packets had no recorded outcome, mostly the longest. An Agent dispatch has no --max-turns, so the cap is COOPERATIVE on the ADR 0017 pause pattern: the budget is stated in the handoff, the implementer stops at a safe boundary, leaves partial work uncommitted (green-only commits), and returns a `continue` status the router sends to a fresh-context continuation of the same packet -- not to review, not counted as a fix/retry attempt, bounded by its own cap past which it stops with a question. Ordered 27, after handoff-spec-inlining (same handoff writer) and before dispatch-progress-metrics, which is its detector. Same files as thin-loop-driver-gaps / loop-driver-run-gaps (runstate.sh, test-runstate.sh, run-loop): not in flight together"
+    depends_on: [thin-loop-driver, handoff-verification-contract]
+
+  - slug: dispatch-progress-metrics
+    order: 28
+    why: "gspec 3.2.0 review, filed 2026-09-20 on the operator's call. Upstream instrumented BEFORE saving: each implementer run tagged initial/revision/lint-fix/continuation/retry with a progress flag and a Waste block, which showed 4-5 of 12 runs checking zero tasks (~8M tokens each) and pointed the 120-turn cap and continuation brief at the right target. gaffer's collector sees a packet as one unit -- dispatched[] counts, a second implementer dispatch inferred as a fix round -- with no dispatch classified by kind, costed, or judged for whether it advanced the packet. The raw records already exist across three logs (events by agent_id, outcomes start/continue, routing fix/retry/attempt/continue); this joins them per dispatch, adds a totals.dispatch_waste rollup and waste: flags, null where unmeasured, and changes no existing field. Ordered 28, after implementer-continuation: it is that feature's success-metric detector (is the cooperative budget honoured; are continuations converging). Same files as loop-measurement (metrics.sh, test-metrics.sh): not in flight together, and its before/after must not be disturbed"
+    depends_on: [run-metrics, implementer-continuation]

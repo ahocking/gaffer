@@ -42,7 +42,7 @@ This feature is part of the 2026-09-14 loop-cost redesign. It removes the levels
   - the `run-loop`, `resume` and `pause` instructions and the `chief-engineer`, `architect` and `implementer` agents no longer branch on a level or tell an agent to check one
   - `scripts/test-guard.sh` drops every per-level case, meaning one that expects a denial only a level below `full-autonomy` produces, or that tests how the level is resolved (precedence, the ceiling clamp), and every case that exists only for `.agents/autonomy` or `ORCH_AUTONOMY`. It keeps every other case, including every always-denied, ask and `full-autonomy` allow case outside the dropped set, with its level setting removed
 
-- [ ] **P1**: Migration cleans up
+- [x] **P1**: Migration cleans up
   - `/gaffer:migrate` deletes `.agents/autonomy` wherever present, reporting the deletion as a change to commit when the file was tracked
   - it removes the `autonomy_ceiling` key and the comment block that introduces it from `.agents/project-overrides.yaml`, each only where present, and leaves the rest of that file as it was
   - it reports, never edits, each line in the repository's own `CLAUDE.md` and `spec-setup.md` that refers to an autonomy level or `/gaffer:set-autonomy`, and any `ORCH_AUTONOMY` entry in the repository's `.claude/settings.json`, because those belong to the human

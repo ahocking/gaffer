@@ -115,7 +115,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: hooks/metrics-log.sh, scripts/metrics.sh, scripts/test-metrics.sh
 
-- [ ] **T7** **P1** Run the new migration against this repository — it is itself a consumer — deleting its tracked `.agents/autonomy` and the `autonomy_ceiling` paragraph from its own overrides.
+- [x] **T7** **P1** Run the new migration against this repository — it is itself a consumer — deleting its tracked `.agents/autonomy` and the `autonomy_ceiling` paragraph from its own overrides.
 
   - run `scripts/migrate.sh apply` against this checkout **first, on a clean tree** (it refuses a dirty one), and let it do the work rather than hand-editing, so the packet is also the first real exercise of T5; the two hand-edits below come after;
   - expected result: `.agents/autonomy` (currently tracked, containing `full-autonomy`) is deleted and the deletion staged; `.agents/project-overrides.yaml` loses the paragraph whose comment reads "No ceiling. This repo runs at full-autonomy deliberately…" together with its commented `# autonomy_ceiling:` line, and every other paragraph — `model_routing`, `escalate_to_human_on`, the `bypass-ask-tier` block, `integration_branch`, `packet_attempts`, `pause_every_packets`, `bundle_max_tasks` — is byte-identical;

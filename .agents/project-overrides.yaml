@@ -87,10 +87,6 @@ escalate_to_human_on:
   - "editing gspec/features/run-metrics/tasks.md — a retro-spec of shipped work whose tasks are all checked"
   - "deleting or rewriting an accepted ADR, as opposed to superseding it"
 
-# No ceiling. This repo runs at full-autonomy deliberately (.agents/autonomy) and
-# its central artifact is the guard itself, so a cap here would be self-defeating.
-# autonomy_ceiling:
-
 # ── ASK tier: OFF for this repo (ADR 0015) ───────────────────────────────────
 # Skips every one-click "ask" — routine-but-notable bash AND review-worthy writes.
 #
@@ -103,7 +99,7 @@ escalate_to_human_on:
 #
 # What this does NOT do — the floors are untouched:
 #   - hard-deny still blocks secrets/.env/key material, recursive deletes, and
-#     history rewrite at every autonomy level;
+#     history rewrite, unconditionally;
 #   - the git soft gates still block commit/merge/push to main/master;
 #   - `escalate_to_human_on` above still governs the judgement calls;
 #   - the reviewer and the PR gate remain the real review boundary here.
@@ -118,7 +114,7 @@ escalate_to_human_on:
 bypass-ask-tier: true
 
 # The non-main integration branch (ADR 0009). Packets branch `orch/<task-id>` from
-# here and, at full-autonomy, merge back into it. main is human-gated regardless.
+# here and merge back into it. main is human-gated regardless.
 integration_branch: develop
 
 # How many `fix`/`retry` attempts `runstate.sh route` allows a packet before

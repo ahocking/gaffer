@@ -90,7 +90,7 @@ contract the parent never had rather than a defect in one it shipped.
 
 ## Capabilities
 
-- [ ] **P0**: Every handoff carries the verification block by construction
+- [x] **P0**: Every handoff carries the verification block by construction
   - `scripts/runstate.sh handoff` appends the block from
     `templates/handoff-required.md` after the piped task text on every handoff
     it writes — gspec-sourced, run-state-sourced, or a bundle — with no option

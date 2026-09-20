@@ -2948,6 +2948,96 @@ printf '' | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-empty --
 assert_true "empty stdin: the title falls back to the packet id" \
   "head -1 \"$HW_RUN_DIR/pkt-empty/handoff.md\" | grep -qx '# pkt-empty: pkt-empty'"
 
+echo "-- handoff: every handoff carries the verification contract (handoff-verification-contract T2) --"
+# MUTATION RULED OUT: the append itself. Delete `printf '\n%s\n' "$required"`
+# from cmd_handoff's write block (the wrong implementation where the contract
+# is documented but never reaches the handoff) and every assertion below that
+# looks for a REQUIRED line, and the heading assertion, turn red -- the handoff
+# is still written and still carries the task text, so nothing else notices.
+HR_TPL="${PLUGIN_ROOT}/templates/handoff-required.md"
+HC_FILE="$HW_RUN_DIR/pkt-contract/handoff.md"
+# The six line NAMES are spelled out here rather than scraped from the template,
+# so a line silently dropped from the template fails this sweep instead of
+# shrinking the thing it is checked against. The count assertion pins the other
+# direction: a SEVENTH line added to the template and not asserted here.
+HR_NAMES="mutation-verification unmeasured real-interface report-the-limitation current-file second-run"
+assert_true "the template states exactly the six REQUIRED lines asserted below" \
+  "[ \"\$(grep -c '^REQUIRED [a-z-]*:' \"$HR_TPL\")\" = 6 ]"
+# The second piped line stands in for one of the driver's own conditional
+# REQUIRED lines (run-loop writes them into the body it pipes in), so the
+# "ahead of the block, neither moved nor repeated" assertions below have a real
+# instance to check rather than a hypothetical one.
+printf 'TEXT=Add the verification block\nREQUIRED: the regression sweep covering runstate.sh passes\n' \
+  | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml pkt-contract --tier integration --agent implementer) >/dev/null
+assert_true "the handoff carries the piped task text" \
+  "grep -q 'Add the verification block' \"$HC_FILE\""
+assert_true "the block sits under its own heading" \
+  "grep -qx '## REQUIRED — the verification contract' \"$HC_FILE\""
+for HR_NAME in $HR_NAMES; do
+  assert_true "the handoff carries the REQUIRED ${HR_NAME} line" \
+    "grep -q \"^REQUIRED ${HR_NAME}: \" \"$HC_FILE\""
+done
+# Ordering: task text, then the driver's conditional line, then the heading,
+# then the last of the six. `tail -1` on the task text deliberately takes the
+# BODY occurrence, not the title line the header repeats it on.
+HC_TEXT_LN="$(grep -n 'Add the verification block' "$HC_FILE" | tail -1 | cut -d: -f1)"
+HC_DRV_LN="$(grep -n '^REQUIRED: the regression sweep covering runstate.sh passes$' "$HC_FILE" | head -1 | cut -d: -f1)"
+HC_HEAD_LN="$(grep -n '^## REQUIRED — the verification contract$' "$HC_FILE" | head -1 | cut -d: -f1)"
+HC_LAST_LN="$(grep -n '^REQUIRED second-run: ' "$HC_FILE" | head -1 | cut -d: -f1)"
+assert_true "the task text comes BEFORE the block, never after it" \
+  "[ -n \"$HC_TEXT_LN\" ] && [ -n \"$HC_HEAD_LN\" ] && [ \"$HC_TEXT_LN\" -lt \"$HC_HEAD_LN\" ]"
+assert_true "the driver's own conditional REQUIRED line stays AHEAD of the block" \
+  "[ -n \"$HC_DRV_LN\" ] && [ -n \"$HC_HEAD_LN\" ] && [ \"$HC_DRV_LN\" -lt \"$HC_HEAD_LN\" ]"
+assert_true "the driver's own conditional REQUIRED line is not repeated inside the block" \
+  "[ \"\$(grep -c '^REQUIRED: the regression sweep covering runstate.sh passes\$' \"$HC_FILE\")\" = 1 ]"
+assert_true "the six lines follow the heading" \
+  "[ -n \"$HC_LAST_LN\" ] && [ \"$HC_HEAD_LN\" -lt \"$HC_LAST_LN\" ]"
+# The block is not conditional on the body's source: an empty body (the
+# no-gspec fallback above pipes only KEY=value lines, and `pkt-empty` pipes
+# nothing at all) still gets it.
+assert_true "a handoff built from empty stdin carries the block too" \
+  "grep -q '^REQUIRED second-run: ' \"$HW_RUN_DIR/pkt-empty/handoff.md\""
+
+echo "-- handoff: an unreadable contract template REFUSES the handoff (handoff-verification-contract T2) --"
+# MUTATION RULED OUT: warn-and-continue. Replace the two `die`s guarding the
+# template with a `printf ... >&2` that falls through to the write, and these
+# turn red -- the command exits 0 and a handoff.md appears with no block, which
+# is precisely the state the refusal exists to prevent (an agent cannot tell a
+# contract-less handoff from a handoff whose contract did not apply).
+HR_MISSING="$HW/no-such-dir/handoff-required.md"
+HC_REFUSE_ERR="$(printf 'TEXT=x\n' | (cd "$HW" && ORCH_HANDOFF_REQUIRED="$HR_MISSING" "$RUNSTATE" handoff .agents/run-state.yaml pkt-norequired --tier integration --agent implementer) 2>&1 >/dev/null || true)"
+assert_true "handoff exits non-zero when the contract template is missing" \
+  "! (printf 'TEXT=x\n' | (cd \"$HW\" && ORCH_HANDOFF_REQUIRED=\"$HR_MISSING\" \"\$RUNSTATE\" handoff .agents/run-state.yaml pkt-norequired --tier integration --agent implementer)) 2>/dev/null"
+assert_true "the refusal names the template path it could not read" \
+  "printf '%s\n' \"\$HC_REFUSE_ERR\" | grep -qF \"$HR_MISSING\""
+assert_true "a refused handoff writes no handoff.md at all" \
+  "[ ! -f \"$HW_RUN_DIR/pkt-norequired/handoff.md\" ]"
+assert_true "a refused handoff leaves no temp file beside it either" \
+  "[ -z \"\$(ls -A \"$HW_RUN_DIR/pkt-norequired\" 2>/dev/null)\" ]"
+HR_BLANK="$HW/blank-required.md"; printf '\n   \n\t\n' > "$HR_BLANK"
+assert_true "handoff exits non-zero when the contract template is whitespace-only" \
+  "! (printf 'TEXT=x\n' | (cd \"$HW\" && ORCH_HANDOFF_REQUIRED=\"$HR_BLANK\" \"\$RUNSTATE\" handoff .agents/run-state.yaml pkt-blankrequired --tier integration --agent implementer)) 2>/dev/null"
+assert_true "a whitespace-only template writes no handoff.md either" \
+  "[ ! -f \"$HW_RUN_DIR/pkt-blankrequired/handoff.md\" ]"
+
+echo "-- handoff: the contract resolves from the SCRIPT's location, not the caller's cwd --"
+# MUTATION RULED OUT: resolving the template from the caller's cwd. Swap
+# `${HERE}/../templates/handoff-required.md` for `templates/handoff-required.md`
+# (or `${PWD}/templates/...`) and this turns red -- the cwd below is a nested
+# directory of a throwaway repo with no templates/ of its own, so the handoff
+# would be REFUSED outright rather than carrying the block. ORCH_HANDOFF_REQUIRED
+# is deliberately left UNSET here: this case is about the default resolution,
+# and setting it would test the override instead.
+HC_DEEP="$HW/deep/nested/cwd"; mkdir -p "$HC_DEEP"
+assert_true "the fixture cwd has no templates/handoff-required.md of its own" \
+  "[ ! -e \"$HC_DEEP/templates/handoff-required.md\" ] && [ ! -e \"$HW/templates/handoff-required.md\" ]"
+assert_true "handoff from a cwd that is not the plugin root still succeeds" \
+  "printf 'TEXT=far from the plugin root\\n' | (cd \"$HC_DEEP\" && unset ORCH_HANDOFF_REQUIRED; \"\$RUNSTATE\" handoff \"$HW/.agents/run-state.yaml\" pkt-farcwd --tier integration --agent implementer)"
+for HR_NAME in $HR_NAMES; do
+  assert_true "from a foreign cwd the handoff still carries the REQUIRED ${HR_NAME} line" \
+    "grep -q \"^REQUIRED ${HR_NAME}: \" \"$HW_RUN_DIR/pkt-farcwd/handoff.md\""
+done
+
 echo "-- handoff/write-result: charset and traversal refusals (review fixes 3/12/13) --"
 assert_true "handoff refuses a packet id of '.'" \
   "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml . --tier integration --agent implementer)) 2>/dev/null"

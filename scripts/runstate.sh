@@ -210,6 +210,14 @@
 #                                    packet whose latest routing record in
 #                                    this run's routing.jsonl is
 #                                    `hand-off-feature` (T9).
+#                                    ALWAYS appends templates/handoff-required.md
+#                                    verbatim after the body, resolved from this
+#                                    SCRIPT's location (never the caller's cwd;
+#                                    $ORCH_HANDOFF_REQUIRED redirects it for
+#                                    fixtures). No option omits it: a missing,
+#                                    unreadable or whitespace-only template
+#                                    exits non-zero naming that path and writes
+#                                    no handoff file at all.
 #   write-result <run-state> <path> --status "<line>"
 #                                    atomically writes the (newline-collapsed)
 #                                    status line followed by stdin to <path>.
@@ -503,6 +511,21 @@ set -euo pipefail
 # Commit-message trailer that ties a packet commit to its packet id. Kept here so
 # the writer (run-loop / pause) and the reader (reconcile) agree on one string.
 PACKET_TRAILER_PREFIX="[orch packet:"
+
+# --- where the plugin's OWN files live, relative to THIS script ---------------
+# Derived the same way scripts/routing.sh derives its agents/ lookup. It must be
+# script-relative and not cwd-relative: `handoff` is run from wherever the
+# driving session happens to be (the consumer repo's checkout, a subdirectory of
+# it), and resolving a plugin template against the CALLER's cwd would find
+# nothing there and refuse every handoff outside the plugin root.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# The verification contract appended to EVERY handoff (handoff-verification-
+# contract T2). ORCH_HANDOFF_REQUIRED redirects WHERE the block is read from,
+# for fixtures; it is an override, never an omission path — an unreadable or
+# whitespace-only template refuses the handoff rather than writing one without
+# the block.
+HANDOFF_REQUIRED_TEMPLATE="${ORCH_HANDOFF_REQUIRED:-${HERE}/../templates/handoff-required.md}"
 
 die() { printf 'runstate.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
 
@@ -2601,6 +2624,27 @@ cmd_handoff() {
   body="$(cat)"
   title="$(_rs_handoff_title "$body" "$pkt")"
   target="${pktdir}/handoff.md"
+
+  # --- the verification contract, read and validated at THIS point ------------
+  # Every handoff carries it, whatever the body's source (gspec-sourced,
+  # run-state-sourced, or a bundle) — there is no flag, no env var and no code
+  # path that omits it. Placement is deliberate at both ends:
+  #   - AFTER `cat` has drained stdin, so the producer on the other side of the
+  #     pipe (gspec-backlog.sh handoff, run through a pipeline by the driver)
+  #     completes its write and gets this message, rather than taking SIGPIPE
+  #     mid-write and reporting rc=141 in place of the real reason; and
+  #   - BEFORE mktemp, so a refusal leaves nothing on disk at all — not a temp
+  #     file, and above all not a handoff.md missing the block, which an agent
+  #     would read as a handoff with no contract rather than as a failure.
+  local req_tpl="$HANDOFF_REQUIRED_TEMPLATE" required=""
+  if ! required="$(cat "$req_tpl" 2>/dev/null)"; then
+    die "handoff: cannot read the verification contract template at '${req_tpl}' — every handoff carries it and there is no option to omit it"
+  fi
+  case "$required" in
+    *[![:space:]]*) ;;
+    *) die "handoff: the verification contract template at '${req_tpl}' is empty — every handoff carries it and there is no option to omit it" ;;
+  esac
+
   # GLOBAL, not local -- an EXIT trap referencing a function-LOCAL is
   # bash-version-dependent while the shell unwinds under `set -e` (see
   # gspec-backlog.sh's cmd_check_task for the same fix and its measured
@@ -2618,6 +2662,13 @@ cmd_handoff() {
     printf 'result: %s\n' "${abs_pktdir}/${agent}.md"
     printf 'review: %s\n\n' "${abs_pktdir}/review.md"
     printf '%s\n' "$body"
+    # Verbatim, and LAST: the body carries the driver's own conditional
+    # REQUIRED lines, which stay ahead of the block exactly as the driver wrote
+    # them — neither moved into it nor repeated by it. Emitted from the value
+    # already read and validated above rather than re-`cat`ing the file, so
+    # there is no window in which the template changes between the check and
+    # the write.
+    printf '\n%s\n' "$required"
   } > "$_rs_tmp"
   mv -f "$_rs_tmp" "$target"
   trap - EXIT

@@ -76,7 +76,7 @@ status-line check over a prompt-only fix.
 
 ## Capabilities
 
-- [ ] **P0**: A malformed status line is refused before it reaches routing, and re-issued by the same agent once
+- [x] **P0**: A malformed status line is refused before it reaches routing, and re-issued by the same agent once
   - a `runstate.sh` subcommand — a status-line check the driver runs on every
     returned line — accepts a line exactly when it is one line containing no
     backtick and no `$`, its first field (everything before the first ` · `)
@@ -102,7 +102,7 @@ status-line check over a prompt-only fix.
     each failing the check with its expected reason, plus the middle-field
     pass case
 
-- [ ] **P0**: A packet-close write carries the run identity and driver claim through
+- [x] **P0**: A packet-close write carries the run identity and driver claim through
   - the close-out clause in `skills/run-loop/SKILL.md` §3.6 names, as an
     enumerated list, every column-0 key that must survive the whole-file
     `write` because the close does not itself produce it: `schema`, `run_id`,
@@ -121,7 +121,7 @@ status-line check over a prompt-only fix.
     fresh-run clause's pin, asserting each named key appears in the extracted
     span
 
-- [ ] **P1**: An end-of-run arm-2 proposal is a counted decision
+- [x] **P1**: An end-of-run arm-2 proposal is a counted decision
   - the termination step in `skills/run-loop/SKILL.md` §4 records the
     architect's routing outcome through the core: when the architect's status
     line reports an arm-2 proposal in its free-text clause — the driver

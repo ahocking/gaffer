@@ -7,6 +7,10 @@
   main-context session author the PRD itself is withdrawn. See
   [Revision — 2026-09-17](#revision--2026-09-17--arm-2-terminates-at-the-operator-never-at-gspec-feature)
   below; the accepted text above it is unchanged.
+- Revision (2026-09-20): **an end-of-run arm-2 proposal now leaves a routing record and
+  is counted in the stop report's tally; the operator gate is unchanged.** See
+  [Revision — 2026-09-20](#revision--2026-09-20--an-end-of-run-arm-2-proposal-leaves-a-routing-record-and-is-counted)
+  below; nothing above it is rewritten.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) (its routing table is unchanged;
   this supplies the destination that made the "backlog, not a finding" rule un-followable
@@ -389,3 +393,40 @@ it no longer moves when the harness does.
   (`hand-off-feature`), `agents/architect.md`, and this repo's `CLAUDE.md` ADR 0026
   bullet. `agents/loop-driver.md` and `templates/report-templates.md` already describe
   hand-off as a stop-report question only, and needed no change.
+
+## Revision — 2026-09-20 — an end-of-run arm-2 proposal leaves a routing record and is counted
+
+`loop-driver-run-gaps` T5 (`ee8b869`). The 2026-09-17 revision above says the stop
+report "carries `handoff-feature` lines for the whole run precisely so it is visible
+there", and that what the architect's proposal feeds "is a stop-report question, never a
+command". Both stand. What that revision did not say — because nothing wrote it — is
+where the `handoff-feature` line for an **end-of-run** proposal comes from. A mid-run
+`hand-off-feature` from the decider reaches the digest through `runstate.sh route`, and
+so is counted; the proposal the end-of-run architect makes in `run-loop` §4 had no
+record at all, so the stop report rendered its decision block beside a `DECISIONS`
+figure that did not count it.
+
+**Now the proposal is recorded through the core, under a fixed id that is not a
+packet.** When the architect's status line reports an arm-2 proposal in its free-text
+clause — the driver judges that from the line it already relays; arm 2 introduces no new
+status token — the driver calls
+`runstate.sh route <run-state> end-of-run-review hand-off-feature --status '<that line>'`
+before the stop report reads `run-tally`. `end-of-run-review` names the run's termination
+review: it fits the packet-id charset, reads as a title in the stop report, and cannot
+collide with a packet. The printed `ACTION` is not acted on — the record is the purpose
+of the call — and no outcome is ever recorded for the id, since it has no handoff file
+and no start record. `run-digest` then emits one `handoff-feature` line for it carrying
+the architect's status line, `run-tally`'s `DECISIONS` includes it once, and the stop
+report's 🔀 section carries exactly that many blocks. An architect that routed everything
+to arm 1, or found nothing to route, records nothing and changes no figure. ADR 0028
+carries the matching amendment on the routing log's shape.
+
+### What is unchanged
+
+- **The operator gate.** The record counts the proposal; it files nothing. No agent runs
+  `/gspec-feature` in the run, and a run can still end with an unfiled proposal — the
+  record only makes the tally honest about how many there are.
+- **The carrier.** The proposal still travels as the architect's status line and result
+  file, and still lands as a stop-report question. The routing record carries that same
+  status line; it is a second reader of the line, not a second line.
+- **Arm 1, the arm ordering, the arm-1 scope test, D3 and D4.**

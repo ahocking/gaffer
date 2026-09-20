@@ -721,7 +721,7 @@ passing sweeps.
   improvising around the guard. A mark from a crashed session is **inert** (keyed to an
   id nothing will reuse; `session-start.sh` clears it on `startup|resume`), compaction
   keeps it (`driver-mode-compact.sh` fires on `compact` only and re-points the session at
-  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit five
+  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit eight
   mechanisms worth knowing before you touch any of them:
   **(a) Run directories.** `begin-run` mints `run_id` into run-state **only when absent**
   — so a resume keeps it and a run spans sessions — creates `.agents/loop/<run_id>/`, and
@@ -753,8 +753,10 @@ passing sweeps.
   (lexically, before touching disk) and writes the status line as the file's **first**
   line — so the reviewer, researcher and chief-engineer gained **no** `Edit` or `Write`
   tool, and the driver can assemble a report from first lines without opening a body.
-  The one-line contract itself is `templates/status-line.md`; nothing mechanically
-  refuses a multi-line reply, the **reviewer** catches it as a `fix`.
+  The one-line contract itself is `templates/status-line.md`; its **shape** is refused
+  mechanically by `runstate.sh check-status` (mechanism (f) below — this replaced the
+  earlier state where nothing refused a multi-line reply), while whether the line is
+  **true** is still the **reviewer's** gate, caught as a `fix`.
   **(e) Every handoff ends with a verification contract, and its text has ONE home:
   `templates/handoff-required.md`** (ADR 0029, `handoff-verification-contract`). The
   block is appended by `runstate.sh handoff` itself — read from that file, resolved
@@ -784,6 +786,77 @@ passing sweeps.
   the line, never a pass with a note), judging applicability and never whether to
   check; the contract is prompt-enforced there, so the detector for a reviewer that
   stops checking is the next run's retry rate, not a sweep.
+  **(f) Every status line is checked for GRAMMAR before the driver acts on it, and the
+  check is a subcommand, not a prompt rule** (`loop-driver-run-gaps` T1–T3, 2026-09-20).
+  `runstate.sh check-status --status '<line>'` is the ONE mechanical reading of
+  `templates/status-line.md`: it accepts a line exactly when it is one line (a CR counts
+  as a break) containing no backtick and no `$`, its first field (everything before the
+  first ` · `) is one word, the field between its second-to-last and last ` · ` is
+  literally `result: needs-reading` or `result: no`, and its last field (everything after
+  the last ` · `) is a non-empty, whitespace-free path. Otherwise it exits non-zero with
+  ONE reason naming the rule that failed — never a generic "malformed status line",
+  because the driver's only move on a refusal is to hand that reason back. Boundaries
+  come from the FIRST and LAST separator, never a field count: the two middle fields are
+  free text and may carry their own ` · `, so a four-way split would refuse a line the
+  template explicitly permits. `route --status` and `write-result --status` run the same
+  check **FIRST, before either touches disk** — before the routing record is appended,
+  before the run directory is created, before the result file is written — so a refused
+  line leaves `routing.jsonl` byte-unchanged and creates no result file, and all three
+  refuse with the byte-identical reason (one `die` path, no per-caller prefix). The
+  driver's rule, stated on both surfaces (`run-loop` §3 step 4 and the Routing section of
+  `agents/loop-driver.md`): run the check on **every** returned line, including one
+  nothing routes on; on a refusal re-dispatch the same agent **once**, passing the printed
+  reason and nothing else; on a second refusal, a line the driver does not route on
+  proceeds to the reviewer dispatch as before, and a line the driver would have routed on
+  (the reviewer's verdict, the decider's token) is escalated as a blocking question
+  naming the agent and the reason. **The driver never substitutes a line of its own** —
+  a line it wrote reports on work it did not do. The check reads shape, never truth: a
+  well-formed line that is wrong is still the reviewer's `fix`, and that content gate is
+  unchanged.
+  **(g) A packet-close `write` REPLACES the whole run-state, so the close must carry every
+  key it does not itself produce** (`loop-driver-run-gaps` T4). `run-loop` §3.6 enumerates
+  the carry set: `schema`, `run_id`, `branch`, every `driver_*` key the file already
+  carries (`driver_host`, `driver_since`, `driver_heartbeat`, and `driver_pid` when the
+  claim recorded one), `status: running`, `pending_questions`, and the whole `findings:`
+  block — each copied line-for-line from the on-disk `.agents/run-state.yaml` being
+  replaced, the same source rule the fresh-run write uses (`runstate.sh findings` is not
+  a source for the index, since its projection strips the quoting — ADR 0027).
+  `updated_at` is the writer's own stamp; `last_green_commit`, `backlog` and `note` are
+  the close's own output. A key left out is not omitted, it is gone, and `run_id` is the
+  expensive one because nothing fails at the write itself: `run-digest` then refuses
+  (*run-state has no run_id*) for the rest of the run, and the next `begin-run` — this
+  session's or a resuming one's — sees no id, mints a second one and a second run
+  directory, orphaning the run's handoff files, result files and routing log. A dropped
+  `driver_*` key is not re-made either (`claim-driver` runs once, at §2), so
+  `driver-status` reads the run as never claimed from that point on. Pinned twice:
+  `test-report-conventions.sh` asserts each named key appears in the clause's span, and
+  `test-runstate.sh` pins the consequence against a control write that drops `run_id`.
+  **(h) An end-of-run arm-2 proposal is a COUNTED decision, recorded under a fixed id
+  that is not a packet** (`loop-driver-run-gaps` T5; amends ADR 0026's arm 2 and the
+  routing-log shape in ADR 0028, both dated 2026-09-20). When the §4 architect's status
+  line reports an arm-2 proposal in its free-text clause — the driver judges that from
+  the line it already relays, and **no new status token** is introduced — the driver
+  calls `runstate.sh route <run-state> end-of-run-review hand-off-feature --status
+  '<that line>'`. `end-of-run-review` names this run's termination review, never a
+  packet: it satisfies the packet-id charset, reads as a title where the stop report
+  renders it, and cannot collide with a packet because every gspec-sourced id is
+  `<slug>-t<n>`. The call prints `ACTION=discard-advance`, and **that `ACTION` is not
+  acted on** — there is no packet to discard and no cursor to advance at termination;
+  the routing record is the whole purpose of the call. **No outcome is ever recorded for
+  the id**: it has no handoff file and no start record, `record-outcome` is never called
+  for it, and it earns no `packet` line in the digest. The record must land **before the
+  stop report reads `run-tally`**, which is what counts it — recorded after that read,
+  the report prints `DECISIONS=0` beside a rendered decision block, the exact defect T5
+  closed. It goes to `routing.jsonl` and **may never go to the outcomes log**: every
+  record in that log is packet lifecycle — `_rs_open_packets`, `sweep-open` and the
+  digest's `packet` lines read it as nothing else — and `end-of-run-review` is not a
+  packet, so a record for it there would be read as one that never existed; (b) is the
+  same rule from the other side. `run-digest` then emits one
+  `handoff-feature` line for the id carrying the architect's status line, and `run-tally`
+  counts it once (the existing dedup of a handed-off packet's own decision line is
+  unchanged). An architect that routed everything to arm 1, or found nothing to route,
+  records nothing and changes no figure. The operator gate is untouched — the record
+  counts the proposal; nobody in the run files it.
   **The escalation decider does not exist yet, and `chief-engineer` is an INTERIM
   stand-in for it.** It decides with its existing judgment — *not* the decider's
   exclusive triggers or their precedence, which `thin-loop-driver` deliberately did not

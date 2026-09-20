@@ -2,6 +2,11 @@
 
 - Status: Accepted (probe record; the design decisions it feeds land with `thin-loop-driver` T3–T24)
 - Date: 2026-09-15
+- Amended (2026-09-20): **a status line's shape is refused by `runstate.sh check-status`
+  before `route` or `write-result` touches disk, and the routing log carries one record
+  per run that is not a verdict** (`loop-driver-run-gaps` T1–T5). See
+  [Amendment (2026-09-20)](#amendment-2026-09-20--a-status-line-is-refused-by-a-subcommand-and-one-routing-record-is-not-a-verdict)
+  below; the 2026-09-16 amendment above it is unchanged.
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: `gspec/features/thin-loop-driver/prd.md` and its plan T1;
   [ADR 0017](0017-graceful-cooperative-pause.md) (the earlier payload probe that established
@@ -240,3 +245,93 @@ exactly one thing — a capability's indented acceptance-criteria sub-bullets �
 by `gspec-backlog.sh handoff`. That decision, and why completion is still derived from
 the checkbox alone, is recorded where it belongs, in
 [ADR 0020](0020-gspec-boundary-and-version-pin.md) D2's own amendment.
+
+## Amendment (2026-09-20) — a status line is refused by a subcommand, and one routing record is not a verdict
+
+`loop-driver-run-gaps` T1–T5 landed (`d724c0b`, `1bf43eb`, `1d79001`, `f9249c0`,
+`ee8b869`). Two statements in the 2026-09-16 amendment above are now incomplete. This
+section amends them; it does not rewrite them, and the text above stands as the record
+of what shipped on that date.
+
+### "writes the status line as the file's first line" described a write nothing checked
+
+"Run directories, the routing log, and script-written result files" says `write-result`
+"writes the status line as the file's first line, followed by stdin" and that the driver
+assembles a report "from first lines without ever opening a result body". Both were true,
+and both rested on a status line whose one-line grammar (`templates/status-line.md`) was
+prompt-enforced only: nothing refused an off-grammar line, so a multi-line or field-less
+reply was written as the first line of a result file, or routed on, and only the reviewer
+caught it — as a `fix`, one packet later.
+
+**Now `runstate.sh check-status --status '<line>'` is the one mechanical reading of that
+grammar.** It accepts a line exactly when it is one line (a CR counts as a break)
+containing no backtick and no `$`, its first field (everything before the first ` · `)
+is one word, the field between its second-to-last and last ` · ` is literally
+`result: needs-reading` or `result: no`, and its last field (everything after the last
+` · `) is non-empty and whitespace-free. Otherwise it exits non-zero and prints **one
+reason naming the rule that failed** — never a generic "malformed status line", because
+the driver's only move on a refusal is to hand that reason back. The boundaries come
+from the first and last separator and never from a field count: the two middle fields
+are free text and may carry their own ` · `, which the template explicitly permits, so a
+four-way split would refuse a well-formed line.
+
+`route --status` and `write-result --status` run the same check **first, before either
+touches disk** — before the routing record is appended, before the run directory is
+created, before the result file is written — and refuse with the byte-identical reason
+(one `die` path, no per-caller prefix). A refused line therefore leaves `routing.jsonl`
+byte-unchanged and creates no result file; the "one write a read-only-tooled agent
+gets" is now a write that can be refused on its content's shape as well as its path.
+
+The driver's rule is stated on both of its surfaces (`skills/run-loop/SKILL.md` §3 step 4
+and the Routing section of `agents/loop-driver.md`): run the check on **every** returned
+line, including one nothing routes on; on a refusal re-dispatch the same agent **once**,
+passing the printed reason and nothing else; on a second refusal, a line the driver does
+not route on proceeds to the reviewer dispatch as before, and a line the driver would
+have routed on (the reviewer's verdict, the decider's token) is escalated as a blocking
+question naming the agent and the reason. The driver never substitutes a line of its
+own. The check reads shape, never truth — a well-formed line that is wrong is still the
+reviewer's `fix`, and that content gate is unchanged.
+
+### "`route` appends one record per verdict" is now one per verdict plus at most one per run that is not
+
+The same section fixes the routing log's shape as "one record per verdict", each keyed
+to a packet id. That is still every record the packet loop writes. **At termination,
+`run-loop` §4 now writes one more**, under the fixed id `end-of-run-review`: when the
+end-of-run architect's status line reports an ADR 0026 arm-2 proposal in its free-text
+clause — judged by the driver from the line it already relays, with no new status token
+— the driver calls `route <run-state> end-of-run-review hand-off-feature --status
+'<that line>'`. The id names the run's termination review and is not a packet: it fits
+the packet-id charset, reads as a title in the stop report, and cannot collide with a
+packet because every gspec-sourced id is `<slug>-t<n>`. The call prints
+`ACTION=discard-advance`, and that action is **not acted on** — there is no packet to
+discard and no cursor to advance at termination; the record is the whole purpose of the
+call.
+
+**No outcome is recorded for the id, and the record may never go to the outcomes log.**
+The id has no handoff file and no start record, `record-outcome` is never called for
+it, and it earns no `packet` line in the digest. Every record in the outcomes log is
+packet lifecycle to its readers, and this is not a packet; it lives in `routing.jsonl`,
+kept out of the outcomes log for the same reason the mark's enter/exit records are
+(those go to `.agents/metrics/driver-mode/<session>.jsonl`, as the 2026-09-16 amendment
+above states). Ordering is load-bearing: the
+record must land **before the stop report reads `run-tally`**, which is what counts it
+— recorded after that read, the report printed `DECISIONS=0` beside a rendered decision
+block, the defect T5 closed. `run-digest` then emits one `handoff-feature` line for the
+id carrying the architect's status line; `run-tally`'s `DECISIONS` includes it once, the
+existing dedup of a handed-off packet's own decision line unchanged. An architect that
+routed everything to arm 1, or found nothing to route, records nothing and changes no
+figure. ADR 0026 carries the matching revision from the arm-2 side; the operator gate it
+states is untouched — the record counts the proposal, and nobody in the run files it.
+
+### One consequence for `begin-run`'s "only when absent"
+
+`begin-run` minting `run_id` only when absent is what lets a run span sessions, and it
+is also what makes a packet-close `write` that drops the key silently expensive: nothing
+fails at the write, `run-digest` refuses for the rest of the run, and the next
+`begin-run` mints a second id and a second run directory, orphaning this run's handoff
+files, result files and routing log. `run-loop` §3.6 therefore enumerates the keys a
+close must carry through the whole-file write (`loop-driver-run-gaps` T4): `schema`,
+`run_id`, `branch`, every `driver_*` key present, `status: running`,
+`pending_questions` and the `findings:` block, each copied from the on-disk file being
+replaced. That is a loop-prose decision rather than one of this ADR's, and is recorded
+here only because the minting rule above is why it matters.

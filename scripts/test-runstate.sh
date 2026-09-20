@@ -4415,6 +4415,166 @@ assert_true "no-tools host: routing.jsonl still byte-unchanged, and no result fi
   "[ \"\$T2_BEFORE\" = \"\$(cat \"$T2_ROUTING\")\" ] && [ ! -e \"$T2_RUN_DIR/t2-nt/implementer.md\" ]"
 
 echo
+echo "== a packet-close write that follows §3.6's carry clause leaves the run resolvable;"
+echo "   one that drops the id or the claim does not (loop-driver-run-gaps T4) =="
+# The clause is prose; these are its CONSEQUENCES, exercised against the real
+# subcommands so the prose is pinned to what the core actually does rather than to
+# what it is documented to do. Observed on run `20260919T224810-6fc6`, packet 1:
+# §3.6 named `status: running` and the `findings:` index and nothing else, the
+# driver wrote exactly that, and the run-state came out of the close missing
+# `run_id` and the whole `driver_*` claim.
+#
+# WHY A CONTROL, AND WHY THESE THREE. A close that follows the clause and one that
+# drops a key take the SAME code path: `runstate.sh write` accepts both (its
+# structural check catches truncation and gross malformation, never a well-formed
+# document that is wrong), and both parse. So a case that only asserted "the
+# compliant write succeeds and the file still parses" would pass on ANY content at
+# all, including the exact content the incident produced. Each control below is one
+# key removed from the same generated close, so the only difference between the
+# green case and the red one is the line the clause exists to carry:
+#   - control 1 drops `run_id`:     run-digest refuses for the rest of the run, and
+#                                   the next `begin-run` mints a SECOND id over a
+#                                   second run directory, leaving this run's handoff
+#                                   files where nothing will look for them.
+#   - control 2 drops the `driver_*` claim (keeping the id, so the refusal above
+#                                   cannot be what turns it red): `driver-status`
+#                                   reads a run nobody ever claimed, and `outcome`
+#                                   reports a live mid-run checkpoint as CRASHED.
+# Both were verified by mutation in the other direction too: with the drop removed
+# (`T4_DROP=`) the control cases go red, which is what shows they are testing the
+# dropped key and not the fixture.
+#
+# Every case runs twice — once on a full PATH, once with jq and python3 scrubbed
+# (`bare`'s NOTOOLS stubs, established at T8 above) — from ONE function, so the
+# mirror cannot drift from the original. The scrub wraps only the runstate.sh
+# invocations; the parse assertion uses the sweep's own parser and skips LOUDLY
+# when the host has none (yamlok), as every parse case here does.
+T4_SUMMARY='guard.sh: fails closed on unreadable input'
+T4_NEWSHA='2222222222222222222222222222222222222222'
+
+# A mid-run checkpoint built by the real scripts: a begun run, a driver claim, a
+# handoff file for the packet about to land, its start/green records, a pending
+# question, and a findings entry whose summary carries the one sequence (`: `) the
+# durable writer quotes for — so "copied line-for-line" is pinned on a value that a
+# re-emission from `runstate.sh findings` would visibly change. Prints the RUN_ID.
+t4_fixture() {
+  local d="$1" rid
+  git -C "$d" init -q; git -C "$d" config user.email t@t; git -C "$d" config user.name t
+  mkdir -p "$d/.agents/metrics/outcomes"
+  cat > "$d/.agents/run-state.yaml" <<'T4STATE'
+schema: 3
+status: running
+branch: orch/t4-a
+last_green_commit: 1111111111111111111111111111111111111111
+backlog:
+  cursor: t4-a
+  pending:
+    - t4-a
+    - t4-b
+pending_questions:
+  - id: q-t4
+    severity: normal
+    packet: t4-b
+    question: which way round
+note: mid-run
+T4STATE
+  rid="$( (cd "$d" && "$RUNSTATE" begin-run .agents/run-state.yaml) | sed -n 's/^RUN_ID=//p')"
+  (cd "$d" && "$RUNSTATE" claim-driver .agents/run-state.yaml) >/dev/null
+  (cd "$d" && "$RUNSTATE" add-finding .agents/run-state.yaml f-t4 "$T4_SUMMARY" --packets t4-b) >/dev/null
+  printf 'T4 the first packet\nbody\n' \
+    | (cd "$d" && "$RUNSTATE" handoff .agents/run-state.yaml t4-a --tier mechanical --agent implementer) >/dev/null
+  printf '{"ts":"2026-02-01T00:00:01Z","packet":"t4-a","session":"T4","kind":"start"}\n{"ts":"2026-02-01T00:00:02Z","packet":"t4-a","session":"T4","outcome":"green"}\n' \
+    > "$d/.agents/metrics/outcomes/T4.jsonl"
+  printf '%s' "$rid"
+}
+
+# The write §3.6 tells the driver to make: every carried key copied line-for-line off
+# the file being replaced (its indented body with it), then the close's own output.
+# $2 is an ERE of column-0 keys to leave behind — empty for the compliant write, one
+# key for a control. The fixture above has no column-0 comment line, which is why the
+# keep-state test can be a plain "unindented line starts a new key".
+t4_close() { # <state file> <drop-ere>
+  awk -v drop="$2" '
+    /^[^[:space:]]/ {
+      k = $0; sub(/:.*/, "", k)
+      keep = (k == "schema" || k == "run_id" || k == "branch" || k == "status" \
+              || k == "pending_questions" || k == "findings" || k ~ /^driver_/)
+      if (drop != "" && k ~ drop) keep = 0
+    }
+    keep { print }
+  ' "$1"
+  printf 'updated_at: 2026-09-20T00:00:00Z\n'
+  printf 'last_green_commit: %s\n' "$T4_NEWSHA"
+  printf 'backlog:\n  cursor: t4-b\n  pending:\n    - t4-b\n'
+  printf 'note: landed t4-a\n'
+}
+
+# $T4_SCRUB is empty on the full-PATH pass and $NOTOOLS on the mirrored one.
+t4_rs() { local d="$1"; shift
+  if [ -n "$T4_SCRUB" ]; then (cd "$d" && PATH="$T4_SCRUB:$PATH" "$RUNSTATE" "$@")
+  else (cd "$d" && "$RUNSTATE" "$@"); fi
+}
+t4_dirs() { ls -1 "$1/.agents/loop" | wc -l | tr -d ' '; }
+
+t4_cases() { # <label suffix>
+  local sfx="$1" d rid wrc drc dmsg reprint ndirs newid
+  echo "-- the compliant close: every named key carried$sfx --"
+  d="$(cd "$(mktemp -d)" && pwd -P)"; rid="$(t4_fixture "$d")"
+  assert_true "fixture$sfx: begin-run minted an id, claim-driver recorded a live claim, and the handoff landed in the run directory" \
+    "[ -n \"\$rid\" ] && [ -f \"\$d/.agents/loop/\$rid/t4-a/handoff.md\" ] && t4_rs \"\$d\" driver-status .agents/run-state.yaml | grep -q '^DRIVER=live'"
+  wrc=0; t4_close "$d/.agents/run-state.yaml" '' | t4_rs "$d" write .agents/run-state.yaml || wrc=$?
+  assert_true "compliant close$sfx: the write is accepted" "[ \"\$wrc\" = 0 ]"
+  assert_true "compliant close$sfx: and the file still parses" "yamlok \"\$d/.agents/run-state.yaml\""
+  assert_true "compliant close$sfx: run-digest resolves — no no-run-id refusal, and it emits the landed packet's own line" \
+    "t4_rs \"\$d\" run-digest .agents/run-state.yaml | grep -qx \$'packet\tt4-a\tT4 the first packet\tgreen'"
+  reprint="$(t4_rs "$d" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  assert_true "compliant close$sfx: begin-run reprints the RUN_ID the file held before the write, minting nothing" \
+    "[ \"\$reprint\" = \"\$rid\" ]"
+  assert_true "compliant close$sfx: and no second run directory was created" "[ \"\$(t4_dirs \"\$d\")\" = 1 ]"
+  assert_true "compliant close$sfx: the driver claim survives — driver-status still reads live" \
+    "t4_rs \"\$d\" driver-status .agents/run-state.yaml | grep -q '^DRIVER=live'"
+  assert_true "compliant close$sfx: the findings index survives with its quoting intact (the summary carries a colon-space)" \
+    "[ \"\$(t4_rs \"\$d\" findings .agents/run-state.yaml | cut -f2)\" = \"\$T4_SUMMARY\" ]"
+  assert_true "compliant close$sfx: the pending question survives" \
+    "grep -q 'id: q-t4' \"\$d/.agents/run-state.yaml\""
+  assert_true "compliant close$sfx: and the close's OWN output landed — cursor advanced and last_green_commit is the new SHA" \
+    "[ \"\$(t4_rs \"\$d\" cursor .agents/run-state.yaml)\" = t4-b ] && [ \"\$(t4_rs \"\$d\" get .agents/run-state.yaml last_green_commit)\" = \"\$T4_NEWSHA\" ]"
+
+  echo "-- control 1: the same close with run_id dropped$sfx --"
+  d="$(cd "$(mktemp -d)" && pwd -P)"; rid="$(t4_fixture "$d")"
+  wrc=0; t4_close "$d/.agents/run-state.yaml" '^run_id$' | t4_rs "$d" write .agents/run-state.yaml || wrc=$?
+  assert_true "control 1$sfx: the write is accepted and the file parses — nothing fails AT the close, which is why a write-succeeded assertion proves nothing" \
+    "[ \"\$wrc\" = 0 ] && yamlok \"\$d/.agents/run-state.yaml\""
+  drc=0; dmsg="$(t4_rs "$d" run-digest .agents/run-state.yaml 2>&1)" || drc=$?
+  assert_true "control 1$sfx: run-digest then refuses, non-zero" "[ \"\$drc\" != 0 ]"
+  assert_true "control 1$sfx: naming the missing id, so no report can be rendered for the rest of the run" \
+    "printf '%s\n' \"\$dmsg\" | grep -q 'run-digest: run-state has no run_id'"
+  assert_true "control 1$sfx: run-tally dies with it, so the stop report's figures go too" \
+    "! t4_rs \"\$d\" run-tally .agents/run-state.yaml >/dev/null 2>&1"
+  newid="$(t4_rs "$d" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  assert_true "control 1$sfx: the next begin-run mints a DIFFERENT id" \
+    "[ -n \"\$newid\" ] && [ \"\$newid\" != \"\$rid\" ]"
+  assert_true "control 1$sfx: over a second run directory, with the run's handoff file left in the first — orphaned, not moved" \
+    "[ \"\$(t4_dirs \"\$d\")\" = 2 ] && [ -f \"\$d/.agents/loop/\$rid/t4-a/handoff.md\" ] && [ ! -e \"\$d/.agents/loop/\$newid/t4-a/handoff.md\" ]"
+
+  echo "-- control 2: the same close with the driver_* claim dropped, id kept$sfx --"
+  d="$(cd "$(mktemp -d)" && pwd -P)"; rid="$(t4_fixture "$d")"
+  wrc=0; t4_close "$d/.agents/run-state.yaml" '^driver_' | t4_rs "$d" write .agents/run-state.yaml || wrc=$?
+  assert_true "control 2$sfx: the write is accepted and the file parses" \
+    "[ \"\$wrc\" = 0 ] && yamlok \"\$d/.agents/run-state.yaml\""
+  assert_true "control 2$sfx: run-digest still resolves — the id is there, so the claim is the only thing under test here" \
+    "t4_rs \"\$d\" run-digest .agents/run-state.yaml | grep -qx \$'packet\tt4-a\tT4 the first packet\tgreen'"
+  assert_true "control 2$sfx: but driver-status reads a run nobody ever claimed" \
+    "t4_rs \"\$d\" driver-status .agents/run-state.yaml | grep -q '^DRIVER=none'"
+  assert_true "control 2$sfx: and outcome reports this live mid-run checkpoint as CRASHED, the ending a resume reconciles" \
+    "t4_rs \"\$d\" outcome .agents/run-state.yaml | grep -q '^OUTCOME=crashed'"
+}
+
+T4_SCRUB=""; t4_cases ""
+T4_SCRUB="$NOTOOLS"; t4_cases " (no-tools host)"
+T4_SCRUB=""
+
+echo
 echo "== source guard: no pipe-fed \`grep\` that can exit early used as a condition in the deterministic core =="
 # next-state-reporting-integrity T4 — the twin of T3's case at the foot of
 # scripts/test-gspec-backlog.sh. The construct this feature removed is a

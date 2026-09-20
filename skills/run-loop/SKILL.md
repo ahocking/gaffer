@@ -726,10 +726,44 @@ nothing. Read the result exactly as §4 states it for the stop report.
    `pending` wherever it sits** (a member absent from `pending` is simply
    not there to remove), then set `cursor` to whatever entry remains first
    in `pending` (or none, if nothing does) — call the packet you just
-   committed `<landed>` from here on, meaning `$MEMBERS` as a whole —
-   `status: running` stays, and carry the
-   whole `findings:` index through verbatim (`write` REPLACES the file — an
-   omitted entry is unlinked, not edited out).
+   committed `<landed>` from here on, meaning `$MEMBERS` as a whole.
+
+   **`write` REPLACES the file, so every column-0 key below survives only
+   because you carry it into the new content.** None of them is this close's
+   own output, so one left out is not omitted — it is gone. The whole list:
+   - `schema` — the version line the reader keys off; `write` refuses content
+     without it, so dropping this one fails loudly rather than quietly.
+   - `run_id` — the run's own identity, and the most expensive of these to
+     lose, because nothing fails at the write itself. Afterwards
+     `run-digest` refuses outright (*run-state has no run_id (begin-run has
+     not been called)*), so no shape-A, shape-B or `run-tally` figure can be
+     rendered for the rest of the run; and the next `begin-run` — this
+     session's or a resuming one's — sees no id, mints a second one and
+     creates a second run directory, orphaning this run's handoff files,
+     result files and routing log.
+   - `branch` — the feature branch this run lives on.
+   - every `driver_*` key the file already carries: `driver_host`,
+     `driver_since`, `driver_heartbeat`, and `driver_pid` when the claim
+     recorded one. Together they are the driver claim (ADR 0020 D5), what
+     tells a crashed run apart from another session driving right now;
+     `claim-driver` runs once at §2, so a key dropped here is not re-made,
+     and `driver-status` reads the run as never claimed from that point on.
+   - `status: running` — the crash signal. Only a pause (→ `paused` /
+     `blocked`) and completion (→ `done`) clear it, and this close is
+     neither.
+   - `pending_questions` — every entry, unchanged.
+   - the `findings:` block — the whole index, verbatim. An omitted entry is
+     unlinked, not edited out: the body stays on disk with nothing left
+     pointing at it.
+   **Take every one of them from the on-disk `.agents/run-state.yaml` you are
+   replacing, copied line-for-line** — the same source rule §2's fresh-run
+   write states, and for the same reason: the quoting the file carries is the
+   quoting the new file carries, `runstate.sh findings` is not a source for
+   the index (its projection strips that quoting, ADR 0027), and a value
+   restated from memory of an earlier read is a value this write can silently
+   change. What this close itself produces is exactly `last_green_commit`,
+   `backlog` (the `cursor` and `pending` above) and `note` (below), and
+   `updated_at` is the writer's own stamp — never a key you carry.
 
    **Outcome vocabulary — five triggers, each excluding the others; when a
    stop fits more than one, `blocked` wins over `rolled-back` and `failed`,

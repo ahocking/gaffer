@@ -395,6 +395,93 @@ has 'read from disk and copied line-for-line, so the quoting survives' \
 has 'and the durable-state projection is refused as a source' \
   '`runstate.sh findings` is not a source' "$fresh_run_write"
 
+printf '\n== the packet-close write enumerates every key it must carry, not just two (loop-driver-run-gaps T4) ==\n'
+# §3.6's close used to name `status: running` and the `findings:` index as what
+# survives the whole-file `write`, and nothing else -- while §2's fresh-run write
+# deliberately omits `run_id`, which made the silence read as intended rather than
+# incomplete. A driver following §3.6 literally dropped `run_id` and the `driver_*`
+# claim on a real run (`20260919T224810-6fc6`, packet 1, repaired by hand): nothing
+# fails at the write, then `run-digest` refuses for the rest of the run and the next
+# `begin-run` mints a second id over a second run directory. So the clause now
+# ENUMERATES, and this section asserts every name in that enumeration is present --
+# a partial list is the whole defect, and a list missing one key looks exactly like a
+# complete one to a reader who does not already know the set.
+#
+# The needle list is the set of column-0 keys `templates/run-state.yaml` documents,
+# split by who produces them: the carried ones are asserted as carried, and the three
+# the close itself writes plus the writer's own stamp are asserted as named in their
+# own role -- otherwise a clause could satisfy every needle by listing all thirteen
+# keys as carry-through, which would tell the driver to preserve the very fields the
+# close exists to update.
+#
+# Extracted by its own content anchor and guarded non-empty before anything is scanned
+# over it, as the extractions above are: a range matching nothing yields an empty span
+# that satisfies every scan, and reverting the clause to its two-key form is exactly
+# what empties this range -- the mutation check, verified by making that reversion.
+# Both anchors sit on ONE wrapped line of the clause; an end anchor spanning a line
+# wrap matches nothing and the range runs on to swallow the rest of the file. That is
+# the vacuous pass the non-empty guard cannot catch: it only sees that the span is
+# non-empty, and an overrun span is the least empty thing there is. The ceiling below
+# is what catches it, and the margin is measured, not assumed: the live span is 36
+# lines, while a span run on to end of file is 396.
+_extract_close_carry() { # file -> §3.6's packet-close carry-through clause
+  sed -n '/every column-0 key below survives only/,/never a key you carry/p' "$1"
+}
+close_carry="$(_extract_close_carry "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$close_carry" ] && ok 'run-loop §3.6 packet-close carry clause extracted (anchor holds)' \
+  || bad 'run-loop §3.6 packet-close carry clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the clause is back to naming only status and findings'
+under_ceiling 'the packet-close span stays inside its ceiling (end anchor still matches)' \
+  "$close_carry"
+
+# Needles stay short enough to sit on ONE wrapped line of the clause: `has` is a plain
+# substring match over the multi-line span, so a phrase broken by a wrap matches nothing
+# and fails a clause that is present. No pipe into the loop -- a `while read` on the
+# right of one runs in a subshell and every ok/bad it counted would be discarded.
+while IFS='|' read -r cc_label cc_needle; do
+  [ -n "$cc_label" ] || continue
+  has "run-loop §3.6 carries: $cc_label" "$cc_needle" "$close_carry"
+done <<'CLOSE_CARRY_NEEDLES'
+the schema line|- `schema`
+the run's own identity|- `run_id`
+the feature branch|- `branch`
+the driver claim's host|`driver_host`
+its since/heartbeat stamps, and the pid when one was recorded|`driver_since`, `driver_heartbeat`, and `driver_pid`
+the crash signal, by value|`status: running`
+the questions awaiting the operator|`pending_questions`
+the findings index|the `findings:` block
+CLOSE_CARRY_NEEDLES
+
+has 'the write is stated to replace, so a dropped key is a loss' \
+  'REPLACES' "$close_carry"
+has 'and an omitted findings entry is named as unlinked, not edited out' \
+  'unlinked, not edited out' "$close_carry"
+has 'losing the id is tied to the refusal it causes' \
+  'run-state has no run_id' "$close_carry"
+has 'and to the second run directory the next begin-run would mint' \
+  'creates a second run directory' "$close_carry"
+
+# The same source rule the fresh-run clause carries, at the write where the file being
+# replaced belongs to THIS run: read from disk, copied, and never re-emitted from the
+# projection that strips the durable writer's quoting (ADR 0027).
+has 'the source is the checkpoint file itself' \
+  '.agents/run-state.yaml' "$close_carry"
+has 'copied line-for-line, so the quoting survives' \
+  'copied line-for-line' "$close_carry"
+has 'and the durable-state projection is refused as a source here too' \
+  '`runstate.sh findings` is not a source' "$close_carry"
+
+# The close's OWN output is named as such, so the enumeration cannot be satisfied by
+# listing every key as carry-through.
+has "the close's own output names the green SHA" \
+  '`last_green_commit`' "$close_carry"
+has 'and the cursor/pending block it advances' \
+  '`backlog` (the `cursor` and `pending` above)' "$close_carry"
+has 'and the one-line note it overwrites' \
+  '`note` (below)' "$close_carry"
+has "and updated_at is the writer's own stamp, not a carried key" \
+  "is the writer's own stamp" "$close_carry"
+
 printf '\n== the status-line refusal rule is stated in the same words on both driver surfaces (loop-driver-run-gaps T3) ==\n'
 # `runstate.sh check-status` (T1) and the refusals `route`/`write-result` run through it
 # (T2) are mechanism; what the driver DOES with a refusal is prose, and it lives on two

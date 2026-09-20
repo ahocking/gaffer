@@ -110,6 +110,25 @@ execute in whichever shell runs this; `${CLAUDE_PLUGIN_ROOT}/templates/status-li
 states the `'\''`-escape rule once). The driver never opens that file; the
 reviewer does.
 
+## The handoff's verification contract
+
+The handoff ends with a block headed **"REQUIRED — the verification
+contract"** — the six lines of
+`${CLAUDE_PLUGIN_ROOT}/templates/handoff-required.md`, plus any lines the
+repository appends through `.agents/handoff-extra`. Each line that applies to
+your packet is one of its acceptance criteria, with the same standing as the
+ones stated above it, and the reviewer holds your result file to it exactly as
+it holds it to those. So your result file addresses every line that applies —
+what you did to satisfy it and what you observed — rather than leaving the
+reviewer to infer that from a green test run or from the status line. Where a
+line tells you to report a limitation instead of approximating, reporting it
+plainly, with what verifying it would take, is how you pass that line; an
+estimate passed off as a measurement, or an applicable line left unanswered,
+is a `fix`. A line that does not apply to your packet needs nothing from you.
+The reviewer, not you, decides which lines apply, so if you treat one as
+inapplicable and that is not obvious from the packet, say why in the result
+file rather than leaving it silent.
+
 ## Build, test, report
 
 1. Make the change within scope.

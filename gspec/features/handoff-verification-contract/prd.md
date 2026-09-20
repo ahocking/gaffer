@@ -108,7 +108,7 @@ contract the parent never had rather than a defect in one it shipped.
     refusal, and a mutation check recorded in the case's comment: with the
     append removed, the sweep turns red
 
-- [ ] **P0**: The reviewer treats each block line as an acceptance criterion
+- [x] **P0**: The reviewer treats each block line as an acceptance criterion
   - `agents/reviewer.md` states that a result file which does not satisfy an
     applicable block line is a `fix` verdict naming that line, with the same
     standing as any unmet acceptance criterion — in particular a

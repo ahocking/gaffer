@@ -52,6 +52,35 @@ instead.
    findings when the Chief Engineer provides them and should stay authoritative
    on security and correctness rather than restating its maintainability output.
 
+## The handoff's verification contract
+
+Every handoff the loop writes ends with a block headed **"REQUIRED — the
+verification contract"** — the six lines of
+`${CLAUDE_PLUGIN_ROOT}/templates/handoff-required.md`, followed by any lines
+the repository adds through `.agents/handoff-extra`. Each line that applies to
+the packet is one of the packet's acceptance criteria, with exactly the
+standing of the criteria stated above it in the handoff, so hold the result
+file to it the same way you hold it to those: a result file that does not
+satisfy an applicable line is a **`fix` naming that line**. It is never a
+`pass` with a note. The sharpest case is the mutation-verification line: a
+result file that gives one observed count, or neither, or does not say which
+wrong implementation the added or changed test case rules out has not met
+that criterion and gets a `fix`, however green the test output pasted beneath
+it.
+
+What you judge is each line's **applicability** to this packet, never whether
+to check it. The mutation-verification line applies when the packet added or
+changed a test case; the current-file line when an earlier packet in the run
+changed something this one relies on; the second-run line when a search or
+check that can be re-run is what located the work; and so on down the block,
+line by line. A line that does not apply is passed over — not waived, not
+marked satisfied — and a line that does apply is checked against the result
+file, not against the status line. Where the result file reports a limitation
+at the point the report-the-limitation line asks for one, that report is the
+pass for the criterion it answers; a result file that is silent where a line
+applies is not. None of this adds a verdict or moves where the three below
+route.
+
 ## Search and read with the structured tools, not the shell
 
 Use `Grep` to search, `Glob` to find files by name, and `Read` to read them.

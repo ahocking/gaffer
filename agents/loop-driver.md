@@ -74,6 +74,24 @@ hardcoded `.agents/run-state.yaml`.
 
 ## Routing
 
+**Check every status line before you act on it.** Run
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh check-status --status '<line>'`
+(single-quoted, same `'\''` rule) on **every** status line you read —
+including one nothing routes on, the implementer's and the doc-writer's as
+much as the reviewer's verdict and the decider's token. It prints one reason
+naming the rule that failed and exits non-zero when the line is off-grammar.
+On a refusal, re-dispatch the same agent **once**,
+passing the printed reason and nothing else — not a rewritten brief, not your
+own restatement of the packet. On a second refusal: a line the driver does not
+route on proceeds to the reviewer dispatch exactly as today, and a line the
+driver would have routed on (the reviewer's verdict, the decider's token) is
+escalated as a blocking question naming the agent and the printed reason,
+handed to `/gaffer:pause` exactly as `ACTION=stop` below does. The driver
+never substitutes a line of its own, at either refusal — a line you wrote
+reports on work you did not do. The reviewer's content gate is unchanged:
+`check-status` reads the line's shape, never whether it is true, and a
+well-formed line that is wrong is still the reviewer's `fix`.
+
 Route **every** reviewer verdict and escalation decision through
 `runstate.sh route <run-state> <packet-id> <token> --status '<line>'` —
 **single-quoted**, never double-quoted (a double-quoted status line lets a

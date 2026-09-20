@@ -395,6 +395,68 @@ has 'read from disk and copied line-for-line, so the quoting survives' \
 has 'and the durable-state projection is refused as a source' \
   '`runstate.sh findings` is not a source' "$fresh_run_write"
 
+printf '\n== the status-line refusal rule is stated in the same words on both driver surfaces (loop-driver-run-gaps T3) ==\n'
+# `runstate.sh check-status` (T1) and the refusals `route`/`write-result` run through it
+# (T2) are mechanism; what the driver DOES with a refusal is prose, and it lives on two
+# surfaces a session reads at different moments -- `skills/run-loop/SKILL.md` §3.4 when
+# it runs the loop, `agents/loop-driver.md` when it takes the role. Stating the rule in
+# one and paraphrasing it in the other is the failure this section exists to catch: a
+# paraphrase is where "re-dispatch once" quietly becomes "re-dispatch until it parses",
+# and where "never substitute a line of its own" is dropped as obvious -- which is the
+# one repair that looks free and reports on work the driver did not do.
+#
+# So the SAME needle list is asserted over BOTH spans. A clause reworded on one surface
+# fails there while passing on the other, naming which file drifted.
+#
+# Extracted by content anchors and guarded non-empty before anything is scanned over it,
+# as the extractions above are: a range matching nothing yields an empty span that
+# satisfies every scan, and deleting the clause is exactly what empties this range --
+# the mutation check, verified by making that deletion. Both anchors sit on ONE wrapped
+# line of the clause in both files; an end anchor spanning a line wrap matches nothing
+# and the range runs on to swallow the rest of the file. That is the vacuous pass the
+# non-empty guard cannot catch: it only sees that the span is non-empty, and an overrun
+# span is the least empty thing there is. The ceiling below is what catches it, and the
+# margin is measured, not assumed: the live span is 17 lines in each file, while a span
+# run on to end of file is 579 in the skill and 103 in the agent. Measured with the end
+# anchor broken by one word, all eight needles below still passed on the skill's 579-line
+# span -- the ceiling was the only assertion that turned red.
+_extract_refusal_rule() { # file -> the check-status refusal clause
+  sed -n '/Check every status line before you act on it/,/well-formed line that is wrong/p' "$1"
+}
+refusal_skill="$(_extract_refusal_rule "$ROOT/skills/run-loop/SKILL.md")"
+refusal_agent="$(_extract_refusal_rule "$ROOT/agents/loop-driver.md")"
+[ -n "$refusal_skill" ] && ok 'run-loop §3.4 refusal clause extracted (anchor holds)' \
+  || bad 'run-loop §3.4 refusal clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the refusal rule is gone from the routing step'
+[ -n "$refusal_agent" ] && ok 'loop-driver Routing refusal clause extracted (anchor holds)' \
+  || bad 'loop-driver Routing refusal clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the refusal rule is gone from the Routing section'
+under_ceiling 'the run-loop §3.4 span stays inside its ceiling (end anchor still matches)' \
+  "$refusal_skill"
+under_ceiling 'the loop-driver Routing span stays inside its ceiling (end anchor still matches)' \
+  "$refusal_agent"
+
+# Needles stay short enough to sit on ONE wrapped line in BOTH files: `has` is a plain
+# substring match over the multi-line span, so a phrase broken by a wrap matches nothing
+# and fails a clause that is present. The two files wrap at different widths (the skill's
+# clause is indented inside a numbered step), which is exactly why the list is short
+# phrases rather than whole sentences. No pipe into the loop -- a `while read` on the
+# right of one runs in a subshell and every ok/bad it counted would be discarded.
+while IFS='|' read -r rr_label rr_needle; do
+  [ -n "$rr_label" ] || continue
+  has "run-loop §3.4: $rr_label"        "$rr_needle" "$refusal_skill"
+  has "loop-driver Routing: $rr_label"  "$rr_needle" "$refusal_agent"
+done <<'REFUSAL_NEEDLES'
+the check is the named subcommand, not a judgement of the driver's own|check-status --status
+it runs on every line read, including one nothing routes on|on **every** status line you read
+the re-dispatch is limited to once|the same agent **once**
+and carries the printed reason and nothing else|passing the printed reason and nothing else
+second refusal, unrouted line: on to the reviewer dispatch as today|proceeds to the reviewer dispatch
+second refusal, routed line: escalated to the operator|escalated as a blocking question
+the driver never substitutes a line of its own|never substitutes a line of its own
+and the reviewer stays the content gate|reviewer's content gate is unchanged
+REFUSAL_NEEDLES
+
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
 # hand _squeeze CRLF line endings. Reproduce that on copies in $TMP (never

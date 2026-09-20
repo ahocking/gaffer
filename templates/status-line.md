@@ -77,6 +77,20 @@ below it.
 A status line that grows past one line — a second line, a wrapped paragraph,
 an embedded list — breaks this contract: the driver never opens the result
 file, so anything after the first line is invisible to it and to whatever the
-driver dispatches next. Nothing mechanically refuses a multi-line reply; the
-**reviewer** is what catches it, the same way it catches any other
-acceptance-criterion failure, and reports it as a `fix`.
+driver dispatches next. This is refused mechanically: `runstate.sh
+check-status --status '<line>'` is the one mechanical reading of the Grammar
+above, and `runstate.sh route` and `runstate.sh write-result` run it on their
+own `--status` argument **before either touches disk** — so an off-grammar
+line writes no routing record and no result file, and all three refuse it
+with the same one-sentence reason naming the rule that failed. The driver's
+move on that refusal is to re-dispatch the same agent once, passing the
+printed reason and nothing else.
+
+What the check reads is the **shape**: one line, no backtick, no `$`, a
+one-word first field, `result: needs-reading` or `result: no` in the
+next-to-last field, and a non-empty whitespace-free path in the last. What it
+cannot read is whether the line is **true** — whether `<status>` is the right
+verdict, whether `<what changed>` describes what actually changed, whether
+`result: no` is an honest claim about the result file. That stays the
+**reviewer's** gate, the same way it catches any other acceptance-criterion
+failure, and it reports it as a `fix`.

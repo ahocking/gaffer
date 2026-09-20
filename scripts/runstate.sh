@@ -261,6 +261,11 @@
 #                                    (no filesystem access before the
 #                                    containment decision, so a refused write
 #                                    never touches disk outside the run dir).
+#                                    Runs `check-status` on <line> FIRST, before
+#                                    anything touches disk, and refuses an
+#                                    off-grammar line with the byte-identical
+#                                    reason `check-status` prints — no result
+#                                    file is created at all (T2).
 #   route <run-state> <packet-id> <token> [--status "<line>"]
 #                                    appends a routing record to
 #                                    .agents/loop/<run_id>/routing.jsonl (never
@@ -277,7 +282,13 @@
 #                                    question, rather than dispatching the
 #                                    decider again — `retry` IS the decider's
 #                                    own return value, so looping on it could
-#                                    never terminate.
+#                                    never terminate. A non-empty --status is
+#                                    run through `check-status` FIRST, before
+#                                    the record is appended and before anything
+#                                    else touches disk: an off-grammar line is
+#                                    refused with the byte-identical reason
+#                                    `check-status` prints and routing.jsonl is
+#                                    left byte-unchanged (T2).
 #   compact-threshold                prints THRESHOLD=<n|unknown>,
 #                                    SOURCE=repo|operator|unknown
 #                                    and APPLIED=no ALWAYS (thin-loop-driver
@@ -2904,6 +2915,28 @@ _rs_status_line_reason() {
   return 0
 }
 
+# --- the ONE refusal path for an off-grammar line (loop-driver-run-gaps T2) --
+# `die`s with the BARE reason `_rs_status_line_reason` printed and no command-
+# specific prefix, so `check-status`, `route` and `write-result` all refuse the
+# same line with byte-identical output. Each caller wording its own refusal
+# would hand the driver a reason the grammar's owner never stated, and the
+# driver's one move on a refusal is to re-dispatch the agent passing that
+# reason and nothing else.
+#
+# Called by `route`/`write-result` BEFORE either touches disk — before the
+# routing record is appended, before the run directory is created and before
+# the result file is written — so a refused line leaves no routing record for
+# a line the loop never routed on, and no half-written result file.
+#
+# `reason="$(...)" && return 0` rather than an `if`: under `set -e` an
+# assignment whose command substitution exits non-zero aborts the shell, and
+# the `&&` is what makes the failure a value here instead of an exit.
+_rs_require_status_line() {
+  local reason=""
+  reason="$(_rs_status_line_reason "$1")" && return 0
+  die "$reason"
+}
+
 # Refuses via `die` with the bare reason and NO command-specific prefix, so
 # every caller that refuses a line refuses it with a byte-identical message.
 cmd_check_status() {
@@ -2918,9 +2951,8 @@ cmd_check_status() {
   done
   [ "$seen" = 1 ] && [ -n "$status" ] || die "usage: check-status --status \"<line>\""
 
-  local reason=""
-  reason="$(_rs_status_line_reason "$status")" && { printf 'STATUS_LINE=ok\n'; return 0; }
-  die "$reason"
+  _rs_require_status_line "$status"
+  printf 'STATUS_LINE=ok\n'
 }
 
 # --- write-result: the ONE write a read-only-tooled agent gets, via a script -
@@ -2946,6 +2978,12 @@ cmd_write_result() {
   done
   [ -n "$f" ] && [ -n "$path" ] && [ -n "$status" ] \
     || die "usage: write-result <run-state> <path> --status \"<line>\""
+  # BEFORE anything reads or writes disk (T2): a refused line must leave no
+  # result file at all -- not an empty one, not one carrying an off-grammar
+  # first line a later reader would parse. Checking after the write would
+  # still exit non-zero and still print the reason while leaving the file
+  # behind, which is the wrong implementation this placement rules out.
+  _rs_require_status_line "$status"
   need_file "$f"
 
   local run_id
@@ -3149,6 +3187,18 @@ cmd_route() {
   done
   [ -n "$f" ] && [ -n "$pkt" ] && [ -n "$token" ] \
     || die "usage: route <run-state> <packet-id> <token> [--status \"<line>\"]"
+  # BEFORE the routing record is appended, and before anything else reads or
+  # writes disk (T2). A check after the append still exits non-zero and still
+  # prints the reason, but leaves routing.jsonl carrying a record for a line
+  # the loop never routed on -- which run-digest would then report as a
+  # decision that was made. `--status` is OPTIONAL here (every caller that
+  # routes without a line omits it), so an absent/empty one is not a line and
+  # is not checked; anything non-empty is.
+  #
+  # An `if`, never `[ -n "$status" ] && _rs_require_status_line …`: under the
+  # `set -e` this file runs with, an `&&` list whose left side is false is a
+  # failing statement, so the empty-status case would abort the whole call.
+  if [ -n "$status" ]; then _rs_require_status_line "$status"; fi
   need_file "$f"
   _rs_check_pkt_id "$pkt"
   case "$token" in

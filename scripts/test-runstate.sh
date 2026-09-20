@@ -3186,30 +3186,36 @@ assert_true "handoff refuses an --agent value outside [a-z-]+" \
   "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml pkt-badagent --tier integration --agent \$'implementer\\nInjected: line')) 2>/dev/null"
 
 echo "-- write-result: a symlinked directory under the run dir cannot escape it (review fix 3) --"
+# Every --status below is a WELL-FORMED status line (loop-driver-run-gaps T2
+# made write-result refuse anything else, ahead of every other check). A
+# placeholder like `--status x` would now be refused for its GRAMMAR, so each
+# path-refusal case below would still go green while testing nothing about
+# paths at all -- exactly the vacuity the owning-sweep rule forbids.
+WR_OK_STATUS='fix · first pass · result: needs-reading · /tmp/run/pkt-h/review.md'
 WR_OUTSIDE="$(mktemp -d)"
 ln -s "$WR_OUTSIDE" "$HW_RUN_DIR/pkt-h/escape-link"
 assert_true "write-result refuses a path through a symlinked directory that resolves outside the run dir" \
-  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/escape-link/pwned.md\" --status x)) 2>/dev/null"
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/escape-link/pwned.md\" --status \"\$WR_OK_STATUS\")) 2>/dev/null"
 assert_true "the symlink escape attempt wrote nothing outside the run dir" \
   "[ ! -f \"$WR_OUTSIDE/pwned.md\" ]"
 
 WR_TARGET="$HW_RUN_DIR/pkt-h/review.md"
-WR_OUT1="$(printf 'first body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "fix: first pass"))"
+WR_OUT1="$(printf 'first body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "$WR_OK_STATUS"))"
 assert_true "write-result reports RESULT=" "printf '%s\n' \"\$WR_OUT1\" | grep -q '^RESULT='"
 assert_true "the status line is the file's first line" \
-  "head -1 \"$WR_TARGET\" | grep -qx 'fix: first pass'"
+  "[ \"\$(head -1 \"$WR_TARGET\")\" = \"\$WR_OK_STATUS\" ]"
 assert_true "the body follows the status line" \
   "grep -q 'first body' \"$WR_TARGET\""
-WR_STATUS_MULTILINE="$(printf 'line one\nline two')"
-printf 'second body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "$WR_STATUS_MULTILINE") >/dev/null
+WR_OK_STATUS2='pass · second pass · result: no · /tmp/run/pkt-h/review.md'
+printf 'second body\n' | (cd "$HW" && "$RUNSTATE" write-result .agents/run-state.yaml "$WR_TARGET" --status "$WR_OK_STATUS2") >/dev/null
 assert_true "a rewrite REPLACES the file, not appends" \
   "! grep -q 'first body' \"$WR_TARGET\" && grep -q 'second body' \"$WR_TARGET\""
-assert_true "write-result collapses a newline in the status to a single line" \
-  "[ \"\$(head -1 \"$WR_TARGET\")\" = 'line one line two' ]"
+assert_true "  and the second status line is the file's first line" \
+  "[ \"\$(head -1 \"$WR_TARGET\")\" = \"\$WR_OK_STATUS2\" ]"
 assert_true "write-result refuses an absolute path outside the run directory" \
-  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml /etc/passwd --status x)) 2>/dev/null"
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml /etc/passwd --status \"\$WR_OK_STATUS\")) 2>/dev/null"
 assert_true "write-result refuses a traversal back out of the run directory" \
-  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/../../../../etc/passwd\" --status x)) 2>/dev/null"
+  "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" write-result .agents/run-state.yaml \"$HW_RUN_DIR/pkt-h/../../../../etc/passwd\" --status \"\$WR_OK_STATUS\")) 2>/dev/null"
 assert_true "handoff refuses a bad packet-id charset" \
   "! (printf 'x\n' | (cd \"$HW\" && \"\$RUNSTATE\" handoff .agents/run-state.yaml 'bad id' --tier integration --agent implementer)) 2>/dev/null"
 
@@ -3234,7 +3240,7 @@ assert_true "  and wrote no handoff.md either (mv never succeeded)" \
 
 WR_MVFAIL_TARGET="$HW_RUN_DIR/pkt-h/mvfail.md"
 WR_MVFAIL_RC=0
-printf 'x\n' | (cd "$HW" && PATH="$FAKEMV_DIR:$PATH" "$RUNSTATE" write-result .agents/run-state.yaml "$WR_MVFAIL_TARGET" --status x) >/dev/null 2>&1 \
+printf 'x\n' | (cd "$HW" && PATH="$FAKEMV_DIR:$PATH" "$RUNSTATE" write-result .agents/run-state.yaml "$WR_MVFAIL_TARGET" --status "$WR_OK_STATUS") >/dev/null 2>&1 \
   || WR_MVFAIL_RC=$?
 assert_true "write-result fails when mv itself fails (forced via a shadowed mv)" \
   "[ \"\$WR_MVFAIL_RC\" != 0 ]"
@@ -3737,7 +3743,7 @@ assert_true "  and does not (also or instead) read open" \
 echo "-- a result file's own BODY TEXT never appears in the digest -- asserted against the digest's REAL content, not an empty one --"
 printf 'T5 write a result file\nbody\n' | (cd "$RD" && "$RUNSTATE" handoff .agents/run-state.yaml rd-body --tier integration --agent implementer) >/dev/null
 RD_RESULT_PATH="$RD/.agents/loop/$RD_RUN_ID/rd-body/implementer.md"
-printf 'RD_SECRET_BODY_TEXT_MUST_NOT_LEAK\n' | (cd "$RD" && "$RUNSTATE" write-result .agents/run-state.yaml "$RD_RESULT_PATH" --status "pass: rd-body landed") >/dev/null
+printf 'RD_SECRET_BODY_TEXT_MUST_NOT_LEAK\n' | (cd "$RD" && "$RUNSTATE" write-result .agents/run-state.yaml "$RD_RESULT_PATH" --status "pass · rd-body landed · result: needs-reading · $RD_RESULT_PATH") >/dev/null
 printf '{"ts":"2026-02-01T00:00:06Z","packet":"rd-body","session":"S1","kind":"start"}\n{"ts":"2026-02-01T00:00:07Z","packet":"rd-body","session":"S1","outcome":"green"}\n' \
   >> "$RD/.agents/metrics/outcomes/S1.jsonl"
 RD_BODY_OUT="$(rd_digest)"
@@ -4294,6 +4300,119 @@ assert_true "no-tools host: all nine remaining refusal reasons are byte-identica
    && [ \"\$CS_NT_W2_MSG\" = \"\$CS_W2_MSG\" ] && [ \"\$CS_NT_1SEP_MSG\" = \"\$CS_1SEP_MSG\" ] \
    && [ \"\$CS_NT_RTOK_MSG\" = \"\$CS_RTOK_MSG\" ] && [ \"\$CS_NT_LEMPTY_MSG\" = \"\$CS_LEMPTY_MSG\" ] \
    && [ \"\$CS_NT_LWS_MSG\" = \"\$CS_LWS_MSG\" ]"
+
+echo
+echo "== route + write-result run that same check on their own --status, BEFORE"
+echo "   either touches disk (loop-driver-run-gaps T2) =="
+# Three wrong implementations these cases rule out, each named on the case that
+# rules it out:
+#   - checking AFTER the routing record is appended: still exits non-zero, still
+#     prints the reason, and leaves routing.jsonl carrying a record for a line
+#     the loop never routed on — a decision run-digest would then report as
+#     having been made. Ruled out by the byte-unchanged assertion, not by the
+#     exit status, which is identical either way.
+#   - checking AFTER the result file is written: same shape one subcommand over
+#     — a result file on disk whose first line is the off-grammar text, for a
+#     write the caller was told was refused. Ruled out by asserting the target
+#     path (and its directory) does not exist.
+#   - each caller wording its own refusal: that hands the driver a reason the
+#     grammar's owner never stated, and the driver's one move on a refusal is to
+#     re-dispatch the agent passing the printed reason and nothing else. Ruled
+#     out by comparing all three messages byte-for-byte, on two DIFFERENT
+#     off-grammar shapes so a single shared generic message cannot pass either.
+T2="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$T2" init -q
+git -C "$T2" config user.email t@t; git -C "$T2" config user.name t
+mkdir -p "$T2/.agents"
+printf 'schema: 3\nstatus: running\n' > "$T2/.agents/run-state.yaml"
+T2_RUN_ID="$(cd "$T2" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+T2_RUN_DIR="$T2/.agents/loop/$T2_RUN_ID"
+T2_ROUTING="$T2_RUN_DIR/routing.jsonl"
+T2_OK='pass · wired the check into route and write-result · result: needs-reading · /tmp/run/t2-pkt/implementer.md'
+
+echo "-- a WELL-FORMED line still goes through both (so the refusals below are not just a check that refuses everything) --"
+T2_GOOD_OUT="$(cd "$T2" && "$RUNSTATE" route .agents/run-state.yaml t2-pkt pass --status "$T2_OK")"
+assert_true "route: a well-formed --status routes normally" \
+  "printf '%s\n' \"\$T2_GOOD_OUT\" | grep -qx 'ACTION=land'"
+assert_true "  and its record reached routing.jsonl" \
+  "[ -f \"$T2_ROUTING\" ] && grep -q 't2-pkt' \"$T2_ROUTING\""
+# route's --status is OPTIONAL: an omitted one is not a line and is not checked.
+# This case also pins the `set -e` footgun the wiring had to avoid -- written as
+# `[ -n "$status" ] && _rs_require_status_line …`, a false left side is a failing
+# statement under `set -euo pipefail` and aborts the whole call.
+assert_true "route: NO --status at all still routes (the optional argument is not checked, and does not abort under set -e)" \
+  "(cd \"$T2\" && \"\$RUNSTATE\" route .agents/run-state.yaml t2-nostatus pass) | grep -qx 'ACTION=land'"
+
+echo "-- route refuses an off-grammar line, and routing.jsonl is BYTE-UNCHANGED --"
+T2_BEFORE="$(cat "$T2_ROUTING")"
+T2_BEFORE_LINES="$(wc -l < "$T2_ROUTING" | tr -d ' ')"
+T2_RT_RC=0; T2_RT_MSG="$( (cd "$T2" && "$RUNSTATE" route .agents/run-state.yaml t2-pkt fix --status "$CS_FREEFORM") 2>&1 )" || T2_RT_RC=$?
+assert_true "route: an off-grammar --status exits non-zero" \
+  "[ \"\$T2_RT_RC\" != 0 ]"
+assert_true "route: its reason is the one check-status prints for that line, verbatim" \
+  "[ \"\$T2_RT_MSG\" = \"\$CS_FREE_MSG\" ]"
+assert_true "route: and it printed NO ACTION= line at all (nothing downstream can read a refusal as a routing decision)" \
+  "! printf '%s\n' \"\$T2_RT_MSG\" | grep -q '^ACTION='"
+assert_true "route: routing.jsonl is byte-identical to before the refused call -- the check ran BEFORE the append, not after it" \
+  "[ \"\$T2_BEFORE\" = \"\$(cat \"$T2_ROUTING\")\" ]"
+assert_true "route: and it gained no line (the same fact counted, so a same-length rewrite cannot pass)" \
+  "[ \"\$(wc -l < \"$T2_ROUTING\" | tr -d ' ')\" = \"\$T2_BEFORE_LINES\" ]"
+
+echo "-- write-result refuses the same line, and the target path is never created --"
+T2_WR_DIR="$T2_RUN_DIR/t2-pkt"
+T2_WR_TARGET="$T2_WR_DIR/implementer.md"
+assert_true "write-result: the target does not exist before the refused call (so the assertion below is not vacuously true)" \
+  "[ ! -e \"$T2_WR_TARGET\" ] && [ ! -d \"$T2_WR_DIR\" ]"
+T2_WR_RC=0; T2_WR_MSG="$( (printf 'body that must never be written\n' | (cd "$T2" && "$RUNSTATE" write-result .agents/run-state.yaml "$T2_WR_TARGET" --status "$CS_FREEFORM")) 2>&1 )" || T2_WR_RC=$?
+assert_true "write-result: an off-grammar --status exits non-zero" \
+  "[ \"\$T2_WR_RC\" != 0 ]"
+assert_true "write-result: its reason is the one check-status prints for that line, verbatim" \
+  "[ \"\$T2_WR_MSG\" = \"\$CS_FREE_MSG\" ]"
+assert_true "write-result: the target file does not exist -- the check ran BEFORE the write, not after it" \
+  "[ ! -e \"$T2_WR_TARGET\" ]"
+assert_true "write-result: and its directory was never created either (nothing touched disk at all)" \
+  "[ ! -d \"$T2_WR_DIR\" ]"
+assert_true "write-result: and it printed NO RESULT= line" \
+  "! printf '%s\n' \"\$T2_WR_MSG\" | grep -q '^RESULT='"
+
+echo "-- a MULTI-LINE status is refused by write-result too, by the one-line rule --"
+# This replaces the old "write-result collapses a newline in the status" case:
+# a multi-line status can no longer reach the collapse, because the grammar
+# check refuses it first. _yaml_collapse stays in write-result as a second
+# line of defence for text that arrives some other way.
+T2_ML_TARGET="$T2_RUN_DIR/t2-ml/implementer.md"
+T2_ML_RC=0; T2_ML_MSG="$( (printf 'body\n' | (cd "$T2" && "$RUNSTATE" write-result .agents/run-state.yaml "$T2_ML_TARGET" --status "$(printf 'done · x · result: no · /tmp/r\nand a second line')")) 2>&1 )" || T2_ML_RC=$?
+assert_true "write-result: a multi-line --status is refused rather than collapsed" \
+  "[ \"\$T2_ML_RC\" != 0 ] && [ \"\$T2_ML_MSG\" = \"\$CS_NL_MSG\" ]"
+assert_true "  and wrote no file" \
+  "[ ! -e \"$T2_ML_TARGET\" ]"
+
+echo "-- all THREE subcommands refuse the same line with the same bytes --"
+T2_CS_MSG="$(cs_run "$CS_FREEFORM" || true)"
+assert_true "check-status, route and write-result print byte-identical refusals for the free-form shape" \
+  "[ \"\$T2_CS_MSG\" = \"\$T2_RT_MSG\" ] && [ \"\$T2_RT_MSG\" = \"\$T2_WR_MSG\" ]"
+assert_true "  and that shared message is non-empty" \
+  "[ -n \"\$T2_CS_MSG\" ]"
+# A SECOND off-grammar shape, refused by a different rule: three callers that
+# all printed one generic "malformed status line" would pass the case above and
+# fail here, because this message must differ from that one and still agree
+# across all three.
+T2_RT2_MSG="$( (cd "$T2" && "$RUNSTATE" route .agents/run-state.yaml t2-pkt fix --status "$CS_PKTID") 2>&1 || true )"
+T2_WR2_MSG="$( (printf 'body\n' | (cd "$T2" && "$RUNSTATE" write-result .agents/run-state.yaml "$T2_RUN_DIR/t2-pkt2/implementer.md" --status "$CS_PKTID")) 2>&1 || true )"
+T2_CS2_MSG="$(cs_run "$CS_PKTID" || true)"
+assert_true "a second off-grammar shape: all three agree byte-for-byte on ITS reason too" \
+  "[ \"\$T2_CS2_MSG\" = \"\$T2_RT2_MSG\" ] && [ \"\$T2_RT2_MSG\" = \"\$T2_WR2_MSG\" ]"
+assert_true "and the two shapes' shared reasons DIFFER (not one generic message repeated by three callers)" \
+  "[ \"\$T2_CS_MSG\" != \"\$T2_CS2_MSG\" ]"
+assert_true "the second refused route left routing.jsonl byte-unchanged as well" \
+  "[ \"\$T2_BEFORE\" = \"\$(cat \"$T2_ROUTING\")\" ]"
+
+echo "-- and the same three refusals with NEITHER jq NOR python3 on PATH --"
+T2_NT_RT_MSG="$( (cd "$T2" && PATH="$NOTOOLS:$PATH" "$RUNSTATE" route .agents/run-state.yaml t2-pkt fix --status "$CS_FREEFORM") 2>&1 || true )"
+T2_NT_WR_MSG="$( (printf 'body\n' | (cd "$T2" && PATH="$NOTOOLS:$PATH" "$RUNSTATE" write-result .agents/run-state.yaml "$T2_RUN_DIR/t2-nt/implementer.md" --status "$CS_FREEFORM")) 2>&1 || true )"
+assert_true "no-tools host: route and write-result refuse with the SAME bytes as the full-PATH runs" \
+  "[ \"\$T2_NT_RT_MSG\" = \"\$T2_RT_MSG\" ] && [ \"\$T2_NT_WR_MSG\" = \"\$T2_WR_MSG\" ]"
+assert_true "no-tools host: routing.jsonl still byte-unchanged, and no result file was written" \
+  "[ \"\$T2_BEFORE\" = \"\$(cat \"$T2_ROUTING\")\" ] && [ ! -e \"$T2_RUN_DIR/t2-nt/implementer.md\" ]"
 
 echo
 echo "== source guard: no pipe-fed \`grep\` that can exit early used as a condition in the deterministic core =="

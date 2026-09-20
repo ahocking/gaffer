@@ -145,7 +145,7 @@ status-line check over a prompt-only fix.
     carries one block for the proposal, yielding no `decision-count` finding
     from `scripts/report-lint.sh`
 
-- [ ] **P0**: Every change above has an owning sweep case, none vacuous, none silently skipped without `jq` or `python3`
+- [x] **P0**: Every change above has an owning sweep case, none vacuous, none silently skipped without `jq` or `python3`
   - every script change this feature makes has a case in
     `scripts/test-runstate.sh` asserting a literal, non-empty expectation,
     verified non-vacuous by making the mutation it exists to catch (reverting

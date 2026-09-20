@@ -3918,6 +3918,109 @@ assert_true "run-tally liveness: one packet with a live ask-operator question AN
   "[ \"\$(lv_decisions \"\${LV_Q}\${LV_RETRY_STOP}\" '')\" = 2 ]"
 
 echo
+echo "-- the end-of-run arm-2 proposal: ONE record, for a fixed id that is not a packet (loop-driver-run-gaps T6) --"
+# The termination review (skills/run-loop/SKILL.md §4) routes the architect's
+# arm-2 proposal through `route` under the fixed id `end-of-run-review`. That id
+# is NOT a packet: it has no handoff file, no start record and no outcome, and
+# the loop calls `route` for the RECORD alone -- the printed `ACTION` is not
+# acted on. This case pins what that one record does to every reader of it, and
+# each assertion rules out a specific wrong implementation:
+#
+#   - the digest emits a `handoff-feature` line carrying the architect's own
+#     status line VERBATIM: that line is what the stop report renders the
+#     proposal from, so a truncating extraction loses the proposed slug;
+#   - and NO `packet` line for that id. A digest that manufactured one would put
+#     a phantom packet in the stop report's shipped/unfinished sections and in
+#     the UNFINISHED figure;
+#   - `run-tally`'s DECISIONS rises by EXACTLY one against the same run without
+#     the record. The single record emits TWO digest lines for the one id (its
+#     `handoff-feature` line AND a `decision … hand-off-feature` line), so a
+#     tally without the hand-off dedup counts one proposal twice and the stop
+#     report's header reads 🔀 2 beside one rendered block. A delta, not a
+#     literal, so it stays the RISE the capability states even if some later
+#     figure in this fixture changes;
+#   - `sweep-open` closes nothing for it. This is the one that rules out the
+#     tempting wrong home for the record, `.agents/metrics/outcomes/`, where
+#     `_rs_open_packets` reads ANY `kind`-bearing record as a packet start: the
+#     next session's sweep would then close a packet that never existed as
+#     `interrupted` -- a fabricated failure in a run that had none.
+#
+# Built with the real writers (begin-run, handoff, record-start, route,
+# sweep-open) over a fresh repo per pass, never hand-written JSON, and run
+# twice: once on a full PATH and once with jq/python3 stubbed out of it.
+EOR_SCRUB=""
+EOR_SESS=EORSWEEP
+EOR_STATUS='hand-off-feature · the balance-drift gotcha needs its own feature, proposed slug balance-drift-audit, parent txn-import · result: needs-reading · .agents/loop/x/end-of-run-review/architect.md'
+EOR_EXPECTED="$(printf 'handoff-feature\tend-of-run-review\t%s' "$EOR_STATUS")"
+
+# $EOR_SCRUB is empty on the full-PATH pass and $NOTOOLS on the mirrored one.
+# The session id is fixed here rather than inherited so `sweep-open` writes to a
+# named log on both passes.
+eor_rs() { local d="$1"; shift
+  if [ -n "$EOR_SCRUB" ]; then (cd "$d" && CLAUDE_CODE_SESSION_ID="$EOR_SESS" PATH="$EOR_SCRUB:$PATH" "$RUNSTATE" "$@")
+  else (cd "$d" && CLAUDE_CODE_SESSION_ID="$EOR_SESS" "$RUNSTATE" "$@"); fi
+}
+eor_dec() { eor_rs "$1" run-tally .agents/run-state.yaml | sed -n 's/^DECISIONS=//p'; }
+
+eor_fixture() { # <dir> -> RUN_ID; a run with ONE real packet, started and still open
+  local d="$1" rid
+  git -C "$d" init -q
+  mkdir -p "$d/.agents/metrics/outcomes"
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  rid="$(eor_rs "$d" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  printf 'T1 reconcile the imported balances\nbody\n' \
+    | eor_rs "$d" handoff .agents/run-state.yaml eor-t1 --tier mechanical --agent implementer >/dev/null
+  eor_rs "$d" record-start eor-t1 "$EOR_SESS" >/dev/null
+  printf '%s' "$rid"
+}
+
+eor_cases() { # <label suffix>
+  local sfx="$1" d rid before after routed digest swept postdec
+  d="$(cd "$(mktemp -d)" && pwd -P)"; rid="$(eor_fixture "$d")"
+  assert_true "end-of-run-review fixture$sfx: begin-run minted an id and the run's one REAL packet has its handoff file" \
+    "[ -n \"\$rid\" ] && [ -f \"\$d/.agents/loop/\$rid/eor-t1/handoff.md\" ]"
+  before="$(eor_dec "$d")"
+  assert_true "end-of-run-review$sfx: the SAME run WITHOUT the record prints a numeric DECISIONS -- the baseline the delta below is taken against" \
+    "case \"\$before\" in ''|*[!0-9]*) false;; *) true;; esac"
+
+  routed="$(eor_rs "$d" route .agents/run-state.yaml end-of-run-review hand-off-feature --status "$EOR_STATUS")"
+  assert_true "route$sfx: the fixed termination id is accepted, and the call prints ACTION=discard-advance -- the action §4 tells the driver NOT to act on" \
+    "printf '%s\n' \"\$routed\" | grep -qx 'ACTION=discard-advance'"
+
+  digest="$(eor_rs "$d" run-digest .agents/run-state.yaml)"
+  assert_true "run-digest$sfx: a handoff-feature line for the termination id carries the architect's status line VERBATIM" \
+    "printf '%s\n' \"\$digest\" | grep -qFx \"\$EOR_EXPECTED\""
+  assert_true "run-digest$sfx: and NO packet line for that id -- it has no handoff file, so it is not a packet" \
+    "! printf '%s\n' \"\$digest\" | awk -F'\t' '\$1 == \"packet\" && \$2 == \"end-of-run-review\"' | grep -q ."
+  assert_true "run-digest$sfx: the run's REAL packet still has its own packet line (so the absence above is not vacuous)" \
+    "printf '%s\n' \"\$digest\" | grep -qx \$'packet\teor-t1\tT1 reconcile the imported balances\topen'"
+  assert_true "run-digest$sfx: the one record emits a decision line for the id as well -- the second line the tally must NOT count again" \
+    "printf '%s\n' \"\$digest\" | grep -qx \$'decision\tend-of-run-review\thand-off-feature'"
+
+  after="$(eor_dec "$d")"
+  assert_true "run-tally$sfx: DECISIONS rises by EXACTLY one against the same run without the record -- the proposal counted once, not once per digest line" \
+    "[ \"\$after\" = \"\$((before + 1))\" ]"
+
+  swept="$(eor_rs "$d" sweep-open)"
+  assert_true "sweep-open$sfx: closes the run's one genuinely open packet (so the two checks below are not vacuous)" \
+    "printf '%s\n' \"\$swept\" | grep -qx 'SWEPT=eor-t1'"
+  assert_true "sweep-open$sfx: and closes NOTHING for the termination id" \
+    "! printf '%s\n' \"\$swept\" | grep -q end-of-run-review"
+  assert_true "sweep-open$sfx: no outcomes record anywhere names the termination id -- the record went to routing.jsonl, never the outcomes log" \
+    "! grep -rq end-of-run-review \"\$d/.agents/metrics/outcomes\""
+  assert_true "end-of-run-review$sfx: the record really is in this run's routing.jsonl (so the absence above is not vacuous)" \
+    "grep -q '\"packet\":\"end-of-run-review\"' \"\$d/.agents/loop/\$rid/routing.jsonl\""
+
+  postdec="$(eor_dec "$d")"
+  assert_true "after the sweep$sfx: DECISIONS is unchanged and the digest still emits no packet line for the id -- the sweep fabricated no interrupted packet" \
+    "[ \"\$postdec\" = \"\$after\" ] && ! eor_rs \"\$d\" run-digest .agents/run-state.yaml | awk -F'\t' '\$1 == \"packet\" && \$2 == \"end-of-run-review\"' | grep -q ."
+}
+
+EOR_SCRUB=""; eor_cases ""
+EOR_SCRUB="$NOTOOLS"; eor_cases " (no-tools host)"
+EOR_SCRUB=""
+
+echo
 echo "== prune-questions: drops pending_questions entries the SAME liveness rule"
 echo "   reports as answered (answered-question-expiry T2) =="
 

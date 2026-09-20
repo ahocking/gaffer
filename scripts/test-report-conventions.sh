@@ -1369,6 +1369,102 @@ case "$sq_dec" in
     ;;
 esac
 
+printf '\n== a stop report carrying the end-of-run arm-2 proposal lints clean (loop-driver-run-gaps T6) ==\n'
+# The other half of T6, from the renderer's end: the run-state sweep pins what the
+# `end-of-run-review` record does to `run-digest`/`run-tally`/`sweep-open`; this pins
+# that a stop report rendered from those figures actually holds together.
+#
+# The run is built with the real scripts -- begin-run, record-start, record-outcome,
+# route -- so the digest and the tally come from the same writers §4 calls. One green
+# packet and ONE `hand-off-feature` record for the fixed termination id, which is the
+# defect's exact shape: the record emits TWO digest lines for one id, and the stop
+# report renders ONE decision block for it. The header 🔀 figure is built from the
+# DECISIONS value `run-tally` just printed, never a literal and never a count of
+# anything the renderer did itself, so a tally that counted the proposal twice puts
+# `🔀 2` above one block and `decision-count` fires.
+#
+# The control is the same run, the same printed figure and the same header with the
+# proposal's block (and its heading -- a heading left behind with no block under it is
+# a second, different defect) dropped: `decision-count` then fires, which is what
+# shows the clean result above is the rule holding rather than the rule not looking.
+EOR="$TMP/end-of-run-review"; mkdir -p "$EOR/.agents/metrics/outcomes"; git -C "$EOR" init -q
+printf 'schema: 3\nstatus: running\n' > "$EOR/.agents/run-state.yaml"
+eo_id="$(cd "$EOR" && "$RS" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+[ -n "$eo_id" ] && ok 'end-of-run-review fixture: begin-run minted a run id' \
+  || bad 'end-of-run-review fixture: begin-run minted a run id' 'no RUN_ID'
+mkdir -p "$EOR/.agents/loop/$eo_id/eo-t1"
+printf '# eo-t1: Reconcile imported balances\n' > "$EOR/.agents/loop/$eo_id/eo-t1/handoff.md"
+eo_status='hand-off-feature · the balance-drift gotcha needs its own feature, proposed slug balance-drift-audit, parent txn-import · result: needs-reading · .agents/loop/x/end-of-run-review/architect.md'
+(cd "$EOR" && "$RS" record-start eo-t1 EO1 \
+  && "$RS" record-outcome eo-t1 green EO1 \
+  && "$RS" route .agents/run-state.yaml end-of-run-review hand-off-feature --status "$eo_status") >/dev/null 2>&1 \
+  && ok 'end-of-run-review fixture: the landed packet and the termination record written by the real scripts' \
+  || bad 'end-of-run-review fixture: the landed packet and the termination record written by the real scripts' 'a runstate.sh call failed'
+
+(cd "$EOR" && "$RS" run-digest .agents/run-state.yaml) > "$TMP/eo-digest" 2>/dev/null
+eo_digest="$(cat "$TMP/eo-digest")"
+has 'end-of-run-review: the digest carries the handoff-feature line for the termination id' \
+  "$(printf 'handoff-feature\tend-of-run-review\t%s' "$eo_status")" "$eo_digest"
+eo_pkts="$(awk -F'\t' '$1 == "packet" { print $2 }' "$TMP/eo-digest" | tr '\n' ' ')"
+[ "$eo_pkts" = 'eo-t1 ' ] && ok 'end-of-run-review: the only packet line is the real packet -- the report owes the termination id no ✅/⚠️ row' \
+  || bad 'end-of-run-review: the only packet line is the real packet -- the report owes the termination id no ✅/⚠️ row' "packet lines: [$eo_pkts]"
+eo_tally="$(cd "$EOR" && "$RS" run-tally .agents/run-state.yaml 2>&1)"
+eo_dec="$(_rr_fig DECISIONS "$eo_tally")"; eo_ship="$(_rr_fig SHIPPED "$eo_tally")"
+[ "$eo_dec" = 1 ] && ok 'end-of-run-review: run-tally counts the proposal once -- DECISIONS=1' \
+  || bad 'end-of-run-review: run-tally counts the proposal once -- DECISIONS=1' "$eo_tally"
+
+# $1 = DECISIONS figure, $2 = SHIPPED figure, $3 = render the proposal's block (yes|no),
+# $4 = output file. Each bucket is omitted at 0, and the 🔀 figure is whatever was
+# passed in -- the renderer never counts its own blocks.
+_eo_report() {
+  local hdr='✅ **DONE** · Balance imports'
+  [ "${2:-0}" -gt 0 ] && hdr="$hdr · ✅ **$2 shipped**"
+  if [ "${1:-0}" -gt 0 ]; then
+    if [ "$1" = 1 ]; then hdr="$hdr · 🔀 **1 decision**"; else hdr="$hdr · 🔀 **$1 decisions**"; fi
+  fi
+  {
+    printf '%s\n\n' "$hdr"
+    printf 'Finished the backlog after 1 packet. Nothing left half-written.\n\n'
+    printf '✅ **Shipped**\n\n'
+    printf '> ✅ **Reconcile imported balances** (`eo-t1`) — landed green\n'
+    if [ "${3:-no}" = yes ]; then
+      printf '\n🔀 **Decisions** — reply `1A`\n\n'
+      printf '> **1 · File the balance-drift audit as its own feature?**\n>\n'
+      printf '> - **A ›** Yes — I hand you the slug and you run the feature command\n'
+      printf '>   → the proposal is scheduled before the next run picks work up\n'
+      printf '> - **B ›** No\n'
+      printf '>   → the gotcha stays a finding and nothing schedules it\n>\n'
+      printf '> **→ Pick A** — the parent plan is fully checked, so there is no unchecked task to hang it on.\n'
+    fi
+  } > "$4"
+}
+
+case "$eo_dec" in
+  ''|*[!0-9]*)
+    bad 'end-of-run-review: the report headed from the printed DECISIONS figure yields no decision-count finding' "no numeric DECISIONS: $eo_tally"
+    bad 'end-of-run-review control: the same report with the block dropped yields a decision-count finding' "no numeric DECISIONS: $eo_tally"
+    ;;
+  *)
+    case "$eo_ship" in ''|*[!0-9]*) eo_ship=0 ;; esac
+    _eo_report "$eo_dec" "$eo_ship" yes "$TMP/eo-report.md"
+    eo_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/eo-report.md")"
+    [ "$eo_blocks" = 1 ] && ok "end-of-run-review: the body carries one decision block, for the proposal" \
+      || bad "end-of-run-review: the body carries one decision block, for the proposal" "blocks=$eo_blocks"
+    eo_out="$(_lint B "$TMP/eo-report.md" "$TMP/eo-digest")"
+    not_fires 'end-of-run-review: a stop report whose header 🔀 is the printed DECISIONS figure, with one block for the proposal, yields no decision-count finding' \
+      decision-count "$eo_out"
+    [ "$eo_out" = 'REPORT_LINT=clean' ] && ok 'end-of-run-review: and the whole report is clean -- no rule fires on it' \
+      || bad 'end-of-run-review: and the whole report is clean -- no rule fires on it' "$eo_out"
+
+    _eo_report "$eo_dec" "$eo_ship" no "$TMP/eo-report-ctl.md"
+    eo_ctl_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/eo-report-ctl.md" || true)"
+    [ "${eo_ctl_blocks:-0}" = 0 ] && ok 'end-of-run-review control: the control body carries no decision block' \
+      || bad 'end-of-run-review control: the control body carries no decision block' "blocks=$eo_ctl_blocks"
+    fires 'end-of-run-review control: the same printed figure over a body with the block dropped yields a decision-count finding' \
+      decision-count "$(_lint B "$TMP/eo-report-ctl.md" "$TMP/eo-digest")"
+    ;;
+esac
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

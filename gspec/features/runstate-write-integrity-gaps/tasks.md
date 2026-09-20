@@ -89,7 +89,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/test-runstate.sh
 
-- [ ] **T7** [P] **P1** Record the two durable decisions in `CLAUDE.md`'s ADR 0027 bullet: that `set` **refuses** a key it cannot address at column 0 rather than learning YAML path addressing, and that one decoder now serves every read path in the file.
+- [x] **T7** [P] **P1** Record the two durable decisions in `CLAUDE.md`'s ADR 0027 bullet: that `set` **refuses** a key it cannot address at column 0 rather than learning YAML path addressing, and that one decoder now serves every read path in the file.
 
   - state why addressing was not built — a large new correctness surface in POSIX shell over the loop's only unrecoverable state, bought to remove a trap a loud refusal closes — so the next reader does not re-derive it, and note that the pause reason now goes through the same encoder;
   - one deliberate edit to the repo's most contended file instead of five tasks each nudging it; beyond capability 1's "and stays so", the record is repo-convention upkeep rather than a PRD criterion.

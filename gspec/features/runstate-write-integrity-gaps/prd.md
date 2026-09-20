@@ -86,7 +86,7 @@ latent hazard cheaply; it is not a fix for a live break.
 
 ## Capabilities
 
-- [ ] **P0**: `set` refuses any key it cannot address at column 0, and writes nothing when it refuses
+- [x] **P0**: `set` refuses any key it cannot address at column 0, and writes nothing when it refuses
   - a key that resolves **only at an indentation greater than zero** — present in the file, but nested under a parent, as `cursor` is under `backlog` — exits non-zero, names the key and points the caller at `write`, and leaves the file byte-identical, asserted by checksum, since a partial write here is the failure being removed. A key that is **absent from the file entirely** is not that case and is still created at column 0: `claim-driver` creates all four of its `driver_*` keys that way against a fresh run-state, and must keep doing so
   - a key that *is* at column 0 but holds a nested mapping rather than a scalar is refused too, for its own reason rather than the one above: the parent's T10 replaces a block-scalar target safely because a block's body boundary is defined by YAML itself, but a mapping header's remainder is empty and carries no such signal, so replacing it strands the children with exit 0
   - refusal is the fix rather than addressing, and stays so: writing YAML path addressing in POSIX shell — no jq, no parser — against the loop's only durable state is a large new correctness surface bought to remove a trap that a loud refusal closes just as well. This mirrors the parent's own history: a plain-scalar allowlist was built and deleted the same day because it made a claim about every future value; a refusal makes a claim about none

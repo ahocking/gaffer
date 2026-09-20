@@ -576,6 +576,45 @@ passing sweeps.
   whoever dispatched it records them. That is the same rule `record-outcome`
   obeys from the other side — it is callable from such a context *because* it
   writes append-only outside run-state.
+  **Two follow-on decisions (`runstate-write-integrity-gaps`, 2026-09-19) are
+  durable and should not be re-derived.** (1) **`set` REFUSES a key it cannot
+  address at column 0, and writes nothing when it refuses.** It addresses exactly
+  one shape — a flat scalar on a column-0 `key:` line — and two other shapes were
+  previously written anyway: a key present **only inside a nested block** (`cursor`
+  under `backlog:` — the old `^key:` grep found nothing, fell through to append,
+  and created a second column-0 `cursor:` that `cmd_cursor` never read: exit 0, two
+  sources of truth), and a column-0 key that **heads a nested mapping or list**
+  (`backlog:`, `findings:`), where replacing the header strands its children —
+  unlike T10's block-scalar case there is no body boundary to consume, because a
+  block header's remainder says where the body ends and a mapping header's
+  remainder is empty. Both now exit non-zero, name the key, point at `write`, and
+  leave the file byte-identical: the shape is decided **before** the temp file
+  exists (`_set_target_shape`, literal `index()` matching so a metacharacter in a
+  key cannot widen its own match). **Absent is deliberately NOT refused** —
+  `claim-driver` creates its four `driver_*` keys and `begin-run` mints `run_id`
+  by appending at column 0 against a fresh run-state; absence and nesting are
+  different answers. **Refusal, not YAML path addressing, and that stays so:**
+  addressing in POSIX shell — no `jq`, no parser — against the loop's only
+  unrecoverable state is a large new correctness surface bought to remove a trap
+  that a loud non-zero exit closes just as well, and the precedent sits one
+  function up: the plain-scalar allowlist made a claim about every *future* value
+  and was wrong twice in one afternoon; a refusal makes a claim about none. The
+  six live keys (`status`, `note`, `updated_at`, `last_green_commit`, `branch`,
+  `driver_*`) are untouched. (2) **One decode rule now serves every read path in
+  the file.** It is `_yaml_decode_value` in shell and `rs_decode` in
+  `_YAML_AWK_DECODE` — the same three branches (`'…'` un-doubled, legacy `"…"`
+  stripped **verbatim** with no escape processing, bare passed through unchanged,
+  so every existing on-disk run-state keeps reading with no flag day). Two
+  expressions rather than one on purpose: the findings/records parsers and
+  `trim-note` run inside a single awk pass, and a shell-out per record would put
+  a fork on every line of the state file on every read; the shared decoder
+  fixture table in `test-runstate.sh` drives both over the same values and is the
+  anti-drift mechanism, not the comment. The **pause reason** goes through the
+  same `_yaml_encode_value` on write (`request-pause`) and the same rule on both
+  reads — `pause-status`, and `hooks/pause-check.sh`, which carries a deliberate
+  third copy rather than sourcing a 4k-line script per tool call. A reason-less
+  sentinel now reads at rc=0. Every case above also passes with `jq` and
+  `python3` absent from `PATH`, byte-identical to a full-tools run.
 - **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
   session outside the stop report** (ADR 0024 + ADR 0025). Three rules that land together because they are one
   correction: run-state was storing what other things already knew.

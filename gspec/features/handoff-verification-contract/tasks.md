@@ -85,7 +85,7 @@ the same caution for the two scripts.
 
 ## Plan
 
-- [ ] **T1** **P1** Write `templates/handoff-required.md` — the six generic lines, each a `REQUIRED:` line in the same form the driver's two conditional lines use, under one heading that delimits the block from the task text above it, phrased by kind and naming no path, script, tool or field of this repository, since every consumer reads this file in place from the plugin root. Checkable by reading it beside `skills/run-loop/SKILL.md` §3.3's two lines: the forms match, and no line names anything repository-specific.
+- [x] **T1** **P1** Write `templates/handoff-required.md` — the six generic lines, each a `REQUIRED:` line in the same form the driver's two conditional lines use, under one heading that delimits the block from the task text above it, phrased by kind and naming no path, script, tool or field of this repository, since every consumer reads this file in place from the plugin root. Checkable by reading it beside `skills/run-loop/SKILL.md` §3.3's two lines: the forms match, and no line names anything repository-specific.
   - deps: —
   - covers: Every handoff carries the verification block by construction · The block's text has one source
   - arch: —

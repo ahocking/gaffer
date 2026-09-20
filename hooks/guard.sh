@@ -19,7 +19,7 @@
 #   READ-ONLY  -> allowed immediately, before any denylist runs, so searching
 #                 FOR a risky string is never mistaken for RUNNING it.
 #   ASK        -> routine-but-notable; returns permissionDecision=ask.
-#   HARD DENY  -> irreversible / never-appropriate; exit 2 at every level.
+#   HARD DENY  -> irreversible / never-appropriate; exit 2, always.
 #
 # Path writes (Edit/Write and shell writes) are TWO tiers (ADR 0014):
 #   SECRET  -> HARD DENY. Irreversible exposure (.env, keys, secret stores).
@@ -42,7 +42,7 @@
 #     merely-absent value: a non-zero return from a `VAR="$(helper …)"`
 #     assignment kills the hook, and Claude Code treats any non-zero-other-than-2
 #     exit as a NON-BLOCKING error — i.e. another silent fail-open. json_field
-#     and read_autonomy_file therefore always return 0.
+#     therefore always returns 0.
 #   - Coverage is defense-in-depth, not a sandbox: it closes the obvious holes
 #     (writes to sensitive paths via the shell, git flags before the subcommand)
 #     but a determined shell can still evade it. Treat it as a backstop.
@@ -66,15 +66,14 @@ set -euo pipefail
 GIT_PREFIX='(^|[^[:alnum:]])git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+'
 
 # (1) HARD-DENY Bash commands (exit 2). Irreversible or never-appropriate:
-#     history destruction, recursive delete, raw-device writes. Denied at EVERY
-#     autonomy level; never downgraded to a prompt. Per-repo `.agents/guard-extra-bash`
+#     history destruction, recursive delete, raw-device writes. Always denied;
+#     never downgraded to a prompt. Per-repo `.agents/guard-extra-bash`
 #     patterns are appended here (declared risk -> ENFORCED as a hard floor).
 #     NOTE: `git commit`/`merge`/`rebase`/`push` are deliberately NOT here — each is
-#     a SOFT gate handled by its check_*_policy below (autonomy-aware). commit is
-#     delegable >= supervised; merge/rebase/push are delegable only at full-autonomy
-#     and only onto NON-main targets.
+#     a SOFT gate handled by its check_*_policy below. All four are delegable, and
+#     only onto NON-main targets.
 DENY_BASH_PATTERNS=(
-  # --- version control: history-destruction (hard-deny at EVERY level) ---
+  # --- version control: history-destruction (always hard-denied) ---
   "${GIT_PREFIX}.*--force([^[:alnum:]]|\$)"
   "${GIT_PREFIX}reset[[:space:]]+--hard([^[:alnum:]]|\$)"
   "${GIT_PREFIX}clean[[:space:]]+.*-[[:alnum:]]*f"
@@ -189,7 +188,7 @@ _AUTH_STRONG='(auth(entication|orization|n|z)?|oauth2?|oidc|jwt|rbac|sso|login|l
 _AUTH_WEAK='(identity|sessions?|tokens?|policy|policies|permissions?)'
 _AUTH_QUAL='(auth(entication|orization|n|z)?|oauth2?|oidc|jwt|rbac|sso|login|logout|signin|providers?|cookies?|claims?|principals?|bearer|csrf|refresh|tickets?|credentials?|tokens?)'
 
-# (2a) SECRET tier — HARD DENY (exit 2), every autonomy level. Irreversible
+# (2a) SECRET tier — HARD DENY (exit 2), always. Irreversible
 #      exposure only. `.agents/guard-extra-paths` is appended here at runtime.
 SECRET_PATH_PATTERNS=(
   # --- secrets / credentials / env / key material ---
@@ -224,30 +223,24 @@ REVIEW_PATH_PATTERNS=(
   '(^|/)(\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|\.circleci/)'
 )
 
-# (3) Autonomy levels, lowest -> highest privilege (ADR 0004 / ADR 0006). The
-#     active level is resolved at runtime below (env ORCH_AUTONOMY > .agents/autonomy
-#     > default), then clamped DOWN to `autonomy_ceiling` in
-#     .agents/project-overrides.yaml. It gates the SOFT git decisions only —
-#     `git commit` (delegable >= supervised) and `git merge`/`rebase`/`push`
-#     (delegable only at `full-autonomy`, and only onto NON-main targets). It does
-#     NOT affect the other tiers: DENY_BASH_PATTERNS (history destruction, rm -rf,
-#     raw-device writes) and SECRET-path writes hard-deny regardless of level;
-#     ASK_BASH_PATTERNS (migrations, deps, deploys) and REVIEW-path writes (auth
-#     code, CI/deploy config) always prompt regardless of level — UNLESS the repo
-#     sets `bypass-ask-tier: true` in .agents/project-overrides.yaml, which skips
-#     the ASK tier entirely (hard-deny floors and git soft gates still enforce).
-#     See resolve_bypass_ask below. Default false; resolved restrictively (every
+# (3) The git SOFT gates are ONE fixed rule set, the same in every repository
+#     (ADR 0004 / ADR 0006, superseded in part). There is no level to raise or
+#     lower: `git commit`, `git merge`, `git rebase` and `git push` are always
+#     delegable, and always only onto a NON-main target. Each is handled by its
+#     check_*_policy below, which still denies a commit on `main`/`master`; a
+#     merge into, rebase of, or push to `main`/`master`; a history rewrite
+#     (`commit --amend`, `rebase -i`, a forced push); and a commit or merge that
+#     carries a SECRET_PATH_PATTERNS path.
+#
+#     The other tiers are independent of the git gates and unchanged:
+#     DENY_BASH_PATTERNS (history destruction, rm -rf, raw-device writes) and
+#     SECRET-path writes always hard-deny; ASK_BASH_PATTERNS (migrations, deps,
+#     deploys) and REVIEW-path writes (auth code, CI/deploy config) always
+#     prompt — UNLESS the repo sets `bypass-ask-tier: true` in
+#     .agents/project-overrides.yaml, which skips the ASK tier entirely
+#     (hard-deny floors and git soft gates still enforce). See
+#     resolve_bypass_ask below. Default false; resolved restrictively (every
 #     discovered config root must opt in).
-ORCH_AUTONOMY_DEFAULT="interactive"
-autonomy_rank() {   # interactive < supervised < autonomous < full-autonomy; unknown -> -1
-  case "$1" in
-    interactive)   echo 0 ;;
-    supervised)    echo 1 ;;
-    autonomous)    echo 2 ;;
-    full-autonomy) echo 3 ;;
-    *)             echo -1 ;;
-  esac
-}
 
 # -----------------------------------------------------------------------------
 # Below this line is mechanism, not policy. Prefer editing the blocks above.
@@ -425,9 +418,9 @@ fi
 # base the git soft gates judge against (see resolve_git_dir below) and it is NOT
 # the config root -- an agent's cwd is routinely a SUBDIRECTORY of the project
 # (a package cache, a submodule, src/). Resolving per-repo config from it made
-# `.agents/*` vanish for any non-root cwd: autonomy silently fell back to
-# `interactive` (fail closed, merely confusing) while `guard-extra-*` silently
-# stopped loading (fail OPEN -- the repo's declared hard-gates disappeared).
+# `.agents/*` vanish for any non-root cwd: `guard-extra-*` silently stopped
+# loading (fail OPEN -- the repo's declared hard-gates disappeared) and
+# `project-overrides.yaml` went unread with it.
 SHELL_CWD="$(json_field "$INPUT" cwd)"
 [ -z "${SHELL_CWD:-}" ] && SHELL_CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 
@@ -442,7 +435,7 @@ SHELL_CWD="$(json_field "$INPUT" cwd)"
 #
 # Multiple roots are merged RESTRICTIVELY, never by picking a winner:
 #   - guard-extra-* patterns are UNIONed  (patterns are only ever ADDED)
-#   - autonomy takes the MINIMUM vote     (privilege is only ever REDUCED)
+#   - bypass-ask-tier needs EVERY vote    (prompts are only ever KEPT)
 # so resolution can never yield a config LESS restrictive than the real project's,
 # even if a foreign `.agents/` is discovered. Ambiguity fails closed by construction.
 CONFIG_ROOTS=()
@@ -468,8 +461,8 @@ _walk_up_for_config() {
 # unioning are wrapped in `discover_config`, called LAZILY — only for commands that
 # are not read-only (the read-only fast-path in the Bash case exits before this),
 # so a read-only command pays none of it (the ADR 0008 hot path). Memoized per
-# process so it runs at most once per invocation (both the Bash gate and
-# ensure_autonomy may ask for it).
+# process so it runs at most once per invocation (both the Bash gate and the
+# Edit/Write path gate may ask for it).
 _CONFIG_DISCOVERED=""
 discover_config() {
   [ -n "$_CONFIG_DISCOVERED" ] && return 0
@@ -1121,86 +1114,6 @@ driver_mode_active() {
   driver_mode_marked "$SESSION_ID"
 }
 
-# --- resolve the active autonomy level (ADR 0004) ----------------------------
-# Precedence: env ORCH_AUTONOMY > <repo>/.agents/autonomy > default. An unknown
-# value falls back to the default (the most restrictive, fail-safe choice). The
-# result is then clamped DOWN to the repo's ceiling if project-overrides.yaml
-# declares `autonomy_ceiling:`. Exposed as ORCH_AUTONOMY for check_commit_policy.
-read_autonomy_ceiling() {   # $1 = a config root
-  local f="${1}/.agents/project-overrides.yaml" v
-  [ -f "$f" ] || return 0
-  v="$(grep -Ei '^[[:space:]]*autonomy_ceiling[[:space:]]*:' "$f" 2>/dev/null | head -n1)" || return 0
-  [ -n "$v" ] || return 0
-  # strip `key:`, trailing comment, surrounding quotes and whitespace.
-  printf '%s' "$v" \
-    | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]*$//' \
-    | tr '[:upper:]' '[:lower:]'
-}
-
-# Read the declared level from one root's `.agents/autonomy`, or "" if absent.
-# Reads only the LAST non-comment, non-blank line: the set-autonomy skill writes an
-# explanatory `#` header above the bare level, and stripping whitespace from the
-# whole file would fold that header into the token and never parse (a silent
-# fallback-to-interactive bug). Strip any inline `# comment`, then whitespace.
-# Always returns 0: an autonomy file that is entirely comments makes the leading
-# `grep -v` exit 1, which `pipefail` propagates and `set -e` turns into a dead
-# hook (exit 1 = a non-blocking error to Claude Code = the guard is bypassed).
-read_autonomy_file() {   # $1 = a config root
-  local f="${1}/.agents/autonomy"
-  [ -f "$f" ] || return 0
-  grep -vE '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
-    | tail -n1 | sed -E 's/[[:space:]]*#.*$//' \
-    | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true
-  return 0
-}
-
-# Precedence: env ORCH_AUTONOMY > the discovered `.agents/autonomy` files > default.
-# Every discovered root VOTES and the LOWEST vote wins; a root that declares a
-# `.agents/` but no (or an unparseable) autonomy votes the default. So a foreign or
-# nested `.agents/` can only ever LOWER the level, never raise it. The result is
-# then clamped DOWN to the LOWEST `autonomy_ceiling` any root declares.
-resolve_autonomy() {
-  local level="" ceiling="" root rlevel rceil
-  if [ -n "${ORCH_AUTONOMY:-}" ]; then
-    level="$(printf '%s' "$ORCH_AUTONOMY" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    [ "$(autonomy_rank "$level")" = "-1" ] && level="$ORCH_AUTONOMY_DEFAULT"
-  else
-    for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-      rlevel="$(read_autonomy_file "$root")"
-      [ -n "$rlevel" ] && [ "$(autonomy_rank "$rlevel")" != "-1" ] || rlevel="$ORCH_AUTONOMY_DEFAULT"
-      if [ -z "$level" ] || [ "$(autonomy_rank "$rlevel")" -lt "$(autonomy_rank "$level")" ]; then
-        level="$rlevel"
-      fi
-    done
-    [ -n "$level" ] || level="$ORCH_AUTONOMY_DEFAULT"
-  fi
-  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-    rceil="$(read_autonomy_ceiling "$root")"
-    [ -n "$rceil" ] && [ "$(autonomy_rank "$rceil")" != "-1" ] || continue
-    if [ -z "$ceiling" ] || [ "$(autonomy_rank "$rceil")" -lt "$(autonomy_rank "$ceiling")" ]; then
-      ceiling="$rceil"
-    fi
-  done
-  if [ -n "$ceiling" ] && [ "$(autonomy_rank "$level")" -gt "$(autonomy_rank "$ceiling")" ]; then
-    level="$ceiling"
-  fi
-  printf '%s' "$level"
-}
-
-# Resolve the autonomy level LAZILY: only the git soft gates (commit/merge/rebase/
-# push) consult it, so a read-only command or a non-git write never pays for it.
-# Memoized. resolve_autonomy reads the ENV ORCH_AUTONOMY first (still intact here),
-# then this overwrites the shell var with the fully-resolved value — same result as
-# the old eager call, just deferred to first use. discover_config must run first
-# (resolve_autonomy votes across CONFIG_ROOTS).
-_AUTONOMY_RESOLVED=""
-ensure_autonomy() {
-  [ -n "$_AUTONOMY_RESOLVED" ] && return 0
-  discover_config
-  ORCH_AUTONOMY="$(resolve_autonomy)"
-  _AUTONOMY_RESOLVED=1
-}
-
 # --- resolve `bypass-ask-tier` (project-overrides.yaml) -----------------------
 # When true, the guard SKIPS the entire ASK tier (routine-but-notable bash —
 # deps/migrations/deploys — and REVIEW-path writes — auth code/CI/appsettings) and
@@ -1208,7 +1121,7 @@ ensure_autonomy() {
 # the git soft gates. Default false. A repo opts out of prompts by declaring
 # `bypass-ask-tier: true` in .agents/project-overrides.yaml.
 #
-# Resolution is RESTRICTIVE, mirroring autonomy: every discovered config root must
+# Resolution is RESTRICTIVE: every discovered config root must
 # opt in. A root that declares a `.agents/` but does not set the flag (or sets it
 # false / an unparseable value) VETOES the bypass — so a foreign or nested
 # `.agents/` can only ever KEEP the prompts, never silently remove them. With no
@@ -1296,19 +1209,15 @@ deny() {
   echo "  rule     : $2" >&2
   echo "  target   : $3" >&2
   echo "  tool     : ${TOOL}" >&2
-  # Category-specific remediation — especially useful on Claude Desktop, where
-  # you cannot prepend `ORCH_AUTONOMY=… claude` to change autonomy per session.
+  # Category-specific remediation — especially useful on Claude Desktop, where a
+  # dead-end denial is otherwise all the human sees.
   case "$1" in
-    commit-gate:autonomy)
-      echo "  hint     : raise autonomy in-session with /gaffer:set-autonomy supervised (or set env ORCH_AUTONOMY, e.g. .claude/settings.json -> env). A main/master commit still ALWAYS requires the human, regardless of autonomy." >&2 ;;
     commit-gate:branch)
-      echo "  hint     : main/master is a hard gate at every autonomy level — commit on a feature branch, or run the commit yourself." >&2 ;;
-    merge-gate:autonomy|rebase-gate:autonomy|push-gate:autonomy)
-      echo "  hint     : merge/rebase/push are delegated only at full-autonomy — raise it with /gaffer:set-autonomy full-autonomy (or env ORCH_AUTONOMY). Even then, only NON-main targets are allowed." >&2 ;;
+      echo "  hint     : main/master is a hard gate — commit on a feature branch, or run the commit yourself." >&2 ;;
     merge-gate:branch|rebase-gate:branch|push-gate:target)
-      echo "  hint     : merging/pushing to main/master (or remote main) ALWAYS requires the human, at every level. Target a non-main integration/feature branch, or run it yourself." >&2 ;;
+      echo "  hint     : merging/pushing to main/master (or remote main) ALWAYS requires the human. Target a non-main integration/feature branch, or run it yourself." >&2 ;;
     commit-gate:secret-path|merge-gate:secret-path)
-      echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor holds at every autonomy level — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
+      echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor always holds — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
     payload-unreadable)
       echo "  hint     : the guardrail could not read this tool call's payload, so it cannot judge it — and a control that cannot read its input must DENY, not allow. Install a working JSON parser on PATH: 'jq' is the reliable one. On Windows/Git Bash, 'python3' is usually the Microsoft Store App Execution Alias, which is on PATH but is NOT a parser. Check with: hooks/guard.sh --selftest" >&2 ;;
     driver-mode|driver-mode-via-bash)
@@ -1453,10 +1362,9 @@ is_read_only() {
   return 0
 }
 
-# `git commit` is a SOFT gate (ADR 0004): allowed only when ALL hold —
-#   1) autonomy >= supervised,
-#   2) the current branch is not main/master, and
-#   3) the diff this commit would create touches no SECRET_PATH_PATTERNS path.
+# `git commit` is a SOFT gate (ADR 0004): allowed only when BOTH hold —
+#   1) the current branch is not main/master, and
+#   2) the diff this commit would create touches no SECRET_PATH_PATTERNS path.
 #      (ADR 0014: the SECRET tier only — committing auth *code* or CI config is a
 #      normal delegable commit, reviewed downstream; sweeping in a secret is not.)
 # Anything else DENIES with the standard explanation. Fails CLOSED on any error
@@ -1471,11 +1379,7 @@ check_commit_policy() {
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])--amend([^[:alnum:]]|$)'; then
     deny "git-history-rewrite" "commit --amend" "$cmd"
   fi
-  # (1) autonomy must be at least supervised.
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank supervised)" ]; then
-    deny "commit-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs >= supervised)" "$cmd"
-  fi
-  # (2) must be on a feature branch, not main/master. Fail closed if undetectable.
+  # (1) must be on a feature branch, not main/master. Fail closed if undetectable.
   #     Read from GIT_CWD (the tree the command targets), not the payload cwd.
   local branch
   branch="$(git -C "$GIT_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
@@ -1486,7 +1390,7 @@ check_commit_policy() {
   case "$branch" in
     main|master) deny "commit-gate:branch" "commit to protected branch '${branch}'" "$cmd" ;;
   esac
-  # (3) the paths this commit would include must hit no SECRET pattern.
+  # (2) the paths this commit would include must hit no SECRET pattern.
   #     Normally the staged diff; with -a/--all, also the tracked-but-unstaged
   #     changes `git commit -a` sweeps in (closes the staging-area bypass).
   local files
@@ -1525,23 +1429,18 @@ resolve_branch_or_deny() {
   fi
 }
 
-# `git merge` is a SOFT gate (ADR 0006): allowed only when ALL hold —
-#   1) autonomy == full-autonomy,
-#   2) the branch being merged INTO (current HEAD) is not main/master, and
-#   3) best-effort: the incoming change touches no SECRET_PATH_PATTERNS path.
-# Merging to main/master is a hard gate at EVERY level. Below full-autonomy this
-# denies exactly as before. Never reached on deny (deny exits 2); returns 0 to
-# continue to the shell-write check.
+# `git merge` is a SOFT gate (ADR 0006): allowed only when BOTH hold —
+#   1) the branch being merged INTO (current HEAD) is not main/master, and
+#   2) best-effort: the incoming change touches no SECRET_PATH_PATTERNS path.
+# Merging to main/master is always a hard gate. Never reached on deny (deny
+# exits 2); returns 0 to continue to the shell-write check.
 check_merge_policy() {
   local cmd="$1"
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "merge-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
-  fi
   resolve_branch_or_deny merge-gate:branch "$cmd"
   case "$CURRENT_BRANCH" in
     main|master) deny "merge-gate:branch" "merge into protected branch '${CURRENT_BRANCH}'" "$cmd" ;;
   esac
-  # (3) Defense in depth: if we can identify the source ref and read the incoming
+  # (2) Defense in depth: if we can identify the source ref and read the incoming
   #     file list, deny on any sensitive path. Best-effort — a merge of branches
   #     the loop itself produced can't contain sensitive paths (the commit gate
   #     blocks them), so an unparseable/unknown ref is allowed to proceed here.
@@ -1564,16 +1463,12 @@ EOF
   return 0
 }
 
-# `git rebase` is a SOFT gate (ADR 0006): allowed only at full-autonomy, and only
-# when rebasing a NON-main branch. Interactive rebase (`-i`) rewrites history and
-# stays a hard gate at every level. Below full-autonomy this denies as before.
+# `git rebase` is a SOFT gate (ADR 0006): allowed only when rebasing a NON-main
+# branch. Interactive rebase (`-i`) rewrites history and is always a hard gate.
 check_rebase_policy() {
   local cmd="$1"
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])(-i|--interactive)([^[:alnum:]]|$)'; then
     deny "git-history-rewrite" "rebase --interactive" "$cmd"
-  fi
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "rebase-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
   fi
   resolve_branch_or_deny rebase-gate:branch "$cmd"
   case "$CURRENT_BRANCH" in
@@ -1582,20 +1477,16 @@ check_rebase_policy() {
   return 0
 }
 
-# `git push` is a SOFT gate (ADR 0006): allowed only at full-autonomy, only for a
-# NON-main target, and never forced. Pushing main/master (or a forced push) stays
-# a hard gate at every level. Below full-autonomy this denies as before. Fails
-# CLOSED when the target ref cannot be determined.
+# `git push` is a SOFT gate (ADR 0006): allowed only for a NON-main target, and
+# never forced. Pushing main/master (or a forced push) is always a hard gate.
+# Fails CLOSED when the target ref cannot be determined.
 check_push_policy() {
   local cmd="$1"
-  # Forced push is history destruction on the remote — deny at every level.
+  # Forced push is history destruction on the remote — always denied.
   # (The DENY_BASH_PATTERNS `--force` rule catches most of these first; this is a
   #  belt-and-suspenders check that also covers `-f` / `--force-with-lease`.)
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])(--force([^[:alnum:]]|$)|--force-with-lease|-[[:alnum:]]*f[[:alnum:]]*([[:space:]]|$))'; then
     deny "push-gate:force" "forced push" "$cmd"
-  fi
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "push-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
   fi
   # Explicit main/master target anywhere in the refspec (e.g. `push origin main`,
   # `push origin HEAD:main`, `push origin develop main`) -> deny.
@@ -1617,8 +1508,8 @@ check_push_policy() {
 # between `git` and the subcommand via GIT_PREFIX. Used to route the git soft gates.
 # The trailing boundary EXCLUDES `-` (ADR 0014 §6): otherwise `grep_Eq_git merge`
 # fires on the read-only plumbing command `git merge-base` (and merge-tree/-file,
-# commit-tree), routing it into the merge soft-gate and denying it below
-# full-autonomy. A real subcommand is followed by whitespace, EOL, or a separator —
+# commit-tree), routing it into the merge soft-gate and denying it on a
+# main/master HEAD. A real subcommand is followed by whitespace, EOL, or a separator —
 # never a hyphen — so `git merge orch/x` still routes while `git merge-base` does not.
 grep_Eq_git() { grep -Eq "${GIT_PREFIX}$1([^[:alnum:]-]|\$)"; }
 
@@ -1632,7 +1523,7 @@ grep_Eq_git() { grep -Eq "${GIT_PREFIX}$1([^[:alnum:]-]|\$)"; }
 # if it targets `main`. Honoring the tree the command names closes that bypass in
 # both directions. Only the GLOBAL `git -C` (before the subcommand) is treated as a
 # directory — `git commit -C <ref>` reuses a message and must not be mistaken for a
-# path. Config (autonomy, ceiling, guard-extra) resolves from CONFIG_ROOTS instead:
+# path. Config (guard-extra, bypass-ask-tier) resolves from CONFIG_ROOTS instead:
 # the tree a command TARGETS and the project whose rules bind it are independent.
 GIT_CWD="$SHELL_CWD"
 _unquote() { local s="$1"; s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"; printf '%s' "$s"; }
@@ -1663,7 +1554,7 @@ case "$TOOL" in
     [ -n "${CMD:-}" ] || deny_unreadable "tool_input.command"
     # (0) read-only fast-path: allow unambiguous searches/inspection immediately,
     #     so grepping FOR a risky string isn't mistaken for RUNNING it. Runs BEFORE
-    #     any config-root discovery or autonomy resolution (the expensive per-call
+    #     any config-root discovery (the expensive per-call
     #     work): the common case — grep/ls/cat/git status — pays none of it. Its
     #     matching uses only the static lists above, so nothing here needs the
     #     per-repo config we skip.
@@ -1679,21 +1570,19 @@ case "$TOOL" in
         deny "risky-bash" "$pat" "$CMD"
       fi
     done
-    # git soft gates (commit/merge/rebase/push). Only these consult the autonomy
-    # level and the target tree, so resolve both LAZILY behind a cheap prefilter —
-    # a non-git write (deps, deploys, file edits) never pays for autonomy
-    # resolution or tree resolution.
+    # git soft gates (commit/merge/rebase/push). Only these consult the target
+    # tree, so resolve it LAZILY behind a cheap prefilter — a non-git write
+    # (deps, deploys, file edits) never pays for tree resolution.
     if printf '%s' "$CMD" | grep -Eq "${GIT_PREFIX}(commit|merge|rebase|push)([^[:alnum:]-]|\$)"; then
-      ensure_autonomy
       # Resolve which tree the git soft gates should inspect (the tree the command
       # actually names via `cd`/`git -C`, not just the payload cwd).
       resolve_git_dir "$CMD"
-      # (a2) git commit — soft gate, delegable above `interactive` (ADR 0004).
+      # (a2) git commit — soft gate, delegable onto a NON-main branch (ADR 0004).
       if printf '%s' "$CMD" | grep_Eq_git commit; then
         check_commit_policy "$CMD"
       fi
-      # (a3) git merge / rebase / push — soft gates, delegable only at
-      #      full-autonomy and only onto NON-main targets (ADR 0006).
+      # (a3) git merge / rebase / push — soft gates, delegable only onto
+      #      NON-main targets (ADR 0006).
       if printf '%s' "$CMD" | grep_Eq_git merge; then
         check_merge_policy "$CMD"
       fi
@@ -1744,9 +1633,8 @@ case "$TOOL" in
     [ -z "${PATH_VAL:-}" ] && PATH_VAL="$(json_field "$INPUT" tool_input path)"
     # An edit tool always names a target -> empty means unreadable, not absent.
     [ -n "${PATH_VAL:-}" ] || deny_unreadable "tool_input.file_path"
-    # Path writes need the guard-extra SECRET/REVIEW unions (autonomy is irrelevant
-    # here — SECRET hard-denies and REVIEW asks at every level), so resolve config
-    # but not autonomy.
+    # Path writes need the guard-extra SECRET/REVIEW unions — SECRET always
+    # hard-denies and REVIEW always asks — so resolve config here.
     discover_config
     # Match on a SEPARATOR-NORMALIZED copy. Every pattern here — built-in and
     # per-repo alike — spells path segments with `/`, but on Windows the harness

@@ -29,7 +29,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
 
 ## Plan
 
-- [ ] **T1** **P0** Delete the autonomy resolution and the four rank comparisons from `hooks/guard.sh` so every repository gets what `full-autonomy` allows today, and land the whole `scripts/test-guard.sh` case surgery in the same change.
+- [x] **T1** **P0** Delete the autonomy resolution and the four rank comparisons from `hooks/guard.sh` so every repository gets what `full-autonomy` allows today, and land the whole `scripts/test-guard.sh` case surgery in the same change.
 
   In `hooks/guard.sh`:
   - remove `ORCH_AUTONOMY_DEFAULT`, `autonomy_rank`, `read_autonomy_ceiling`, `read_autonomy_file`, `resolve_autonomy`, `_AUTONOMY_RESOLVED`/`ensure_autonomy` and the `ensure_autonomy` call inside the git-soft-gate prefilter; keep the prefilter itself, which still gates the `resolve_git_dir` call behind a cheap `grep`;

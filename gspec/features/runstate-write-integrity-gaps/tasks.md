@@ -70,7 +70,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
 
-- [ ] **T5** **P0** Route the pause reason through `_yaml_encode_value` in `cmd_request_pause`, decode it on both read paths, and pin it in `scripts/test-pause.sh`.
+- [x] **T5** **P0** Route the pause reason through `_yaml_encode_value` in `cmd_request_pause`, decode it on both read paths, and pin it in `scripts/test-pause.sh`.
 
   - `cmd_pause_status` decodes through the shared decoder and returns the bare reason, unchanged in output shape for every existing caller (`PAUSE=1 reason=<bare>`);
   - `hooks/pause-check.sh` keeps its own grep and gains the same unwrap, so the advisory it injects carries no quote characters — the deliberate third expression the preamble states, pinned by the cases below rather than by a comment, and the hook stays context-only and always exits 0;

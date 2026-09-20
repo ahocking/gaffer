@@ -98,12 +98,12 @@ latent hazard cheaply; it is not a fix for a live break.
   - the two inline awk sites cannot cheaply shell out per line, so unification there means one implementation kept honest by a shared fixture set rather than by a comment — and the comment at `runstate.sh:539` that asks for it by hand, naming only two of the four, goes away
   - all four read call sites yield the same decoding for the same input, asserted directly for both quote shapes, so the anti-drift property this capability exists for is pinned mechanically rather than by comment
 
-- [ ] **P1**: The pause reason is written through the shared encoder
+- [x] **P1**: The pause reason is written through the shared encoder
   - `cmd_request_pause` encodes the reason exactly as `set` and `add-finding` encode theirs, so no write path in the file composes an agent-supplied value by hand
   - `pause-status` returns the bare reason, unchanged in shape for every existing caller and hook that reads it
   - `hooks/pause-check.sh` reads the sentinel directly with its own grep rather than through `pause-status`, and still surfaces the bare reason in its advisory — an encoding decoded only on the `pause-status` path would leave quote characters visible in what that hook prints
 
-- [ ] **P0**: Existing on-disk state still reads correctly, including files written before the parent feature
+- [x] **P0**: Existing on-disk state still reads correctly, including files written before the parent feature
   - unquoted and legacy-shaped values — anything `write` produced, and anything that round-tripped bare before the encoder existed — pass through whichever decoder is in use unchanged, so no consumer repo has to migrate a run-state before its next run
   - the sentinel's pre-existing bare reasons still read correctly, whether or not the reason is yet written through the shared encoder
   - no flag day: compatibility stays the reader's job, exactly as the parent decided

@@ -46,9 +46,38 @@ if [ -z "$base" ]; then
 fi
 
 # --- is a pause requested? ----------------------------------------------------
+# unwrap_yaml_scalar <value already stripped of its "reason:" prefix>
+#   THE SAME decode rule as runstate.sh's _yaml_decode_value / rs_decode, in a
+#   third expression (runstate-write-integrity-gaps T5). Deliberately a copy and
+#   not a source of runstate.sh: this hook runs per tool call, must stay
+#   self-contained and dependency-free, and sourcing a 4k-line script on every
+#   Bash/Edit/Write call to strip two quote characters is the wrong trade.
+#   `request-pause` now writes the reason as a single-quoted YAML scalar, so
+#   without this the advisory below would read (reason: 'wrap up') -- quote
+#   characters the human never typed, injected into every agent's context. The
+#   three branches, in order:
+#     '...'  strip the wrapping pair, un-double `''` back to `'` (what
+#            request-pause writes today);
+#     "..."  LEGACY, stripped verbatim with no escape processing, matching the
+#            runstate.sh rule exactly;
+#     bare   everything else UNCHANGED -- including every sentinel written by a
+#            version of request-pause older than this one, which is the only
+#            reason no consumer repo has to clear a pause before upgrading.
+#   Pinned against drift by scripts/test-pause.sh, which drives this hook and
+#   `pause-status` over the same hostile reasons and demands the same answer.
+unwrap_yaml_scalar() {
+  local body
+  case "$1" in
+    \'*\') body="${1#\'}"; body="${body%\'}"; printf '%s' "$body" | sed "s/''/'/g" ;;
+    \"*\") body="${1#\"}"; body="${body%\"}"; printf '%s' "$body" ;;
+    *)     printf '%s' "$1" ;;
+  esac
+}
+
 reason=""
 if [ -f "$base" ]; then
   reason="$(grep -E '^reason:' "$base" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
+  reason="$(unwrap_yaml_scalar "$reason")"
 else
   exit 0                                        # no pause requested -> silent allow
 fi

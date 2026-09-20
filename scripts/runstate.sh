@@ -3625,6 +3625,18 @@ cmd_outcome() {
 # =============================================================================
 
 # --- request-pause: touch the sentinel atomically with a reason + timestamp ---
+# The reason is an arbitrary human/agent string arriving as an argument -- the
+# same class of value cmd_set and cmd_add_finding take -- so it goes through the
+# SAME _yaml_encode_value (runstate-write-integrity-gaps T5). Before this, it was
+# the last write path in the file that composed a YAML line by hand: a reason
+# reading `blocked on the commit: the harness denied it` wrote a second mapping
+# key into the sentinel, and one carrying a newline wrote a whole second line
+# that the readers below would then treat as the file's next key. The sentinel is
+# smaller and more disposable than run-state, but it is read by two independent
+# parsers (cmd_pause_status here, hooks/pause-check.sh's own grep), and "the
+# value is usually harmless" is exactly the reasoning the parent feature removed.
+# Both readers strip the encoding symmetrically, so `PAUSE=1 reason=<bare>` and
+# the hook's advisory are unchanged in shape for every existing caller.
 cmd_request_pause() {
   local f="${1:-}" reason="${2:-}"
   [ -n "$f" ] || die "usage: request-pause <pause-file> [reason]"
@@ -3633,7 +3645,7 @@ cmd_request_pause() {
   tmp="$(mktemp "${dir}/.pause.XXXXXX")" || die "cannot create temp file in ${dir}"
   {
     printf 'requested_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    [ -n "$reason" ] && printf 'reason: %s\n' "$reason"
+    [ -n "$reason" ] && printf 'reason: %s\n' "$(_yaml_encode_value "$reason")"
   } > "$tmp"
   mv -f "$tmp" "$f"          # rename is atomic on the same filesystem
   printf 'pause requested: %s\n' "$f"
@@ -3652,11 +3664,27 @@ cmd_clear_pause() {
 # --- pause-status: is a pause requested for the whole run? -------------------
 # Prints PAUSE=1/0 on stdout; ALWAYS exits 0 (a query never fails the caller).
 # Whole-run only — retire-unused-loop-modes T1 removed the lane-scoped variant.
+#
+# The reason is unwrapped with _yaml_decode_value -- THE shared decode rule, the
+# same one cmd_get and cmd_cursor use (runstate-write-integrity-gaps T5), so the
+# encoding cmd_request_pause now writes is invisible here and the output shape
+# stays exactly `PAUSE=1 reason=<bare>` for every existing caller. Its bare
+# branch is what keeps a sentinel written by an OLDER version -- `reason: night`,
+# unquoted -- reading correctly with no flag day, the same reader's-job
+# compatibility the parent feature chose for run-state.
+#
+# `|| true` on the extraction: grep exits 1 when the sentinel carries no
+# `reason:` line at all (an ordinary `request-pause <file>` with no reason), and
+# under this file's `set -euo pipefail` that non-zero pipeline status aborted the
+# whole command substitution -- so pause-status printed NOTHING and exited 1 on a
+# perfectly legitimate sentinel, contradicting both the "always exits 0" contract
+# above and the `<none>` fallback below, which was unreachable until now.
 cmd_pause_status() {
   local f="${1:-}" r
   [ -n "$f" ] || die "usage: pause-status <pause-file>"
   if [ -f "$f" ]; then
-    r="$(grep -E '^reason:' "$f" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
+    r="$(grep -E '^reason:' "$f" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//' || true)"
+    r="$(_yaml_decode_value "$r")"
     printf 'PAUSE=1 reason=%s\n' "${r:-<none>}"; return 0
   fi
   printf 'PAUSE=0\n'

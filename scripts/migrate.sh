@@ -34,7 +34,11 @@
 #                    --force: a migration you cannot `git diff` is not reviewable.
 #                    Also cleans up the retired parallel-mode / rate-limit-pause
 #                    footprint (retire-unused-loop-modes T5) -- see the
-#                    "retire-unused-loop-modes cleanup" section below.
+#                    "retire-unused-loop-modes cleanup" section below -- and the
+#                    retired autonomy-level footprint (retire-autonomy-levels T5):
+#                    `.agents/autonomy` is deleted, `autonomy_ceiling` is stripped
+#                    from project-overrides.yaml, and the human's own level
+#                    references are REPORTED, never edited.
 #                    --remove-statusline additionally removes a user-level
 #                    statusLine ONLY when it points at the plugin's now-deleted
 #                    scripts/statusline-pause-sensor.sh; omit it and apply only
@@ -919,10 +923,34 @@ _strip_key_paragraphs() { # <file> <bare-key> [<bare-key> ...]
   ' "$f"
 }
 
-# Rewrites <file> in place, dropping the rate_limit_pause: and
-# max_parallel_packets: paragraphs (active OR commented-out example, and their
-# introducing comment lines -- both live in the same paragraph). Returns 0 and
-# mutates the file if something was dropped, 1 (file byte-identical) otherwise.
+# The retired project-overrides keys, in report order. ONE list, read by both
+# the stripper and the CLEANED= line that names what it dropped, so a key can
+# never be removed without being named -- or named without being removed.
+#   rate_limit_pause      -- ADR 0018, retired (retire-unused-loop-modes)
+#   max_parallel_packets  -- ADR 0016, retired (retire-unused-loop-modes)
+#   autonomy_ceiling      -- autonomy levels retired (retire-autonomy-levels);
+#                            the guard no longer resolves a level, so a ceiling
+#                            here caps nothing and only misleads its reader.
+OVERRIDES_RETIRED_KEYS="rate_limit_pause max_parallel_packets autonomy_ceiling"
+
+# Which of OVERRIDES_RETIRED_KEYS actually head a paragraph in <file> -- active
+# (`key:`) or commented-out (`# key:`), one per line, in list order. The test is
+# deliberately the same shape as _strip_key_paragraphs' own (leading whitespace,
+# one optional `#`, whitespace, then `key:`) so the CLEANED= line cannot name a
+# key the stripper did not drop. Call it BEFORE the strip -- it reads the file.
+_overrides_retired_keys_in() {
+  local f="$1" k
+  [ -f "$f" ] || return 0
+  for k in $OVERRIDES_RETIRED_KEYS; do
+    grep -qE "^[[:space:]]*#?[[:space:]]*${k}:" "$f" 2>/dev/null && printf '%s\n' "$k"
+  done
+  return 0
+}
+
+# Rewrites <file> in place, dropping every OVERRIDES_RETIRED_KEYS paragraph
+# (active OR commented-out example, and their introducing comment lines -- both
+# live in the same paragraph), each only where present. Returns 0 and mutates
+# the file if something was dropped, 1 (file byte-identical) otherwise.
 # Mode-preserving and atomic, same discipline as _drop_backlog_done above.
 _strip_overrides_retired_keys() {
   local f="$1" tmp
@@ -930,13 +958,58 @@ _strip_overrides_retired_keys() {
   tmp="$(mktemp "$(dirname "$f")/.migrate-overrides.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
   cp -p "$f" "$tmp"
-  _strip_key_paragraphs "$f" "rate_limit_pause" "max_parallel_packets" > "$tmp"
+  # Unquoted on purpose: OVERRIDES_RETIRED_KEYS is a space-separated list of
+  # bare keys and each must arrive as its own argument.
+  # shellcheck disable=SC2086
+  _strip_key_paragraphs "$f" $OVERRIDES_RETIRED_KEYS > "$tmp"
   if cmp -s "$f" "$tmp"; then
     rm -f "$tmp"; trap - EXIT
     return 1
   fi
   mv "$tmp" "$f"
   trap - EXIT
+  return 0
+}
+
+# --- retire-autonomy-levels cleanup (T5) -------------------------------------
+# Autonomy levels are retired: the guard resolves no level, so `ORCH_AUTONOMY`,
+# `.agents/autonomy` and `autonomy_ceiling` change no decision anywhere. `apply`
+# deletes the two artifacts the PLUGIN owns (`.agents/autonomy`, the
+# `autonomy_ceiling` paragraph) and only ever REPORTS what the HUMAN owns --
+# their `CLAUDE.md`, their `spec-setup.md`, their `.claude/settings.json` --
+# exactly as a foreign `statusLine` is left alone above.
+
+# Retired modes and commands, for the CLAUDE.md routing report
+# (retire-unused-loop-modes T5). Split out of cmd_apply so it can be combined
+# with the autonomy pattern below in one grep.
+RETIRED_ROUTES_RE='relay mode|--parallel|worktree lane|packet-graph|build-packet-dependency-tree|rate-limit-pause|statusline-pause-sensor'
+
+# A reference to a retired autonomy level, for the read-only reports.
+#
+# `interactive`, `supervised` and `autonomous` are ordinary English, so matching
+# them bare would flag a sentence about an interactive prompt or an autonomous
+# agent -- in a report a human is asked to act on, a false line is worse than a
+# missed one. They therefore count ONLY on a line that also says "autonomy";
+# every other alternative here (`ORCH_AUTONOMY`, `.agents/autonomy`,
+# `autonomy_ceiling`, `set-autonomy`, `full-autonomy`, "autonomy level") names
+# the retired setting unambiguously on its own. Matched case-insensitively.
+AUTONOMY_REPORT_RE='ORCH_AUTONOMY|\.agents/autonomy|autonomy_ceiling|set-autonomy|full-autonomy|autonomy level|autonomy.*(interactive|supervised|autonomous)|(interactive|supervised|autonomous).*autonomy'
+
+# Report -- never edit -- every line of <file> matching <extended-regex>, under
+# <label>=<preamble> with the matches indented beneath it. Read-only by
+# construction: it opens the file with grep and writes nothing. Silent when the
+# file is absent or nothing matches, so a repo with none of these artifacts
+# emits none of these lines at all.
+_report_stale_lines() { # <file> <label> <extended-regex> <preamble>
+  local f="$1" label="$2" re="$3" preamble="$4" hits line
+  [ -f "$f" ] || return 0
+  hits="$(grep -niE "$re" "$f" 2>/dev/null || true)"
+  [ -n "$hits" ] || return 0
+  printf '%s=%s\n' "$label" "$preamble"
+  printf '%s\n' "$hits" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '  %s\n' "$line"
+  done
   return 0
 }
 
@@ -1066,14 +1139,23 @@ cmd_apply() {
     fi
   fi
 
-  # 5. project-overrides.yaml -- drop the retired rate_limit_pause: block and
-  #    max_parallel_packets: key (active or commented-out example), plus the
-  #    comment lines introducing each. Everything else in the file -- in
-  #    particular bypass-ask-tier, integration_branch, autonomy_ceiling and
-  #    escalate_to_human_on -- is a different paragraph and survives untouched.
+  # 5. project-overrides.yaml -- drop every retired key's paragraph
+  #    (rate_limit_pause, max_parallel_packets, autonomy_ceiling), active or
+  #    commented-out example, plus the comment lines introducing each.
+  #    Everything else in the file -- in particular bypass-ask-tier,
+  #    integration_branch and escalate_to_human_on -- is a different paragraph
+  #    and survives untouched.
+  #
+  #    The keys PRESENT are read before the strip and named in CLEANED=, rather
+  #    than the line reciting all three: "each only where present" is the whole
+  #    contract, so a report naming a key this file never carried is a false
+  #    statement about a change that did not happen.
   if [ -f "$root/.agents/project-overrides.yaml" ]; then
-    if _strip_overrides_retired_keys "$root/.agents/project-overrides.yaml"; then
-      printf 'CLEANED=rate_limit_pause: block and max_parallel_packets: key removed from .agents/project-overrides.yaml -- both are retired (ADR 0016/0018 superseded); every other line is unchanged\n'
+    local ovf="$root/.agents/project-overrides.yaml" ovkeys
+    ovkeys="$(_overrides_retired_keys_in "$ovf" \
+      | awk '{ printf "%s%s:", (NR>1 ? ", " : ""), $0 } END { printf "\n" }')"
+    if _strip_overrides_retired_keys "$ovf"; then
+      printf 'CLEANED=%s removed from .agents/project-overrides.yaml -- all retired (ADR 0016/0018 superseded; autonomy levels retired); every other line is unchanged\n' "$ovkeys"
       did=1
     fi
   fi
@@ -1150,6 +1232,33 @@ cmd_apply() {
     did=1
   fi
 
+  # 8b. .agents/autonomy -- the per-repo autonomy level (retire-autonomy-levels).
+  #     The guard resolves no level any more, so whatever this file says changes
+  #     no decision; leaving it in place only tells its next reader that a
+  #     setting exists which does not. Deleted wherever present.
+  #
+  #     Unlike packet-graph.yaml above, whether it is TRACKED is checked rather
+  #     than assumed: a repo that gitignored it (this plugin's own .gitignore
+  #     does) has NOTHING to commit, and telling its operator otherwise sends
+  #     them looking for a change that is not in `git status`. Tracked ->
+  #     `git rm` so the deletion is staged and named as theirs to commit;
+  #     untracked -> plain `rm`, reported as deleted with no commit claimed.
+  if [ -f "$root/.agents/autonomy" ]; then
+    local aut_tracked=0
+    if _is_git "$root" \
+       && git -C "$root" ls-files --error-unmatch ".agents/autonomy" >/dev/null 2>&1; then
+      aut_tracked=1
+    fi
+    if [ "$aut_tracked" = 1 ]; then
+      git -C "$root" rm -q -f ".agents/autonomy" >/dev/null 2>&1 || rm -f "$root/.agents/autonomy"
+      printf 'REMOVED=.agents/autonomy deleted -- autonomy levels are retired and the guard no longer reads it. It was TRACKED, so this is a change YOU need to commit.\n'
+    else
+      rm -f "$root/.agents/autonomy"
+      printf 'REMOVED=.agents/autonomy deleted -- autonomy levels are retired and the guard no longer reads it. It was untracked, so there is nothing to commit.\n'
+    fi
+    did=1
+  fi
+
   # 9. Extra git worktrees. Parallel mode is retired, but a worktree may still
   #    hold unmerged work -- deleting one is destructive and irreversible from
   #    this script's side, so it is only ever LISTED, never removed.
@@ -1164,20 +1273,26 @@ cmd_apply() {
     fi
   fi
 
-  # 10. The consumer's own CLAUDE.md. It is the human's standing instruction,
-  #     never rewritten by this script -- report any line that routes to a
-  #     removed mode or command and let them edit it themselves.
-  if [ -f "$root/CLAUDE.md" ]; then
-    local claude_stale
-    claude_stale="$(grep -niE 'relay mode|--parallel|worktree lane|packet-graph|build-packet-dependency-tree|rate-limit-pause|statusline-pause-sensor' "$root/CLAUDE.md" 2>/dev/null || true)"
-    if [ -n "$claude_stale" ]; then
-      printf 'CLAUDEMD_ROUTES=CLAUDE.md has line(s) routing to a removed mode or command -- reported only, never edited (it is your standing instruction):\n'
-      printf '%s\n' "$claude_stale" | while IFS= read -r sline; do
-        [ -n "$sline" ] || continue
-        printf '  %s\n' "$sline"
-      done
-    fi
-  fi
+  # 10. Three files that belong to the HUMAN, not to this script: their
+  #     CLAUDE.md (the standing instruction every session reads), their
+  #     spec-setup.md (the setup narrative), and their repo .claude/settings.json
+  #     (harness config). Each is REPORTED and never rewritten -- the same rule
+  #     that leaves a foreign statusLine alone. None of them sets `did`: a
+  #     read-only finding is not a change.
+  _report_stale_lines "$root/CLAUDE.md" 'CLAUDEMD_ROUTES' \
+    "$RETIRED_ROUTES_RE|$AUTONOMY_REPORT_RE" \
+    'CLAUDE.md has line(s) routing to a removed mode or command, or naming a retired autonomy level -- reported only, never edited (it is your standing instruction):'
+
+  _report_stale_lines "$root/spec-setup.md" 'SPECSETUP_ROUTES' \
+    "$AUTONOMY_REPORT_RE" \
+    'spec-setup.md has line(s) naming a retired autonomy level -- reported only, never edited (it is yours to reword):'
+
+  # ORCH_AUTONOMY only: this is the repo's own settings.json, and the one thing
+  # in it this feature retired is that env entry. Anything else there is the
+  # human's harness config and is not even mentioned.
+  _report_stale_lines "$root/.claude/settings.json" 'SETTINGS_AUTONOMY' \
+    'ORCH_AUTONOMY' \
+    '.claude/settings.json carries an ORCH_AUTONOMY entry -- the guard no longer reads it, so it sets nothing; reported only, never edited (it is your harness config):'
 
   [ "$did" = "1" ] || printf 'NOCHANGE=nothing mechanical left to move\n'
   printf '\n'

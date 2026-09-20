@@ -1161,9 +1161,12 @@ has   'a packet with a REAL trailer commit still reads dead (the anchor still ma
 printf '\n== apply: retire-unused-loop-modes T5 -- clean up a consumer repo ==\n'
 # Parallel mode (ADR 0016) and rate-limit auto-pause (ADR 0018) are retired from
 # the shipped plugin; a repo that had adopted either still carries the artifacts.
+# Autonomy levels (retire-autonomy-levels) are retired the same way, and their
+# footprint rides this same fixture: `.agents/autonomy`, the `autonomy_ceiling`
+# paragraph, and level references in the human's own files.
 # `apply` cleans up what is mechanically safe and only ever REPORTS the rest.
 R="$TMP/retire-cleanup"; mk_repo "$R" canonical
-mkdir -p "$R/.agents"
+mkdir -p "$R/.agents" "$R/.claude"
 cat > "$R/.agents/project-overrides.yaml" <<'EOF'
 # Per-project orchestration overrides for demo-app
 project:
@@ -1181,10 +1184,19 @@ integration_branch: develop
 #   five_hour_threshold_pct: 90
 #   seven_day_threshold_pct: 85
 
+# Never let this repo run above supervised, whatever .agents/autonomy says.
+autonomy_ceiling: supervised
+
+escalate_to_human_on:
+  - "anything touching money movement"
+
 # Parallel lanes (ADR 0016). Left at the default 5, but expect far less
 # concurrency than that here.
 # max_parallel_packets: 5
 EOF
+# a TRACKED .agents/autonomy (retire-autonomy-levels): the guard reads no level
+# any more, so it is deleted -- and staged, because it is tracked here.
+printf 'full-autonomy\n' > "$R/.agents/autonomy"
 # a leftover per-lane pause file (ADR 0017's retired per-lane variant) plus the
 # whole-run sentinel, which must survive untouched.
 printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause"
@@ -1192,24 +1204,87 @@ printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-a"
 printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-b"
 # a TRACKED packet-graph.yaml (ADR 0016)
 printf 'waves:\n  - wave: 1\n    packets:\n      - id: x\n' > "$R/.agents/packet-graph.yaml"
-# stale CLAUDE.md routing lines
+# stale CLAUDE.md routing lines, plus an autonomy-level line
 cat >> "$R/CLAUDE.md" <<'EOF'
 
 Run the backlog in parallel with `/gaffer:run-loop --parallel` after
 `/gaffer:build-packet-dependency-tree`. Auto-pause with `/gaffer:rate-limit-pause on`.
+This repo runs at full-autonomy; raise it with `/gaffer:set-autonomy`.
+EOF
+# the human's own setup narrative and repo harness config, both naming a level
+cat > "$R/spec-setup.md" <<'EOF'
+# Setting this repo up
+
+Write `supervised` into `.agents/autonomy` before the first run.
+Everything else is covered by the plugin defaults.
+EOF
+cat > "$R/.claude/settings.json" <<'EOF'
+{
+  "env": {
+    "ORCH_AUTONOMY": "supervised"
+  }
+}
 EOF
 git -C "$R" add -A >/dev/null 2>&1
 git -C "$R" -c user.email=t@e -c user.name=t commit -qm "retire-cleanup fixtures" >/dev/null 2>&1
 
-printf '\n-- overrides file: rate_limit_pause + max_parallel_packets removed, rest untouched --\n'
+printf '\n-- overrides file: every retired key removed, every neighbour byte-identical --\n'
 out="$("$MIG" apply "$R" 2>&1)"
 has 'apply reports the overrides cleanup' 'CLEANED=rate_limit_pause' "$out"
+has 'and names autonomy_ceiling among what it removed' 'autonomy_ceiling:' "$out"
 ov="$(cat "$R/.agents/project-overrides.yaml")"
 hasnt 'the rate_limit_pause example is gone'  'rate_limit_pause:'    "$ov"
 hasnt 'the max_parallel_packets key is gone'  'max_parallel_packets' "$ov"
+hasnt 'the autonomy_ceiling paragraph is gone' 'autonomy_ceiling'    "$ov"
+hasnt 'and its introducing comment went with it' 'Never let this repo run' "$ov"
 has   'bypass-ask-tier survives untouched'    'bypass-ask-tier: true'    "$ov"
 has   'integration_branch survives untouched' 'integration_branch: develop' "$ov"
 has   'the project: block survives untouched' 'name: demo-app' "$ov"
+has   'escalate_to_human_on -- the paragraph AFTER autonomy_ceiling -- survives' \
+  'anything touching money movement' "$ov"
+# The strongest form of "leaves the rest of that file as it was": compare the
+# WHOLE file against the fixture minus exactly the three retired paragraphs.
+# `has`/`hasnt` on individual keys cannot see a blank line eaten between two
+# surviving paragraphs, which is precisely how a paragraph-joining rewrite goes
+# subtly wrong.
+cat > "$TMP/overrides-expected.yaml" <<'EOF'
+# Per-project orchestration overrides for demo-app
+project:
+  name: demo-app
+
+bypass-ask-tier: true
+
+integration_branch: develop
+
+escalate_to_human_on:
+  - "anything touching money movement"
+EOF
+cmp -s "$TMP/overrides-expected.yaml" "$R/.agents/project-overrides.yaml" \
+  && ok 'every surviving paragraph is byte-identical, blank lines included' \
+  || bad 'every surviving paragraph is byte-identical, blank lines included' \
+         "$(diff "$TMP/overrides-expected.yaml" "$R/.agents/project-overrides.yaml" 2>&1)"
+
+printf '\n-- .agents/autonomy: tracked, so removed AND staged AND flagged to commit --\n'
+has 'apply reports the .agents/autonomy removal' 'REMOVED=.agents/autonomy deleted' "$out"
+has 'and says the operator must commit it'       'TRACKED, so this is a change YOU need to commit' "$out"
+[ ! -e "$R/.agents/autonomy" ] && ok '.agents/autonomy is gone from the working tree' \
+  || bad '.agents/autonomy still on disk'
+git -C "$R" status --porcelain -- .agents/autonomy | grep -q '^D ' \
+  && ok 'the .agents/autonomy deletion is staged (it was tracked)' \
+  || bad '.agents/autonomy deletion was not staged' "$(git -C "$R" status --porcelain -- .agents/autonomy)"
+
+printf '\n-- CLAUDE.md / spec-setup.md / .claude/settings.json: REPORTED, never edited --\n'
+before_specsetup="$(cat "$R/spec-setup.md")"
+before_settings="$(cat "$R/.claude/settings.json")"
+has 'apply reports the CLAUDE.md autonomy line' 'CLAUDEMD_ROUTES=' "$out"
+has 'and quotes /gaffer:set-autonomy from it'   'set-autonomy'     "$out"
+has 'apply reports spec-setup.md under its own label' 'SPECSETUP_ROUTES=' "$out"
+has 'and quotes the .agents/autonomy line from it'    '.agents/autonomy' "$out"
+has 'apply reports the repo settings.json ORCH_AUTONOMY entry' 'SETTINGS_AUTONOMY=' "$out"
+[ "$before_specsetup" = "$(cat "$R/spec-setup.md")" ] \
+  && ok 'spec-setup.md is byte-unchanged' || bad 'spec-setup.md was edited'
+[ "$before_settings" = "$(cat "$R/.claude/settings.json")" ] \
+  && ok '.claude/settings.json is byte-unchanged' || bad '.claude/settings.json was edited'
 
 printf '\n-- per-lane pause files removed; the whole-run sentinel survives --\n'
 has 'apply reports the per-lane pause cleanup' 'leftover per-lane pause file' "$out"
@@ -1249,8 +1324,39 @@ out3="$("$MIG" apply "$R" --force 2>&1)"
 hasnt 'no further CLEANED= on a second run'                'CLEANED='                        "$out3"
 hasnt 'no further per-lane pause cleanup on a second run'  'leftover per-lane pause file'     "$out3"
 hasnt 'no further packet-graph.yaml removal on a second run' 'packet-graph.yaml deleted'      "$out3"
+hasnt 'no further .agents/autonomy removal on a second run'  '.agents/autonomy deleted'       "$out3"
 has 'WORKTREES= is still (accurately) reported -- it is a read-only listing' 'WORKTREES=' "$out3"
 has 'CLAUDEMD_ROUTES= is still (accurately) reported -- read-only' 'CLAUDEMD_ROUTES=' "$out3"
+has 'SPECSETUP_ROUTES= is still reported -- read-only, so it does not go quiet' 'SPECSETUP_ROUTES=' "$out3"
+has 'SETTINGS_AUTONOMY= is still reported -- read-only, so it does not go quiet' 'SETTINGS_AUTONOMY=' "$out3"
+
+printf '\n-- .agents/autonomy: an UNTRACKED one is deleted without claiming a commit --\n'
+# A repo that gitignored the file has nothing to commit, and telling its operator
+# otherwise sends them looking for a change `git status` does not show.
+R5="$TMP/autonomy-untracked"; mk_repo "$R5" canonical
+printf '.agents/run-state.yaml\n.agents/autonomy\n' > "$R5/.gitignore"
+git -C "$R5" add -A >/dev/null 2>&1
+git -C "$R5" -c user.email=t@e -c user.name=t commit -qm "ignore autonomy" >/dev/null 2>&1
+printf 'full-autonomy\n' > "$R5/.agents/autonomy"
+out5="$("$MIG" apply "$R5" 2>&1)"
+has 'apply reports the untracked removal' 'REMOVED=.agents/autonomy deleted' "$out5"
+has 'and says there is nothing to commit' 'untracked, so there is nothing to commit' "$out5"
+# This repo carries no packet-graph.yaml, so the "TRACKED" wording can only have
+# come from the autonomy line -- nothing else here emits it.
+hasnt 'and does NOT claim it was tracked' 'TRACKED, so this is a change YOU need to commit' "$out5"
+[ ! -e "$R5/.agents/autonomy" ] && ok 'the untracked .agents/autonomy is gone' \
+  || bad 'the untracked .agents/autonomy survived'
+
+printf '\n-- a repo with NONE of these artifacts emits none of the new lines --\n'
+# The other half of "each only where present": a clean repo must not be told
+# about a key it never had or a file it does not carry.
+R6="$TMP/no-autonomy-artifacts"; mk_repo "$R6" canonical
+out6="$("$MIG" apply "$R6" 2>&1)"
+hasnt 'no CLEANED= with no retired override key present' 'CLEANED='          "$out6"
+hasnt 'no .agents/autonomy removal when there is none'   '.agents/autonomy'  "$out6"
+hasnt 'no SPECSETUP_ROUTES= with no spec-setup.md'       'SPECSETUP_ROUTES=' "$out6"
+hasnt 'no SETTINGS_AUTONOMY= with no .claude/settings.json' 'SETTINGS_AUTONOMY=' "$out6"
+hasnt 'no CLAUDEMD_ROUTES= from a CLAUDE.md naming no level or retired mode' 'CLAUDEMD_ROUTES=' "$out6"
 
 printf '\n-- statusLine: FOUND (decline path) -- reported, never touched, reload caveat stated --\n'
 R2="$TMP/statusline-decline"; mk_repo "$R2" canonical

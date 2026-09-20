@@ -90,7 +90,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: templates/task-packet.yaml, templates/report-templates.md, scripts/test-report-conventions.sh, scripts/report-lint.sh, templates/spec-driven-base/CLAUDE.md, templates/spec-driven-base/spec-setup.md, templates/spec-driven-base/.agents/project-overrides.yaml
 
-- [ ] **T5** [P] **P1** Extend `/gaffer:migrate`'s retired-feature cleanup to delete `.agents/autonomy`, strip `autonomy_ceiling`, and report — never edit — the human's own level references.
+- [x] **T5** [P] **P1** Extend `/gaffer:migrate`'s retired-feature cleanup to delete `.agents/autonomy`, strip `autonomy_ceiling`, and report — never edit — the human's own level references.
 
   Mirror the `retire-unused-loop-modes` T5 cleanup already in `scripts/migrate.sh`, which is the pattern for all three behaviours:
   - `.agents/autonomy`: delete it wherever present, exactly as `.agents/packet-graph.yaml` is handled — `git rm` when the repo is a git checkout so the deletion is staged, plain `rm` otherwise, and a `REMOVED=` line saying it was tracked and is therefore a change the operator must commit themselves. An untracked file is deleted with a `REMOVED=` line that does not claim a commit is needed;

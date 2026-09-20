@@ -192,6 +192,14 @@ layout; it is not a routine edit. Name explicitly:
   `.agents/packet-graph.yaml`. It only ever **lists** extra git worktrees (never
   deletes — one may hold unmerged work) and only ever **reports** a stale
   `statusLine`/lines in the repo's own `CLAUDE.md` — see §4 and §5c.
+- **and it cleans up the autonomy-level leftovers** (retired —
+  `retire-autonomy-levels`): it deletes `.agents/autonomy` wherever present and
+  strips the `autonomy_ceiling:` paragraph from
+  `.agents/project-overrides.yaml`. The guard resolves no level any more, so
+  neither changes a decision — they only tell their next reader that a setting
+  exists which does not. Three files it only ever **reports**, never edits,
+  because they are the human's: the repo's `CLAUDE.md`, its `spec-setup.md`,
+  and an `ORCH_AUTONOMY` entry in its `.claude/settings.json` — see §4 and §5c.
 
 ## 4. Apply the mechanical moves
 
@@ -201,11 +209,14 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/migrate.sh apply <root>
 
 It moves plans with `git mv` (history preserved), stamps `spec-version` + `feature:`
 frontmatter onto plans that lack it, converts the roadmap, cleans up the retired
-parallel-mode/rate-limit-pause footprint, and then verifies. Relay its `MOVED=` /
+parallel-mode/rate-limit-pause and autonomy-level footprints, and then verifies.
+Relay its `MOVED=` /
 `STAMPED=` / `CONVERTED=` / `SKIP=` / `DROPPED=` / `UNCHECKED=` /
 `UNRECOGNIZED_BACKLOG_DONE=` / `CLEANED=` / `FOUND=` / `REMOVED=` / `NOTE=` /
-`WORKTREES=` / `CLAUDEMD_ROUTES=` lines — `SKIP=`, `UNCHECKED=`,
-`UNRECOGNIZED_BACKLOG_DONE=`, `FOUND=` and `CLAUDEMD_ROUTES=` need a decision or
+`WORKTREES=` / `CLAUDEMD_ROUTES=` / `SPECSETUP_ROUTES=` / `SETTINGS_AUTONOMY=`
+lines — `SKIP=`, `UNCHECKED=`,
+`UNRECOGNIZED_BACKLOG_DONE=`, `FOUND=`, `CLAUDEMD_ROUTES=`, `SPECSETUP_ROUTES=`
+and `SETTINGS_AUTONOMY=` need a decision or
 follow-up from the user; `MOVED=`, `STAMPED=`, `CONVERTED=`, `DROPPED=`, `CLEANED=`,
 `REMOVED=` and `WORKTREES=` are informational.
 
@@ -223,14 +234,19 @@ An `UNRECOGNIZED_BACKLOG_DONE=` means the `done:` key exists in a shape the scri
 does not trust itself to touch, so `apply` left it byte-for-byte. Point the user at
 the line range it names and let them drop it by hand once they have reviewed it.
 
-A `CLEANED=` means `.agents/project-overrides.yaml`'s `rate_limit_pause:` block
-and/or `max_parallel_packets:` key were removed — informational; every other line
-of that file (in particular `bypass-ask-tier`, `integration_branch`,
-`autonomy_ceiling`, `escalate_to_human_on`) is untouched.
+A `CLEANED=` means retired key paragraphs were removed from
+`.agents/project-overrides.yaml` — `rate_limit_pause:`, `max_parallel_packets:`
+and/or `autonomy_ceiling:`. Informational. The line names **only the keys that
+were actually there**, so read it rather than assuming all three; every other
+line of that file (in particular `bypass-ask-tier`, `integration_branch`,
+`escalate_to_human_on`) is untouched, blank lines included.
 
-A `REMOVED=` covers three different things, all informational, all already done:
+A `REMOVED=` covers four different things, all informational, all already done:
 a leftover per-lane pause file, or the **tracked** `.agents/packet-graph.yaml`
 (name it as a change the user must `git add`/commit — `apply` never commits), or
+`.agents/autonomy` (autonomy levels are retired and the guard no longer reads
+it — the line says whether it was **tracked**, and so a change to commit, or
+untracked and nothing to commit; relay which, do not assume), or
 a statusLine actually removed from `settings.json` (see the `FOUND=`/`NOTE=`
 pair below — a `REMOVED=` here still carries a `NOTE=` and is still not a
 promise the sensor is inert *this* session).
@@ -250,8 +266,16 @@ deletes **none** of them (one may hold unmerged work). If the user wants them
 gone, that is their call to make by hand.
 
 A `CLAUDEMD_ROUTES=` names line(s) in the repo's own `CLAUDE.md` that route to
-a retired mode or command. `apply` only ever reports these — see §5c for
-rewriting them.
+a retired mode or command, or that name a retired autonomy level. `apply` only
+ever reports these — see §5c for rewriting them.
+
+A `SPECSETUP_ROUTES=` does the same for the repo's `spec-setup.md`, and a
+`SETTINGS_AUTONOMY=` for an `ORCH_AUTONOMY` entry in its
+`.claude/settings.json`. Both are **reported, never edited** — these are the
+human's files, the same rule that leaves a foreign `statusLine` alone. Show the
+lines and offer to rewrite them; the guard reads no level any more, so an
+`ORCH_AUTONOMY` entry sets nothing and a level named in prose is describing a
+setting that no longer exists.
 
 ## 5. The parts no script can do
 
@@ -290,11 +314,21 @@ wording. Keep everything project-specific.
 
 If `apply` printed `CLAUDEMD_ROUTES=`, it found line(s) in this same file routing
 to a mode or command that is retired: `--parallel`, `/gaffer:build-packet-dependency-tree`,
-`/gaffer:rate-limit-pause`, relay mode, or worktree lanes. It only ever **reports**
+`/gaffer:rate-limit-pause`, relay mode, or worktree lanes — or naming a retired
+autonomy level (`full-autonomy`, `/gaffer:set-autonomy`, `ORCH_AUTONOMY`,
+`.agents/autonomy`, `autonomy_ceiling`). It only ever **reports**
 these — `CLAUDE.md` is the human's standing instruction, never rewritten for
 them. Show the lines and rewrite them yourself, in the same pass as the rest of
 this section: the loop now runs one sequential mode regardless of backlog size,
-and there is no separate parallel/relay path to route toward.
+and there is no separate parallel/relay path to route toward; and there is one
+fixed rule set with no level to choose, so a sentence that says what this repo's
+level *is*, or how to change it, should say what the guard allows instead.
+
+`SPECSETUP_ROUTES=` and `SETTINGS_AUTONOMY=` are the same job on two more of the
+human's files: `spec-setup.md` (level references in the setup narrative) and
+`.claude/settings.json` (an `ORCH_AUTONOMY` entry that now sets nothing).
+`apply` edits neither. Offer the rewrite/removal and let the user decide — and
+never delete a key from their `settings.json` on their behalf.
 
 **The report conventions are stamped in for you.** `migrate.sh apply` copies
 `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions-card.md` into `CLAUDE.md`

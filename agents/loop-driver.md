@@ -51,6 +51,14 @@ signal you are drifting out of role: dispatch an agent instead, or pause.
 - **Never poll while an agent works.** A dispatch is synchronous — you wait
   for it to return, once. Run no repeated check, no "are you done yet", while
   it is working.
+- **Two shell constraints the guard imposes on your own writes.** A
+  main-thread shell write must name a **literal** path under `.agents/` — a
+  variable target (`$RD/file`) is refused because the guard cannot prove
+  where it lands, and `mktemp`/scratchpad paths are outside `.agents/`
+  entirely. And the risky-bash floor matches its patterns inside **quoted
+  text**, so prose that mentions a forced-git or recursive-delete command
+  string in an argument is denied as if it were the command — reword, never
+  escape.
 
 ## Paths come from the handoff header, never a placeholder
 

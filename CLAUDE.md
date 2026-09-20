@@ -721,7 +721,7 @@ passing sweeps.
   improvising around the guard. A mark from a crashed session is **inert** (keyed to an
   id nothing will reuse; `session-start.sh` clears it on `startup|resume`), compaction
   keeps it (`driver-mode-compact.sh` fires on `compact` only and re-points the session at
-  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit four
+  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit five
   mechanisms worth knowing before you touch any of them:
   **(a) Run directories.** `begin-run` mints `run_id` into run-state **only when absent**
   — so a resume keeps it and a run spans sessions — creates `.agents/loop/<run_id>/`, and
@@ -755,6 +755,35 @@ passing sweeps.
   tool, and the driver can assemble a report from first lines without opening a body.
   The one-line contract itself is `templates/status-line.md`; nothing mechanically
   refuses a multi-line reply, the **reviewer** catches it as a `fix`.
+  **(e) Every handoff ends with a verification contract, and its text has ONE home:
+  `templates/handoff-required.md`** (ADR 0029, `handoff-verification-contract`). The
+  block is appended by `runstate.sh handoff` itself — read from that file, resolved
+  against the **script's** location rather than the caller's cwd, on every handoff from
+  every body source — **not** carried in `templates/task-packet.yaml`, because the
+  packet template is what the driver reads and the agents read only the handoff (ADR
+  0023: naming a path is not delivering a file). It goes **after** the piped body, so
+  the driver's two conditional lines from `run-loop` §3.3 stay ahead of it, neither
+  moved nor repeated, and a driver that forgets §3.3 entirely still hands over all six
+  lines — that is the property, since the lines were previously written per packet
+  from the driver's own context and vanished at the next compaction or session. A
+  missing, unreadable or whitespace-only template **refuses the handoff** — non-zero,
+  naming the path, no `handoff.md` and no temp file — never a handoff without the
+  block, because an agent cannot tell a contract-less handoff from one whose contract
+  did not apply; `ORCH_HANDOFF_REQUIRED` redirects where the block is read from for
+  fixtures and is an override, never an omission path. `.agents/handoff-extra` in
+  **every** discovered config root adds `REQUIRED: <line>` lines after the six —
+  ADR 0011's bounded walk and restrictive union, reimplemented in `runstate.sh` because
+  `guard.sh` is a hook body with no callable form — so a nested or foreign root can only
+  add; absent everywhere is byte-identical to the mechanism not existing, and
+  present-but-unreadable is refused like the template. **Nothing else restates the six
+  lines**: `templates/task-packet.yaml`, `run-loop` §3.3, `agents/reviewer.md` and
+  `agents/implementer.md` all refer to the block by its heading, and a copy of a line
+  anywhere but the template is drift to remove — the check is a search for each line's
+  distinctive phrase under `templates/`, `agents/` and `skills/`. The reviewer holds a
+  result file to each line that **applies** as an acceptance criterion (a `fix` naming
+  the line, never a pass with a note), judging applicability and never whether to
+  check; the contract is prompt-enforced there, so the detector for a reviewer that
+  stops checking is the next run's retry rate, not a sweep.
   **The escalation decider does not exist yet, and `chief-engineer` is an INTERIM
   stand-in for it.** It decides with its existing judgment — *not* the decider's
   exclusive triggers or their precedence, which `thin-loop-driver` deliberately did not

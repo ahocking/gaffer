@@ -110,7 +110,7 @@ the same caution for the two scripts.
   - covers: The block's text has one source
   - arch: —
   - files: templates/task-packet.yaml, skills/run-loop/SKILL.md
-- [ ] **T6** **P1** Record the decision where the harness and a future session will read it — a new ADR (next free number, 0029) stating that the verification contract is appended by the handoff writer rather than carried in the packet template, that a missing template refuses the handoff rather than degrading it, and that `.agents/handoff-extra` unions across config roots by ADR 0011's rules; and an amendment to `CLAUDE.md`'s driver-mode/ADR 0028 bullet naming `templates/handoff-required.md` as the block's one home, both naming the block and restating none of its six lines. Prose only, no sweep case; checkable by reading each new sentence against the template it cites and confirming neither file reproduces a line's text.
+- [x] **T6** **P1** Record the decision where the harness and a future session will read it — a new ADR (next free number, 0029) stating that the verification contract is appended by the handoff writer rather than carried in the packet template, that a missing template refuses the handoff rather than degrading it, and that `.agents/handoff-extra` unions across config roots by ADR 0011's rules; and an amendment to `CLAUDE.md`'s driver-mode/ADR 0028 bullet naming `templates/handoff-required.md` as the block's one home, both naming the block and restating none of its six lines. Prose only, no sweep case; checkable by reading each new sentence against the template it cites and confirming neither file reproduces a line's text.
   - deps: T1, T2, T3, T4, T5
   - covers: The block's text has one source
   - arch: —

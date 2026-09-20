@@ -141,7 +141,7 @@ contract the parent never had rather than a defect in one it shipped.
     unreadable, and two roots whose lines are both present in the written
     handoff
 
-- [ ] **P1**: The block's text has one source
+- [x] **P1**: The block's text has one source
   - the six lines' text lives only in `templates/handoff-required.md`;
     `templates/task-packet.yaml` carries a short comment naming that file as
     the source of the block every handoff carries and restates none of the

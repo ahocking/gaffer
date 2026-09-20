@@ -108,7 +108,7 @@ latent hazard cheaply; it is not a fix for a live break.
   - the sentinel's pre-existing bare reasons still read correctly, whether or not the reason is yet written through the shared encoder
   - no flag day: compatibility stays the reader's job, exactly as the parent decided
 
-- [ ] **P0**: Every hazard has a case in the sweep that owns it — `scripts/test-runstate.sh`, and `scripts/test-pause.sh` for the sentinel — and no case can pass vacuously
+- [x] **P0**: Every hazard has a case in the sweep that owns it — `scripts/test-runstate.sh`, and `scripts/test-pause.sh` for the sentinel — and no case can pass vacuously
   - `set` is exercised against a nested-only key (`cursor`) and a nested-mapping key (`backlog`), each asserting a non-zero exit, an unchanged target checksum, and that no top-level key was added — and, on the other side of the rule, a first `claim-driver` against a fresh run-state still inserts its four `driver_*` keys, so the refusal cannot be written as "refuse what is not already there"
   - each read site is exercised on the quote shape its own caller actually produces, plus a legacy bare value and a hostile value carrying `: `, an embedded `'` and a newline, with every case asserting the decoded result equals the collapsed original exactly — not merely that the site returns something
   - every new parse assertion is a real YAML parse and **skips loudly** — visibly reported and counted in the sweep summary — when no parser is present. The parent's capability 5 exists because these assertions silently no-op'd on a host without PyYAML; a case added here that can quietly return success re-opens it

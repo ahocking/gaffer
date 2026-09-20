@@ -80,7 +80,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/runstate.sh, hooks/pause-check.sh, scripts/test-pause.sh
 
-- [ ] **T6** [P] **P0** Extend the sweep's existing no-tools block — the `NOTOOLS` stubs and the `bare` wrapper — to this feature's new behaviour, demanding it be byte-identical with `jq` and `python3` absent from `PATH`.
+- [x] **T6** [P] **P0** Extend the sweep's existing no-tools block — the `NOTOOLS` stubs and the `bare` wrapper — to this feature's new behaviour, demanding it be byte-identical with `jq` and `python3` absent from `PATH`.
 
   - both `set` refusals (exit code, message text, unchanged target checksum), a decode of each quote shape through `get`, `findings` and `lanes`, and `request-pause`/`pause-status` round-tripping a hostile reason;
   - the scrub wraps **only** the `runstate.sh` invocations, never the sweep's own `have_yaml`/`yamlok`, which would trip the loud skip and fail the run for the wrong reason while telling us nothing about `runstate.sh`.

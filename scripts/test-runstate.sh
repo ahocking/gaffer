@@ -1587,18 +1587,70 @@ assert_true "and none of them disturbed the nested cursor" \
 # stays at hooks/guard.sh's dependency tier (stock Git Bash ships neither), and
 # a check that quietly disables itself where a tool is missing is the defect
 # this feature exists to remove, one file over. `bare`/`NOTOOLS` are the same
-# stubs T8 established above; the scrub wraps ONLY the runstate.sh call.
-RFN="$RF/rs-notools.yaml"
-printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n' > "$RFN"
-RFN_SUM_BEFORE="$(cksum < "$RFN")"
-assert_true "no-tools host: the nested-only refusal still fires" \
-  "! bare set '$RFN' cursor 'a flat scalar' 2>/dev/null"
-assert_true "no-tools host: the column0-mapping refusal still fires" \
-  "! bare set '$RFN' backlog 'a flat scalar' 2>/dev/null"
-assert_true "no-tools host: neither refusal changed a byte of the target" \
-  "[ \"\$(cksum < \"$RFN\")\" = \"\$RFN_SUM_BEFORE\" ]"
-assert_true "no-tools host: an ordinary set on the same file still lands" \
-  "bare set '$RFN' status paused >/dev/null && [ \"\$(bare get '$RFN' status)\" = paused ]"
+# stubs T8 established above; the scrub wraps ONLY the runstate.sh call, never
+# the sweep's own have_yaml/yamlok -- blinding those would trip the loud skip
+# and fail the run for the wrong reason while telling us nothing about
+# `runstate.sh`.
+#
+# Both refusals, and all three observables the full-PATH cases above demand of
+# them (gaps T6): a non-zero exit, the MESSAGE (which key, and where to go
+# instead), and a target checksum identical to its pre-call value. Each one
+# answers a different question -- the exit status alone cannot separate "it
+# refused" from "it refused having already rewritten the file", and a message
+# that degraded to a bare `die` here would leave the caller on the host with
+# the fewest tools unable to tell which rule fired.
+for refuse_case in nested-only column0-mapping; do
+  case "$refuse_case" in
+    nested-only)     refuse_key=cursor  ;;
+    column0-mapping) refuse_key=backlog ;;
+  esac
+  RFN="$RF/rs-notools-$refuse_case.yaml"
+  printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n  pending:\n    - feature-002\nbranch: orch/x\n' > "$RFN"
+  RFN_SUM_BEFORE="$(cksum < "$RFN")"
+  RFN_KEYS_BEFORE="$(_top_key_count "$RFN")"
+  RFN_RC=0
+  RFN_MSG="$(bare set "$RFN" "$refuse_key" 'a flat scalar' 2>&1)" || RFN_RC=$?
+  assert_true "no-tools host: the $refuse_case refusal ($refuse_key) still exits non-zero" \
+    "[ \"\$RFN_RC\" != 0 ]"
+  assert_true "no-tools host: the $refuse_case refusal ($refuse_key) still names the key in the message" \
+    "case \"\$RFN_MSG\" in *\"'$refuse_key'\"*) true;; *) false;; esac"
+  assert_true "no-tools host: the $refuse_case refusal ($refuse_key) still points the caller at \`write\`" \
+    "case \"\$RFN_MSG\" in *'\`write\`'*) true;; *) false;; esac"
+  assert_true "no-tools host: the $refuse_case refusal ($refuse_key) changed no byte of the target" \
+    "[ \"\$(cksum < \"$RFN\")\" = \"\$RFN_SUM_BEFORE\" ]"
+  assert_true "no-tools host: the $refuse_case refusal ($refuse_key) added no column-0 key" \
+    "[ \"\$(_top_key_count \"$RFN\")\" = \"\$RFN_KEYS_BEFORE\" ]"
+  # Byte-identical with the tools present: what a parser-less host is told is
+  # the SAME message, not a shorter one that happens to still be non-zero.
+  RFN_FULL_MSG="$("$RUNSTATE" set "$RFN" "$refuse_key" 'a flat scalar' 2>&1 || true)"
+  assert_true "no-tools host: the $refuse_case message is byte-identical to the full-PATH one" \
+    "[ \"\$RFN_MSG\" = \"\$RFN_FULL_MSG\" ]"
+done
+# The two messages stay distinguishable here too. One message covering both
+# reasons is how the second reason stops being read, and that is not a property
+# that may hold only where jq happens to be installed.
+RFN_MSG_NESTED="$(bare set "$RF/rs-notools-nested-only.yaml" cursor x 2>&1 || true)"
+RFN_MSG_MAPPING="$(bare set "$RF/rs-notools-column0-mapping.yaml" backlog x 2>&1 || true)"
+assert_true "no-tools host: the two refusals still give different reasons" \
+  "[ \"\$RFN_MSG_NESTED\" != \"\$RFN_MSG_MAPPING\" ]"
+# THE OTHER SIDE OF THE RULE, on the same host: a key ABSENT from the file
+# entirely is still created at column 0, so the refusal cannot have been
+# written as "refuse what is not already there" -- which would break the loop's
+# own driver claim on a fresh run-state exactly where it has no tools to fall
+# back on.
+RFND="$RF/rs-notools-fresh-driver.yaml"
+printf 'schema: 3\nstatus: running\nbacklog:\n  cursor: feature-002\n' > "$RFND"
+assert_true "no-tools host: claim-driver against a FRESH run-state still succeeds" \
+  "bare claim-driver '$RFND' 4242 >/dev/null"
+for dk in driver_host driver_since driver_heartbeat driver_pid; do
+  assert_true "no-tools host:   it still inserted $dk at column 0" \
+    "[ -n \"\$(bare get '$RFND' $dk)\" ] && grep -q \"^$dk:\" \"$RFND\""
+done
+assert_true "no-tools host:   and the nested cursor it did NOT touch still reads back" \
+  "[ \"\$(bare cursor '$RFND')\" = feature-002 ]"
+assert_true "no-tools host: the fresh-claim run-state still parses" "yamlok \"$RFND\""
+assert_true "no-tools host: an ordinary set on a refusing target still lands" \
+  "bare set '$RF/rs-notools-nested-only.yaml' status paused >/dev/null && [ \"\$(bare get '$RF/rs-notools-nested-only.yaml' status)\" = paused ]"
 
 # Anti-drift pin: `set` and `add-finding` now call the SAME encoder, so the
 # same hostile value must come out byte-identical from both -- pinned
@@ -2042,6 +2094,100 @@ printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\
   "$DC_NT_ENC" > "$DC_NTLS"
 assert_true "no-tools host: lanes still decodes the single-quoted field" \
   "[ \"\$(bare lanes \"$DC_NTLS\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
+# EVERY shape through EVERY site on this host, not a representative one (gaps
+# T6). The cases above reach `get` only through the single-quoted shape, and
+# reach the legacy BARE value nowhere at all -- yet bare is what `write` still
+# produces, so a site that started trimming it is the one failure a consumer
+# repo could not work around. Three shapes x the three read sites the caller
+# actually uses, each asserting the decoded result equals the collapsed
+# original exactly rather than merely that the site returned something.
+DC_NTGD="$DT/notools-get-dq.yaml"
+printf 'before: 1\ntarget: "%s"\nbacklog:\n  cursor: "%s"\nafter: 1\n' "$DC_NT_WANT" "$DC_NT_WANT" > "$DC_NTGD"
+assert_true "no-tools host: get still decodes the legacy double-quoted shape" \
+  "[ \"\$(bare get \"$DC_NTGD\" target)\" = \"\$DC_NT_WANT\" ]"
+assert_true "no-tools host: cursor still decodes the legacy double-quoted shape" \
+  "[ \"\$(bare cursor \"$DC_NTGD\")\" = \"\$DC_NT_WANT\" ]"
+DC_NTB="$DT/notools-bare-get.yaml"
+printf 'before: 1\ntarget: %s\nbacklog:\n  cursor: %s\nafter: 1\n' "$DC_BARE" "$DC_BARE" > "$DC_NTB"
+assert_true "no-tools host: get passes the legacy bare value through unchanged" \
+  "[ \"\$(bare get \"$DC_NTB\" target)\" = \"\$DC_BARE\" ]"
+assert_true "no-tools host: cursor passes the legacy bare value through unchanged" \
+  "[ \"\$(bare cursor \"$DC_NTB\")\" = \"\$DC_BARE\" ]"
+DC_NTBF="$DT/notools-bare-findings.yaml"
+printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: %s\n    packets: [pkt-1]\nstatus: running\n' \
+  "$DC_BARE" > "$DC_NTBF"
+assert_true "no-tools host: findings passes the legacy bare summary through unchanged" \
+  "[ \"\$(bare findings \"$DC_NTBF\" | cut -f2)\" = \"\$DC_BARE\" ]"
+DC_NTBL="$DT/notools-bare-lanes.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
+  "$DC_BARE" > "$DC_NTBL"
+assert_true "no-tools host: lanes passes the legacy bare field through unchanged" \
+  "[ \"\$(bare lanes \"$DC_NTBL\" | cut -f2)\" = \"\$DC_BARE\" ]"
+# ...and the three sites agree with each other on this host, per shape. Each
+# case above is anchored to a literal, so agreement follows -- but stating it
+# directly is what fails loudly if ONE site is migrated and the others are not,
+# which is the drift the shared decoder exists to prevent.
+DC_NT_SQ_GET="$(bare get "$DC_NTG" target)"
+assert_true "no-tools host: all three read sites decode the single-quoted shape identically" \
+  "[ \"\$DC_NT_SQ_GET\" = \"\$DC_NT_WANT\" ] && [ \"\$(bare findings \"$DC_NTF\" | cut -f2)\" = \"\$DC_NT_SQ_GET\" ] && [ \"\$(bare lanes \"$DC_NTLS\" | cut -f2)\" = \"\$DC_NT_SQ_GET\" ]"
+DC_NT_DQ_GET="$(bare get "$DC_NTGD" target)"
+assert_true "no-tools host: all three read sites decode the legacy double-quoted shape identically" \
+  "[ \"\$DC_NT_DQ_GET\" = \"\$DC_NT_WANT\" ] && [ \"\$(bare findings \"$DC_NTFD\" | cut -f2)\" = \"\$DC_NT_DQ_GET\" ] && [ \"\$(bare lanes \"$DC_NTL\" | cut -f2)\" = \"\$DC_NT_DQ_GET\" ]"
+DC_NT_B_GET="$(bare get "$DC_NTB" target)"
+assert_true "no-tools host: all three read sites pass the legacy bare value through identically" \
+  "[ \"\$DC_NT_B_GET\" = \"\$DC_BARE\" ] && [ \"\$(bare findings \"$DC_NTBF\" | cut -f2)\" = \"\$DC_NT_B_GET\" ] && [ \"\$(bare lanes \"$DC_NTBL\" | cut -f2)\" = \"\$DC_NT_B_GET\" ]"
+
+# --- the pause SENTINEL, same host (gaps T5, pinned here by T6) --------------
+# test-pause.sh owns the sentinel's semantics; what belongs here is that the
+# ENCODER and the two decoders `request-pause`/`pause-status` now share with
+# `set` hold at hooks/guard.sh's dependency tier. The sentinel is the loop's
+# only cooperative stop signal, so a reason that corrupts it -- or that comes
+# back with its quotes attached -- is a pause a human requested and the run did
+# not hear, on precisely the host with the fewest tools to notice.
+#
+# One reason carrying all three hazards at once: `: ` (opens a sibling mapping
+# key), an embedded `'` (breaks the encoding unless doubled), a newline (writes
+# a whole second line both readers would then take for the next key). That
+# second line is itself key-SHAPED, deliberately -- with plain prose there the
+# sibling-key count cannot move whatever the encoder does, so the case would
+# read as a check while being incapable of failing. The expected on-disk line
+# is a LITERAL, never rebuilt by mirroring the encoder, since a mirror agrees
+# with a wrong encoder by construction.
+NTP="$(mktemp -d)/pause"
+NTP_RAW="$(printf "wrap up: it's 'done'\nnote: a second line")"
+NTP_WANT="$(printf '%s' "$NTP_RAW" | tr '\n\r' '  ')"
+NTP_LINE="reason: 'wrap up: it''s ''done'' note: a second line'"
+assert_true "no-tools host: request-pause writes the sentinel" \
+  "bare request-pause '$NTP' \"\$NTP_RAW\" >/dev/null"
+assert_true "no-tools host: the hostile reason is encoded byte-identically to a full-PATH run" \
+  "[ \"\$(grep '^reason:' '$NTP')\" = \"\$NTP_LINE\" ]"
+assert_true "no-tools host: the newline injected no extra line (sentinel is exactly 2 lines)" \
+  "[ \"\$(wc -l < '$NTP' | tr -d ' ')\" = 2 ]"
+assert_true "no-tools host: the colon-space injected no sibling key (exactly 2 top-level keys)" \
+  "[ \"\$(_top_key_count '$NTP')\" = 2 ]"
+assert_true "no-tools host: the sentinel it wrote is still real, parseable YAML" \
+  "yamlok '$NTP'"
+assert_true "no-tools host: pause-status hands the reason back bare, collapsed and unquoted" \
+  "[ \"\$(bare pause-status '$NTP')\" = \"PAUSE=1 reason=\$NTP_WANT\" ]"
+# Both crossings of the PATH boundary, because the writer and the reader are
+# not always the same host: a repo driven from stock Git Bash one session and a
+# POSIX host the next has to round-trip either way round.
+assert_true "no-tools host: a full-PATH reader gets the same line off those same bytes" \
+  "[ \"\$(\"\$RUNSTATE\" pause-status '$NTP')\" = \"PAUSE=1 reason=\$NTP_WANT\" ]"
+"$RUNSTATE" request-pause "$NTP" "$NTP_RAW" >/dev/null
+assert_true "no-tools host: pause-status decodes a sentinel written WITH the tools present" \
+  "[ \"\$(bare pause-status '$NTP')\" = \"PAUSE=1 reason=\$NTP_WANT\" ]"
+# Existing on-disk state, here too: a sentinel written before the encoder
+# existed carries an unquoted reason, and an ordinary `request-pause <file>`
+# carries none at all. The second is the rc fix T5 made -- a query never fails
+# its caller -- so it is asserted on the exit status, not just the text.
+printf 'requested_at: 2026-01-01T00:00:00Z\nreason: night\n' > "$NTP"
+assert_true "no-tools host: a legacy bare reason still reads through unchanged" \
+  "[ \"\$(bare pause-status '$NTP')\" = 'PAUSE=1 reason=night' ]"
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$NTP"
+NTP_RC=0; NTP_OUT="$(bare pause-status "$NTP")" || NTP_RC=$?
+assert_true "no-tools host: a reason-less sentinel still exits 0 with the <none> fallback" \
+  "[ \"\$NTP_RC\" = 0 ] && [ \"\$NTP_OUT\" = 'PAUSE=1 reason=<none>' ]"
 
 echo
 echo "== findings: packet-scoped and opt-in bodies (ADR 0024, T3/T4) =="

@@ -3933,6 +3933,339 @@ assert_true "and round-trips that text verbatim" \
   "[ \"\$(jq -r 'select(.decision == \"ask-operator\") | .trigger' \"$DL_LOG\")\" = \"\$DL_HOSTILE\" ]"
 
 echo
+echo "== review-due: counted since the last RECORDED review, and reported unmeasured --"
+echo "   never 0 -- when it cannot be read (escalation-decider T2) =="
+# THE mutation this whole block exists to rule out is reporting 0 for a count
+# that could not be read. 0 is a measurement meaning "nothing has happened since
+# the last review": it sits below both thresholds, so DUE reads `no` and every
+# review is suppressed for the rest of the run, silently, for as long as
+# whatever broke the read stays broken. `unmeasured` + DUE=yes is the opposite
+# failure direction -- one review too many, which costs a dispatch.
+#
+# Ordering is asserted against HAND-WRITTEN records with explicit timestamps,
+# the same way periodic-pause's own cases are, because `_rs_now_ts` falls back
+# to WHOLE-SECOND resolution wherever `date +%N` is unsupported (macOS) -- so
+# records written by consecutive real calls can share a timestamp and no
+# before/after assertion built on them would be trustworthy there. The real
+# writers get their own end-to-end case at the bottom of this block.
+RV="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RV" init -q
+git -C "$RV" config user.email t@t; git -C "$RV" config user.name t
+mkdir -p "$RV/.agents/metrics/outcomes" "$RV/.agents/metrics/decisions"
+printf 'schema: 3\nstatus: running\n' > "$RV/.agents/run-state.yaml"
+RV_OUTCOMES="$RV/.agents/metrics/outcomes"
+RV_DECISIONS="$RV/.agents/metrics/decisions"
+RV_OVERRIDES="$RV/.agents/project-overrides.yaml"
+rv_due() { (cd "$RV" && CLAUDE_CODE_SESSION_ID=RVS "$RUNSTATE" review-due); }
+# One capture, five values -- extracted with a here-string, never a pipe, since
+# this file runs with `pipefail` on outside assert_true.
+rv_snap() {
+  RV_OUT="$(rv_due)"
+  RV_NG="$(sed -n 's/^NON_GREEN=//p'       <<< "$RV_OUT")"
+  RV_BG="$(sed -n 's/^BEGINNINGS=//p'      <<< "$RV_OUT")"
+  RV_ENG="$(sed -n 's/^EVERY_NON_GREEN=//p'  <<< "$RV_OUT")"
+  RV_EBG="$(sed -n 's/^EVERY_BEGINNINGS=//p' <<< "$RV_OUT")"
+  RV_DUE="$(sed -n 's/^DUE=//p'            <<< "$RV_OUT")"
+}
+
+echo "-- a continuation is not a beginning --"
+# Two packets begin, one of them is continued after a false finish, one ends
+# failed and one ends green. Session A only so far.
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:01Z","packet":"rv-p1","session":"RVA","kind":"start"}' \
+  '{"ts":"2026-04-01T00:00:02Z","packet":"rv-p1","session":"RVA","outcome":"failed"}' \
+  '{"ts":"2026-04-01T00:00:03Z","packet":"rv-p2","session":"RVA","kind":"start"}' \
+  '{"ts":"2026-04-01T00:00:04Z","packet":"rv-p2","session":"RVA","outcome":"green"}' \
+  '{"ts":"2026-04-01T00:00:05Z","packet":"rv-p1","session":"RVA","kind":"continue"}' \
+  > "$RV_OUTCOMES/RVA.jsonl"
+rv_snap
+# MUTATION RULED OUT: counting `kind: continue` as a beginning (widening the
+# `k == "start"` test in _rs_review_rows to `k == "start" || k == "continue"`).
+# The count reads 3 with that change -- and a packet retried three times would
+# read as four beginnings, pulling the beginnings threshold forward by however
+# often the loop had to retry, which is exactly when the findings index is
+# least in need of an extra review.
+assert_true "review-due counts two beginnings, not three: the continuation of rv-p1 does not raise BEGINNINGS" \
+  "[ \"\$RV_BG\" = 2 ]"
+assert_true "and counts only the NON-green ending: rv-p1 failed counts, rv-p2 green does not" \
+  "[ \"\$RV_NG\" = 1 ]"
+assert_true "with no overrides file, both thresholds report their documented defaults" \
+  "[ \"\$RV_ENG\" = 2 ] && [ \"\$RV_EBG\" = 10 ]"
+assert_true "one ending and two beginnings is under both thresholds, so no review is due" \
+  "[ \"\$RV_DUE\" = no ]"
+
+echo "-- a second session's records count too, and the threshold fires AT the number --"
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:06Z","packet":"rv-p3","session":"RVB","outcome":"blocked"}' \
+  > "$RV_OUTCOMES/RVB.jsonl"
+rv_snap
+assert_true "a blocked ending in ANOTHER session's log raises the count (a packet can begin in one session and end in another)" \
+  "[ \"\$RV_NG\" = 2 ]"
+assert_true "and DUE flips at the threshold, not one past it (2 >= 2)" \
+  "[ \"\$RV_DUE\" = yes ]"
+
+echo "-- the count resets at a recorded review, and at nothing else --"
+# A DECISION record first. It lives in the same log as a review record and
+# carries the same `kind` field, so anchoring on "the latest record in the
+# decisions log" rather than on "the latest RECORD OF KIND review" would reset
+# the count here -- and a decider that had just routed one escalation would
+# never reach a periodic review at all.
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:07Z","session":"RVD","run_id":"r1","kind":"decision","packet":"rv-p1","decision":"retry","trigger":"t","finding":"","summary":""}' \
+  > "$RV_DECISIONS/RVD.jsonl"
+rv_snap
+assert_true "a DECISION record does not reset the count" \
+  "[ \"\$RV_NG\" = 2 ] && [ \"\$RV_BG\" = 2 ] && [ \"\$RV_DUE\" = yes ]"
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:08Z","session":"RVD","run_id":"r1","kind":"review","bytes_before":"10","bytes_after":"8","merged":"1","routed":"0","dropped":"0"}' \
+  >> "$RV_DECISIONS/RVD.jsonl"
+rv_snap
+# MUTATION RULED OUT: dropping the `kind != "review"` filter in
+# _rs_latest_review_ts (anchoring on the newest record in the decisions log).
+# The decision assertion above turns red immediately -- the count resets on a
+# routing decision, which happens far more often than a review.
+assert_true "a RECORDED review resets both counts to 0" \
+  "[ \"\$RV_NG\" = 0 ] && [ \"\$RV_BG\" = 0 ]"
+assert_true "and nothing is due straight after a review" \
+  "[ \"\$RV_DUE\" = no ]"
+# A review counts as completed only when it recorded itself, which the decider
+# does after returning its status line -- so a review cut short by a crash
+# leaves no record here and the count simply never reset. That is the same
+# assertion as "the count reset at THIS record": there is no separate liveness
+# field to get wrong.
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:00.500Z","session":"RVE","run_id":"r0","kind":"review","bytes_before":"1","bytes_after":"1","merged":"0","routed":"0","dropped":"0"}' \
+  > "$RV_DECISIONS/RVE.jsonl"
+rv_snap
+assert_true "an EARLIER review in another session's decision log does not move the anchor back (latest, not first)" \
+  "[ \"\$RV_NG\" = 0 ] && [ \"\$RV_BG\" = 0 ]"
+
+echo "-- all five non-green endings count; green and an unknown outcome do not --"
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:09Z","packet":"rv-p4","session":"RVB","kind":"start"}' \
+  '{"ts":"2026-04-01T00:00:10Z","packet":"rv-p4","session":"RVB","outcome":"abandoned"}' \
+  '{"ts":"2026-04-01T00:00:11Z","packet":"rv-p5","session":"RVB","outcome":"interrupted"}' \
+  '{"ts":"2026-04-01T00:00:12Z","packet":"rv-p6","session":"RVB","outcome":"rolled-back"}' \
+  '{"ts":"2026-04-01T00:00:13Z","packet":"rv-p7","session":"RVB","outcome":"green"}' \
+  >> "$RV_OUTCOMES/RVB.jsonl"
+rv_snap
+assert_true "abandoned, interrupted and rolled-back all count as non-green endings (failed and blocked counted above)" \
+  "[ \"\$RV_NG\" = 3 ]"
+assert_true "and the one start among them is the only new beginning" \
+  "[ \"\$RV_BG\" = 1 ]"
+# MUTATION RULED OUT: matching non-green as `outcome != "green"`. An outcome
+# value this file does not know -- a future one, or a truncated record -- would
+# then count as an ending, and endings carry the SMALLER threshold, so the
+# inverted form pulls reviews forward on records nobody attested as endings.
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:14Z","packet":"rv-p8","session":"RVB","outcome":"superseded"}' \
+  >> "$RV_OUTCOMES/RVB.jsonl"
+rv_snap
+assert_true "an outcome value this file does not know is NOT counted as a non-green ending (matched by value, never as 'not green')" \
+  "[ \"\$RV_NG\" = 3 ]"
+
+echo "-- both thresholds come from project-overrides.yaml, token-scanned --"
+printf '%s\n' \
+  "review_after_non_green_endings: '4'   # quoted, and a trailing comment" \
+  'review_after_beginnings: 3 # whichever count is reached first triggers' \
+  > "$RV_OVERRIDES"
+rv_snap
+assert_true "a quoted value and a comment-trailed value are both honoured, not read as missing" \
+  "[ \"\$RV_ENG\" = 4 ] && [ \"\$RV_EBG\" = 3 ]"
+assert_true "raising the endings threshold above the count clears DUE on that arm" \
+  "[ \"\$RV_NG\" = 3 ]"
+# Whichever comes first: three endings against a threshold of 4 is not due, but
+# the SAME snapshot has one beginning against 3, so this pins that DUE is an OR
+# of the two arms rather than the endings arm alone.
+assert_true "with 3 endings under a threshold of 4 and 1 beginning under 3, nothing is due" \
+  "[ \"\$RV_DUE\" = no ]"
+printf '%s\n' \
+  '{"ts":"2026-04-01T00:00:15Z","packet":"rv-p9","session":"RVB","kind":"start"}' \
+  '{"ts":"2026-04-01T00:00:16Z","packet":"rv-pa","session":"RVB","kind":"start"}' \
+  >> "$RV_OUTCOMES/RVB.jsonl"
+rv_snap
+assert_true "the BEGINNINGS arm fires on its own, with the endings arm still under its threshold" \
+  "[ \"\$RV_BG\" = 3 ] && [ \"\$RV_NG\" = 3 ] && [ \"\$RV_DUE\" = yes ]"
+printf '%s\n' \
+  'review_after_non_green_endings: many' \
+  'review_after_beginnings: 0' \
+  > "$RV_OVERRIDES"
+rv_snap
+assert_true "an invalid value falls back to its default, and so does 0 (a threshold of 0 would ask for a review at every boundary forever)" \
+  "[ \"\$RV_ENG\" = 2 ] && [ \"\$RV_EBG\" = 10 ]"
+rm -f "$RV_OVERRIDES"
+
+echo "-- unmeasured, never 0: an unreadable outcomes log --"
+# Shape 1, uid-INDEPENDENT: a plain file where the log directory belongs. No
+# process of any uid can list it, so this shape runs everywhere.
+RV_SAVED="$RV/.agents/metrics/outcomes-saved"
+mv "$RV_OUTCOMES" "$RV_SAVED"
+printf 'not a directory\n' > "$RV_OUTCOMES"
+rv_snap
+# MUTATION RULED OUT: reporting 0 for a count that could not be read (drop the
+# readability test and let the awk glob come back empty). Both counts read 0,
+# DUE reads `no`, and every review for the rest of the run is suppressed by a
+# number that looks like a measurement -- the failure this command's whole
+# enum exists to prevent.
+assert_true "an unreadable outcomes log reports NON_GREEN=unmeasured, never 0" \
+  "[ \"\$RV_NG\" = unmeasured ]"
+assert_true "and BEGINNINGS=unmeasured, never 0" \
+  "[ \"\$RV_BG\" = unmeasured ]"
+assert_true "and the review RUNS on an unmeasured count" \
+  "[ \"\$RV_DUE\" = yes ]"
+# Scoped: only what failed reads as unmeasured. The overrides file is absent,
+# which is an ANSWER (no override, hence the default) rather than a failed read.
+assert_true "the thresholds still report their values -- unmeasured is scoped to what actually could not be read" \
+  "[ \"\$RV_ENG\" = 2 ] && [ \"\$RV_EBG\" = 10 ]"
+rm -f "$RV_OUTCOMES"; mv "$RV_SAVED" "$RV_OUTCOMES"
+rv_snap
+assert_true "and the counts come back as soon as the log is readable again" \
+  "[ \"\$RV_NG\" = 3 ] && [ \"\$RV_BG\" = 3 ]"
+
+# Shape 2, uid-DEPENDENT: mode 000, probed rather than assumed. As uid 0 a
+# mode-000 path is still readable, so this host may be unable to create the
+# condition -- in which case the case is reported NOT RUN, never passed quietly.
+chmod 000 "$RV_OUTCOMES"
+RV_MODE_BLOCKS=no
+if ! ls "$RV_OUTCOMES" >/dev/null 2>&1; then RV_MODE_BLOCKS=yes; fi
+if [ "$RV_MODE_BLOCKS" = yes ]; then
+  rv_snap
+  assert_true "a mode-000 outcomes directory reports both counts as unmeasured with DUE=yes" \
+    "[ \"\$RV_NG\" = unmeasured ] && [ \"\$RV_BG\" = unmeasured ] && [ \"\$RV_DUE\" = yes ]"
+else
+  printf 'note this host reads a mode-000 directory (uid %s) — the mode-000 shape was NOT run; the not-a-directory shape above covers the same refusal\n' "$(id -u)"
+fi
+chmod 755 "$RV_OUTCOMES"
+
+# Shape 3, the sharp one: the DIRECTORY is readable and one log FILE inside it
+# is not. The awk pass globs `<dir>/*.jsonl` with stderr discarded, so an
+# unreadable file contributes nothing and the remaining files still produce a
+# plausible, smaller count -- a wrong number that looks exactly like a right one.
+chmod 000 "$RV_OUTCOMES/RVB.jsonl"
+RV_FILE_BLOCKS=no
+if ! cat "$RV_OUTCOMES/RVB.jsonl" >/dev/null 2>&1; then RV_FILE_BLOCKS=yes; fi
+if [ "$RV_FILE_BLOCKS" = yes ]; then
+  rv_snap
+  assert_true "an unreadable log FILE inside a readable directory reports unmeasured, not the smaller count the remaining files would give" \
+    "[ \"\$RV_NG\" = unmeasured ] && [ \"\$RV_BG\" = unmeasured ] && [ \"\$RV_DUE\" = yes ]"
+else
+  printf 'note this host reads a mode-000 file (uid %s) — the unreadable-log-file shape was NOT run\n' "$(id -u)"
+fi
+chmod 644 "$RV_OUTCOMES/RVB.jsonl"
+
+echo "-- unmeasured, never a stale anchor: an unreadable decision log --"
+# The decision log supplies the POINT the outcomes records are counted from. An
+# unreadable one would otherwise count from the wrong anchor -- silently, and
+# with a number that looks measured.
+RV_DEC_SAVED="$RV/.agents/metrics/decisions-saved"
+mv "$RV_DECISIONS" "$RV_DEC_SAVED"
+printf 'not a directory\n' > "$RV_DECISIONS"
+rv_snap
+assert_true "an unreadable decision log reports both counts as unmeasured with DUE=yes (the anchor is part of the measurement)" \
+  "[ \"\$RV_NG\" = unmeasured ] && [ \"\$RV_BG\" = unmeasured ] && [ \"\$RV_DUE\" = yes ]"
+rm -f "$RV_DECISIONS"; mv "$RV_DEC_SAVED" "$RV_DECISIONS"
+
+echo "-- unmeasured thresholds: an overrides file that is present but cannot be read --"
+printf 'review_after_beginnings: 3\n' > "$RV_OVERRIDES"
+chmod 000 "$RV_OVERRIDES"
+RV_OV_BLOCKS=no
+if ! cat "$RV_OVERRIDES" >/dev/null 2>&1; then RV_OV_BLOCKS=yes; fi
+if [ "$RV_OV_BLOCKS" = yes ]; then
+  rv_snap
+  assert_true "an unreadable overrides file reports both thresholds as unmeasured, never as the default (a default there would read as a measurement)" \
+    "[ \"\$RV_ENG\" = unmeasured ] && [ \"\$RV_EBG\" = unmeasured ]"
+  assert_true "and an unmeasured threshold runs the review, even with both counts measured" \
+    "[ \"\$RV_NG\" = 3 ] && [ \"\$RV_DUE\" = yes ]"
+else
+  printf 'note this host reads a mode-000 file (uid %s) — the mode-000 overrides shape was NOT run; the not-a-regular-file shape below covers it\n' "$(id -u)"
+fi
+chmod 644 "$RV_OVERRIDES"; rm -f "$RV_OVERRIDES"
+# uid-independent: a DIRECTORY where the overrides file belongs. Present, so
+# not skippable as absent, and no uid can read it as a file.
+mkdir -p "$RV_OVERRIDES"
+rv_snap
+assert_true "an overrides path that is present but is not a regular file reports both thresholds as unmeasured with DUE=yes" \
+  "[ \"\$RV_ENG\" = unmeasured ] && [ \"\$RV_EBG\" = unmeasured ] && [ \"\$RV_DUE\" = yes ]"
+rmdir "$RV_OVERRIDES"
+
+echo "-- absence is an answer, not a failed read --"
+RVE="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RVE" init -q
+RVE_OUT="$( (cd "$RVE" && CLAUDE_CODE_SESSION_ID=RVS "$RUNSTATE" review-due) )"
+assert_true "a repo with no metrics directory at all counts 0 and 0 -- an absent log holds no records, which IS a measurement" \
+  "[ \"\$(sed -n 's/^NON_GREEN=//p' <<< \"\$RVE_OUT\")\" = 0 ] && [ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVE_OUT\")\" = 0 ]"
+assert_true "and nothing is due there" \
+  "[ \"\$(sed -n 's/^DUE=//p' <<< \"\$RVE_OUT\")\" = no ]"
+assert_true "review-due refuses an argument (it counts across every session, so there is no session to name)" \
+  "! (cd \"$RVE\" && \"\$RUNSTATE\" review-due RVS) 2>/dev/null"
+
+echo "-- with no review ever recorded, counting starts at the repo's FIRST start record --"
+RVF="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RVF" init -q
+mkdir -p "$RVF/.agents/metrics/outcomes"
+printf '%s\n' \
+  '{"ts":"2026-05-01T00:00:01Z","packet":"rvf-old","session":"S0","outcome":"failed"}' \
+  '{"ts":"2026-05-01T00:00:02Z","packet":"rvf-a","session":"S0","kind":"start"}' \
+  > "$RVF/.agents/metrics/outcomes/S0.jsonl"
+RVF_OUT="$( (cd "$RVF" && "$RUNSTATE" review-due) )"
+assert_true "an ending recorded BEFORE the first start record is outside the window and is not counted" \
+  "[ \"\$(sed -n 's/^NON_GREEN=//p' <<< \"\$RVF_OUT\")\" = 0 ]"
+assert_true "and the first start record itself is inside it (the window is at-or-after, not after)" \
+  "[ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVF_OUT\")\" = 1 ]"
+# A log of endings with no beginnings at all -- written before start records
+# existed -- has no anchor to find. Counting the whole log can only make a
+# review run sooner; reporting 0 would suppress one.
+RVG="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RVG" init -q
+mkdir -p "$RVG/.agents/metrics/outcomes"
+printf '%s\n' \
+  '{"ts":"2026-05-01T00:00:01Z","packet":"rvg-old","session":"S0","outcome":"failed"}' \
+  > "$RVG/.agents/metrics/outcomes/S0.jsonl"
+RVG_OUT="$( (cd "$RVG" && "$RUNSTATE" review-due) )"
+assert_true "a legacy log holding endings but no start record at all counts the whole log rather than reporting 0" \
+  "[ \"\$(sed -n 's/^NON_GREEN=//p' <<< \"\$RVG_OUT\")\" = 1 ] && [ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVG_OUT\")\" = 0 ]"
+
+echo "-- end to end through the REAL writers, not hand-written records --"
+# Everything above reads records this file wrote itself, which proves the
+# counting rule and nothing about the field shapes record-start/record-outcome/
+# record-review actually emit. This case uses those three commands, so a change
+# to any of their record shapes turns it red.
+RVR="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RVR" init -q
+git -C "$RVR" config user.email t@t; git -C "$RVR" config user.name t
+mkdir -p "$RVR/.agents"
+printf 'schema: 3\nstatus: running\n' > "$RVR/.agents/run-state.yaml"
+rvr_rs() { (cd "$RVR" && CLAUDE_CODE_SESSION_ID=RVRS "$RUNSTATE" "$@"); }
+rvr_rs begin-run .agents/run-state.yaml >/dev/null   # record-review needs a run_id
+rvr_rs record-start rvr-a >/dev/null
+rvr_rs record-outcome rvr-a failed >/dev/null
+RVR_OUT="$(rvr_rs review-due)"
+assert_true "a real record-start and a real record-outcome are counted by review-due" \
+  "[ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVR_OUT\")\" = 1 ] && [ \"\$(sed -n 's/^NON_GREEN=//p' <<< \"\$RVR_OUT\")\" = 1 ]"
+# ONE second of real time, and it is load-bearing: `_rs_now_ts` is whole-second
+# wherever `date +%N` is unsupported, so without this the review record could
+# share a timestamp with the records above and the at-or-after window would
+# keep counting them -- the reset would read as broken on macOS and fine on
+# Linux. Everything AFTER the review may share its timestamp safely: the window
+# is at-or-after by design.
+sleep 1
+rvr_rs record-review .agents/run-state.yaml \
+  --bytes-before 4096 --bytes-after 2048 --merged 1 --routed 0 --dropped 0 >/dev/null
+RVR_OUT="$(rvr_rs review-due)"
+assert_true "a real record-review resets both counts" \
+  "[ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVR_OUT\")\" = 0 ] && [ \"\$(sed -n 's/^NON_GREEN=//p' <<< \"\$RVR_OUT\")\" = 0 ]"
+rvr_rs record-start rvr-a --continue >/dev/null
+RVR_OUT="$(rvr_rs review-due)"
+assert_true "a real continuation after that review still does not raise BEGINNINGS" \
+  "[ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVR_OUT\")\" = 0 ]"
+rvr_rs record-start rvr-b >/dev/null
+RVR_OUT="$(rvr_rs review-due)"
+assert_true "a real start after that review does" \
+  "[ \"\$(sed -n 's/^BEGINNINGS=//p' <<< \"\$RVR_OUT\")\" = 1 ]"
+# review-due is a READER: it must leave both logs byte-unchanged, so that
+# calling it at every boundary cannot itself move the counts it reports.
+RVR_BYTES="$(cat "$RVR"/.agents/metrics/outcomes/*.jsonl "$RVR"/.agents/metrics/decisions/*.jsonl | wc -c | tr -d ' ')"
+rvr_rs review-due >/dev/null
+RVR_BYTES_AFTER="$(cat "$RVR"/.agents/metrics/outcomes/*.jsonl "$RVR"/.agents/metrics/decisions/*.jsonl | wc -c | tr -d ' ')"
+assert_true "review-due writes nothing: both logs are byte-unchanged after a call" \
+  "[ \"\$RVR_BYTES\" = \"\$RVR_BYTES_AFTER\" ]"
+
+echo
 echo "== run-tally: the four digest-derived tally figures, counted from the digest's own"
 echo "   lines for the whole run (report-render-conformance T1) =="
 rd_tally() { (cd "$RD" && "$RUNSTATE" run-tally .agents/run-state.yaml "$@"); }

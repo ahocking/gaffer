@@ -449,6 +449,87 @@
 #                                    comparison. No enter record for the
 #                                    session, or not a git repo, reads as
 #                                    ENDED=0/EVERY=off/DUE=no.
+#   review-due                       escalation-decider T2: prints
+#                                    NON_GREEN=<n|unmeasured>,
+#                                    BEGINNINGS=<n|unmeasured>,
+#                                    EVERY_NON_GREEN=<n|unmeasured>,
+#                                    EVERY_BEGINNINGS=<n|unmeasured> and
+#                                    DUE=yes|no. Pure reader, no side effect,
+#                                    always exits 0 — the CALLER (run-loop,
+#                                    between packets and never while one is
+#                                    open) is what dispatches the decider for
+#                                    a periodic review when DUE=yes. Takes no
+#                                    arguments: unlike periodic-pause it
+#                                    counts across EVERY session's log, so
+#                                    there is no session to name, and an
+#                                    argument is refused rather than ignored.
+#                                    NON_GREEN counts outcome records whose
+#                                    `outcome` is one of the five NON-green
+#                                    endings (failed, rolled-back, blocked,
+#                                    abandoned, interrupted — matched by
+#                                    value, never as "not green", so an
+#                                    outcome this file does not know cannot
+#                                    silently become an ending). BEGINNINGS
+#                                    counts `kind: start` records ONLY — a
+#                                    `kind: continue` is a continuation of a
+#                                    packet that already began and must not
+#                                    raise the count, or a packet retried
+#                                    three times would read as four
+#                                    beginnings. Both are counted in
+#                                    .agents/metrics/outcomes/*.jsonl across
+#                                    every session (a packet can begin in one
+#                                    session and end in another), at or after
+#                                    the LATEST `kind: review` record in
+#                                    .agents/metrics/decisions/*.jsonl — so
+#                                    the count resets at a RECORDED review and
+#                                    at nothing else. record-review is written
+#                                    by the decider after it returns its
+#                                    status line, so a review cut short by a
+#                                    crash leaves no record, the count does
+#                                    not reset, and the review runs again at
+#                                    the next boundary — exactly what the PRD
+#                                    asks for, with no separate liveness
+#                                    field. With no review record anywhere,
+#                                    counting starts at the repo's FIRST
+#                                    `kind: start` record (and, when the log
+#                                    holds no start record at all, at the
+#                                    whole log — a legacy log of endings with
+#                                    no beginnings errs toward running a
+#                                    review, never toward suppressing one).
+#                                    Comparison is by PARSED time
+#                                    (_rs_ts_key), never a raw string compare
+#                                    — the same sub-second-vs-whole-second
+#                                    trap sweep-open guards against.
+#                                    EVERY_NON_GREEN/EVERY_BEGINNINGS come
+#                                    from `review_after_non_green_endings`
+#                                    (2) and `review_after_beginnings` (10) in
+#                                    .agents/project-overrides.yaml, token-
+#                                    scanned in the _rs_packet_attempts_limit
+#                                    shape (a trailing comment cannot defeat
+#                                    the scan and `'2'` is honoured rather
+#                                    than read as missing), each falling back
+#                                    to its default when the key is missing,
+#                                    invalid or 0 — 0 would fire a review at
+#                                    every boundary forever, which is a typo,
+#                                    not a policy.
+#                                    UNMEASURED IS NOT 0, and that is the
+#                                    whole point of the enum: 0 reads as
+#                                    "nothing has happened since the last
+#                                    review" and would suppress every review
+#                                    for the rest of the run. So a count that
+#                                    could not be READ (not a git repo, or
+#                                    either log directory present but
+#                                    unreadable) prints `unmeasured`, a
+#                                    threshold that could not be read (not a
+#                                    git repo, or an overrides file present
+#                                    but unreadable) prints `unmeasured`, and
+#                                    any `unmeasured` at all forces DUE=yes —
+#                                    a review that cannot be scheduled from
+#                                    evidence is run. An ABSENT log directory
+#                                    or an absent overrides file is not
+#                                    unmeasured: absence is an answer (no
+#                                    records, hence 0; no override, hence the
+#                                    default).
 #   bundle-cap                       packet-bundling T2: prints CAP=<n> the
 #                                    way periodic-pause prints EVERY=. Pure
 #                                    reader, no side effect. Comes from
@@ -2502,6 +2583,241 @@ cmd_periodic_pause() {
   local due=no
   [ "$ended" -ge "$every" ] && due=yes
   printf 'ENDED=%s\nEVERY=%s\nDUE=%s\n' "$ended" "$every" "$due"
+}
+
+# =============================================================================
+# review-due (escalation-decider T2)
+# =============================================================================
+# The periodic review's trigger, as a pure reader. See the header entry above
+# for the full contract; what follows is why each piece is shaped this way.
+#
+# The one invariant everything here serves: a count that could not be read is
+# `unmeasured`, never 0. 0 is a MEASUREMENT meaning "nothing has happened since
+# the last review", so a failed read reported as 0 would sit below both
+# thresholds and suppress every review for the rest of the run -- silently, and
+# for exactly as long as whatever broke the read stays broken.
+
+_RS_REVIEW_DEFAULT_NON_GREEN=2
+_RS_REVIEW_DEFAULT_BEGINNINGS=10
+
+# --- one review threshold from .agents/project-overrides.yaml ---------------
+# Same token-scan shape as _rs_packet_attempts_limit/_rs_bundle_max_tasks:
+# scan the remainder after `<key>:`, skipping any token that is not purely
+# digits (so a trailing comment cannot defeat the scan) and stripping one
+# matching pair of quotes per token first, so `review_after_beginnings: '10'`
+# -- legal YAML -- is honoured rather than read as missing.
+#
+# Two deliberate differences from those two siblings:
+#
+#  - the key is a PARAMETER, passed through ENVIRON rather than `awk -v`
+#    (which expands escapes in the value) and matched with a literal
+#    index()==1 rather than a regex, so no character in a key could ever widen
+#    its own match. Both callers pass a constant, so neither risk is live
+#    today; the point is that neither becomes live if a third key is added.
+#  - an overrides path that EXISTS but cannot be read as a regular file
+#    returns `unmeasured`, not the default. Absence is an answer -- no
+#    override, hence the default -- but an unreadable file, or a directory
+#    where the file belongs, is a failed read, and reporting the default there
+#    is precisely "a default that reads like a measurement". Both shapes are
+#    tested because only the second is uid-independent: as uid 0, a mode-000
+#    file is still readable.
+#
+# Missing, invalid and 0 all fall back to the default. 0 is invalid rather than
+# "review at every boundary": a threshold of 0 fires forever and is a typo, not
+# a policy anyone would set.
+_rs_review_threshold() {
+  local main_root="$1" key="$2" default="$3" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  if [ -e "$ov" ] && { [ ! -f "$ov" ] || [ ! -r "$ov" ]; }; then printf 'unmeasured'; return 0; fi
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(RS_REVIEW_KEY="$key" awk '
+      BEGIN { key = ENVIRON["RS_REVIEW_KEY"] ":"; klen = length(key) }
+      index($0, key) == 1 {
+        line = substr($0, klen + 1)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) printf '%s' "$default" ;; *) printf '%s' "$v" ;; esac
+}
+
+# --- can this log directory actually be read? -------------------------------
+# Returns 0 for "yes, and what I read is the truth", 1 for "no -- report
+# unmeasured". ABSENT is 0 on purpose: a directory that does not exist holds no
+# records, so 0 records is a measurement, not a failed read. Every other
+# failure mode is 1 -- a directory that cannot be opened or listed, a plain
+# file sitting where the log directory belongs, or a log file the process
+# cannot read. That last check matters because the awk pass below globs
+# `<dir>/*.jsonl` with stderr discarded: an unreadable FILE inside a readable
+# directory would otherwise contribute nothing and read as an honest zero.
+_rs_review_dir_readable() {
+  local dir="$1" f
+  [ -e "$dir" ] || return 0
+  [ -d "$dir" ] || return 1
+  { [ -r "$dir" ] && [ -x "$dir" ]; } || return 1
+  for f in "$dir"/*.jsonl; do
+    [ -e "$f" ] || continue
+    [ -r "$f" ] || return 1
+  done
+  return 0
+}
+
+# --- the ts of the LATEST recorded review, or empty -------------------------
+# Scans EVERY session's decision log, not one named session: the count this
+# anchors is itself cross-session, and a review recorded by a session that has
+# since ended still reset the count. Same plain index/substr field extraction
+# as _rs_open_packets (no regex escaping, portable to a POSIX awk), and the
+# same "max by PARSED time" comparison as _rs_latest_driver_mode_enter_ts --
+# a raw string compare would sort a sub-second stamp below a whole-second one
+# in the same second ("." is 0x2E, "Z" is 0x5A).
+_rs_latest_review_ts() {
+  local main_root="$1" dir
+  dir="${main_root}/.agents/metrics/decisions"
+  [ -d "$dir" ] || return 0
+  local best_ts="" best_key=-1 ts key
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    key="$(_rs_ts_key "$ts")"
+    if [ "$key" -gt "$best_key" ]; then best_key="$key"; best_ts="$ts"; fi
+  done <<EOF
+$(awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    { k = field($0, "kind"); if (k != "review") next
+      ts = field($0, "ts"); if (ts != "") print ts }
+  ' "$dir"/*.jsonl 2>/dev/null)
+EOF
+  printf '%s' "$best_ts"
+}
+
+# --- every outcomes record that could count, as <tag>\t<parsed-time key> ----
+# Two stages for the same reason _rs_open_packets is two stages: awk extracts
+# fields with plain index/substr, and bash attaches the parsed-time key that
+# needs `date` (which awk cannot do portably). Only CANDIDATE records reach the
+# bash stage, so the per-record `date` cost is paid for beginnings and non-green
+# endings and for nothing else.
+#
+#   S = a beginning: `kind` is exactly `start`. A `kind: continue` is skipped
+#       HERE rather than filtered later, so there is one place to look for the
+#       rule that a continuation is not a beginning.
+#   N = a non-green ending: `outcome` is one of the five the PRD names. Matched
+#       by VALUE, never as `outcome != "green"` -- that inverted form would
+#       turn any outcome this file does not yet know (a future value, a
+#       truncated record) into an ending, and endings are the count with the
+#       smaller threshold.
+_rs_review_rows() {
+  local dir="$1" parsed
+  parsed="$(awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    {
+      ts = field($0, "ts"); if (ts == "") next
+      k = field($0, "kind")
+      if (k != "") { if (k == "start") print "S\t" ts; next }
+      o = field($0, "outcome")
+      if (o == "failed" || o == "rolled-back" || o == "blocked" || o == "abandoned" || o == "interrupted")
+        print "N\t" ts
+    }
+  ' "$dir"/*.jsonl 2>/dev/null || true)"
+  [ -n "$parsed" ] || return 0
+  local tag ts
+  while IFS="$(printf '\t')" read -r tag ts; do
+    [ -n "$tag" ] || continue
+    printf '%s\t%s\n' "$tag" "$(_rs_ts_key "$ts")"
+  done <<EOF
+$parsed
+EOF
+}
+
+# Always exits 0 -- a query, same contract as periodic-pause/bundle-cap/
+# compact-threshold. Never writes anything: the CALLER decides what to do with
+# DUE=yes, and record-review (the thing that resets the count) is a separate,
+# explicit call made by the review itself.
+cmd_review_due() {
+  [ $# -eq 0 ] || die "usage: review-due (takes no arguments -- it counts across EVERY session's log, so there is no session to name)"
+
+  local main_root
+  if ! main_root="$(_rs_main_checkout_root)"; then
+    # Nothing at all could be read -- not the logs, not the overrides file. All
+    # four values are unmeasured and the review runs.
+    printf 'NON_GREEN=unmeasured\nBEGINNINGS=unmeasured\nEVERY_NON_GREEN=unmeasured\nEVERY_BEGINNINGS=unmeasured\nDUE=yes\n'
+    return 0
+  fi
+
+  local every_ng every_b
+  every_ng="$(_rs_review_threshold "$main_root" review_after_non_green_endings "$_RS_REVIEW_DEFAULT_NON_GREEN")"
+  every_b="$(_rs_review_threshold "$main_root" review_after_beginnings "$_RS_REVIEW_DEFAULT_BEGINNINGS")"
+
+  local outcomes_dir="${main_root}/.agents/metrics/outcomes"
+  local decisions_dir="${main_root}/.agents/metrics/decisions"
+  local non_green=unmeasured beginnings=unmeasured
+
+  # BOTH logs have to be readable for the counts to mean anything: the outcomes
+  # log supplies the records and the decision log supplies the point they are
+  # counted from, so an unreadable decision log would silently count from the
+  # wrong anchor rather than fail.
+  if _rs_review_dir_readable "$outcomes_dir" && _rs_review_dir_readable "$decisions_dir"; then
+    local rows anchor_key=-1 review_ts first_start
+    review_ts="$(_rs_latest_review_ts "$main_root")"
+    rows="$(_rs_review_rows "$outcomes_dir")"
+    if [ -n "$review_ts" ]; then
+      anchor_key="$(_rs_ts_key "$review_ts")"
+    elif [ -n "$rows" ]; then
+      # No review has ever completed, so counting starts at the repo's first
+      # beginning. When the log holds endings but no beginnings at all (a log
+      # written before start records existed), the anchor stays -1 and the
+      # whole log counts -- which can only make a review run sooner, and
+      # running one review too many is the recoverable direction.
+      first_start="$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "S" { if (m == "" || $2 + 0 < m) m = $2 + 0 } END { if (m != "") printf "%d\n", m }')"
+      [ -n "$first_start" ] && anchor_key="$first_start"
+    fi
+    non_green=0; beginnings=0
+    if [ -n "$rows" ]; then
+      local counts
+      # `>=`, not `>`: a record stamped at the review's own millisecond counts
+      # toward the NEXT review. Over-counting runs a review sooner; under-
+      # counting suppresses one, which is the failure this whole command is
+      # shaped to avoid.
+      counts="$(printf '%s\n' "$rows" | RS_REVIEW_ANCHOR="$anchor_key" awk -F'\t' '
+        BEGIN { a = ENVIRON["RS_REVIEW_ANCHOR"] + 0 }
+        $2 + 0 >= a { if ($1 == "S") b++; else if ($1 == "N") n++ }
+        END { printf "%d\t%d\n", n + 0, b + 0 }')"
+      non_green="${counts%%$(printf '\t')*}"
+      beginnings="${counts##*$(printf '\t')}"
+    fi
+  fi
+
+  local due=no
+  if [ "$non_green" = unmeasured ] || [ "$beginnings" = unmeasured ] \
+     || [ "$every_ng" = unmeasured ] || [ "$every_b" = unmeasured ]; then
+    due=yes
+  else
+    [ "$non_green" -ge "$every_ng" ] && due=yes
+    [ "$beginnings" -ge "$every_b" ] && due=yes
+  fi
+  printf 'NON_GREEN=%s\nBEGINNINGS=%s\nEVERY_NON_GREEN=%s\nEVERY_BEGINNINGS=%s\nDUE=%s\n' \
+    "$non_green" "$beginnings" "$every_ng" "$every_b" "$due"
 }
 
 # --- mint a sortable run id: UTC timestamp + a short random suffix so two
@@ -4685,6 +5001,7 @@ case "$cmd" in
   record-review)   cmd_record_review   "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
+  review-due)        cmd_review_due        "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;
   run-tally)         cmd_run_tally         "$@" ;;
   prune-questions)   cmd_prune_questions   "$@" ;;

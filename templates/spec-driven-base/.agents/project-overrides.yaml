@@ -104,6 +104,18 @@ integration_branch: develop
 # unasked.
 # pause_every_packets: 10
 
+# How much has to happen between packets before the loop dispatches the
+# escalation decider for a periodic review of the findings index (plugin
+# escalation-decider T2). Whichever count is reached first triggers the review,
+# and both counts reset only when a review completes and records itself.
+# A non-green ending is a failed, rolled-back, blocked, abandoned or interrupted
+# packet outcome; a beginning is a packet starting for the first time (a
+# continuation of a packet already begun does not count). Each falls back to the
+# default below when its key is missing, invalid or 0 -- 0 would ask for a
+# review at every boundary forever.
+# review_after_non_green_endings: 2
+# review_after_beginnings: 10
+
 # The largest number of tasks a bundle may hold (plugin packet-bundling T2).
 # 1 when missing, invalid, zero or negative -- bundling is off until this
 # repository raises it. A recommended starting value is 4; a larger value

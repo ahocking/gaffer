@@ -92,7 +92,7 @@ latent hazard cheaply; it is not a fix for a live break.
   - refusal is the fix rather than addressing, and stays so: writing YAML path addressing in POSIX shell — no jq, no parser — against the loop's only durable state is a large new correctness surface bought to remove a trap that a loud refusal closes just as well. This mirrors the parent's own history: a plain-scalar allowlist was built and deleted the same day because it made a claim about every future value; a refusal makes a claim about none
   - the six live keys (`status`, `note`, `updated_at`, `last_green_commit`, `branch`, `driver_*`) keep working unchanged, so no skill, sweep fixture or caller is touched by the refusal
 
-- [ ] **P1**: One decoder, mirroring the one encoder, with every read path migrated to it
+- [x] **P1**: One decoder, mirroring the one encoder, with every read path migrated to it
   - a single decoding helper handles both the single-quoted shape the encoder writes and the legacy double-quoted shape, and **all four** current decoders call it: `_yaml_decode_value`, the `trim-note` unwrap, `_findings_default`, and `_list_records` — none left as a hand-maintained copy
   - the contract is round-tripping: for any value, decoding what `_yaml_encode_value` produced returns that value, newlines collapsed, exactly, asserted directly rather than inferred from the callers that happen to exercise it
   - the two inline awk sites cannot cheaply shell out per line, so unification there means one implementation kept honest by a shared fixture set rather than by a comment — and the comment at `runstate.sh:539` that asks for it by hand, naming only two of the four, goes away

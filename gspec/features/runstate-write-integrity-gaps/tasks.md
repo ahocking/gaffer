@@ -60,7 +60,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
 
-- [ ] **T4** **P1** Migrate the two remaining awk decoders — `_findings_default`'s summary unwrap and `_list_records`' field unwrap — to T3's shared awk function text, so no read path in the file carries its own copy.
+- [x] **T4** **P1** Migrate the two remaining awk decoders — `_findings_default`'s summary unwrap and `_list_records`' field unwrap — to T3's shared awk function text, so no read path in the file carries its own copy.
 
   - `_findings_default` gains the legacy double-quoted shape alongside the single-quoted one `add-finding` writes; `_list_records` gains the single-quoted shape alongside the double-quoted one it strips today, for every field it returns — the widening this capability exists for, not a side effect;
   - extend T2's table so all four sites are asserted over **both** quote shapes and a legacy bare value, each case asserting the decoded result equals the collapsed original exactly rather than merely returning something;

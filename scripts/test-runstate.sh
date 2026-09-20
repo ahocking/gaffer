@@ -1635,26 +1635,31 @@ assert_true "a dot in an id does not match a dash" \
   "\"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f.001 one --packets pkt-a >/dev/null && \"\$RUNSTATE\" add-finding \"$FY/rx.yaml\" f-001 two --packets pkt-a | grep -q '^ADDED=yes'"
 
 echo
-echo "== the decoder fixture table: one encoder, four read sites (gaps T2/T3) =="
+echo "== the decoder fixture table: one encoder, four read sites (gaps T2/T3/T4) =="
 # `set` and `add-finding` write through ONE encoder (_yaml_encode_value). The
-# read side is four call sites, and this table is what keeps them in step while
-# they are unified one at a time:
+# read side is four call sites, and this table is what keeps them in step:
 #
 #   _yaml_decode_value    shell   single + double   `get`, `cursor`
 #   _YAML_AWK_DECODE      awk     single + double   the note's first line (trim-note)
-#   _findings_default     awk     single-quoted     `findings`
-#   _list_records' kv()   awk     double-quoted     `lanes`
+#   _findings_default     awk     single + double   `findings`
+#   _list_records' kv()   awk     single + double   `lanes`
 #
-# The first two are ONE rule in two expressions as of gaps T3 -- the shell
-# function and the awk function text it prepends to trim-note's pass -- so this
-# table asserts that they agree, value by value, rather than a comment asking a
-# maintainer to keep them in step. The last two still carry their own copy until
-# T4 migrates them; theirs are the rows below that drive one quote shape only.
+# As of gaps T4 all four are ONE rule in TWO expressions -- the shell function
+# and the awk function text prepended to the three awk passes -- so every site
+# below is driven over BOTH quote shapes and a legacy BARE value, and each case
+# asserts the decoded result EQUALS the collapsed original exactly rather than
+# merely that the site returned something. The cross-site block at the end of
+# each iteration then asserts all four agree on the same input, which is the
+# anti-drift property this capability exists for, pinned mechanically rather
+# than by a comment asking a maintainer to keep copies in step.
 #
-# Each decoder is otherwise driven over the shapes its own caller can actually
-# hand it -- not over every shape, which would assert a property nothing has yet
-# -- plus a legacy BARE value, which all four must pass through untouched, since
-# no consumer repo migrates its run-state before its next run.
+# Driving both shapes everywhere is the WIDENING T4 delivers, not test
+# thoroughness for its own sake: before it, `findings` knew only the
+# single-quoted shape its own writer produces and `lanes` only the
+# double-quoted shape the retired parallel scheduler wrote, so the same bytes
+# on disk read two ways depending on which subcommand opened the file. The
+# legacy BARE value is asserted at all four sites too, since no consumer repo
+# migrates its run-state before its next run.
 #
 # THIS TABLE IS THE EXTENSION POINT. A later case adds a value by adding one
 # name to DECODER_CASES and one line to each of the three functions below; it
@@ -1775,6 +1780,23 @@ for dc in $DECODER_CASES; do
   assert_true "table ($dc): findings decodes the single-quoted summary to the collapsed original" \
     "[ \"\$(\"\$RUNSTATE\" findings \"$DC_F\" | cut -f2)\" = \"\$DC_WANT\" ]"
 
+  # --- site 2 again, over the LEGACY double-quoted shape (NEW in gaps T4) ----
+  # Until T4 this site carried its own single-quote-only unwrap, so a legacy
+  # double-quoted summary came out of `findings` with its quotes still attached
+  # -- and an agent copied them into a brief. It strips that pair too now,
+  # VERBATIM, the same reading the other three sites have always given it.
+  #
+  # Deliberately NOT parse-asserted, for the reason the double-quoted `get` and
+  # trim-note cases already state: a backslash inside a REAL YAML double-quoted
+  # scalar means something else, and this cell pins the unwrap as it behaves,
+  # not as YAML would read the same bytes. No table value carries a `"`, which
+  # this shape could not hold unescaped in the first place.
+  DC_FD="$DT/findings-dq-$dc.yaml"
+  printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: "%s"\n    file: .agents/findings/f-1.md\n    packets: [pkt-1]\nstatus: running\n' \
+    "$DC_WANT" > "$DC_FD"
+  assert_true "table ($dc): findings decodes the legacy double-quoted summary to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" findings \"$DC_FD\" | cut -f2)\" = \"\$DC_WANT\" ]"
+
   # --- site 3: cmd_trim_note's inline awk unwrap (BOTH quote shapes) ---------
   # The unwrap only runs when the note overflows, so the bound is picked to make
   # it fire AND to leave the value whole: the note line is `note: ` + the quoted
@@ -1825,14 +1847,53 @@ for dc in $DECODER_CASES; do
   assert_true "table ($dc): the awk and shell expressions of the rule agree on the legacy double-quoted shape" \
     "[ \"\$DC_TD_AWK\" = \"\$DC_SH_DQ\" ] && [ \"\$DC_TD_AWK\" = \"\$DC_WANT\" ]"
 
-  # --- site 4: _list_records' kv(), via `lanes` (legacy double-quoted) -------
-  # Same verbatim-strip reading as the trim-note double-quoted case above, on
+  # --- site 4: _list_records' kv(), via `lanes` (BOTH quote shapes) ----------
+  # The double-quoted shape is what the retired parallel scheduler wrote, and it
+  # gets the same verbatim strip as the trim-note double-quoted case above, on
   # the one read-only projection kept over a pre-retirement parallel run-state.
   DC_L="$DT/lanes-$dc.yaml"
   printf 'schema: 3\nlanes:\n  - id: pb\n    branch: "%s"\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
     "$DC_WANT" > "$DC_L"
   assert_true "table ($dc): lanes decodes the legacy double-quoted field to the collapsed original" \
     "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_L\" | cut -f2)\" = \"\$DC_WANT\" ]"
+  # The SINGLE-quoted shape is NEW in gaps T4: it is what _yaml_encode_value
+  # produces, so any writer touching such a row today leaves it behind, and
+  # before T4 `lanes` handed it back with its quotes attached and its `''`
+  # un-collapsed while every other read site decoded it. Parse-asserted, unlike
+  # its double-quoted sibling, because this shape IS a real single-quoted YAML
+  # scalar and the expectation can therefore be anchored to what YAML itself
+  # says the bytes mean. Asserted on EVERY field the projection returns, not
+  # just the one `cut` reads, since kv() decodes per field and a migration that
+  # reached only the first column would pass a single-column check.
+  DC_LS="$DT/lanes-sq-$dc.yaml"
+  printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: %s\n    packet: pb\n    last_green_commit: abc123\n    status: %s\n' \
+    "$DC_ENC" "$DC_ENC" "$DC_ENC" > "$DC_LS"
+  assert_true "table ($dc): the single-quoted lanes fixture is parseable YAML" \
+    "yamlok \"$DC_LS\""
+  assert_true "table ($dc): lanes decodes the single-quoted field to the collapsed original" \
+    "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_LS\" | cut -f2)\" = \"\$DC_WANT\" ]"
+  assert_true "table ($dc): lanes decodes EVERY single-quoted field, not just the first" \
+    "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_LS\" | cut -f3)\" = \"\$DC_WANT\" ] && [ \"\$(\"\$RUNSTATE\" lanes \"$DC_LS\" | cut -f6)\" = \"\$DC_WANT\" ]"
+
+  # --- ALL FOUR sites agree on the same input (gaps T4) ----------------------
+  # The anti-drift property this capability exists for, stated as one assertion
+  # per quote shape: four decoders, one input, one answer -- and that answer is
+  # the collapsed original, so the block cannot be satisfied by four sites being
+  # wrong in the same way. T3 pinned this for the two sites it unified; T4
+  # widens it to all four. Read back through the sweep's own awk for trim-note
+  # rather than through _yaml_value, on purpose: this is an assertion about the
+  # AWK decoders, and gating it on PyYAML would turn a parser-less host into a
+  # loud skip of exactly the property being pinned.
+  DC_X_SQ_GET="$("$RUNSTATE" get "$DC_G" target)"
+  DC_X_SQ_FIND="$("$RUNSTATE" findings "$DC_F" | cut -f2)"
+  DC_X_SQ_LANE="$("$RUNSTATE" lanes "$DC_LS" | cut -f2)"
+  assert_true "table ($dc): all four read sites decode the single-quoted shape identically" \
+    "[ \"\$DC_X_SQ_GET\" = \"\$DC_WANT\" ] && [ \"\$DC_TS_AWK\" = \"\$DC_X_SQ_GET\" ] && [ \"\$DC_X_SQ_FIND\" = \"\$DC_X_SQ_GET\" ] && [ \"\$DC_X_SQ_LANE\" = \"\$DC_X_SQ_GET\" ]"
+  DC_X_DQ_GET="$("$RUNSTATE" get "$DC_GD" target)"
+  DC_X_DQ_FIND="$("$RUNSTATE" findings "$DC_FD" | cut -f2)"
+  DC_X_DQ_LANE="$("$RUNSTATE" lanes "$DC_L" | cut -f2)"
+  assert_true "table ($dc): all four read sites decode the legacy double-quoted shape identically" \
+    "[ \"\$DC_X_DQ_GET\" = \"\$DC_WANT\" ] && [ \"\$DC_TD_AWK\" = \"\$DC_X_DQ_GET\" ] && [ \"\$DC_X_DQ_FIND\" = \"\$DC_X_DQ_GET\" ] && [ \"\$DC_X_DQ_LANE\" = \"\$DC_X_DQ_GET\" ]"
 done
 
 # --- the legacy BARE value: all four sites must pass it through untouched ----
@@ -1876,6 +1937,13 @@ assert_true "legacy bare value: lanes passes an unquoted field through unchanged
 DC_B_AWK="$(awk '/^note: \|-$/ { getline; sub(/^  /, ""); print; exit }' "$DC_BT")"
 assert_true "legacy bare value: the awk and shell expressions of the rule both pass it through" \
   "[ \"\$DC_B_AWK\" = \"\$DC_BARE\" ] && [ \"\$(rs_fn _yaml_decode_value \"\$DC_BARE\")\" = \"\$DC_BARE\" ]"
+# ...and the same cross-site agreement the table asserts for both quote shapes,
+# on the shape that predates every one of them (gaps T4). A site that started
+# stripping something off a bare value would be the one failure here that no
+# consumer repo could work around, since it is what `write` still produces.
+DC_B_GET="$("$RUNSTATE" get "$DC_BG" target)"
+assert_true "legacy bare value: all four read sites pass it through identically" \
+  "[ \"\$DC_B_GET\" = \"\$DC_BARE\" ] && [ \"\$DC_B_AWK\" = \"\$DC_B_GET\" ] && [ \"\$(\"\$RUNSTATE\" findings \"$DC_BF\" | cut -f2)\" = \"\$DC_B_GET\" ] && [ \"\$(\"\$RUNSTATE\" lanes \"$DC_BL\" | cut -f2)\" = \"\$DC_B_GET\" ]"
 
 # --- the branch ORDER is load-bearing (gaps T3) ------------------------------
 # One rule now serves both quote shapes, and the two branches do different work:
@@ -1897,6 +1965,17 @@ assert_true "branch order: trim-note really re-emitted that note as a block" \
   "case \"\$DC_DQT_OUT\" in TRIMMED=yes*) true;; *) false;; esac && grep -q '^note: |-' \"$DC_DQT\""
 assert_true "branch order: trim-note leaves '' inside a legacy double-quoted note alone" \
   "[ \"\$(awk '/^note: \\|-\$/ { getline; sub(/^  /, \"\"); print; exit }' \"$DC_DQT\")\" = \"\$DC_DQ_IN\" ]"
+# The two sites gaps T4 migrated, on the same two bytes: both reached the
+# double-quoted branch for the first time in T4, so both are new places the
+# un-doubling could run where it must not.
+DC_DQF="$DT/order-findings.yaml"
+printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: "%s"\n    packets: [pkt-1]\nstatus: running\n' "$DC_DQ_IN" > "$DC_DQF"
+assert_true "branch order: findings leaves '' inside a legacy double-quoted summary alone" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$DC_DQF\" | cut -f2)\" = \"\$DC_DQ_IN\" ]"
+DC_DQL="$DT/order-lanes.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: "%s"\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' "$DC_DQ_IN" > "$DC_DQL"
+assert_true "branch order: lanes leaves '' inside a legacy double-quoted field alone" \
+  "[ \"\$(\"\$RUNSTATE\" lanes \"$DC_DQL\" | cut -f2)\" = \"\$DC_DQ_IN\" ]"
 # And the inverse: a SINGLE-quoted value's `''` must still be un-doubled -- the
 # same two bytes, the other branch, so a decoder cannot satisfy both by doing
 # nothing.
@@ -1908,6 +1987,14 @@ assert_true "branch order: the single-quoted counterpart is still un-doubled by 
   "[ \"\$(\"\$RUNSTATE\" get \"$DC_SQG\" target)\" = \"\$DC_SQ_WANT\" ]"
 assert_true "branch order: a real YAML parse agrees with that un-doubling" \
   "yamlok \"$DC_SQG\" && [ \"\$(_yaml_value \"$DC_SQG\" target)\" = \"\$DC_SQ_WANT\" ]"
+DC_SQF="$DT/order-findings-sq.yaml"
+printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: %s\n    packets: [pkt-1]\nstatus: running\n' "$DC_SQ_ENC" > "$DC_SQF"
+assert_true "branch order: findings still un-doubles the single-quoted counterpart" \
+  "yamlok \"$DC_SQF\" && [ \"\$(\"\$RUNSTATE\" findings \"$DC_SQF\" | cut -f2)\" = \"\$DC_SQ_WANT\" ]"
+DC_SQL="$DT/order-lanes-sq.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' "$DC_SQ_ENC" > "$DC_SQL"
+assert_true "branch order: lanes still un-doubles the single-quoted counterpart" \
+  "yamlok \"$DC_SQL\" && [ \"\$(\"\$RUNSTATE\" lanes \"$DC_SQL\" | cut -f2)\" = \"\$DC_SQ_WANT\" ]"
 
 # --- and every site again with NEITHER jq NOR python3 on PATH ---------------
 # runstate.sh stays at hooks/guard.sh's dependency tier (stock Git Bash ships
@@ -1942,6 +2029,19 @@ printf 'schema: 3\nlanes:\n  - id: pb\n    branch: "%s"\n    worktree: /tmp/wt/p
   "$DC_NT_WANT" > "$DC_NTL"
 assert_true "no-tools host: lanes still decodes the legacy double-quoted field" \
   "[ \"\$(bare lanes \"$DC_NTL\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
+# The two shapes gaps T4 ADDED are exercised here too, not just the ones that
+# already worked: a widening that holds only where jq/python3 happen to be
+# installed is the same defect class one tool over.
+DC_NTFD="$DT/notools-findings-dq.yaml"
+printf 'schema: 3\nfindings:\n  - id: f-1\n    summary: "%s"\n    packets: [pkt-1]\nstatus: running\n' \
+  "$DC_NT_WANT" > "$DC_NTFD"
+assert_true "no-tools host: findings still decodes the legacy double-quoted summary" \
+  "[ \"\$(bare findings \"$DC_NTFD\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
+DC_NTLS="$DT/notools-lanes-sq.yaml"
+printf 'schema: 3\nlanes:\n  - id: pb\n    branch: %s\n    worktree: /tmp/wt/pb\n    packet: pb\n    last_green_commit: abc123\n    status: running\n' \
+  "$DC_NT_ENC" > "$DC_NTLS"
+assert_true "no-tools host: lanes still decodes the single-quoted field" \
+  "[ \"\$(bare lanes \"$DC_NTLS\" | cut -f2)\" = \"\$DC_NT_WANT\" ]"
 
 echo
 echo "== findings: packet-scoped and opt-in bodies (ADR 0024, T3/T4) =="

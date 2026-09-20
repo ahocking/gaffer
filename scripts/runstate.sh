@@ -1399,21 +1399,25 @@ cmd_findings() {
 }
 
 # id / summary(decoded) / file / packets(csv) — one TSV row per entry, index order.
+#
+# The summary unwrap is rs_decode from _YAML_AWK_DECODE (defined with
+# _yaml_decode_value, above cmd_set) — the one decode rule, not a copy of it
+# maintained here (runstate-write-integrity-gaps T4). Left undecoded, every
+# summary would print wrapped in the quotes cmd_add_finding wrote and an agent
+# would copy them into a brief. Migrating widens this site to the LEGACY
+# double-quoted shape as well: never written by this file, but left behind by an
+# older tool or a hand edit, and stripped verbatim exactly as the other three
+# read sites strip it. That widening is the point of the unification, not a side
+# effect of it — four sites that disagree about a shape on disk are four answers
+# to one question.
 _findings_default() {
-  awk '
+  awk "$_YAML_AWK_DECODE"'
     /^findings:[[:space:]]*$/ { inf=1; next }
     /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
     inf && /^[[:space:]]*- id:/    { if (id != "") print id "\t" sum "\t" file "\t" pkts; sum=""; file=""; pkts="";
                                      sub(/^[[:space:]]*- id:[[:space:]]*/, ""); id=$0; next }
     inf && /^[[:space:]]*summary:/ { line=$0; sub(/^[[:space:]]*summary:[[:space:]]*/, "", line);
-                                     # Undo the single-quoted encoding the write side
-                                     # applies: strip the wrapping quotes, then `'"''"'` -> `'"'"'`.
-                                     # Left alone, every summary would print wrapped in
-                                     # quotes and an agent would copy them into a brief.
-                                     if (line ~ /^'"'"'.*'"'"'$/) {
-                                       line = substr(line, 2, length(line) - 2)
-                                       gsub(/'"''"'/, "'"'"'", line) }
-                                     sum=line; next }
+                                     sum=rs_decode(line); next }
     inf && /^[[:space:]]*packets:/ { line=$0; sub(/^[[:space:]]*packets:[[:space:]]*/, "", line);
                                      sub(/^\[/, "", line); sub(/\]$/, "", line);
                                      gsub(/, */, ",", line); pkts=line; next }
@@ -3960,10 +3964,20 @@ cmd_reconstruct() {
 # first key) + indented `key: v` continuations, over OUR OWN emitted structure
 # (scalar values; a flow list like `depends_on: [a, b]` passes through verbatim as
 # one value). No YAML dependency — grep/awk only, like the rest of this file.
+#
+# Every field it returns is unwrapped by rs_decode from _YAML_AWK_DECODE
+# (defined with _yaml_decode_value, above cmd_set) — the one decode rule, not a
+# copy of it maintained here (runstate-write-integrity-gaps T4). This site used
+# to strip a double-quoted pair only, because that is the shape the retired
+# parallel scheduler wrote; migrating widens it to the SINGLE-quoted shape the
+# encoder produces today, so a lane row touched by any current writer reads the
+# same way `get`, `cursor`, `trim-note` and `findings` read it. A flow list
+# (`depends_on: [a, b]`) carries no wrapping quote pair and so still passes
+# through verbatim, as this function's contract above promises.
 _list_records() {
   local f="$1" section="$2"; shift 2
   local fields="$*"
-  awk -v section="$section" -v fields="$fields" '
+  awk -v section="$section" -v fields="$fields" "$_YAML_AWK_DECODE"'
     BEGIN{ nf=split(fields,F," ") }
     $0 ~ "^"section":[ \t]*$" { insec=1; next }
     insec && /^[^ \t]/ { flush(); insec=0 }
@@ -3974,8 +3988,7 @@ _list_records() {
     function reset(   i){ for(i=1;i<=nf;i++) rec[F[i]]="" }
     function kv(s,   p,k,v){ p=index(s,":"); if(p==0) return; k=substr(s,1,p-1);
       v=substr(s,p+1); sub(/^[ \t]+/,"",v); sub(/[ \t]+$/,"",v);
-      if(length(v)>=2 && substr(v,1,1)=="\"" && substr(v,length(v),1)=="\"") v=substr(v,2,length(v)-2);
-      rec[k]=v }
+      rec[k]=rs_decode(v) }
     function flush(   i,out){ if(!have) return; out="";
       for(i=1;i<=nf;i++){ out=(i==1?rec[F[i]]:out "\t" rec[F[i]]) } print out; have=0 }
   ' "$f"

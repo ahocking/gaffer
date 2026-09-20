@@ -11,7 +11,7 @@
     {
       "name": "gaffer",
       "source": "./",
-      "description": "Reusable, domain-agnostic orchestration layer: chief-engineer/architect/reviewer/implementer subagents, spec-driven chains, single-checkout feature-branch workflow (develop + orch/* branches), graduated-autonomy guided loop, task-packet template, and an approval guardrail with generic risk defaults plus per-repo extensions."
+      "description": "Reusable, domain-agnostic orchestration layer: chief-engineer/architect/reviewer/implementer subagents, spec-driven chains, single-checkout feature-branch workflow (develop + orch/* branches), a guided loop under a fixed rule set (the loop commits, merges, rebases and pushes on branches other than main/master; main, releases, PRs, and the danger floor stay human-gated), task-packet template, and an approval guardrail with generic risk defaults plus per-repo extensions."
     }
   ]
 }

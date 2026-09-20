@@ -48,7 +48,7 @@ Every regression sweep must pass after every task, and `claude plugin validate .
   - arch: —
   - files: hooks/guard.sh, scripts/test-guard.sh
 
-- [ ] **T2** [P] **P0** Delete `skills/set-autonomy/` from the shipped plugin and remove the graduated-autonomy clause from both `.claude-plugin` descriptions.
+- [x] **T2** [P] **P0** Delete `skills/set-autonomy/` from the shipped plugin and remove the graduated-autonomy clause from both `.claude-plugin` descriptions.
 
   - delete the whole `skills/set-autonomy/` directory — the skill writes `.agents/autonomy`, which nothing reads after T1, so leaving it shipped would offer a control that silently does nothing;
   - in `.claude-plugin/plugin.json`, replace the description's "graduated autonomy across four levels (interactive → supervised → autonomous → full-autonomy, set in-session via /gaffer:set-autonomy, Desktop-friendly) where full-autonomy delegates merge/rebase/push onto non-main branches while keeping main, releases, and the danger floor human-gated" with one clause stating the fixed rule set: the loop commits, merges, rebases and pushes on branches other than `main`/`master`, and `main`, releases, PRs and the danger floor stay human-gated. Leave every other clause of that description exactly as it is;

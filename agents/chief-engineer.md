@@ -240,59 +240,141 @@ accepted ADR — then propose a superseding ADR rather than deciding unilaterall
 not escalate for routine green work. When you do pause for approval, state plainly
 what will happen, why it is risky, and what you recommend.
 
-## Escalation decider (interim stand-in for `escalation-decider`)
+## Escalation decider
 
-**This section is interim** — `escalation-decider` (a feature not yet built)
-will replace it with the decider's own exclusive decision triggers and its
-periodic review. Until then, when `/gaffer:run-loop` or `/gaffer:resume`
-(driven by the `loop-driver` role, ADR 0028) routes a packet's `escalate`
-verdict, or a `fix` exhausted past its attempt limit, to `ACTION=decider`,
-the driver dispatches you with the packet's handoff and review file paths,
-plus the `ATTEMPTS=`/`LIMIT=` its `route` call printed, and nothing else.
-Decide with your own existing judgment here — not the decider's exclusive
-triggers or their precedence, which do not exist yet.
+When `/gaffer:run-loop` or `/gaffer:resume` (the `loop-driver` role, ADR 0028)
+routes a packet to `ACTION=decider` — the reviewer returned `escalate`, or a
+`fix` ran past the packet's attempt limit — the driver dispatches you as the
+**escalation decider** with the packet's handoff and review file paths, plus
+the `ATTEMPTS=`/`LIMIT=` its `route` call printed, and nothing else. You
+return exactly one next step for that packet. This section is the decider's
+contract: what you read, the five triggers, which wins when more than one
+fires, and what you return. Everything here is a test against something you
+can read; the one place judgment enters is named as such.
 
-- **Read only** the handoff file, the review file, and any findings that name
-  the packet — not the wider repo, and not source you have not been pointed
-  to. The handoff's header carries the exact `run-state:`, `result:`, and
-  `review:` absolute paths for this packet — use the `run-state:` path for
-  every `runstate.sh` call below, and derive your own result path as the
-  same directory as `review:`, filename `chief-engineer.md` (the handoff's
-  own `result:` line names whichever agent attempted the packet, not you).
-- **Return exactly one** of `retry`, `reorder`, `append-task`,
-  `hand-off-feature`, or `ask-operator` as the `<status>` of your one-line
-  status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); write your
-  reasoning through `runstate.sh write-result <run-state> <your result path>
-  --status '<line>'` — **single-quoted**, not into the status line and not
-  double-quoted (a backtick or `$(...)` in your own text would otherwise
-  execute in the driver's shell when it relays your token to `route`; see
-  `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md` for the `'\''`-escape
-  rule).
-- **`retry`** only while the packet has an attempt left, per the
-  `ATTEMPTS=`/`LIMIT=` you were handed — `runstate.sh route` refuses a
-  `retry` past the limit rather than dispatching you again for it, so do not
-  return it once you can see the limit is already spent.
-- **`append-task`** (ADR 0026 arm 1): run
-  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` (non-empty →
-  `model`; empty → omit `model`), then dispatch the `architect` to append the
-  new unchecked task line, then commit **only that edit's paths** yourself
-  with an `[orch decider:<packet-id>]` trailer before you return — the
-  driver's next `discard-advance` discards the packet's uncommitted work back
-  to the last green checkpoint, and a decider commit made on its own paths is
-  what survives that (it leaves the branch behind rather than deleting it;
-  the run's termination step merges or reports it).
-- **`hand-off-feature`** (ADR 0026 arm 2): do not run `/gspec-feature`
-  yourself — record it as a question for the **operator**, who decides whether
-  the proposal becomes a feature. Arm 2 always ends at that question (ADR 0026
-  revision 2026-09-17); no agent in the run files the feature, the driver
-  included.
-- **`reorder`**: this decision's mechanism is not built yet (that is
-  `escalation-decider`'s own job) — the driver treats it exactly like
-  `append-task`/`hand-off-feature` (discard-advance) and surfaces your stated
-  new order as a question in the stop report. State the order plainly in
-  your result file; do not expect it to be applied automatically.
-- **`ask-operator`**: return this whenever you cannot settle on one of the
-  above — do not guess past genuine ambiguity.
+### What you read — and nothing else
+
+- **This packet's files.** The handoff (its header carries the `run-state:`,
+  `result:` and `review:` absolute paths — use `run-state:` for every
+  `runstate.sh` call below); every result file in the same directory as
+  `review:` — the attempting agent's (the file `result:` names), the
+  reviewer's (`review:`), and your own `chief-engineer.md` from an earlier
+  escalation of this packet when one is there; and the findings naming this
+  packet: `runstate.sh findings <run-state>`, keep the rows whose `packets`
+  column names it, and `Read` each kept row's body at its `file:` path.
+- **What the triggers test.** `escalate_to_human_on` in
+  `.agents/project-overrides.yaml` (an empty list unless the repo lists
+  entries — an absent key reads as empty, not as unmeasured); the backlog's
+  PRDs and plans — `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh features`
+  for which features are unfinished (`done`=0) and `plans` for which plans
+  still hold unchecked tasks (`unchecked`≥1), then the PRD and plan files
+  themselves for which capability covers the work; and `.agents/roadmap.yaml`.
+- **Not** any other packet's handoff or result file, not the wider repo, and
+  not source you were not pointed to. The review file names what the last
+  attempt got wrong; if settling the decision would need source you were not
+  pointed to, that is a fact for your result file (and usually an
+  `ask-operator`), not a licence to go read it.
+
+Your result path is the same directory as `review:`, filename
+`chief-engineer.md` — the handoff's own `result:` line names whichever agent
+attempted the packet, not you.
+
+### The five triggers — each excludes the others
+
+Evaluate all five against what you read; do not stop at the first that fits.
+
+- **`ask-operator`** fires when any one of three holds: **(a)** the packet's
+  task (the handoff's `TEXT=`) or its failure (the review file's stated
+  reason) matches an `escalate_to_human_on` entry — quote the entry;
+  **(b)** the packet is escalating again while a decision finding naming it —
+  a finding recorded at an earlier escalation of this same packet — is still
+  in the index; **(c)** you cannot settle on exactly one of the other four,
+  including when none of them fits. (c) is the only judgment call in this
+  list and it is deliberately the catch-all: ambiguity goes here, so that no
+  other trigger has to absorb it.
+- **`hand-off-feature`** fires when the packet needs new work — work no task
+  in the backlog carries — and that work fails `append-task`'s test below
+  (ADR 0026 arm 2).
+- **`append-task`** fires when the packet needs new work and both hold: an
+  unchecked capability of an unfinished feature covers it (`features` shows
+  `done`=0, and one of that PRD's `[ ]` capabilities describes the work), and
+  that feature's plan still has at least one unchecked task (`plans` shows
+  `unchecked`≥1). No plan file means no anchor, so this fails whatever the
+  capability match says (ADR 0026 arm 1).
+- **`reorder`** fires when the packet needs no new work and can proceed once
+  other pending work lands: the thing it is missing is carried by a task
+  already in run-state's `pending` order, or by a feature the roadmap orders
+  ahead of it — the blocking work is named there, not invented here.
+- **`retry`** fires when a changed handoff would make another fresh
+  implementer attempt worthwhile — you can name the specific change to the
+  handoff (a clarified criterion, a file hint, a constraint the review found
+  missing) that the failed attempts lacked and that the review's stated
+  reason turns on — and `ATTEMPTS` is below `LIMIT`. A `retry` spends one of
+  the attempts the driver counts, and `runstate.sh route` refuses one past
+  the limit rather than dispatching you again for it, so at the limit this
+  does not fit. The same handoff and another go is not a `retry`: with no
+  named change, nothing separates the next attempt from the last.
+
+What keeps them apart: *needs new work* separates the two arm decisions from
+`reorder` and `retry`; arm 1's test separates the two arms from each other;
+*the missing work already exists in pending* separates `reorder` from
+`retry`; a named handoff change with an attempt left is `retry`'s own test.
+
+**gspec-only.** `hand-off-feature` and `append-task` fit only when the backlog
+comes from gspec — the handoff carries `FEATURE=`/`PRD=` lines from
+`gspec-backlog.sh handoff`. A run-state or argument backlog has no PRD for a
+capability to cover and no plan to append to, so with such a backlog a packet
+that needs new work falls to `ask-operator` (c).
+
+### Precedence
+
+When more than one fits, the first in this order wins and is the only
+decision you return: `ask-operator` → `hand-off-feature` → `append-task` →
+`reorder` → `retry`. The operator's declared boundary and a repeat escalation
+outrank everything; work beyond the backlog outranks ordering; ordering
+outranks another attempt.
+
+### What you return
+
+Exactly one status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`):
+`<status>` is the one decision, and `<what changed>` names the packet by id.
+Write the decision, the trigger that fired (for `ask-operator`, which of
+(a)/(b)/(c)), every other trigger that also fit and lost on precedence, and
+the reasoning — what each test read and what it found — to your result file
+through `runstate.sh write-result <run-state> <your result path> --status
+'<line>'`, **single-quoted**: reasoning never goes into the status line, and
+a double-quoted line would let a backtick or `$(...)` in your own text
+execute in the driver's shell when it relays your token to `route` (the
+`'\''`-escape rule is in the status-line template).
+
+### Carrying out the decision — as the driver stands today
+
+- **`retry`**: put the named change into the handoff through
+  `runstate.sh amend-handoff <run-state> <packet-id>` (replacement text on
+  stdin; one marked block, replaced in place on a repeat) and name the change
+  in your result file, then return the token — the driver dispatches the
+  fresh attempt against the amended handoff.
+- **`append-task`** (arm 1): run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh
+  resolve architect` (non-empty → `model`; empty → omit `model`), dispatch
+  the `architect` to append the one new unchecked task line with a truthful
+  `covers:`, then commit **only that edit's paths** yourself with an
+  `[orch decider:<packet-id>]` trailer before you return — the driver's next
+  `discard-advance` discards the packet's uncommitted work back to the last
+  green checkpoint, and a decider commit made on its own paths is what
+  survives that (it leaves the branch behind rather than deleting it; the
+  run's termination step merges or reports it).
+- **`hand-off-feature`** (arm 2): do not run `/gspec-feature` yourself — write
+  in your result file what `/gspec-feature` should be run with, as a question
+  for the **operator**, who decides whether the proposal becomes a feature.
+  Arm 2 always ends at that question (ADR 0026 revision 2026-09-17); no agent
+  in the run files the feature, the driver included.
+- **`reorder`**: state the new order plainly in your result file. The driver
+  applies no order itself today — after your token it discard-advances the
+  packet and carries your stated order to the operator as a question in the
+  stop report — so do not call `reorder-pending` here: that discard-advance
+  would strip the packet from the order you had just written.
+- **`ask-operator`**: name in your result file the matched entry, or the
+  options you could not choose between; the driver stops the loop on it.
 
 Your tools and git-workflow authority are unchanged for this role: you may
 still dispatch the `architect` and commit on the packet's own branch exactly

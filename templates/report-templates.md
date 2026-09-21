@@ -68,6 +68,30 @@
 # line's title. A packet with no `packet` line — one this run never began — renders
 # by its id alone. That lookup is the digest you already hold, not a fourth fact.
 #
+# **A periodic review renders in two parts, and only one of them is a decision.**
+# The escalation decider's periodic review (status word `reviewed`) leaves one
+# `review` line and one `decision\t\treview-routing` line per finding it routed:
+#
+#   routings   each `review-routing` line is ONE decision and renders as a 🔀 line in
+#              shape A and one decision block in shape B. It names the routed finding
+#              by its id and its summary — `<finding-id>` and `<summary>`, exactly as
+#              the digest gives them, or *not recorded* when they are empty — and
+#              every packet that summary names by its id and plain-English title (the
+#              lookup above). The summary holds the routing; write the question, the
+#              two options and the lean from it, as for a `handoff-feature` line.
+#   merges,    the `review` line's `<merged>` and `<dropped>` are COUNTS. They render
+#   drops      as numbers on one line with no glyph — never as 🔀, never as a
+#              decision block, never as a line per finding — and they add nothing to
+#              the 🔀 figure. `<routed>` is stated on the same line as a count; it is
+#              the routing lines, not that number, that become decisions. The index
+#              bytes before and after go on the same line.
+#
+# A value on the `review` line that reads `unmeasured` is written *unmeasured*, never
+# 0 or blank; an unmeasured `<routed>` comes with no routing lines, so it adds no 🔀
+# line and no block, and the counts line is where the reader learns that.
+#
+#   > Findings review — 2 merged · 1 routed · 1 dropped · index 14,210 → 9,880 bytes
+#
 # **Three facts the digest does not carry**, and the only three a shape below may
 # read from anywhere else — each a FILE read at render time, never a memory:
 #
@@ -133,6 +157,14 @@
 # a question takes 🔀" rule — that rule exists so such a packet counts once in each
 # tally, and shape A has no tally.
 #
+# A periodic review since your last report adds its lines here too, rendered as the
+# review paragraph at the top of this file says: one 🔀 line per `review-routing`
+# line, naming the finding and the packets its summary names, and one glyphless
+# counts line for the `review` line itself — its merges and drops never take 🔀.
+#
+#   > 🔀 **Finding `<finding-id>`** — <summary, shortened>; names **<Title>** (`<id>`)
+#   > Findings review — <merged> merged · <routed> routed · <dropped> dropped · index <before> → <after> bytes
+#
 # A sweep runs before every start/continuation (loop-measurement T8). A packet it
 # closed reads as `interrupted` in the digest and takes the ⚠️ line above with
 # *swept as interrupted* as its clause — there is no separate sweep line any more.
@@ -191,6 +223,12 @@
 # capped against a digest count. The digest's `decision` line carries no
 # timestamp, so this is the core's judgement, not something to re-derive from
 # the digest.
+#
+# The 🔀 figure also counts one per `decision\t\treview-routing` line — a periodic
+# review's routing, counted directly because its empty packet-id field leaves
+# nothing for the hand-off exclusion or the still-awaiting ageing to join on. The
+# `review` line itself counts toward no figure: its merges and drops are numbers,
+# never decisions.
 #
 # A packet routed `hand-off-feature` always
 # emits BOTH records for the same question (the digest's two records — left
@@ -255,6 +293,12 @@
 #   drop an open question the run asked three hours and one compaction ago. Its
 #   `<status>` field is the status line the decider routed — it holds the
 #   question; write the two options and the lean.
+# - **Every `review-routing` line becomes exactly one decision block too**, headed
+#   by the routed finding's id and summary and naming each packet the summary names
+#   by id and title (the review paragraph at the top of this file). **The `review`
+#   line becomes one glyphless counts line** in a `>` quote directly above ▶ Next —
+#   never a block, never under 🔀 — so a review that merged and dropped entries but
+#   routed none adds a line and no decision.
 # - **`⬚ Queued` collapses to a count and one clause**, never a list of its own
 #   lines — the digest does not carry unbegun packets, so there is nothing to name
 #   there anyway. If everything remaining is unfinished, omit the section.
@@ -284,6 +328,23 @@
 #   🔀 **Decisions**, one per counted line above — the header's 🔀 figure and the
 #   section's block count match, which is the table-of-contents property this
 #   correction restores.
+#
+# Worked example of a periodic review (one routing, two merges, one drop):
+#
+#   packet   txn-t4  Add a duplicate-detection pass over…  rolled-back
+#   packet   txn-t5  Record every import in an audit log…  green
+#   decision         review-routing  txn-import-dupes  review: bank retries resend a
+#                                    row; needs a dedup feature (txn-t4)
+#   review   2  1  1  14210  9880
+#
+#   Tally: ✅ **1 shipped** · ⛔ **1 failed** · 🔀 **1 decision** — the one
+#   `review-routing` line.
+#   The `review` line counts toward nothing. The body renders exactly one block
+#   under 🔀 **Decisions**, headed by finding `txn-import-dupes` and its summary and
+#   naming **Duplicate detection** (`txn-t4`) — by id alone if the digest had no
+#   `txn-t4` packet line — and the merges and the drop appear only as numbers:
+#
+#   > Findings review — 2 merged · 1 routed · 1 dropped · index 14,210 → 9,880 bytes
 #
 # Worked example (from a digest with five packets, one paused, one question):
 #

@@ -5123,6 +5123,142 @@ assert_true "run-tally liveness: one packet with a live ask-operator question AN
   "[ \"\$(lv_decisions \"\${LV_Q}\${LV_RETRY_STOP}\" '')\" = 2 ]"
 
 echo
+echo "== run-digest: a periodic review's own line and its routings as decisions, with every"
+echo "   packet decision still reported exactly ONCE (escalation-decider T7) =="
+# THE mutation this block exists to rule out is emitting a digest `decision`
+# line for every record in .agents/metrics/decisions/, rather than for the
+# `review` records alone. Every packet decision already produced a
+# routing.jsonl record -- the driver routed the token -- and the decider then
+# wrote its OWN audit copy of the same decision to the decision log. Reading
+# both sources reports that one decision twice, and because the stop report's
+# 🔀 figure is counted from these lines, its header doubles. The failure is
+# silent: both lines are individually well-formed.
+#
+# The fixture is therefore built so the wrong implementation is DISTINGUISHABLE
+# in two independent directions, because the obvious half-fix (dedupe the two
+# sources by packet+token) would pass the first and fail the second:
+#   - `rvw-pkt`/`retry` exists in BOTH logs -- a routing record and a decision
+#     record. Counted, not grepped: `exactly once` is the assertion, and a
+#     `grep -q` would pass against two copies.
+#   - `rvw-pkt`/`reorder` exists ONLY in the decision log, with no routing
+#     record at all (what a crash between the decider writing its record and
+#     the driver routing its token leaves behind). It must not appear either --
+#     the rule is that the decision records are not a source of digest decision
+#     lines, not that duplicates are removed.
+RVW="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RVW" init -q
+git -C "$RVW" config user.email t@t; git -C "$RVW" config user.name t
+mkdir -p "$RVW/.agents"
+printf 'schema: 3\nstatus: running\n' > "$RVW/.agents/run-state.yaml"
+# Session pinned per call, not exported: the sweep may itself run inside a
+# session that exports CLAUDE_CODE_SESSION_ID, and that value is the log's
+# filename.
+rvw_rs() { (cd "$RVW" && CLAUDE_CODE_SESSION_ID=RVWS "$RUNSTATE" "$@"); }
+RVW_RUN_ID="$(rvw_rs begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+RVW_LOG="$RVW/.agents/metrics/decisions/RVWS.jsonl"
+# Count digest lines by their three leading fields. awk, not grep: field 2 of a
+# review-routing line is EMPTY, which is the property being asserted, and a
+# whole-line grep cannot tell an empty field from a collapsed one.
+rvw_lines() { # <digest> <type> <field2> <field3> -> count
+  awk -F'\t' -v k="$2" -v a="$3" -v b="$4" '$1 == k && $2 == a && $3 == b { n++ } END { print n+0 }' <<<"$1"
+}
+
+printf 'T7 the escalated packet\nbody\n' \
+  | rvw_rs handoff .agents/run-state.yaml rvw-pkt --tier mechanical --agent implementer >/dev/null
+rvw_rs record-start rvw-pkt >/dev/null
+# The reviewer escalates, the decider answers `retry`, the driver routes it:
+# one routing record for the packet decision.
+rvw_rs route .agents/run-state.yaml rvw-pkt escalate >/dev/null
+rvw_rs route .agents/run-state.yaml rvw-pkt retry >/dev/null
+# The decider's own audit copies. The first duplicates the routed token; the
+# second was never routed at all.
+rvw_rs record-decision .agents/run-state.yaml rvw-pkt retry \
+  --trigger 'the handoff omitted the sweep case' >/dev/null
+rvw_rs record-decision .agents/run-state.yaml rvw-pkt reorder \
+  --trigger 'the packet can proceed once other pending work lands' >/dev/null
+# merged/routed/dropped are 2/3/4 deliberately: no two of them sum to another,
+# so a tally that counted merges or drops as decisions lands on a number the
+# assertion below can tell apart from 3.
+rvw_rs record-review .agents/run-state.yaml \
+  --bytes-before 4096 --bytes-after 2048 --merged 2 --routed 3 --dropped 4 >/dev/null
+RVW_DIGEST="$(rvw_rs run-digest .agents/run-state.yaml)"
+
+assert_true "T7 fixture: the decision log really holds the decider's own copy of the routed decision (so 'exactly once' below is not vacuous)" \
+  "[ \"\$(grep -c '\"kind\":\"decision\",\"packet\":\"rvw-pkt\",\"decision\":\"retry\"' \"$RVW_LOG\")\" = 1 ]"
+assert_true "T7 fixture: and a second decision record the driver never routed" \
+  "[ \"\$(grep -c '\"kind\":\"decision\",\"packet\":\"rvw-pkt\",\"decision\":\"reorder\"' \"$RVW_LOG\")\" = 1 ]"
+assert_true "run-digest: the packet decision is reported EXACTLY once -- from routing.jsonl, never a second time from the decider's own decision record" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST\" decision rvw-pkt retry)\" = 1 ]"
+assert_true "run-digest: a decision record with no routing record produces NO decision line -- the decision records are not a source of digest decision lines at all" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST\" decision rvw-pkt reorder)\" = 0 ]"
+
+echo "-- the review's own line: five values, carried verbatim in merged/routed/dropped/before/after order --"
+assert_true "run-digest: the review line carries the completed review's merged, routed and dropped counts and its index bytes before and after" \
+  "grep -qx \$'review\t2\t3\t4\t4096\t2048' <<<\"\$RVW_DIGEST\""
+assert_true "run-digest: one decision line per review routing -- three routings, three lines" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST\" decision '' review-routing)\" = 3 ]"
+assert_true "run-digest: a review routing names NO packet (its id field is empty) -- a review routes a finding, so there is nothing for a renderer to join to a packet line" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST\" decision rvw-pkt review-routing)\" = 0 ]"
+assert_true "run-digest: the review record adds no packet line of its own" \
+  "[ \"\$(awk -F'\t' '\$1 == \"packet\" { n++ } END { print n+0 }' <<<\"\$RVW_DIGEST\")\" = 1 ]"
+
+echo "-- run-tally: the routings count as decisions; the merges and drops stay counts --"
+RVW_TALLY="$(rvw_rs run-tally .agents/run-state.yaml)"
+assert_true "run-tally: DECISIONS counts the three review routings and nothing else -- not the 2 merges, not the 4 drops, and not the non-question retry" \
+  "[ \"\$(sed -n 's/^DECISIONS=//p' <<<\"\$RVW_TALLY\")\" = 3 ]"
+assert_true "run-tally: still prints exactly the four figures in the fixed tally order -- a review is not a fifth figure" \
+  "[ \"\$(sed -n 's/=.*//p' <<<\"\$RVW_TALLY\" | tr '\n' ' ')\" = 'SHIPPED FAILED UNFINISHED DECISIONS ' ]"
+
+echo "-- a count that could not be read: 'unmeasured' is carried through, and no routing line is invented for it --"
+# Reporting 0 routings here would read as a measurement meaning the review
+# routed nothing, and fabricating lines for an unknown count would report a
+# guess as a tally figure. Neither: the `review` line says `unmeasured` and the
+# decision lines stay at the three the MEASURED review produced.
+rvw_rs record-review .agents/run-state.yaml \
+  --bytes-before unmeasured --bytes-after unmeasured --merged 1 --routed unmeasured --dropped 0 >/dev/null
+RVW_DIGEST2="$(rvw_rs run-digest .agents/run-state.yaml)"
+assert_true "run-digest: an unmeasured count is carried VERBATIM onto the review line, never rewritten to 0" \
+  "grep -qx \$'review\t1\tunmeasured\t0\tunmeasured\tunmeasured' <<<\"\$RVW_DIGEST2\""
+assert_true "run-digest: an unmeasured routed count invents no review-routing decision lines -- still exactly the three the measured review produced" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST2\" decision '' review-routing)\" = 3 ]"
+assert_true "run-tally: and DECISIONS is unchanged by it -- an unknown number of routings adds nothing rather than adding zero" \
+  "[ \"\$(rvw_rs run-tally .agents/run-state.yaml | sed -n 's/^DECISIONS=//p')\" = 3 ]"
+
+echo "-- scoped to THIS run, and to --since, exactly as the decision lines are --"
+# The decision log is SESSION-keyed and a session outlives a run (begin-run
+# mints run_id once, and a resume keeps it), so a session's log holds every run
+# it drove. Without the run_id filter a second run would report the previous
+# one's reviews as its own. The record below is written by hand because a
+# minted run_id belongs to a run-state, and the point is a record this run-state
+# never made.
+printf '{"ts":"2026-02-01T00:00:00Z","session":"OTHER","run_id":"20990101T000000-ffff","kind":"review","bytes_before":"11","bytes_after":"22","merged":"9","routed":"9","dropped":"9"}\n' \
+  > "$RVW/.agents/metrics/decisions/OTHER.jsonl"
+RVW_DIGEST3="$(rvw_rs run-digest .agents/run-state.yaml)"
+assert_true "run-digest: a review recorded under ANOTHER run's run_id is not reported as this run's" \
+  "! grep -q \$'review\t9\t9\t9' <<<\"\$RVW_DIGEST3\""
+assert_true "run-digest: and its routings are not counted either -- still exactly three review-routing lines" \
+  "[ \"\$(rvw_lines \"\$RVW_DIGEST3\" decision '' review-routing)\" = 3 ]"
+# Captured into variables and matched with here-strings rather than piped into
+# `grep -q`: under the `pipefail` set at the top of this file a pipe-fed early-
+# exiting reader can report the writer's SIGPIPE instead of its own success --
+# the flake scripts/runstate.sh carries its own source guard against.
+RVW_FUTURE="$(rvw_rs run-digest .agents/run-state.yaml --since 2099-01-01T00:00:00Z)"
+RVW_EPOCH="$(rvw_rs run-digest .agents/run-state.yaml --since 1970-01-01T00:00:00Z)"
+assert_true "run-digest --since in the far future excludes the review line" \
+  "! grep -q \$'^review\t' <<<\"\$RVW_FUTURE\""
+assert_true "  and excludes the review-routing decision lines with it -- they are scoped WITH their review, not separately" \
+  "[ \"\$(rvw_lines \"\$RVW_FUTURE\" decision '' review-routing)\" = 0 ]"
+assert_true "  while the packet line it is scoped alongside still reports" \
+  "grep -qx \$'packet\trvw-pkt\tT7 the escalated packet\topen' <<<\"\$RVW_FUTURE\""
+assert_true "run-digest --since at the epoch still includes the review line and all three of its routings" \
+  "grep -qx \$'review\t2\t3\t4\t4096\t2048' <<<\"\$RVW_EPOCH\" && [ \"\$(rvw_lines \"\$RVW_EPOCH\" decision '' review-routing)\" = 3 ]"
+# The RD fixture has no .agents/metrics/decisions at all, so this pins the
+# missing-log path as fail-soft -- the same contract a missing routing.jsonl or
+# driver-mode log already has, never a die.
+RVW_NOLOG="$(cd "$RD" && "$RUNSTATE" run-digest .agents/run-state.yaml)"
+assert_true "run-digest: a run with no decision log at all emits no review line and still reports its packets (fail-soft, as a missing routing.jsonl is)" \
+  "! grep -q \$'^review\t' <<<\"\$RVW_NOLOG\" && grep -q \$'^packet\t' <<<\"\$RVW_NOLOG\""
+
+echo
 echo "-- the end-of-run arm-2 proposal: ONE record, for a fixed id that is not a packet (loop-driver-run-gaps T6) --"
 # The termination review (skills/run-loop/SKILL.md §4) routes the architect's
 # arm-2 proposal through `route` under the fixed id `end-of-run-review`. That id

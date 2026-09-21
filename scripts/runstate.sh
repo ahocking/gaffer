@@ -674,6 +674,62 @@
 #                                        only ROUTES to the decider) -- with
 #                                        a parsed ts at or after --since (all
 #                                        of them when --since is omitted).
+#                                        PLUS, since escalation-decider T7,
+#                                        one `decision\t\treview-routing` per
+#                                        routing a periodic review made (see
+#                                        the `review` line below). Its id
+#                                        field is EMPTY, and deliberately: a
+#                                        review routes a FINDING, not a
+#                                        packet, so there is no packet id to
+#                                        name and a renderer joining decision
+#                                        lines to packet lines by id must not
+#                                        mis-join one.
+#                                      review\t<merged>\t<routed>\t<dropped>
+#                                            \t<bytes_before>\t<bytes_after>
+#                                        escalation-decider T7: one per
+#                                        `"kind":"review"` record in
+#                                        .agents/metrics/decisions/*.jsonl
+#                                        (EVERY session's log -- a run spans
+#                                        sessions) whose `run_id` is THIS
+#                                        run's. The run_id filter is what that
+#                                        log's run_id field exists for: it is
+#                                        session-keyed and a session outlives
+#                                        a run, so without it a resumed run
+#                                        would report the previous run's
+#                                        reviews. --since-scoped exactly as
+#                                        the decision lines above are, and the
+#                                        review-routing decision lines a
+#                                        review produces are scoped WITH it
+#                                        (they come from the same record).
+#                                        Each value is carried VERBATIM from
+#                                        the record, including the literal
+#                                        `unmeasured` a count that could not
+#                                        be read is written as -- never
+#                                        rewritten to 0, which would read as a
+#                                        measurement.
+#                                        ONLY the review records are read from
+#                                        that log; the decision records in it
+#                                        are NOT a source of digest `decision`
+#                                        lines. Every packet decision already
+#                                        produced a routing.jsonl record --
+#                                        the driver routed the token -- so
+#                                        reading both would report each packet
+#                                        decision TWICE and double the stop
+#                                        report's 🔀 tally. The decider's own
+#                                        records are for the audit and the
+#                                        success metric, which read the log
+#                                        directly.
+#                                        A `routed` value that is not a run of
+#                                        digits (`unmeasured`, or anything a
+#                                        hand-edit left behind) yields NO
+#                                        review-routing decision lines and so
+#                                        adds nothing to run-tally's
+#                                        DECISIONS: the number of routings is
+#                                        unknown, and inventing lines for it
+#                                        would report a guess. The `review`
+#                                        line still carries `unmeasured`, so
+#                                        the renderer states it rather than
+#                                        the tally implying zero.
 #                                      handoff-feature\t<id>\t<status>
 #                                        one per hand-off-feature routing
 #                                        record for the WHOLE run, regardless
@@ -754,7 +810,24 @@
 #                                                      not answer; a blocked
 #                                                      outcome -- the stop
 #                                                      /gaffer:pause records
-#                                                      -- never answers)
+#                                                      -- never answers),
+#                                                      plus one per review-
+#                                                      routing decision line
+#                                                      (escalation-decider
+#                                                      T7): a periodic
+#                                                      review's routings
+#                                                      count as decisions,
+#                                                      while its merges and
+#                                                      drops stay counts on
+#                                                      the `review` line and
+#                                                      are counted toward no
+#                                                      figure here. A review
+#                                                      routing is never
+#                                                      liveness-filtered or
+#                                                      hand-off-excluded: it
+#                                                      names no packet, so
+#                                                      there is nothing for
+#                                                      either rule to join on.
 #                                    No queued figure: that is the pending
 #                                    count `summary` reports, not a digest
 #                                    fact. Dies exactly where run-digest dies.
@@ -4562,6 +4635,56 @@ EOF
   printf '%s' "$best_line"
 }
 
+# --- run-digest: this run's completed periodic reviews, from the decision log
+# --- (escalation-decider T7) ------------------------------------------------
+# Prints one TSV row per `kind":"review"` record carrying THIS run's run_id,
+# across EVERY session's log (a run spans sessions, so the glob is the whole
+# directory -- the same whole-directory read _rs_digest_outcome makes, and for
+# the same reason):
+#   <ts>\t<merged>\t<routed>\t<dropped>\t<bytes_before>\t<bytes_after>
+# The ts leads so the caller can apply --since with _rs_ts_key, which needs
+# `date` and so cannot live in awk.
+#
+# The run_id filter is not optional bookkeeping. This log is SESSION-keyed and
+# `begin-run` mints run_id once per run-state, so one session's log holds every
+# run it drove; without the filter a resumed or second run would report the
+# previous run's reviews as its own.
+#
+# The field_esc walk is a fourth verbatim copy of the one in
+# _rs_digest_outcome/_rs_digest_latest_enter/cmd_run_digest rather than a
+# shared constant: those three are shipped readers this task does not touch,
+# and hoisting them into one global would rewrite three working functions to
+# save a paste. Copying is this file's existing convention for it.
+_rs_digest_reviews() {
+  local main_root="$1" run_id="$2"
+  local dir="${main_root}/.agents/metrics/decisions"
+  [ -d "$dir" ] || return 0
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+  awk -v want="$run_id" "$extract"'
+    { k = field_esc($0, "kind");   if (k != "review") next
+      r = field_esc($0, "run_id"); if (r != want) next
+      ts = field_esc($0, "ts");    if (ts == "") next
+      print ts "\t" field_esc($0, "merged") "\t" field_esc($0, "routed") \
+        "\t" field_esc($0, "dropped") "\t" field_esc($0, "bytes_before") \
+        "\t" field_esc($0, "bytes_after") }
+  ' "$dir"/*.jsonl 2>/dev/null
+}
+
 # --- run-digest: assemble the run's report from files alone, nothing from
 # --- memory (thin-loop-driver T11) ------------------------------------------
 # See the header comment above for the exact line shapes this prints -- one
@@ -4672,6 +4795,64 @@ cmd_run_digest() {
     done < "$routing_file"
   fi
 
+  # --- one line per completed periodic review recorded for THIS run, plus one
+  # --- decision line per routing that review made (escalation-decider T7) ----
+  # Read from .agents/metrics/decisions/, NOT from routing.jsonl: a periodic
+  # review is not a packet escalation, so the driver never routes a token for
+  # it and it leaves no routing record. The converse is what the `decision`
+  # lines above rest on and is stated here because getting it wrong is silent:
+  # only the `review` records in that log are read. Its `decision` records are
+  # the decider's own audit copy of decisions the driver ALREADY routed, so
+  # emitting a digest line from them too would report every packet decision
+  # twice -- once from routing.jsonl and once from here -- and double the stop
+  # report's 🔀 tally.
+  #
+  # Fields come off the row with `cut -f`, never `IFS=<tab> read`: bash treats
+  # tab as IFS whitespace whatever IFS is set to, so adjacent tabs collapse and
+  # one empty field shifts every later one left. A hand-edited record missing a
+  # count produces exactly that empty field, and the same trap is already
+  # documented at _rs_open_packets and at the enter line below.
+  local rev_since_key=-1
+  [ -n "$since" ] && rev_since_key="$(_rs_ts_key "$since")"
+  local rev_row rev_ts rev_key rev_merged rev_routed rev_dropped rev_before rev_after rev_n rev_i
+  while IFS= read -r rev_row; do
+    [ -n "$rev_row" ] || continue
+    rev_ts="$(printf '%s' "$rev_row" | cut -f1)"
+    if [ -n "$since" ]; then
+      rev_key="$(_rs_ts_key "$rev_ts")"
+      [ "$rev_key" -ge "$rev_since_key" ] || continue
+    fi
+    rev_merged="$(printf '%s' "$rev_row" | cut -f2)"
+    rev_routed="$(printf '%s' "$rev_row" | cut -f3)"
+    rev_dropped="$(printf '%s' "$rev_row" | cut -f4)"
+    rev_before="$(printf '%s' "$rev_row" | cut -f5)"
+    rev_after="$(printf '%s' "$rev_row" | cut -f6)"
+    printf 'review\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rev_merged" "$rev_routed" "$rev_dropped" "$rev_before" "$rev_after"
+    # `routed` is re-validated HERE and not trusted from the record:
+    # record-review only ever writes digits or `unmeasured`, but this reads a
+    # file it did not write, and the value drives a loop. Anything that is not
+    # a run of digits -- `unmeasured` above all -- yields NO decision lines,
+    # because the number of routings is then unknown and a fabricated line is a
+    # guess reported as a count. The `review` line above still carries the word
+    # `unmeasured`, which is where a reader learns the count was not read.
+    case "$rev_routed" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    # 10# so a leading zero is read as decimal, never octal; an absurdly long
+    # digit run overflows to <= 0 and prints nothing rather than looping.
+    rev_n=$((10#$rev_routed)); rev_i=0
+    while [ "$rev_i" -lt "$rev_n" ]; do
+      # Empty id field: a review routes a FINDING, not a packet. See the
+      # header -- there is no packet id to name here, and leaving the field
+      # empty is what stops a renderer joining this line to a packet line.
+      printf 'decision\t\treview-routing\n'
+      rev_i=$((rev_i + 1))
+    done
+  done <<EOF
+$(_rs_digest_reviews "$main_root" "$run_id")
+EOF
+
   # --- model/effort/threshold at the latest driver-mode enter, any session --
   # Fields are pulled with `cut -f`, NOT `IFS=<tab> read`: bash always treats
   # tab as "IFS whitespace" for splitting purposes regardless of what IFS is
@@ -4736,6 +4917,14 @@ cmd_run_tally() {
       next
     }
     $1 == "handoff-feature" { decisions++; hof[$2] = 1; next }
+    # The routings of a periodic review count as decisions (escalation-decider
+    # T7), counted directly: the line names no packet, so neither the hand-off
+    # exclusion nor the liveness cap below has anything to join it on. Merges
+    # and drops stay counts -- they arrive on the `review` line, which falls
+    # through every rule here and is counted toward no figure.
+    # (No apostrophes in this comment: the whole program is one single-quoted
+    # shell word, and one would end it.)
+    $1 == "decision" && $3 == "review-routing" { decisions++; next }
     $1 == "decision" && $3 == "hand-off-feature" { dec[++nd] = $2; next }
     $1 == "decision" && $3 == "ask-operator" { ask[$2]++; next }
     END {

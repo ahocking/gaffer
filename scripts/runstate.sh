@@ -67,6 +67,22 @@
 #                                    rename + temp-file swap). A forced failure
 #                                    mid-drop restores the set-aside body and
 #                                    leaves the index entry in place.
+#   merge-findings <file> <survivor-id> <removed-id>
+#                                    fold two duplicate findings into one,
+#                                    LOSSLESSLY: the survivor's `packets:`
+#                                    becomes the union of both lists, the
+#                                    removed entry's summary AND the whole of
+#                                    its body are appended to the survivor's
+#                                    body file (created here, with the entry's
+#                                    `file:` pointer, when the survivor had
+#                                    none), and only THEN is the removed entry
+#                                    dropped with its body — both-or-neither on
+#                                    drop-finding's own sequence, so a failure
+#                                    anywhere leaves both entries and both
+#                                    bodies untouched. Whether two findings
+#                                    really are duplicates is a judgment
+#                                    nothing here checks; losslessness is what
+#                                    makes being wrong about it recoverable.
 #   claim-driver <file> [pid]        mark the run as actively driven (host +
 #                                    since + heartbeat). Pass a pid ONLY if you
 #                                    have a genuinely long-lived one.
@@ -1379,6 +1395,60 @@ _restore_aside() {
   return 0
 }
 
+# The `findings:` block — its key line's contents through the line before the
+# next column-0 key (or EOF). ONE copy of that bound: cmd_add_finding's
+# duplicate-id check, cmd_drop_finding's not-found check and cmd_merge_findings'
+# two existence checks all read it, so a change to how the block is delimited
+# reaches every one of them rather than three of four. Always exits 0 (a
+# run-state with no findings block is an empty block, not an error), which also
+# keeps a caller's `x="$(_findings_block …)"` from tripping `set -e`.
+_findings_block() {
+  awk '
+    /^findings:[[:space:]]*$/ { inf=1; next }
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
+    inf { print }' "$1" 2>/dev/null || true
+}
+
+# `[a, b]` -> `a, b` — the inverse of the YAML flow sequence add-finding writes
+# for `packets:`. Only the brackets come off; splitting, validating and
+# de-duplicating stay _normalize_id_list's job, which is where every other
+# packet list in this file is normalized.
+_strip_flow() { printf '%s' "$1" | sed 's/^\[//; s/\]$//'; }
+
+# _finding_field <file> <id> <key> — the RAW (still-encoded) value of <key>
+# inside the findings entry whose `  - id:` line matches <id> exactly, or
+# nothing when the entry or the key is absent. Raw, not decoded: `packets:` and
+# `file:` are written bare and are wanted verbatim, while `summary:` is
+# single-quoted and its caller runs it through _yaml_decode_value — the one
+# decode rule (runstate-write-integrity-gaps T4), never a second one here.
+#
+# Field-at-a-time rather than a TSV row from _findings_default because a
+# summary may legitimately contain a tab (nothing collapses one — only newlines
+# are collapsed), and one tab inside a value shifts every later TSV field by
+# one, silently returning another entry's `file:` path as its `packets:`.
+_finding_field() {
+  local f="$1" id="$2" key="$3"
+  ID="$id" KEY="$key" awk '
+    BEGIN { target = "  - id: " ENVIRON["ID"]; pfx = ENVIRON["KEY"] ":" }
+    /^findings:[[:space:]]*$/ { inf = 1; next }
+    inf && /^[A-Za-z_][A-Za-z0-9_]*:/ { inf = 0; inentry = 0 }
+    inf && /^[[:space:]]*- id:/ { inentry = ($0 == target) ? 1 : 0; next }
+    inentry {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      # LITERAL prefix match (index), not a regex: every key passed in is a
+      # literal from this file, but the same rule that made the duplicate-id
+      # check use grep -F applies — a metacharacter must never widen a match.
+      if (index(line, pfx) == 1) {
+        v = substr(line, length(pfx) + 1)
+        sub(/^[[:space:]]+/, "", v)
+        print v
+        exit
+      }
+    }
+  ' "$f" 2>/dev/null || true
+}
+
 # --- add a finding: one-line index entry here, body in .agents/findings/ ------
 # ADR 0022/0024. Run-state is read by EVERY packet and sits in the standing context
 # for a whole dispatch, so content useful to one packet is paid for by all of them.
@@ -1473,10 +1543,7 @@ cmd_add_finding() {
   #   - literal (`grep -F` on an exact line): `.` is a legal id character and a live regex
   #     metachar, so `f.001` matched `f-001` and reported a duplicate that did not exist.
   local in_findings
-  in_findings="$(awk '
-    /^findings:[[:space:]]*$/ { inf=1; next }
-    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
-    inf { print }' "$f" 2>/dev/null || true)"
+  in_findings="$(_findings_block "$f")"
   # NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2): no bound can be
   # written down for this writer, so the pipe is removed rather than recorded.
   # The reading behind that one line: the writer emits the ENTIRE `findings:`
@@ -1591,10 +1658,7 @@ cmd_drop_finding() {
   esac
 
   local in_findings
-  in_findings="$(awk '
-    /^findings:[[:space:]]*$/ { inf=1; next }
-    /^[A-Za-z_][A-Za-z0-9_]*:/ { inf=0 }
-    inf { print }' "$f" 2>/dev/null || true)"
+  in_findings="$(_findings_block "$f")"
   # NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2): no bound can be
   # written down for this writer, so the pipe is removed rather than recorded.
   # Same reading as cmd_add_finding's duplicate check above — the writer emits the
@@ -1638,6 +1702,195 @@ cmd_drop_finding() {
   else
     printf 'DROPPED=yes\nID=%s\nBODY=none\n' "$id"
   fi
+}
+
+# --- merge two findings: one entry, both packet lists, NO TEXT LOST -----------
+# ADR 0024 as amended by escalation-decider: a periodic review may merge two
+# entries that say the same thing, and the whole licence for doing that inside
+# the loop is that the merge is LOSSLESS. Whether two findings really are
+# duplicates is a judgment nothing here can check (the PRD says so outright);
+# what this command guarantees is that being wrong costs a reader some noise in
+# one body file, never a sentence that no longer exists anywhere.
+#
+# So "merge" is three things, in this order, and the order is the contract:
+#   1. the surviving entry's `packets:` becomes the UNION of both lists, so the
+#      merged entry expires only once every packet EITHER finding named has run
+#      (`findings --stale` reads that list; a union that dropped ids would
+#      expire the survivor early, which is the failure ADR 0024 exists to stop),
+#   2. the removed entry's SUMMARY and the WHOLE of its body are appended to the
+#      survivor's body file — created here, with the entry's `file:` pointer,
+#      when the survivor had none, because a summary with nowhere to go is text
+#      lost just as surely as a deleted body,
+#   3. and ONLY THEN is the removed entry dropped, with its body, both-or-
+#      neither on exactly drop-finding's sequence: set aside -> build -> swap ->
+#      delete the set-aside. Any failure in the middle restores both bodies and
+#      dies, leaving the two entries and both bodies exactly as they were.
+#
+# The step that matters most is 2-before-3. Copying only the summary and then
+# deleting the body reads as a complete merge from every count anyone looks at
+# — one entry fewer in the index, both packet ids present, a body file that
+# grew — while the removed body's detail is simply gone. That is the one
+# failure a merge can have that nothing downstream can notice, which is why the
+# sweep case asserts EVERY LINE of the removed body, not just its summary.
+cmd_merge_findings() {
+  local f="${1:-}" sid="${2:-}" rid="${3:-}"
+  [ "$#" -eq 3 ] && [ -n "$f" ] && [ -n "$sid" ] && [ -n "$rid" ] \
+    || die "usage: merge-findings <run-state-file> <survivor-id> <removed-id>"
+  need_file "$f"
+  case "$sid" in *[!a-zA-Z0-9._-]*) die "finding id must be [a-zA-Z0-9._-] (it is a filename)" ;; esac
+  case "$rid" in *[!a-zA-Z0-9._-]*) die "finding id must be [a-zA-Z0-9._-] (it is a filename)" ;; esac
+  # Merging an entry into itself is an argument error, not a no-op: step 3 would
+  # delete the very body step 2 had just appended to. Refused before anything is
+  # read, like every other argument error here.
+  [ "$sid" != "$rid" ] \
+    || die "survivor and removed must differ (merging '${sid}' into itself would delete the body it just appended to)"
+
+  local in_findings
+  in_findings="$(_findings_block "$f")"
+  # NO PIPE, BY HERE-STRING (next-state-reporting-integrity T2) — the same
+  # reading as cmd_add_finding's and cmd_drop_finding's checks above: the whole
+  # findings block is written in one go and is EXPECTED to reach 4096 bytes
+  # (PIPE_BUF), so a piped `grep -q` matching early could report the writer's
+  # SIGPIPE 141 instead of the match. Negated here as in drop-finding, where the
+  # wrong answer is the worse direction: an existing entry read as not-found.
+  if ! grep -qxF "  - id: ${sid}" <<< "$in_findings"; then
+    printf 'MERGED=no\nREASON=survivor-not-found\nSURVIVOR=%s\nREMOVED=%s\n' "$sid" "$rid"; return 0
+  fi
+  if ! grep -qxF "  - id: ${rid}" <<< "$in_findings"; then
+    printf 'MERGED=no\nREASON=removed-not-found\nSURVIVOR=%s\nREMOVED=%s\n' "$sid" "$rid"; return 0
+  fi
+
+  # --- everything the merge needs, read BEFORE anything is written ------------
+  local s_pkts r_pkts s_file r_summary s_summary merged_csv packets_flow
+  s_pkts="$(_strip_flow "$(_finding_field "$f" "$sid" packets)")"
+  r_pkts="$(_strip_flow "$(_finding_field "$f" "$rid" packets)")"
+  s_file="$(_finding_field "$f" "$sid" file)"
+  r_summary="$(_yaml_decode_value "$(_finding_field "$f" "$rid" summary)")"
+  s_summary="$(_yaml_decode_value "$(_finding_field "$f" "$sid" summary)")"
+  # Survivor's ids first, then the removed entry's, de-duplicated in first-seen
+  # order by the SAME normalizer `--packets` goes through — so a merged list is
+  # indistinguishable from one `add-finding` wrote, including its id charset
+  # refusal. An entry with no `packets:` at all (a hand-written legacy one;
+  # add-finding has always required the flag) contributes nothing and does not
+  # fail the merge.
+  merged_csv="$(_normalize_id_list "$(printf '%s %s' "$s_pkts" "$r_pkts")")"
+  packets_flow="$(printf '%s' "$merged_csv" | sed 's/,/, /g')"
+
+  local dir findingsdir sbody rbody rel add_file="" s_had_body=0 r_had_body=0
+  dir="$(dirname "$f")"
+  findingsdir="${dir}/findings"
+  sbody="${findingsdir}/${sid}.md"
+  rbody="${findingsdir}/${rid}.md"
+  # Derived from the same `dir` as the body itself, for the reason cmd_add_finding
+  # records: a hardcoded `.agents/…` prefix is a dangling index everywhere the
+  # run-state does not sit at exactly `.agents/run-state.yaml`.
+  rel="$(basename "$dir")/findings/${sid}.md"
+  [ -n "$s_file" ] || add_file="$rel"
+  [ -f "$sbody" ] && s_had_body=1
+  [ -f "$rbody" ] && r_had_body=1
+  mkdir -p "$findingsdir" 2>/dev/null || die "cannot create ${findingsdir}"
+
+  # --- 1. set the removed body aside (same-directory rename, atomic) ----------
+  local aside_r="" aside_s="" tmpbody="" tmp="" stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ "$r_had_body" = 1 ]; then
+    aside_r="$(mktemp "${findingsdir}/.${rid}.aside.XXXXXX")" || die "cannot create temp file in ${findingsdir}"
+    mv -f "$rbody" "$aside_r" || die "cannot set aside ${rbody}"
+  fi
+
+  # --- 2. build the merged survivor body ------------------------------------
+  tmpbody="$(mktemp "${findingsdir}/.${sid}.merge.XXXXXX")" \
+    || { _restore_aside "$aside_r" "$rbody"; die "cannot create temp file in ${findingsdir}"; }
+  { if [ "$s_had_body" = 1 ]; then
+      cat "$sbody"
+      # A body that does not end in a newline would otherwise run its last line
+      # into the appended heading.
+      if [ -n "$(tail -c 1 "$sbody")" ]; then printf '\n'; fi
+    else
+      printf '# %s\n\n' "$sid"
+      printf '> %s\n\n' "$s_summary"
+      printf -- '- recorded: %s\n' "$stamp"
+    fi
+    printf '\n## merged from %s (%s)\n\n' "$rid" "$stamp"
+    printf '> %s\n\n' "$r_summary"
+    if [ -n "$aside_r" ]; then cat "$aside_r"; fi
+    :
+  } > "$tmpbody" \
+    || { rm -f "$tmpbody"; _restore_aside "$aside_r" "$rbody"; die "cannot write ${sbody}"; }
+
+  # --- 3. build the updated run-state ---------------------------------------
+  # One pass: rewrite the survivor's `packets:` (and add its `file:` when the
+  # body was created here), drop the removed entry entirely. A key the survivor
+  # does not carry is emitted when the entry ENDS rather than guessed at a
+  # position inside it — the same reason cmd_add_finding inserts at the
+  # `findings:` key and nowhere else: locating a line that is not there means
+  # guessing, and guessing wrong writes into the next entry.
+  tmp="$(mktemp "${dir}/.run-state.XXXXXX")" \
+    || { rm -f "$tmpbody"; _restore_aside "$aside_r" "$rbody"; die "cannot create temp file in ${dir}"; }
+  SID="$sid" RID="$rid" PFLOW="$packets_flow" ADDFILE="$add_file" awk '
+    BEGIN {
+      starget = "  - id: " ENVIRON["SID"]
+      rtarget = "  - id: " ENVIRON["RID"]
+      pline   = "    packets: [" ENVIRON["PFLOW"] "]"
+      fline   = (ENVIRON["ADDFILE"] == "") ? "" : "    file: " ENVIRON["ADDFILE"]
+    }
+    function close_survivor() {
+      if (!seen_packets) print pline
+      if (fline != "" && !seen_file) print fline
+      insurv = 0; seen_packets = 0; seen_file = 0
+    }
+    /^findings:[[:space:]]*$/ { print; inf = 1; next }
+    inf && /^[A-Za-z_][A-Za-z0-9_]*:/ { if (insurv) close_survivor(); inf = 0; skip = 0; print; next }
+    inf && /^[[:space:]]*- id:/ {
+      if (insurv) close_survivor()
+      insurv = ($0 == starget) ? 1 : 0
+      skip   = ($0 == rtarget) ? 1 : 0
+      if (!skip) print
+      next
+    }
+    inf && skip { next }
+    inf && insurv && /^[[:space:]]*packets:/ { print pline; seen_packets = 1; next }
+    inf && insurv && /^[[:space:]]*file:/ {
+      if (fline != "") { print fline; seen_file = 1 } else print
+      next
+    }
+    { print }
+    END { if (insurv) close_survivor() }
+  ' "$f" > "$tmp" \
+    || { rm -f "$tmp" "$tmpbody"; _restore_aside "$aside_r" "$rbody"; die "failed to build updated run-state"; }
+
+  # --- 4. swap the body in, then the run-state ------------------------------
+  if [ "$s_had_body" = 1 ]; then
+    aside_s="$(mktemp "${findingsdir}/.${sid}.aside.XXXXXX")" \
+      || { rm -f "$tmp" "$tmpbody"; _restore_aside "$aside_r" "$rbody"; die "cannot create temp file in ${findingsdir}"; }
+    mv -f "$sbody" "$aside_s" \
+      || { rm -f "$tmp" "$tmpbody" "$aside_s"; _restore_aside "$aside_r" "$rbody"; die "cannot set aside ${sbody}"; }
+  fi
+  mv -f "$tmpbody" "$sbody" || {
+    rm -f "$tmp" "$tmpbody"
+    _restore_aside "$aside_s" "$sbody"; _restore_aside "$aside_r" "$rbody"
+    die "cannot write ${sbody}"
+  }
+  mv -f "$tmp" "$f" || {
+    rm -f "$tmp"
+    # The merged body is already in place; put back what was there before it —
+    # or remove it outright when this merge is what created it — so a failed
+    # merge leaves BOTH entries and BOTH bodies, never a survivor carrying the
+    # removed entry's text while the removed entry is still in the index.
+    if [ "$s_had_body" = 1 ]; then _restore_aside "$aside_s" "$sbody"; else rm -f "$sbody"; fi
+    _restore_aside "$aside_r" "$rbody"
+    die "cannot replace run-state"
+  }
+  rm -f "$aside_s" "$aside_r"
+
+  # ONE write, for the reason cmd_add_finding records: a caller piping this into
+  # `grep -q` can close the pipe on the first line, and a second printf into a
+  # closed pipe is a SIGPIPE that `pipefail` reports as a failure even though
+  # the match succeeded.
+  printf 'MERGED=yes\nSURVIVOR=%s\nREMOVED=%s\nPACKETS=%s\nFILE=%s\nBODY=%s\nSURVIVOR_BODY=%s\n' \
+    "$sid" "$rid" "$merged_csv" "$sbody" \
+    "$([ "$r_had_body" = 1 ] && printf 'merged' || printf 'summary-only')" \
+    "$([ "$s_had_body" = 1 ] && printf 'appended' || printf 'created')"
 }
 
 # --- list the finding index (ids + summaries only, never the bodies) ----------
@@ -5462,6 +5715,7 @@ case "$cmd" in
   sweep-open)     cmd_sweep_open     "$@" ;;
   add-finding)   cmd_add_finding   "$@" ;;
   drop-finding)  cmd_drop_finding  "$@" ;;
+  merge-findings) cmd_merge_findings "$@" ;;
   findings)      cmd_findings      "$@" ;;
   reconcile) cmd_reconcile "$@" ;;
   reconstruct) cmd_reconstruct "$@" ;;

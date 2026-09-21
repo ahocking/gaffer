@@ -2279,6 +2279,134 @@ assert_true "forced failure: no leftover aside file in findings/" \
   "! ls \"$FDF/findings\"/.*.aside.* >/dev/null 2>&1"
 
 echo
+echo "== merge-findings: one entry, both packet lists, NO TEXT LOST (escalation-decider T5) =="
+# THE WRONG IMPLEMENTATION THIS SECTION RULES OUT, and why it needs a
+# line-by-line check rather than a summary check: a merge that copies the
+# removed entry's SUMMARY into the survivor's body and then deletes the removed
+# body is indistinguishable from a correct one in every count anyone reads —
+# one entry fewer in the index, both packet ids on the survivor, a body file
+# that grew, MERGED=yes. The removed body's detail is simply gone, with nothing
+# left behind to notice it. Asserting the summary alone PASSES that
+# implementation, so every line of the removed body is checked here, against a
+# copy taken before the merge.
+FM="$(mktemp -d)/.agents"; mkdir -p "$FM"
+printf 'schema: 3\nstatus: running\nfindings:\nnote: keep-me\n' > "$FM/run-state.yaml"
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-keep 'the surviving finding' \
+  --packets mg-pkt-a,mg-pkt-shared --body >/dev/null
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-dup 'the duplicate finding, said differently' \
+  --packets mg-pkt-shared,mg-pkt-b --body >/dev/null
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-other 'an unrelated finding' \
+  --packets mg-pkt-c --body >/dev/null
+# Detail that exists ONLY in the removed body — the text a summary-only merge loses.
+printf 'MG-DETAIL-ONE the reproduction\nMG-DETAIL-TWO the constraint it implies\n' \
+  >> "$FM/findings/mg-dup.md"
+MG_RCOPY="$(mktemp)"; cp "$FM/findings/mg-dup.md" "$MG_RCOPY"
+MG_SCOPY="$(mktemp)"; cp "$FM/findings/mg-keep.md" "$MG_SCOPY"
+MG_OUT="$("$RUNSTATE" merge-findings "$FM/run-state.yaml" mg-keep mg-dup)"
+assert_true "merge-findings reports MERGED=yes" \
+  "printf '%s\n' \"\$MG_OUT\" | grep -qx 'MERGED=yes'"
+# The union, de-duplicated: survivor's ids first, then the removed entry's, and
+# mg-pkt-shared (named by BOTH) exactly once. A list that dropped an id would
+# expire the merged entry before every packet it constrains has run.
+assert_true "the reported packet list is the de-duplicated union, survivor's ids first" \
+  "printf '%s\n' \"\$MG_OUT\" | grep -qx 'PACKETS=mg-pkt-a,mg-pkt-shared,mg-pkt-b'"
+assert_true "both entries' packets appear in the survivor's packets: in the index" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$FM/run-state.yaml\" | awk -F'\t' '\$1==\"mg-keep\"{print \$4}')\" = mg-pkt-a,mg-pkt-shared,mg-pkt-b ]"
+# EVERY line of the removed body, not just its summary (see the note above).
+# `--` before the pattern is load-bearing: a finding body legitimately contains
+# lines beginning with `-` (add-finding's own `- recorded:` stub line), which
+# grep would otherwise read as options — every such line would report missing
+# and the case would fail against a correct merge.
+MG_MISSING=""
+while IFS= read -r mg_line; do
+  grep -qxF -- "$mg_line" "$FM/findings/mg-keep.md" || MG_MISSING="${MG_MISSING}${mg_line}
+"
+done < "$MG_RCOPY"
+assert_true "every line of the removed body appears in the survivor's body" \
+  "[ -z \"\$MG_MISSING\" ]"
+assert_true "the removed entry's summary appears in the survivor's body" \
+  "grep -qF 'the duplicate finding, said differently' \"$FM/findings/mg-keep.md\""
+# ...and the survivor's own body is appended to, never replaced: its pre-merge
+# content is still there, unchanged, as the head of the merged file.
+assert_true "the survivor's own body text survives the merge" \
+  "head -n \"\$(wc -l < \"$MG_SCOPY\")\" \"$FM/findings/mg-keep.md\" | diff -q - \"$MG_SCOPY\" >/dev/null"
+assert_true "the removed entry is gone from the index" \
+  "! grep -qxF '  - id: mg-dup' \"$FM/run-state.yaml\""
+assert_true "the removed body is gone from disk" \
+  "[ ! -f \"$FM/findings/mg-dup.md\" ]"
+assert_true "an unrelated entry and the keys around the findings block survive a merge" \
+  "grep -qxF '  - id: mg-other' \"$FM/run-state.yaml\" && grep -q '^note: keep-me' \"$FM/run-state.yaml\" && grep -q '^status: running' \"$FM/run-state.yaml\""
+assert_true "yamlok after a merge" \
+  "yamlok \"$FM/run-state.yaml\""
+assert_true "no leftover temp or aside file after a merge" \
+  "! ls \"$FM/findings\"/.mg-* >/dev/null 2>&1 && ! ls \"$FM\"/.run-state.* >/dev/null 2>&1"
+
+# A survivor with NO body: the removed entry's text still needs a home, so the
+# body and the entry's file: pointer are created here.
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-nobody 'a survivor with no body file' \
+  --packets mg-pkt-d >/dev/null
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-src 'the entry folded into it' \
+  --packets mg-pkt-e --body >/dev/null
+printf 'MG-ONLY-IN-SRC the detail that has nowhere else to go\n' >> "$FM/findings/mg-src.md"
+MG_OUT2="$("$RUNSTATE" merge-findings "$FM/run-state.yaml" mg-nobody mg-src)"
+assert_true "a survivor with no body gets one created (SURVIVOR_BODY=created)" \
+  "printf '%s\n' \"\$MG_OUT2\" | grep -qx 'SURVIVOR_BODY=created' && [ -s \"$FM/findings/mg-nobody.md\" ]"
+assert_true "the created body carries the removed body's text and the removed summary" \
+  "grep -qxF 'MG-ONLY-IN-SRC the detail that has nowhere else to go' \"$FM/findings/mg-nobody.md\" && grep -qF 'the entry folded into it' \"$FM/findings/mg-nobody.md\""
+# Read back through `findings` itself, not a grep for the next file: line in the
+# file — an entry that gained NO pointer would otherwise borrow the following
+# entry's path, which resolves, and the assertion would pass on the bug.
+assert_true "the survivor's index entry gains a file: pointer that resolves to the real body" \
+  "MG_F=\"\$(\"\$RUNSTATE\" findings \"$FM/run-state.yaml\" | awk -F'\t' '\$1==\"mg-nobody\"{print \$3}')\"; [ -n \"\$MG_F\" ] && [ -s \"\$(dirname \"$FM\")/\$MG_F\" ]"
+# A removed entry with no body of its own (the DEFAULT shape — bodies are
+# opt-in): its summary is the only text it has, and it must still survive.
+"$RUNSTATE" add-finding "$FM/run-state.yaml" mg-bare 'no body of its own, summary must still survive' \
+  --packets mg-pkt-f >/dev/null
+MG_OUT3="$("$RUNSTATE" merge-findings "$FM/run-state.yaml" mg-nobody mg-bare)"
+assert_true "a removed entry with no body still hands over its summary (BODY=summary-only)" \
+  "printf '%s\n' \"\$MG_OUT3\" | grep -qx 'BODY=summary-only' && grep -qF 'no body of its own, summary must still survive' \"$FM/findings/mg-nobody.md\""
+
+MG_BEFORE="$(cat "$FM/run-state.yaml")"
+assert_true "an unknown removed id merges nothing (REASON=removed-not-found)" \
+  "\"\$RUNSTATE\" merge-findings \"$FM/run-state.yaml\" mg-keep mg-no-such-id | grep -qx 'REASON=removed-not-found'"
+assert_true "an unknown survivor id merges nothing (REASON=survivor-not-found)" \
+  "\"\$RUNSTATE\" merge-findings \"$FM/run-state.yaml\" mg-no-such-id mg-keep | grep -qx 'REASON=survivor-not-found'"
+assert_true "a not-found merge leaves the file byte-identical" \
+  "[ \"\$(cat \"$FM/run-state.yaml\")\" = \"\$MG_BEFORE\" ]"
+# Merging an entry into itself would delete the very body it had just appended
+# to — an argument error, refused before anything is read.
+assert_true "merging an entry into itself is refused (nonzero), body and entry intact" \
+  "! \"\$RUNSTATE\" merge-findings \"$FM/run-state.yaml\" mg-keep mg-keep 2>/dev/null && [ -s \"$FM/findings/mg-keep.md\" ] && grep -qxF '  - id: mg-keep' \"$FM/run-state.yaml\""
+assert_true "a traversing id is rejected by merge-findings" \
+  "! \"\$RUNSTATE\" merge-findings \"$FM/run-state.yaml\" mg-keep '../escape' 2>/dev/null"
+
+# Forced failure, same technique as the drop-finding case above: the run-state's
+# OWN directory is made unwritable so building its temp file fails, AFTER the
+# removed body has been set aside. Both-or-neither means both bodies come back
+# and the index still holds both entries.
+FMF="$(mktemp -d)/.agents"; mkdir -p "$FMF"
+printf 'schema: 3\nstatus: running\nfindings:\nnote: forced-failure\n' > "$FMF/run-state.yaml"
+"$RUNSTATE" add-finding "$FMF/run-state.yaml" mf-keep 'the survivor' --packets mf-pkt-a --body >/dev/null
+"$RUNSTATE" add-finding "$FMF/run-state.yaml" mf-dup 'the duplicate' --packets mf-pkt-b --body >/dev/null
+printf 'MF-SURVIVOR-ORIGINAL\n' >> "$FMF/findings/mf-keep.md"
+printf 'MF-REMOVED-ORIGINAL\n' >> "$FMF/findings/mf-dup.md"
+MF_STATE="$(cat "$FMF/run-state.yaml")"
+MF_SBODY="$(cat "$FMF/findings/mf-keep.md")"
+MF_RBODY="$(cat "$FMF/findings/mf-dup.md")"
+chmod 500 "$FMF"
+assert_true "a forced failure mid-merge is refused (nonzero)" \
+  "! \"\$RUNSTATE\" merge-findings \"$FMF/run-state.yaml\" mf-keep mf-dup 2>/dev/null"
+chmod 700 "$FMF"
+assert_true "forced failure: run-state is unchanged, both entries still present" \
+  "[ \"\$(cat \"$FMF/run-state.yaml\")\" = \"\$MF_STATE\" ]"
+assert_true "forced failure: the survivor's body is unchanged (no half-merge)" \
+  "[ \"\$(cat \"$FMF/findings/mf-keep.md\")\" = \"\$MF_SBODY\" ]"
+assert_true "forced failure: the removed body is restored" \
+  "[ \"\$(cat \"$FMF/findings/mf-dup.md\")\" = \"\$MF_RBODY\" ]"
+assert_true "forced failure: no leftover temp or aside file" \
+  "! ls \"$FMF/findings\"/.mf-* >/dev/null 2>&1 && ! ls \"$FMF\"/.run-state.* >/dev/null 2>&1"
+
+echo
 echo "== findings --stale: SUPPLIED finished set only (ADR 0024, T6) =="
 FSS="$(mktemp -d)/.agents"; mkdir -p "$FSS"
 printf 'status: running\nbacklog:\n  cursor: pkt-cur\n  pending:\n    - pkt-cur\n    - pkt-pend\nfindings:\nnote: x\n' \
@@ -2538,7 +2666,7 @@ assert_true "legacy fixture (done: + packet-less findings) is valid YAML itself"
 # of the legacy fixture. record-outcome/request-pause/clear-pause/pause-status do NOT
 # mutate run-state (record-outcome writes a separate outcomes/ log; the pause
 # sentinel is its own file) so they are not exercised here.
-for mut in set touch write trim-note add-finding drop-finding claim-driver heartbeat; do
+for mut in set touch write trim-note add-finding drop-finding merge-findings claim-driver heartbeat; do
   LC="$(mktemp -d)/.agents"; mkdir -p "$LC"
   legacy_fixture > "$LC/run-state.yaml"
   case "$mut" in
@@ -2548,6 +2676,11 @@ for mut in set touch write trim-note add-finding drop-finding claim-driver heart
     trim-note)    mut_cmd="\"\$RUNSTATE\" trim-note \"$LC/run-state.yaml\" 5" ;;
     add-finding)  mut_cmd="\"\$RUNSTATE\" add-finding \"$LC/run-state.yaml\" new-2 'legacy add' --packets pkt-z" ;;
     drop-finding) mut_cmd="\"\$RUNSTATE\" drop-finding \"$LC/run-state.yaml\" old-1" ;;
+    # new-1 carries `packets:`, old-2 carries neither `packets:` nor `file:` —
+    # the merge has to add both to the survivor and tolerate their absence on
+    # the entry it removes, which is exactly the legacy shape this loop exists
+    # to run every mutating subcommand against.
+    merge-findings) mut_cmd="\"\$RUNSTATE\" merge-findings \"$LC/run-state.yaml\" new-1 old-2" ;;
     claim-driver) mut_cmd="\"\$RUNSTATE\" claim-driver \"$LC/run-state.yaml\"" ;;
     heartbeat)    mut_cmd="\"\$RUNSTATE\" heartbeat \"$LC/run-state.yaml\"" ;;
   esac

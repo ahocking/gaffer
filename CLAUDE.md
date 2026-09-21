@@ -918,6 +918,37 @@ passing sweeps.
   capture, drops anything else only on `findings --stale --finished` evidence, and ends
   with `record-review` as its last write — that record is what resets the count, so a
   review cut short leaves none and runs again at the next boundary.
+  **Driver-mode context is measured only where `autoCompactWindow` is set, and a plugin
+  cannot supply it** (`driver-context-window-default`; ADR 0028's 2026-09-21 amendment).
+  The success metric — the driver's peak context against the compaction threshold in
+  effect — needs a threshold with a named source, and `runstate.sh compact-threshold`
+  reads only a repository or operator `autoCompactWindow`; with neither set it prints
+  `THRESHOLD=unknown` / `SOURCE=unknown`, which is the default state everywhere. The
+  deferred question — can a plugin supply a default without overriding a value a
+  repository or operator set — was probed by the operator and the answer is **no**, on
+  harness 2.1.278 on Opus 5 only: a `settings.json` at the plugin root is **inert**
+  (the plugin-enabled arm read the same window as the plugin-disabled control, because
+  that version reads a root `settings.json` neither as project settings nor as plugin
+  settings, having no plugin settings scope). A `SessionStart` hook writing the key was
+  **not tried, by the operator's choice** — the ADR already classes a yes that way as
+  writing the operator's own file, a separate feature — and is recorded as not tried,
+  never as failed. Also observed: `/context` printed **no source label** on any line,
+  so the ADR's prediction of one does not hold on that version. **A negative answer is
+  the answer**, so no value, no carrier and no `SOURCE` branch entered the reader, and
+  none may be added on the strength of it: a threshold is reportable only with a
+  `SOURCE=` naming its provenance, and inventing one reproduces the model-conditional
+  default the parents removed. What changed is what the reader who meets the absence
+  is told: `metrics.sh show` renders the unmeasured line with its cause and the key
+  `autoCompactWindow` (the key only — no scope, no precedence, never a value),
+  `skills/metrics` relays that remedy clause unparaphrased, and both loop entry points'
+  kickoffs state that no compaction threshold is in effect and name the same key,
+  rather than staying silent in a way that reads as a measured run. Setting the key in
+  this repo is a one-line settings edit left to the operator, not a feature. **Still
+  open, as result 3 left them:** precedence when both the environment variable and a
+  settings key are set, the user and committed-project scopes, and whether a session
+  can read the value in effect other than by reading settings files — the reader's
+  header comment still marks its operator-over-repo order as documented and unverified.
+  This evidence stays here and in the ADR; no agent or skill prompt carries it.
   **Reflexivity, because this repo self-hosts:** `runstate.sh` and hook bodies take
   effect mid-run, but a **mark** is only written by a loop that already entered driver
   mode, so a run that lands a driver-mode change is itself running the old contract —

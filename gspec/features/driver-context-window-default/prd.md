@@ -77,7 +77,7 @@ the dependency rule.
 
 ## Capabilities
 
-- [ ] **P1**: The deferred probe is run, and its answer is recorded as a result
+- [x] **P1**: The deferred probe is run, and its answer is recorded as a result
   - the probe answers exactly the question that was left unrun — whether a plugin
     can supply a compaction-window default without overriding a value a
     repository or operator has set — exercising both arms, since a default that
@@ -97,7 +97,7 @@ the dependency rule.
     `THRESHOLD=`/`SOURCE=`/`APPLIED=` triple, the no-default branch included, so
     no new case is owed here
 
-- [ ] **P1**: An unmeasured context metric says why, and what would make it real
+- [x] **P1**: An unmeasured context metric says why, and what would make it real
   - the unmeasured rendering in `scripts/metrics.sh show` names the cause and the
     settings key that would supply a threshold — the key itself, not any one of
     the scopes that can carry it nor a precedence among them, both deferred — so

@@ -11,6 +11,13 @@
   superseded in place** — `escalation-decider` shipped, and "The interim decider, and
   what `escalation-decider` replaces" now states what replaced it, with the original
   text kept marked beneath it.
+- Open probe (2026-09-21): **one item of result 3's not-probed list — whether a plugin
+  can supply a compaction-window default without overriding a repository or operator
+  value — has a written procedure and is handed to the operator as a blocking question**
+  (`driver-context-window-default` T1). See
+  [Open probe (2026-09-21)](#open-probe-2026-09-21--can-a-plugin-supply-a-compaction-window-default-without-overriding-a-repository-or-operator-value)
+  at the end; result 3 and its list are unrevised, and the answer lands beneath that
+  section when the operator returns it (T5).
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: `gspec/features/thin-loop-driver/prd.md` and its plan T1;
   [ADR 0017](0017-graceful-cooperative-pause.md) (the earlier payload probe that established
@@ -386,3 +393,146 @@ close must carry through the whole-file write (`loop-driver-run-gaps` T4): `sche
 `pending_questions` and the `findings:` block, each copied from the on-disk file being
 replaced. That is a loop-prose decision rather than one of this ADR's, and is recorded
 here only because the minting rule above is why it matters.
+
+## Open probe (2026-09-21) — can a plugin supply a compaction-window default without overriding a repository or operator value?
+
+Result 3 lists four things it did not probe. This section takes up **exactly one** of
+them — the third, *whether a plugin can supply a default without overriding a repo or
+operator value* — and leaves the other three (precedence between the variable and a
+settings key; the user and committed-project scopes; reading the value in effect other
+than from the settings files) exactly as open as result 3 left them. It is a
+**procedure and a blocking question for the operator, not a result**: the probe needs
+live sessions in which a person reads `/context`, which an unattended packet cannot
+produce — the same was true of the four sessions in Method. The answer lands beneath
+this section as a dated amendment (`driver-context-window-default` T5) and revises
+nothing above it; result 3's text and its not-probed list stand as written.
+
+### The question, stated so that a negative reads as an answer
+
+Does any carrier a plugin can ship cause the harness to use the plugin's value as the
+auto-compact window **only when** no repository or operator scope carries
+`autoCompactWindow`, and to defer to that value whenever one does? The second half is
+not optional: a "default" that wins over a repository value is an override, and a
+carrier that is inert both ways is not a carrier. Either is *no*, and *no* is recorded
+as the answer — `runstate.sh compact-threshold` keeps printing `THRESHOLD=unknown` /
+`SOURCE=unknown`, no value enters it, and its header comment stops naming this probe as
+outstanding. Nothing in this section presupposes that a plugin carrier exists or that
+it does not.
+
+### Carriers to try
+
+What follows was read against Claude Code **2.1.278** as installed here — the strings
+its own binary carries, not the documentation — and is a prediction of what each
+carrier will do, which the probe turns into a reading. A later version may differ,
+which is why the version is a recorded condition below.
+
+1. **A `settings.json` at the plugin root.** The only *file-shaped* carrier that could
+   carry the harness's own key (a plugin manifest's `userConfig` surface is namespaced
+   under the plugin name, so it cannot). 2.1.278's own list of what it recognises as plugin content at a root is
+   `.claude-plugin/`, `commands/`, `skills/`, `agents/`, `hooks/`, `themes/`,
+   `output-styles/`, `monitors/`, `workflows/`, `SKILL.md`, `.mcp.json` and
+   `.lsp.json`, and the settings scopes it names internally are `userSettings`,
+   `projectSettings`, `localSettings`, `policySettings` and `flagSettings` — no plugin
+   settings scope among them. So the expected reading is *inert in both arms*; that
+   expectation is not the answer, the reading is. Try it first, because if it works it
+   is the only carrier whose value the harness would attribute itself.
+2. **A `SessionStart` hook that writes the key.** The plugin's `hooks/hooks.json` can
+   register a `startup` hook that inserts `"autoCompactWindow": <n>` into
+   `.claude/settings.local.json` when no scope carries the key. This is a *mechanism*
+   rather than a carrier: it "does not override" only by checking first; it turns a
+   plugin default into an entry the reader reports as `SOURCE=operator`, misattributing
+   provenance; and it writes a settings file, which `compact-threshold` is built never
+   to do. Try it only if carrier 1 reads inert in arm B, and record a *yes* through it
+   as "yes, by writing the operator's file" — which the PRD's deferred decision then
+   weighs as a separate feature, not as this probe closing the gap. **Its arm B is
+   taken in two consecutive fresh sessions**, because the carrier is not in place until
+   its own startup hook has run inside the session being measured, and a settings
+   value is what the harness reads at its *next* session start (the assumption
+   `compact-threshold`'s header states): the first session is the one whose hook
+   writes the key, the second starts with the key already on disk. Both readings are
+   recorded. A value present only in the second is a distinct reading — "yes, from the
+   next session onward, by writing the operator's file" — still the separate-feature
+   case above, never carrier 1's yes; the control value in *both* sessions is inert →
+   no. Its arm A needs one session: the hook checks first, so 100k persists.
+
+**Not a carrier: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.** A hook is a child process, so
+nothing it exports reaches the session that spawned it; a plugin cannot set the
+variable for a session, and probe D already read it as the *operator's* carrier. Every
+session below runs with it **unset**, so each reading is about the settings files and
+not the variable — and so that this probe does not quietly answer the precedence item
+it is not asking.
+
+### Values, chosen so the number says whose value won
+
+Three distinct numbers, none equal to any model's own default: the repository/operator
+`autoCompactWindow` at **100000** (the value probe D used), the plugin default at
+**150000**, and the model's own reading from a plain session as the **control**.
+Distinctness is the whole attribution: `/context`'s `Auto-compact window:` line labels
+its source only as one of five — `(from settings)`, `(from
+CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, `(default for this model)`, `(default for an
+unrecognized model)` or `auto` — and it never names *which* settings scope, so only the
+number can say which value is in effect. The control on a recognised model is expected
+to carry `(default for this model)`; result 3's `1m tokens` on Opus 5 (1M) is that
+case, not the unrecognized-model one.
+
+### The two arms, and what each reading means
+
+Each session is fresh (`claude` from the repository root, never `--resume`), with the
+plugin enabled and the carrier under test in place; run `/context` once and copy the
+`Auto-compact window:` line verbatim.
+
+- **Arm A — plugin default with a repository or operator value present.**
+  `"autoCompactWindow": 100000` in `.claude/settings.local.json` (the scope result 3
+  verified), plugin carrier at 150000. Reads `100k tokens (from settings)` → the plugin
+  does not override. Reads `150k` → it overrides → **no** for this carrier, and arm B
+  need not run for it.
+- **Arm B — plugin default with neither set.** No scope carries the key (user,
+  project and local files checked, no managed settings present), the variable unset,
+  plugin carrier at 150000. Reads `150k tokens (from settings)` → the plugin's value is
+  in effect when nothing else is. Reads what the control read → the carrier is inert
+  → **no** for this carrier (for carrier 2, only when both of its consecutive
+  sessions read the control value — see the two-session rule under carrier 2).
+- **Control — plugin disabled, nothing set.** The model's own reading (result 3 saw
+  `1m tokens` on Opus 5 (1M)). Recorded so arm B's "unchanged" is a comparison with
+  something measured under the same conditions, never with result 3's line.
+
+**Yes** requires both: arm A shows 100k *and* arm B shows 150k, for the same carrier,
+in the same harness version, on the same model. Any other combination is **no** for
+that carrier, and no for every carrier is the answer *no*. In each session also run
+`runstate.sh compact-threshold` and record its triple: it is expected to read
+`THRESHOLD=100000` / `SOURCE=operator` in arm A and `unknown` in arm B *whatever
+`/context` says*, because the reader reads no plugin carrier by design — a *yes* would
+make changing that a separate decision (the PRD's deferred one), never a reader change
+made on the strength of this probe.
+
+### Conditions every reading is recorded under
+
+Each reading — both arms and the control — carries all of the following, and one
+missing any of them is re-taken rather than recorded:
+
+- the **harness version** (`claude --version`; 2.1.278 when this section was written)
+  — the plugin-content list and scope names above are this version's, and a carrier's
+  fate may differ on another;
+- the **model** the session ran on, from `/context`'s header or the `SessionStart
+  startup` payload's `model`. Result 3's `1m tokens` was taken on Opus 5 (1M) and was
+  then treated as harness-wide: it became an invented `200000` default in the reader,
+  which `thin-loop-driver-gaps` T6 removed. A plugin value that appears on one model
+  and not another is a *no*, not a yes with a caveat;
+- **which of the five settings scopes carried `autoCompactWindow`** (user
+  `~/.claude/settings.json`, project `.claude/settings.json`, local
+  `.claude/settings.local.json`, managed/policy, flag) and with what value, plus that
+  the environment variable was unset;
+- the **carrier tried** and the plugin's **enabled state and where it was enabled** —
+  this repository's committed `.claude/settings.json` sets
+  `"gaffer@gaffer-marketplace": false` today, so a probe session must enable it
+  explicitly and say in which scope;
+- the **`/context` line verbatim**, parenthetical source label included, and the
+  **`compact-threshold` triple** from the same session.
+
+### Blocking question for the operator
+
+The sessions are the operator's to run: arms A and B and the control against carrier
+1, then carrier 2 only if carrier 1 reads inert in arm B, each reading returned with
+its conditions. T5 records them beneath this section, dated, as an amendment — a
+negative as the answer, never as a failure to answer. Until then the capability stays
+unchecked, which is its intended state and not a stall.

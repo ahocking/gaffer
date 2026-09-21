@@ -2063,6 +2063,105 @@ out="$("$ADAPTER" handoff shop-t1 "$RA")"
 check 'with no arch.md, an anchor is reported unmatched' 'UNMATCHED-ARCH=Endpoint: GET /orders/{id}' "$out"
 no_arch_line 'and no ARCH= line (not even absent)' "$out"
 
+printf '\n== handoff: a word budget bounds what one handoff inlines (handoff-spec-inlining-t3) ==\n'
+# Word counts are exact by construction: a heading `### Entity: X` is 3 words,
+# and each body line is 100 words. Alpha = 3 + 50*100 = 5003 words over 51
+# lines; Beta = 3 + 15*100 = 1503 over 16; Gamma = 3 + 10 = 13 over 2. Under
+# the 6000 default Alpha fits, Beta would cross it (6506), and Gamma -- small
+# enough to fit on its own (5016) -- is named by heading anyway, because every
+# section from the crossing one on is. A reader that took a non-numeric value
+# as unbounded inlines all three; one that took it as 0 inlines none.
+RW="$TMPROOT/handoff-budget"; mkdir -p "$RW/gspec/features/big"
+words100="$(awk 'BEGIN { for (i = 1; i <= 100; i++) printf "%sw%d", (i > 1 ? " " : ""), i; print "" }')"
+crit500="$(awk 'BEGIN { for (i = 1; i <= 500; i++) printf "%sc%d", (i > 1 ? " " : ""), i; print "" }')"
+{ printf -- '---\nspec-version: v2\n---\n\n# Feature: big\n\n## Capabilities\n\n'
+  printf -- '- [ ] **P0**: Big capability\n  - %s\n\n## Dependencies\n' "$crit500"
+} > "$RW/gspec/features/big/prd.md"
+{ printf -- '---\nspec-version: v2\n---\n\n# Architecture: big\n\n## Data\n\n'
+  printf '### Entity: Alpha\n'; for i in $(seq 1 50); do printf '%s\n' "$words100"; done; printf '\n'
+  printf '### Entity: Beta\n';  for i in $(seq 1 15); do printf '%s\n' "$words100"; done; printf '\n'
+  printf '### Entity: Gamma\n'; printf 'g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\n'
+} > "$RW/gspec/features/big/arch.md"
+mk_plan_v2 "$RW" big <<'EOF'
+- [ ] **T1** **P0** three sections
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Alpha · Entity: Beta · Entity: Gamma
+- [ ] **T2** **P0** one small section, big criteria
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma
+EOF
+default_shape() { # default_shape <label> <out> — Alpha inlined, Beta+Gamma by heading, 6000 stated
+  check  "$1: Alpha fits and is inlined" 'ARCH-SECTION=Entity: Alpha
+  ### Entity: Alpha
+  w1 w2' "$2"
+  check  "$1: Beta would cross the budget and is named by heading and line count" 'ARCH-HEADING=Entity: Beta lines=16
+  ### Entity: Beta
+' "$2"
+  check  "$1: Gamma, though small enough to fit, is named by heading too" 'ARCH-HEADING=Entity: Gamma lines=2
+  ### Entity: Gamma
+BUDGET-REACHED=6000 words' "$2"
+  refute "$1: Gamma's text is not inlined" 'g1 g2' "$2"
+  [ "$(printf '%s\n' "$2" | grep -c '^BUDGET-REACHED=')" = "1" ] \
+    && ok "$1: exactly one BUDGET-REACHED= line, and it is the last line" \
+    || bad "$1: exactly one BUDGET-REACHED= line" "got: $(printf '%s\n' "$2" | grep '^BUDGET-REACHED=')"
+  [ "$(printf '%s\n' "$2" | tail -n 1)" = "BUDGET-REACHED=6000 words" ] \
+    || bad "$1: BUDGET-REACHED= is the last line" "last: $(printf '%s\n' "$2" | tail -n 1)"
+  [ "$(printf '%s\n' "$2" | grep -c '^  w1 w2')" = "50" ] \
+    && ok "$1: only Alpha's 50 body lines are inlined" \
+    || bad "$1: only Alpha's 50 body lines are inlined" "count: $(printf '%s\n' "$2" | grep -c '^  w1 w2')"
+}
+
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+default_shape 'no overrides file (default 6000)' "$out"
+
+mkdir -p "$RW/.agents"
+printf 'integration_branch: develop\n# handoff_inline_word_budget: 99999\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'key missing (a commented-out key does not count)' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget:\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'empty value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget: lots\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'non-numeric value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget: 0\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'zero value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+# An override is read back: quoted, with a trailing comment, it still reads.
+printf "handoff_inline_word_budget: '100'  # small on purpose\n" > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+check  'an override of 100 is read back in the statement line' 'BUDGET-REACHED=100 words' "$out"
+check  'at 100 the first section already crosses, so it is named by heading' 'ARCH-HEADING=Entity: Alpha lines=51
+  ### Entity: Alpha
+ARCH-HEADING=Entity: Beta lines=16' "$out"
+refute 'and no section is inlined' 'ARCH-SECTION=' "$out"
+
+# Under budget: every section inlined, no statement line.
+printf 'handoff_inline_word_budget: 7000\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+check  'under budget: Gamma is inlined' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2 g3' "$out"
+check  'under budget: Beta is inlined' 'ARCH-SECTION=Entity: Beta' "$out"
+refute 'under budget: no ARCH-HEADING= marker' 'ARCH-HEADING=' "$out"
+refute 'under budget: no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+
+# Criteria are not counted: 500 words of criterion plus Gamma's 13 fit a
+# 20-word budget only if the criterion is outside the count. And the criterion
+# still prints whole.
+printf 'handoff_inline_word_budget: 20\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t2 "$RW")"
+check  'criteria text is not counted: a 13-word section fits a 20-word budget beside 500 criterion words' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2' "$out"
+refute 'and no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+check  'the COVERS= criterion is inlined unchanged' "COVERS=Big capability
+    - $crit500
+PRD=" "$out"
+rm -f "$RW/.agents/project-overrides.yaml"
+
 printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
 # The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
 # wrapped continuation line, a blank separator and a trailing paragraph, with

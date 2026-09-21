@@ -184,6 +184,12 @@
 #                            section it names inlined under `ARCH-SECTION=`,
 #                            or `UNMATCHED-ARCH=<anchor>` (handoff-spec-
 #                            inlining-t2 — no `ARCH=` path line is printed).
+#                            Inlining stops at a word budget
+#                            (`handoff_inline_word_budget`, default 6000):
+#                            from the section that would cross it on, each
+#                            resolved section prints `ARCH-HEADING=<anchor>
+#                            lines=<n>` with its heading only, then one
+#                            `BUDGET-REACHED=<budget> words` line (t3).
 #                            A `covers:` quote matching no PRD
 #                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
@@ -2125,6 +2131,11 @@ cmd_complete_capabilities() {
 #     ...                                     `_arch_section`)
 #   UNMATCHED-ARCH=<anchor>                  (in place of ARCH-SECTION= for an
 #                                              anchor matching no heading)
+#   ARCH-HEADING=<anchor> lines=<n>          (in place of ARCH-SECTION= for a
+#     <the section's heading line, indented>   resolved section at or past the
+#                                              word budget)
+#   BUDGET-REACHED=<budget> words            (once, last, only when some
+#                                              section was named by heading)
 _handoff_one() {
   local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
   local root; root="$(_root "${2:-}")"
@@ -2267,17 +2278,78 @@ EOF
   # spaces, the way COVERS= indents criteria; an unresolved one is reported,
   # never replaced by a nearest heading -- on a checked task too, where a
   # frozen anchor may name a superseded heading. No anchors, no marker.
-  local anchor secout
+  #
+  # The word budget (handoff-spec-inlining-t3): sections inline in anchor order
+  # until the next would carry the running count past the budget; from that
+  # section on, every remaining RESOLVED section is named by its heading and
+  # line count instead (`ARCH-HEADING=`), even one small enough to fit, and a
+  # single `BUDGET-REACHED=` line follows the markers. Only inlined section
+  # text is counted — the COVERS= criteria above are outside the budget. An
+  # unmatched anchor inlines nothing, so it counts nothing and is still
+  # reported as before.
+  local anchor secout block nwords nlines
+  local budget; budget="$(_handoff_word_budget "$root")"
+  local used=0 reached=0
   while IFS= read -r anchor; do
     [ -n "$anchor" ] || continue
     secout="$(_arch_section "$archabs" "$anchor")"
     if [ "${secout%%$'\n'*}" = "MATCH" ]; then
-      printf 'ARCH-SECTION=%s\n' "$anchor"
-      printf '%s\n' "$secout" | tail -n +2 | sed 's/^/  /'
+      block="$(printf '%s\n' "$secout" | tail -n +2)"
+      nwords="$(printf '%s\n' "$block" | awk '{ n += NF } END { print n + 0 }')"
+      if [ "$reached" = "0" ] && [ $((used + nwords)) -gt "$budget" ]; then
+        reached=1
+      fi
+      if [ "$reached" = "0" ]; then
+        used=$((used + nwords))
+        printf 'ARCH-SECTION=%s\n' "$anchor"
+        printf '%s\n' "$block" | sed 's/^/  /'
+      else
+        nlines="$(printf '%s\n' "$block" | awk 'END { print NR + 0 }')"
+        printf 'ARCH-HEADING=%s lines=%s\n' "$anchor" "$nlines"
+        printf '%s\n' "$block" | head -n 1 | sed 's/^/  /'
+      fi
     else
       printf 'UNMATCHED-ARCH=%s\n' "$anchor"
     fi
   done < <(_split_covers "$archv")
+  if [ "$reached" = "1" ]; then
+    printf 'BUDGET-REACHED=%s words\n' "$budget"
+  fi
+}
+
+# _handoff_word_budget <root> — the most words of spec-section text one
+# handoff inlines (handoff-spec-inlining-t3), from `handoff_inline_word_budget`
+# in <root>/.agents/project-overrides.yaml — the repository's own file only: a
+# numeric limit has no restrictive union across config roots. Same token-
+# scanning shape as `runstate.sh`'s `_rs_packet_attempts_limit`: the remainder
+# after the key is split on whitespace, each token has one matching pair of
+# quotes stripped, and the first all-digit token wins, so a trailing comment
+# or `'8000'` still reads. A missing file, missing key, empty, non-numeric or
+# zero value reads as 6000 — never as unbounded, and never as a budget of 0.
+_handoff_word_budget() {
+  local root="$1" ov v
+  ov="${root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^handoff_inline_word_budget:[[:space:]]*/ {
+        line = $0
+        sub(/^handoff_inline_word_budget:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  # A zero with leading zeros (`000`) is still zero: strip them before the
+  # test so it cannot slip past the `0` arm as a digit string.
+  case "$v" in *[!0-9]*) v="" ;; esac
+  while [ "${v#0}" != "$v" ]; do v="${v#0}"; done
+  case "$v" in '') echo 6000 ;; *) echo "$v" ;; esac
 }
 
 # --- group: bundle the cursor with the unchecked tasks that safely follow it -

@@ -95,6 +95,12 @@ derived-done `run-metrics`; no existing field changes meaning.
   - a run whose window holds neither a start record nor a routing record is a
     legacy run: every dispatch row carries `kind: null` and `progress: null`,
     never a guessed `initial`; re-collecting an old run yields the same
+  - a run whose start records survive but whose routing log does not — its
+    `.agents/loop/<run_id>/` directory already pruned, since `begin-run` keeps
+    only the current run and the newest other — carries `kind: null` on every
+    dispatch row, never the `initial` the surviving start record alone would
+    give a `fix` or `retry` dispatch; an unreadable routing log is unmeasured,
+    not a run without verdicts (amended 2026-09-21, operator's call at plan time)
   - a swept or bundle-sibling packet, whose window the collector already
     declares unmeasured, has `dispatches: null`, in the same null-field shape
     those rows use today

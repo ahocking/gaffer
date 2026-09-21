@@ -158,6 +158,41 @@ rule). Never decide the next step yourself:
   checkpoint, sets `status: blocked`, and renders the stop report. Do not
   write run-state yourself for this.
 
+## The periodic review — at the packet boundary, never inside a packet
+
+This is the check `/gaffer:run-loop` §3.8 runs beside the periodic pause —
+after the pause sentinel and the periodic pause have both left the run
+going, before the next packet is pulled — stated here in the same words. It
+is not a routing action: no `route` call brings you here, and none takes
+its result.
+
+Between packets — never while one is open — run `runstate.sh review-due`.
+It prints `NON_GREEN=`, `BEGINNINGS=`, `EVERY_NON_GREEN=`,
+`EVERY_BEGINNINGS=` (each a number or the word `unmeasured`) and
+`DUE=yes|no`. On `DUE=no` nothing is dispatched and nothing is carried. On
+`DUE=yes` — **including when any of the four reads `unmeasured`**, because a
+count that could not be read is not a `0` sitting below its threshold, and
+the review runs — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
+chief-engineer` (non-empty → `model`; empty → omit `model`), then dispatch
+the `chief-engineer` as the **escalation decider** for a **periodic review**
+— its contract is `${CLAUDE_PLUGIN_ROOT}/agents/chief-engineer.md`
+§Periodic review — with the `run-state:` path from the handoff header you
+already hold and nothing else: no handoff, no review file, no packet id, no
+counts. It picks its own result path inside the run directory. Read its one
+status line (its status word is `reviewed`; `check-status` it as you do
+every line) and route nothing on it — `route` has no token for a review —
+and record nothing yourself: the `record-review` record that completes the
+review and resets `review-due`'s count is already on disk when the line
+returns, and a review that returned no line left no record, so `review-due`
+runs it again at the next boundary. On a second `check-status` refusal,
+carry on to the next packet for the same reason — the record, not the line,
+decides whether the review counted. Then carry both counts into the next
+report you emit, shape A at the next landing or shape B if the run stops
+first: `NON_GREEN=` and `BEGINNINGS=` exactly as `review-due` printed them,
+with `unmeasured` rendered as the word `unmeasured` and never as `0`. What
+the review itself merged, routed and dropped reaches that report through
+`run-digest`'s `review` line, never from its status line or its result file.
+
 ## Operator questions and mid-run edits
 
 - **Answer from what you already have first.** A question from the operator

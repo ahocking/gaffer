@@ -136,7 +136,7 @@ the right-sizing bar is not.
   - covers: Each escalation gets exactly one next step · The decider acts only within fixed authority
   - arch: —
   - files: skills/run-loop/SKILL.md, agents/loop-driver.md
-- [ ] **T12** **P1** State the periodic review at the one boundary it may run at, in `skills/run-loop/SKILL.md` §3.8 beside the existing `periodic-pause` check and in `agents/loop-driver.md` in the same words: between packets and never while one is open, run `review-due`, and on `DUE=yes` — including when a count reads `unmeasured` — dispatch the decider for a review with the run-state path and nothing else, read its one status line, record nothing yourself, and carry both counts into the next report. Prose only, no sweep case; checkable by reading the two call sites together — both state the same trigger, the same dispatch and the same `unmeasured`-still-runs rule, and neither sits inside the packet loop's body.
+- [x] **T12** **P1** State the periodic review at the one boundary it may run at, in `skills/run-loop/SKILL.md` §3.8 beside the existing `periodic-pause` check and in `agents/loop-driver.md` in the same words: between packets and never while one is open, run `review-due`, and on `DUE=yes` — including when a count reads `unmeasured` — dispatch the decider for a review with the run-state path and nothing else, read its one status line, record nothing yourself, and carry both counts into the next report. Prose only, no sweep case; checkable by reading the two call sites together — both state the same trigger, the same dispatch and the same `unmeasured`-still-runs rule, and neither sits inside the packet loop's body.
   - deps: T2, T10, T11
   - covers: A periodic review keeps the findings index small and honest
   - arch: —

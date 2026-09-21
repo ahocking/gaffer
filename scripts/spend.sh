@@ -56,6 +56,15 @@
 #         with all-zero usage (same convention metrics.sh already drops) —
 #         excluded from every count, tallied separately as
 #         `messages_excluded_synthetic` so it is visible, not silently gone.
+#       * compaction is recorded as a NON-assistant row
+#         `{"type":"system","subtype":"compact_boundary","timestamp":…}` in the
+#         transcript of the context that compacted — main sessions AND
+#         subagent files (probed 2026-09-21: found in both). Only its
+#         timestamp is read. Also probed then: main sessions wrote their cache
+#         at the 1h lifetime and subagents at 5m, and subagent rows carried no
+#         `.effort` at all — which is why the cause scan below reads the
+#         lifetime per context from the rows, and treats "effort unrecorded on
+#         both turns" as no change shown rather than as a change.
 #       * every real row scanned on this machine carried both `usage` and
 #         `.timestamp`; no row lacking either was found. The exclude-and-count
 #         path exists for format drift, not a bug reproduced here — it is
@@ -210,9 +219,16 @@ files_scanned=0
 # are supplied (main files know role="main" from their location; subagent
 # files read the acting role from `.attributionAgent`, falling back to
 # "unrecorded" — never guessed — when the field is absent or null).
+#
+# Both also emit one {kind:"compact"} marker per compaction boundary row (see
+# the header's probe note), carrying ONLY the context id and timestamp — the
+# cache-write cause scan (T13) needs to know a compaction happened between two
+# turns of one context, and nothing else about it.
 scan_main() { # scan_main <file> <project> <sid>
   jq -c --arg proj "$2" --arg sid "$3" '
-    select(.type=="assistant")
+    if (.type=="system" and .subtype=="compact_boundary") then
+      (if .timestamp == null then empty else {kind:"compact", aid:("main:"+$sid), ts:.timestamp} end)
+    else select(.type=="assistant")
     | ((.message.usage // .usage)) as $u
     | ((.message.model // .model)) as $m
     | if ($u == null) or (.timestamp == null) then
@@ -235,11 +251,14 @@ scan_main() { # scan_main <file> <project> <sid>
           }
         }
       end
+    end
   ' "$1" 2>/dev/null >> "$tmp/raw.ndjson"
 }
 scan_sub() { # scan_sub <file> <project> <aid>
   jq -c --arg proj "$2" --arg aid "$3" '
-    select(.type=="assistant")
+    if (.type=="system" and .subtype=="compact_boundary") then
+      (if .timestamp == null then empty else {kind:"compact", aid:$aid, ts:.timestamp} end)
+    else select(.type=="assistant")
     | ((.message.usage // .usage)) as $u
     | ((.message.model // .model)) as $m
     | if ($u == null) or (.timestamp == null) then
@@ -262,6 +281,7 @@ scan_sub() { # scan_sub <file> <project> <aid>
           }
         }
       end
+    end
   ' "$1" 2>/dev/null >> "$tmp/raw.ndjson"
 }
 
@@ -409,6 +429,109 @@ def cache_read_shape(rows):
       turns_over_threshold: (if ($s|length) == 0 then null
                              else ($s | map(select(. > cache_read_threshold)) | length) end) };
 
+# LARGE CACHE WRITES BY CAUSE (loop-measurement T13). A turn whose cache-write
+# tokens (5m + 1h + unsplit) exceed the stated size is a "large write", and it
+# counts ONCE, under the FIRST cause in cause_order whose test the transcript
+# shows. Scanned per agent context — one transcript file: a main session, or
+# one subagent — in time order, like metrics.sh's context_invalidations, so
+# two dispatches of one role are two contexts, never a switch inside one.
+# Each test answers "fits", "no" or "undecidable" (the transcript does not
+# carry what the test reads). An undecidable test BEFORE the first fitting
+# cause makes the write "unknown_cause": the earlier cause might have fit, and
+# picking the later one would be a guess at the tie-break. A write no test
+# fits is also "unknown_cause" — never given a guessed cause.
+#
+# Prefix reuse is the evidence the idle and new-content tests share: the write
+# turn read at least the whole previous turn's context from cache
+# (cache_read >= prev.cache_read + prev's cache writes). Undecidable when
+# either turn lacks cache_read_input_tokens.
+def cache_write_threshold: 50000;
+def cause_order: ["new_session_or_subagent", "compaction_or_prefix_change",
+                  "model_changed", "effort_changed", "idle_gap_past_cache_lifetime",
+                  "new_content"];
+# Sort/epoch key. Timestamps are mixed sub-second / whole-second, and "." < "Z"
+# as ASCII, so a raw string sort misorders turns within one second: pad a
+# whole-second stamp to ".000" before comparing, and parse the whole-second
+# prefix for the epoch.
+def tskey: if .[19:20] == "." then .[0:23] else .[0:19] + ".000" end;
+def tsepoch: ((.[0:19] + "Z") | fromdateiso8601)
+             + (if .[19:20] == "." then ((.[20:23] | tonumber? // 0) / 1000) else 0 end);
+def cwrite: ((.tok.cache_write_5m // 0) + (.tok.cache_write_1h // 0) + (.tok.cache_write_unsplit // 0));
+# lifetime in seconds of the cache the write turn would have read: the previous
+# turn's write lifetime (1h if it wrote any 1h tokens, else 5m if it wrote any
+# 5m tokens), else the write turn's own; null when neither turn shows one.
+def lifetime(p; c):
+  if   (p.tok.cache_write_1h // 0) > 0 then 3600
+  elif (p.tok.cache_write_5m // 0) > 0 then 300
+  elif (c.tok.cache_write_1h // 0) > 0 then 3600
+  elif (c.tok.cache_write_5m // 0) > 0 then 300
+  else null end;
+# a recorded-vs-recorded comparison; "unrecorded" on BOTH turns shows no
+# change, on exactly ONE it is undecidable.
+def changed(a; b):
+  if (a == null) and (b == null) then "no"
+  elif (a == null) or (b == null) then "undecidable"
+  elif a != b then "fits" else "no" end;
+def classify(p; c; compacted):
+  ( if (p.cache_read_measured and c.cache_read_measured)
+    then (if c.tok.cache_read >= (p.tok.cache_read + (p|cwrite)) then "yes" else "no" end)
+    else "unknown" end ) as $reused
+  | ((c.ts | tsepoch) - (p.ts | tsepoch)) as $gap
+  | lifetime(p; c) as $life
+  | [ "no",                                              # new_session_or_subagent (prev exists)
+      (if compacted then "fits" else "no" end),
+      changed((if p.model == "unrecorded" then null else p.model end);
+              (if c.model == "unrecorded" then null else c.model end)),
+      changed(p.effort; c.effort),
+      ( if $reused == "yes" then "no"
+        elif $life != null then
+          (if $gap > $life then (if $reused == "no" then "fits" else "undecidable" end) else "no" end)
+        elif $gap > 3600 then (if $reused == "no" then "fits" else "undecidable" end)
+        elif $gap <= 300 then "no"
+        else "undecidable" end ),
+      ( if $reused == "yes" then "fits" elif $reused == "no" then "no" else "undecidable" end )
+    ] as $tests
+  | ( [ range(0; $tests|length) | select($tests[.] != "no") ] | first ) as $first
+  | if $first == null then "unknown_cause"
+    elif $tests[$first] == "fits" then cause_order[$first]
+    else "unknown_cause" end;
+# rows: every deduplicated turn (ANY time — a write's previous turn may sit
+# before the window); marks: compact markers; inwin(ts) decides which WRITES
+# count. Dollars are the cache-write part of each write's cost only; unsplit
+# tokens (no 5m/1h breakdown) and unpriced models are counted as tokens and
+# stated, never priced.
+def large_writes(rows; marks; P; since; until):
+  (marks | group_by(.aid) | map({key: (.[0].aid | tostring), value: map(.ts | tskey)}) | from_entries) as $M
+  | [ rows | group_by(.aid)[]
+      | sort_by(.ts | tskey) as $t
+      | ($M[$t[0].aid | tostring] // []) as $mk
+      | range(0; $t|length) as $i
+      | $t[$i] as $c
+      | select(($c|cwrite) > cache_write_threshold)
+      | select(($c.ts[0:19] >= since[0:19]) and ($c.ts[0:19] <= until[0:19]))
+      | ( if $i == 0 then "new_session_or_subagent"
+          else ($t[$i-1]) as $p
+            | ($p.ts|tskey) as $pk | ($c.ts|tskey) as $ck
+            | classify($p; $c; ($mk | any(. > $pk and . <= $ck)))
+          end ) as $cause
+      | (P[$c.model]) as $rt
+      | { cause: $cause, tokens: ($c|cwrite),
+          unsplit: ($c.tok.cache_write_unsplit // 0),
+          priced: ($rt != null),
+          dollars: (if $rt == null then 0 else
+                     (($c.tok.cache_write_5m // 0) * ($rt.cache_write_5m // 0)
+                      + ($c.tok.cache_write_1h // 0) * ($rt.cache_write_1h // 0)) / 1000000 end) } ];
+def cause_report(w):
+  (cause_order + ["unknown_cause"]) as $all
+  | ( $all | map(. as $k | (w | map(select(.cause == $k))) as $g
+        | { key: $k,
+            value: { count: ($g|length),
+                     tokens: ($g | map(.tokens) | add // 0),
+                     dollars: r6($g | map(select(.priced)) | map(.dollars) | add // 0),
+                     unpriced_tokens: ($g | map(select(.priced|not)) | map(.tokens) | add // 0),
+                     cache_write_unmeasured_tokens: ($g | map(select(.priced)) | map(.unsplit) | add // 0) } })
+      | from_entries );
+
 [inputs] as $raw
 | ($pricefile[0].prices // {}) as $P
 | ($raw | map(select(.kind=="excluded_no_usage_or_ts")) | length) as $exc_no_usage_ts
@@ -459,6 +582,7 @@ def cache_read_shape(rows):
             end)
         }
     ) ) as $priced_rows
+| large_writes($deduped; ($raw | map(select(.kind == "compact"))); $P; $since; $until) as $large_writes
 | {
     window: { since: $since, until: $until },
     # NO ABSOLUTE PATHS (I4, loop-measurement T9 P0): neither field below carries
@@ -509,6 +633,32 @@ def cache_read_shape(rows):
                      | from_entries) as $shape
                   | $g | with_entries(.value += {cache_read_shape: $shape[.key]}) ),
     by_effort:  groupreport($priced_rows; (.effort // "unrecorded")),
+    # T13: large cache writes grouped by cause. Every cause is always listed, so
+    # a 0 is a counted zero over the window's turns, not a missing bucket.
+    cache_write_causes: {
+      method: {
+        threshold_tokens: cache_write_threshold,
+        over_threshold: "strictly greater than threshold_tokens",
+        write_size: "one deduplicated assistant turn's cache-write tokens: 5m + 1h + any write lacking the 5m/1h split",
+        context: "one transcript file (a main session, or one subagent), turns in time order; a write's previous turn may predate the window",
+        cause_order: cause_order,
+        first_fit: "each large write counts once, under the first cause in cause_order whose test fits; if a test before it cannot be decided from the transcript, or no test fits, it counts as unknown_cause",
+        tests: {
+          new_session_or_subagent: "the write is the first turn of its context",
+          compaction_or_prefix_change: "a compact_boundary row in the same context falls after the previous turn and at or before the write",
+          model_changed: "the model differs from the previous turn's (undecidable when exactly one of the two is unrecorded)",
+          effort_changed: "the effort differs from the previous turn's (undecidable when exactly one of the two is unrecorded; unrecorded on both is no change)",
+          idle_gap_past_cache_lifetime: "the gap since the previous turn exceeds the cache lifetime (1h if the previous turn wrote 1h cache, else 5m if it wrote 5m, else the write's own) AND the write did not re-read the previous turn's context from cache",
+          new_content: "the write re-read at least the previous turn's whole context from cache (cache_read >= previous cache_read + previous cache writes), so what it wrote was new",
+          unknown_cause: "no test fits, or one before the first fit is undecidable (e.g. a turn lacks cache_read_input_tokens); a prefix change with no compaction marker lands here, never guessed"
+        },
+        dollars: "the cache-write part of each write's cost only; unpriced models and writes lacking the 5m/1h split are counted in tokens and never priced"
+      },
+      by_cause: cause_report($large_writes),
+      total: { count: ($large_writes | length),
+               tokens: ($large_writes | map(.tokens) | add // 0),
+               dollars: r6($large_writes | map(select(.priced)) | map(.dollars) | add // 0) }
+    },
     unmeasured: (
       [ (if $project_status == "absent" then
            "--project \"\($project_filter)\" does not match any project folder under projects_dir: no transcripts were scanned, so every figure in this report is zero because nothing matched — not because nothing was spent."
@@ -526,6 +676,14 @@ def cache_read_shape(rows):
         ($priced_rows | map(select(.cache_read_measured | not)) | length) as $ucr
         | (if $ucr > 0 then
              "\($ucr) message(s) carried no cache_read_input_tokens field; they are excluded from by_role.*.cache_read_shape (counted there as turns_unmeasured), and a role with no measured turn reports its shape as null."
+           else empty end),
+        ($large_writes | map(select(.cause == "unknown_cause")) | length) as $ucause
+        | (if $ucause > 0 then
+             "\($ucause) large cache write(s) could not be given a cause from the transcript; counted under cache_write_causes.by_cause.unknown_cause, never guessed."
+           else empty end),
+        ($large_writes | map(select(.priced and .unsplit > 0)) | map(.unsplit) | add // 0) as $uw
+        | (if $uw > 0 then
+             "\($uw) token(s) of large cache writes lacked the 5m/1h split; counted in cache_write_causes tokens but excluded from its dollars."
            else empty end),
         ($priced_rows | map(select(.model=="unrecorded")) | length) as $umodel
         | (if $umodel > 0 then

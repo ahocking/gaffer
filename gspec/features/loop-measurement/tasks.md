@@ -132,7 +132,7 @@ that it blocks nothing.
   - covers: The spend report shows where context cost comes from
   - arch: —
   - files: scripts/spend.sh, scripts/test-spend.sh
-- [ ] **T13** **P1** Group cache writes above a size the report states by cause, with count and dollars per cause, scanning per agent context as the collector's `context_invalidations` does:
+- [x] **T13** **P1** Group cache writes above a size the report states by cause, with count and dollars per cause, scanning per agent context as the collector's `context_invalidations` does:
   - the possible causes are: idle gap past the cache lifetime, model changed, effort changed, new session or subagent, compaction or prefix change, and new content;
   - each write counts once, under the first cause that fits, trying causes in an order the report states;
   - a write whose cause the transcript cannot show is counted as "unknown cause";

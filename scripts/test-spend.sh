@@ -358,6 +358,100 @@ check "unmeasured[] names the missing cache-read field (2 messages)" "1" \
 check "set A: every role in by_role carries a cache_read_shape" "true" \
   "$(jq -r '[.by_role[] | has("cache_read_shape")] | all' "$OUT_A")"
 
+# =============================================================================
+# FIXTURE SET E — large cache writes by cause (loop-measurement T13). Every
+# write below is > 50000 cache-write tokens unless stated. Each context's
+# "prev ctx" is the previous turn's cache_read + cache writes: a write whose
+# cache_read reaches it re-read the whole previous context (prefix reused).
+#   main SE (model-a, effort high, 1h writes):
+#     t1 10:00  first turn                         -> new_session_or_subagent
+#     t2 10:01  small write (not large)
+#     t3 10:02  cr = prev ctx (reused)             -> new_content
+#     t3 dup at +2s (same message id)              -> must not count again
+#     compact_boundary row at 10:02:30
+#     t4 10:03  cr dropped, after the marker       -> compaction_or_prefix_change
+#     t5 12:00  model-z AND a ~2h gap, not reused  -> TWO causes fit (model_changed,
+#               idle_gap_past_cache_lifetime): model_changed wins, counted once
+#     t6 12:01  effort high -> xhigh, not reused   -> effort_changed
+#     t7 14:00  ~2h gap past the 1h lifetime       -> idle_gap_past_cache_lifetime
+#     t8 14:01  short gap, same model/effort, cr dropped, no marker
+#               -> no test fits                    -> unknown_cause (never guessed)
+#     t9 14:02  write EXACTLY 50000                -> not large, not counted
+#   subagent (implementer, NO effort field on any row, 5m writes):
+#     s1 11:00  first turn of the subagent         -> new_session_or_subagent
+#     s2 11:10  10-min gap past the 5m lifetime; effort unrecorded on both
+#               turns is no change                 -> idle_gap_past_cache_lifetime
+#     s3 11:11  no cache_read_input_tokens field: reuse cannot be judged
+#                                                  -> unknown_cause
+#   main SE2: p1 at 23:59 the day BEFORE the window (small), p2 in the window
+#     re-reads it                                  -> new_content, NOT new_session
+#     (the previous turn is found even though it predates the window)
+# =============================================================================
+PROJ_E_ROOT="$ROOT/projects-e"
+mkdir -p "$PROJ_E_ROOT/proj-e/SE/subagents"
+PRICES_E="$ROOT/prices-e.json"
+cat > "$PRICES_E" <<'JSON'
+{"table_date":"2026-09-01","prices":{"model-a":{"input":10,"cache_write_5m":12,"cache_write_1h":20,"cache_read":1,"output":30},"model-z":{"input":10,"cache_write_5m":12,"cache_write_1h":20,"cache_read":1,"output":30}}}
+JSON
+# erow <ts> <id> <model> <extra-json-fragment> <cache-read-fragment> <w5m> <w1h>
+erow() {
+  printf '{"type":"assistant","timestamp":"%s"%s,"message":{"id":"%s","model":"%s","usage":{"input_tokens":1,"output_tokens":1%s,"cache_creation_input_tokens":%d,"cache_creation":{"ephemeral_5m_input_tokens":%d,"ephemeral_1h_input_tokens":%d}}}}\n' \
+    "$1" "$4" "$2" "$3" "$5" "$(( $6 + $7 ))" "$6" "$7"
+}
+HI=',"effort":"high"'; XH=',"effort":"xhigh"'
+{
+  erow 2026-09-14T10:00:00Z e_t1 model-a "$HI" ',"cache_read_input_tokens":0'      0 60000
+  erow 2026-09-14T10:01:00Z e_t2 model-a "$HI" ',"cache_read_input_tokens":60000'  0 100
+  erow 2026-09-14T10:02:00Z e_t3 model-a "$HI" ',"cache_read_input_tokens":60100'  0 70000
+  erow 2026-09-14T10:02:02Z e_t3 model-a "$HI" ',"cache_read_input_tokens":60100'  0 70000
+  printf '{"type":"system","subtype":"compact_boundary","timestamp":"2026-09-14T10:02:30.000Z"}\n'
+  erow 2026-09-14T10:03:00Z e_t4 model-a "$HI" ',"cache_read_input_tokens":5000'   0 80000
+  erow 2026-09-14T12:00:00Z e_t5 model-z "$HI" ',"cache_read_input_tokens":0'      0 90000
+  erow 2026-09-14T12:01:00Z e_t6 model-z "$XH" ',"cache_read_input_tokens":1000'   0 55000
+  erow 2026-09-14T14:00:00Z e_t7 model-z "$XH" ',"cache_read_input_tokens":0'      0 65000
+  erow 2026-09-14T14:01:00Z e_t8 model-z "$XH" ',"cache_read_input_tokens":100'    0 75000
+  erow 2026-09-14T14:02:00Z e_t9 model-z "$XH" ',"cache_read_input_tokens":75100'  0 50000
+} > "$PROJ_E_ROOT/proj-e/SE.jsonl"
+SUBA=',"attributionAgent":"implementer"'
+{
+  erow 2026-09-14T11:00:00Z e_s1 model-a "$SUBA" ',"cache_read_input_tokens":0' 52000 0
+  erow 2026-09-14T11:10:00Z e_s2 model-a "$SUBA" ',"cache_read_input_tokens":0' 53000 0
+  erow 2026-09-14T11:11:00Z e_s3 model-a "$SUBA" ''                             54000 0
+} > "$PROJ_E_ROOT/proj-e/SE/subagents/agent-AESUB.jsonl"
+{
+  erow 2026-09-13T23:59:00Z e_p1 model-a "$HI" ',"cache_read_input_tokens":0'  0 10
+  erow 2026-09-14T00:00:30Z e_p2 model-a "$HI" ',"cache_read_input_tokens":10' 0 51000
+} > "$PROJ_E_ROOT/proj-e/SE2.jsonl"
+
+echo "== Fixture Set E: large cache writes grouped by cause =="
+OUT_E="$ROOT/out-e.json"
+"$SPEND" --projects-dir "$PROJ_E_ROOT" --price-table "$PRICES_E" \
+  --since "2026-09-14T00:00:00Z" --until "2026-09-14T23:59:59Z" > "$OUT_E" 2>"$ROOT/out-e.err"
+check "set E: exit 0" "0" "$?"
+cwc() { jq -r ".cache_write_causes.by_cause.$1 | \"\(.count) \(.tokens) \(.dollars)\"" "$OUT_E"; }
+check "report states the large-write size (50000 tokens)" "50000" \
+  "$(jq -r '.cache_write_causes.method.threshold_tokens' "$OUT_E")"
+check "report states the order causes are tried in" \
+  "new_session_or_subagent,compaction_or_prefix_change,model_changed,effort_changed,idle_gap_past_cache_lifetime,new_content" \
+  "$(jq -r '.cache_write_causes.method.cause_order | join(",")' "$OUT_E")"
+check "new session or subagent: t1 + s1 (60000 1h + 52000 5m), \$1.2 + \$0.624" "2 112000 1.824" \
+  "$(cwc new_session_or_subagent)"
+check "compaction: t4 after the compact_boundary row" "1 80000 1.6" "$(cwc compaction_or_prefix_change)"
+check "model changed: t5 (also fits idle) counted ONCE, under model_changed" "1 90000 1.8" "$(cwc model_changed)"
+check "effort changed: t6 high -> xhigh" "1 55000 1.1" "$(cwc effort_changed)"
+check "idle gap: t7 past 1h + s2 past 5m (effort unrecorded on both = no change)" "2 118000 1.936" \
+  "$(cwc idle_gap_past_cache_lifetime)"
+check "new content: t3 + p2 (p2's previous turn predates the window)" "2 121000 2.42" "$(cwc new_content)"
+check "unknown cause: t8 (nothing fits) + s3 (reuse unjudgeable)" "2 129000 2.148" "$(cwc unknown_cause)"
+check "total: 11 large writes (dup of t3 not recounted; t9 at exactly 50000 not large)" "11" \
+  "$(jq -r '.cache_write_causes.total.count' "$OUT_E")"
+check "every write counted once: by_cause counts sum to total" "true" \
+  "$(jq -r '.cache_write_causes | ([.by_cause[].count] | add) == .total.count' "$OUT_E")"
+check "unmeasured[] names the 2 unknown-cause writes" "1" \
+  "$(jq -r '[.unmeasured[] | select(test("^2 large cache write\\(s\\) could not be given a cause"))] | length' "$OUT_E")"
+check "set A: every cause bucket is listed even when zero" "7" \
+  "$(jq -r '.cache_write_causes.by_cause | length' "$OUT_A")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-spend.sh: ALL %d checks passed\n' "$pass"; exit 0

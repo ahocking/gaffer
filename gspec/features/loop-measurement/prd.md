@@ -57,7 +57,7 @@ This feature **takes over `metrics-coverage-gaps`' P1 capability "Failed and unc
   - dollars come from a price table stamped with the date it was last checked, shown in the report and labelled API-equivalent, not a bill. A model missing from the table shows its tokens with cost "unpriced", and totals state how many tokens were unpriced instead of counting them as $0
   - messages lacking usage data or a timestamp are excluded and their count is shown. No message content, prompt text or file path appears, and projects appear by folder name
 
-- [ ] **P1**: The spend report shows where context cost comes from
+- [x] **P1**: The spend report shows where context cost comes from
   - per agent role, it shows the context re-read per turn, measured as the turn's cache-read tokens (median, 90th percentile, maximum), and the number of turns above a size the report states
   - it groups cache writes above a size the report states by cause, each with count and dollars: cache lifetime expired during an idle gap, model changed, effort changed, new session or subagent started, context compacted or its prefix changed, or new content added
   - each large write is counted once, under the first cause that fits, trying causes in an order the report states. A write whose cause the transcript cannot show is counted as "unknown cause", never given a guessed one

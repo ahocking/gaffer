@@ -35,6 +35,19 @@
 #       one per escalation-decider decision: retry · reorder · append-task ·
 #       hand-off-feature · ask-operator. A bare reviewer verdict is never one of
 #       these. `--since <ts>` scopes this section and only this section.
+#   decision\t\treview-routing\t<finding-id>\t<summary>
+#       one per finding a periodic review routed. The packet-id field is EMPTY on
+#       purpose — a review routes a finding, not a packet — so never join this line
+#       to a `packet` line by that field. <finding-id> and <summary> are the routed
+#       finding's id and the summary the review recorded for it, which opens
+#       `review:` and names every packet the finding names. Read the finding's name
+#       from these two fields and from nowhere else. An empty <summary> means the
+#       routing was recorded without one; both fields empty means its record could
+#       not be found — render either as *not recorded*, never a summary you wrote.
+#   review\t<merged>\t<routed>\t<dropped>\t<bytes_before>\t<bytes_after>
+#       one per completed periodic review, scoped by `--since` with its routing
+#       lines. A value may be the literal `unmeasured` — state it as unmeasured,
+#       never as 0. An unmeasured <routed> has no routing lines.
 #   handoff-feature\t<id>\t<status>
 #       one per `hand-off-feature` question the run recorded, for the WHOLE run
 #       regardless of `--since`, carrying that routing call's own status line.
@@ -49,6 +62,11 @@
 # file paths in it. Shorten it to a plain-English title when you render — that is a
 # bounded transform of text you were just handed, which is exactly what ADR 0012's
 # "render, don't relay" permits. Pasting the raw digest field is not rendering.
+#
+# **A packet named inside a review routing's summary takes its title from the
+# digest too**: look the id up among the same digest's `packet` lines and use that
+# line's title. A packet with no `packet` line — one this run never began — renders
+# by its id alone. That lookup is the digest you already hold, not a fourth fact.
 #
 # **Three facts the digest does not carry**, and the only three a shape below may
 # read from anywhere else — each a FILE read at render time, never a memory:

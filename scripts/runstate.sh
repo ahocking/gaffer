@@ -686,6 +686,26 @@
 #                                        name and a renderer joining decision
 #                                        lines to packet lines by id must not
 #                                        mis-join one.
+#                                        Since T16 that line is
+#                                        `decision\t\treview-routing\t<finding>
+#                                        \t<summary>`: the routed finding's id
+#                                        and the summary the review wrote
+#                                        (it opens `review:` and names every
+#                                        packet the finding names), from the
+#                                        review's own record-decision records
+#                                        -- this run's append-task/hand-off-
+#                                        feature decision records whose
+#                                        summary is empty or opens `review:`,
+#                                        timed after the previous review and
+#                                        at or before this one, the latest
+#                                        <routed> of them. A record with no
+#                                        summary gives an empty summary field;
+#                                        a routing with no record found gives
+#                                        both fields empty. Neither is ever
+#                                        filled from another record. The
+#                                        line COUNT still comes from the
+#                                        review's `routed`, never from the
+#                                        records.
 #                                      review\t<merged>\t<routed>\t<dropped>
 #                                            \t<bytes_before>\t<bytes_after>
 #                                        escalation-decider T7: one per
@@ -720,7 +740,10 @@
 #                                        report's 🔀 tally. The decider's own
 #                                        records are for the audit and the
 #                                        success metric, which read the log
-#                                        directly.
+#                                        directly. (T16 reads them for ONE
+#                                        thing only: the names on a
+#                                        review-routing line. They still
+#                                        produce no line of their own.)
 #                                        A `routed` value that is not a run of
 #                                        digits (`unmeasured`, or anything a
 #                                        hand-edit left behind) yields NO
@@ -4687,6 +4710,64 @@ _rs_digest_reviews() {
   ' "$dir"/*.jsonl 2>/dev/null
 }
 
+# --- run-digest: the decision records a periodic review's routings COULD be
+# --- (escalation-decider T16) -----------------------------------------------
+# A review routes each finding with one `record-decision` call and then writes
+# `record-review` as its LAST write (agents/chief-engineer.md §Periodic review,
+# steps 3 and 6), so a review's routing records are the `decision` records of
+# this run that precede its `review` record. This prints the candidates, one
+# TSV row each, in read order:
+#   <ts>\t<seq>\t<finding>\t<summary>
+# <seq> is the record's position in the read (files in glob order, lines in
+# file order) -- the tie-break when two records share a parsed time.
+#
+# A candidate is a `kind: decision` record carrying THIS run's run_id whose
+# decision is `append-task` or `hand-off-feature` (the only two a review ever
+# returns) and whose summary is EMPTY or opens with `review:`. The summary
+# test is a narrowing, not the definition: a review's summary always opens
+# with `review:`, so a non-empty summary that does not is an escalation's audit
+# copy and can never be a review routing -- but an EMPTY one is kept, because a
+# routing record written without --summary is still that routing's record and
+# must still carry its finding id. The caller pairs candidates to reviews by
+# time window.
+#
+# Tabs and newlines are already folded to spaces by _rs_json_escape on write;
+# the gsub below only guards a hand-edited record, since a raw tab here would
+# shift every later digest field.
+_rs_digest_review_routing_candidates() {
+  local main_root="$1" run_id="$2"
+  local dir="${main_root}/.agents/metrics/decisions"
+  [ -d "$dir" ] || return 0
+  local extract='
+    function field_esc(line, name,    pat, pos, i, n, c, out, esc) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      i = pos + length(pat); n = length(line); out = ""; esc = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") { esc = 1 }
+        else if (c == "\"") { return out }
+        else { out = out c }
+        i++
+      }
+      return out
+    }'
+  awk -v want="$run_id" "$extract"'
+    { k = field_esc($0, "kind");     if (k != "decision") next
+      r = field_esc($0, "run_id");   if (r != want) next
+      d = field_esc($0, "decision"); if (d != "append-task" && d != "hand-off-feature") next
+      ts = field_esc($0, "ts");      if (ts == "") next
+      s = field_esc($0, "summary")
+      if (s != "" && index(s, "review:") != 1) next
+      fid = field_esc($0, "finding")
+      gsub(/[\t\r\n]/, " ", s); gsub(/[\t\r\n]/, " ", fid)
+      seq++
+      print ts "\t" seq "\t" fid "\t" s }
+  ' "$dir"/*.jsonl 2>/dev/null
+}
+
 # --- run-digest: assemble the run's report from files alone, nothing from
 # --- memory (thin-loop-driver T11) ------------------------------------------
 # See the header comment above for the exact line shapes this prints -- one
@@ -4803,7 +4884,9 @@ cmd_run_digest() {
   # review is not a packet escalation, so the driver never routes a token for
   # it and it leaves no routing record. The converse is what the `decision`
   # lines above rest on and is stated here because getting it wrong is silent:
-  # only the `review` records in that log are read. Its `decision` records are
+  # only the `review` records in that log are a source of lines (T16 reads its
+  # `decision` records solely to NAME a review's routing lines, below, and
+  # never emits a line for one). Its `decision` records are
   # the decider's own audit copy of decisions the driver ALREADY routed, so
   # emitting a digest line from them too would report every packet decision
   # twice -- once from routing.jsonl and once from here -- and double the stop
@@ -4816,12 +4899,34 @@ cmd_run_digest() {
   # documented at _rs_open_packets and at the enter line below.
   local rev_since_key=-1
   [ -n "$since" ] && rev_since_key="$(_rs_ts_key "$since")"
-  local rev_row rev_ts rev_key rev_merged rev_routed rev_dropped rev_before rev_after rev_n rev_i
+  local rev_row rev_ts rev_key rev_merged rev_routed rev_dropped rev_before rev_after rev_n
+  # T16: every review's parsed time (ALL of this run's reviews, never
+  # --since-scoped -- a review's window opens at the PREVIOUS review even when
+  # that one is outside --since), and every candidate routing record keyed the
+  # same way. Both are computed once, before the loop, since _rs_ts_key forks.
+  local rev_all rev_keys="" rtg_rows="" c_row c_ts
+  rev_all="$(_rs_digest_reviews "$main_root" "$run_id")"
+  while IFS= read -r rev_row; do
+    [ -n "$rev_row" ] || continue
+    # Comma-joined, not newline-joined: BSD awk refuses a newline inside a
+    # `-v` value ("newline in string").
+    rev_keys="${rev_keys}$(_rs_ts_key "$(printf '%s' "$rev_row" | cut -f1)"),"
+  done <<EOF
+$rev_all
+EOF
+  while IFS= read -r c_row; do
+    [ -n "$c_row" ] || continue
+    c_ts="$(printf '%s' "$c_row" | cut -f1)"
+    rtg_rows="${rtg_rows}$(_rs_ts_key "$c_ts")	${c_row#*	}
+"
+  done <<EOF
+$(_rs_digest_review_routing_candidates "$main_root" "$run_id")
+EOF
   while IFS= read -r rev_row; do
     [ -n "$rev_row" ] || continue
     rev_ts="$(printf '%s' "$rev_row" | cut -f1)"
+    rev_key="$(_rs_ts_key "$rev_ts")"
     if [ -n "$since" ]; then
-      rev_key="$(_rs_ts_key "$rev_ts")"
       [ "$rev_key" -ge "$rev_since_key" ] || continue
     fi
     rev_merged="$(printf '%s' "$rev_row" | cut -f2)"
@@ -4843,16 +4948,57 @@ cmd_run_digest() {
     esac
     # 10# so a leading zero is read as decimal, never octal; an absurdly long
     # digit run overflows to <= 0 and prints nothing rather than looping.
-    rev_n=$((10#$rev_routed)); rev_i=0
-    while [ "$rev_i" -lt "$rev_n" ]; do
-      # Empty id field: a review routes a FINDING, not a packet. See the
-      # header -- there is no packet id to name here, and leaving the field
-      # empty is what stops a renderer joining this line to a packet line.
-      printf 'decision\t\treview-routing\n'
-      rev_i=$((rev_i + 1))
-    done
+    rev_n=$((10#$rev_routed))
+    [ "$rev_n" -gt 0 ] || continue
+    # One line per routing, as before, and the COUNT still comes from the
+    # review record, never from how many routing records were found (T7). What
+    # T16 adds is the NAMES: the routed finding's id and the summary the review
+    # wrote, taken from this review's routing records -- the candidates whose
+    # parsed time is after the PREVIOUS review of this run and at or before
+    # this one, the latest `routed` of them in (time, read order). Latest,
+    # because the review writes its routings immediately before record-review,
+    # so an escalation's append-task/hand-off-feature audit copy with an empty
+    # summary, recorded earlier in the same window, is the one left out.
+    # Fewer records than `routed` (a hand-edit, a record-decision that failed
+    # to append) leaves the remaining lines with BOTH fields empty -- a routing
+    # whose record could not be found is reported as unnamed, never given a
+    # name borrowed from another record. A record with no --summary likewise
+    # yields an empty summary field, never a fabricated one.
+    #
+    # Field 2 stays EMPTY: a review routes a FINDING, not a packet. See the
+    # header -- there is no packet id to name here, and leaving the field empty
+    # is what stops a renderer joining this line to a packet line. The finding
+    # id and summary are fields 4 and 5, after the token, so every reader
+    # keying on fields 1-3 (run-tally among them) reads the line unchanged.
+    printf '%s' "$rtg_rows" | awk -F'\t' -v keys="$rev_keys" -v me="$rev_key" -v n="$rev_n" '
+      BEGIN {
+        lo = -1
+        m = split(keys, ks, ",")
+        for (i = 1; i <= m; i++) {
+          if (ks[i] == "") continue
+          k = ks[i] + 0
+          if (k < me + 0 && k > lo) lo = k
+        }
+      }
+      $1 != "" && ($1 + 0) > lo && ($1 + 0) <= (me + 0) { c++; kk[c] = $1 + 0; sq[c] = $2 + 0; fid[c] = $3; sm[c] = $4 }
+      END {
+        # insertion sort by (key, read order): a handful of rows per review
+        for (i = 2; i <= c; i++) {
+          j = i
+          while (j > 1 && (kk[j-1] > kk[j] || (kk[j-1] == kk[j] && sq[j-1] > sq[j]))) {
+            t = kk[j]; kk[j] = kk[j-1]; kk[j-1] = t
+            t = sq[j]; sq[j] = sq[j-1]; sq[j-1] = t
+            t = fid[j]; fid[j] = fid[j-1]; fid[j-1] = t
+            t = sm[j]; sm[j] = sm[j-1]; sm[j-1] = t
+            j--
+          }
+        }
+        first = c - n + 1; if (first < 1) first = 1
+        for (i = c + 1 - first + 1; i <= n; i++) printf "decision\t\treview-routing\t\t\n"
+        for (i = first; i <= c; i++) printf "decision\t\treview-routing\t%s\t%s\n", fid[i], sm[i]
+      }'
   done <<EOF
-$(_rs_digest_reviews "$main_root" "$run_id")
+$rev_all
 EOF
 
   # --- model/effort/threshold at the latest driver-mode enter, any session --

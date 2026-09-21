@@ -5259,6 +5259,77 @@ assert_true "run-digest: a run with no decision log at all emits no review line 
   "! grep -q \$'^review\t' <<<\"\$RVW_NOLOG\" && grep -q \$'^packet\t' <<<\"\$RVW_NOLOG\""
 
 echo
+echo "== run-digest: a review routing line carries the routed finding's id and summary (escalation-decider T16) =="
+# The driver renders a review's routings from the digest alone, so the line has
+# to NAME what was routed. The wrong implementations this rules out:
+#   - the T7 shape, `decision\t\treview-routing` with no names -- the renderer
+#     would then have to open the decision log or the result file to name them;
+#   - naming a routing from the WRONG record: an escalation's own append-task
+#     audit copy sits in the same log and the same run, with a finding id and a
+#     summary of its own, and is not a review routing;
+#   - borrowing a name across reviews: a later review whose routing records are
+#     missing must report its routings UNNAMED, never re-use an earlier
+#     review's record;
+#   - fabricating a summary for a routing recorded without one.
+# The line count still comes from the review's `routed` (T7), and field 2 stays
+# empty so nothing joins it to a packet line.
+RN="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RN" init -q
+mkdir -p "$RN/.agents"
+printf 'schema: 3\nstatus: running\n' > "$RN/.agents/run-state.yaml"
+rn_rs() { (cd "$RN" && CLAUDE_CODE_SESSION_ID=RNS "$RUNSTATE" "$@"); }
+rn_rs begin-run .agents/run-state.yaml >/dev/null
+printf 'T3 import the ledger\nbody\n' \
+  | rn_rs handoff .agents/run-state.yaml rn-t3 --tier mechanical --agent implementer >/dev/null
+rn_rs record-start rn-t3 >/dev/null
+# An escalation's audit copy: append-task, a finding, a summary -- but not a
+# review's (its summary does not open `review:`).
+rn_rs record-decision .agents/run-state.yaml rn-t3 append-task --trigger 'append-task arm' \
+  --finding decider-rn-t3 --summary 'appended T9 for the ledger rounding gap' >/dev/null
+# The review: ONE routing, then two merges and one drop, then record-review last.
+RN_SUM='review: rn-t3, rn-t5 -- the currency-rounding rule needs its own feature, depends_on: txn-import'
+rn_rs record-decision .agents/run-state.yaml rn-t3 hand-off-feature --trigger 'hand-off-feature arm' \
+  --finding f-rounding --summary "$RN_SUM" >/dev/null
+rn_rs record-review .agents/run-state.yaml \
+  --bytes-before 900 --bytes-after 300 --merged 2 --routed 1 --dropped 1 >/dev/null
+RN_D1="$(rn_rs run-digest .agents/run-state.yaml)"
+RN_EXPECT="$(printf 'decision\t\treview-routing\tf-rounding\t%s' "$RN_SUM")"
+assert_true "T16: one review with one routing yields exactly one review-routing line" \
+  "[ \"\$(awk -F'\t' '\$1 == \"decision\" && \$3 == \"review-routing\" { n++ } END { print n+0 }' <<<\"\$RN_D1\")\" = 1 ]"
+assert_true "T16: that line carries the routed finding's id and the summary the review wrote, verbatim, with the packet-id field empty" \
+  "grep -qxF \"\$RN_EXPECT\" <<<\"\$RN_D1\""
+assert_true "T16: the escalation's audit copy names no review routing" \
+  "! grep -q 'decider-rn-t3' <<<\"\$RN_D1\""
+assert_true "T16: the merges and drop stay counts on the review line" \
+  "grep -qx \$'review\t2\t1\t1\t900\t300' <<<\"\$RN_D1\""
+assert_true "T16: run-tally counts the one routing as ONE decision -- not the two merges, not the drop" \
+  "[ \"\$(rn_rs run-tally .agents/run-state.yaml | sed -n 's/^DECISIONS=//p')\" = 1 ]"
+
+# A second review whose routing record was written with no --summary.
+rn_rs record-decision .agents/run-state.yaml rn-t3 append-task --trigger 'append-task arm' \
+  --finding f-nosum >/dev/null
+rn_rs record-review .agents/run-state.yaml \
+  --bytes-before 300 --bytes-after 200 --merged 0 --routed 1 --dropped 1 >/dev/null
+RN_D2="$(rn_rs run-digest .agents/run-state.yaml)"
+assert_true "T16: a routing whose record lacks a summary carries its finding id and an EMPTY summary field, not a fabricated one" \
+  "grep -qx \$'decision\t\treview-routing\tf-nosum\t' <<<\"\$RN_D2\""
+assert_true "T16: and the first review's routing is still named once, by its own record" \
+  "[ \"\$(grep -cxF \"\$RN_EXPECT\" <<<\"\$RN_D2\")\" = 1 ]"
+
+# A third review that reports two routings but whose routing records are
+# missing, with another escalation audit copy recorded since the last review.
+rn_rs record-decision .agents/run-state.yaml rn-t3 append-task --trigger 'append-task arm' \
+  --finding decider-rn-t3b --summary 'appended T10 for the ledger header' >/dev/null
+rn_rs record-review .agents/run-state.yaml \
+  --bytes-before 200 --bytes-after 200 --merged 0 --routed 2 --dropped 0 >/dev/null
+RN_D3="$(rn_rs run-digest .agents/run-state.yaml)"
+assert_true "T16: routings whose records cannot be found are reported UNNAMED -- two lines with both name fields empty" \
+  "[ \"\$(grep -cx \$'decision\t\treview-routing\t\t' <<<\"\$RN_D3\")\" = 2 ]"
+assert_true "T16: never named from an earlier review's record or an escalation's audit copy" \
+  "[ \"\$(grep -c 'f-rounding' <<<\"\$RN_D3\")\" = 1 ] && [ \"\$(grep -c 'f-nosum' <<<\"\$RN_D3\")\" = 1 ] && ! grep -q 'decider-rn-t3b' <<<\"\$RN_D3\""
+assert_true "T16: an unmeasured routed count still yields no routing line" \
+  "rn_rs record-review .agents/run-state.yaml --bytes-before 1 --bytes-after 1 --merged 0 --routed unmeasured --dropped 0 >/dev/null && [ \"\$(awk -F'\t' '\$1 == \"decision\" && \$3 == \"review-routing\" { n++ } END { print n+0 }' <<<\"\$(rn_rs run-digest .agents/run-state.yaml)\")\" = 4 ]"
+
+echo
 echo "-- the end-of-run arm-2 proposal: ONE record, for a fixed id that is not a packet (loop-driver-run-gaps T6) --"
 # The termination review (skills/run-loop/SKILL.md §4) routes the architect's
 # arm-2 proposal through `route` under the fixed id `end-of-run-review`. That id

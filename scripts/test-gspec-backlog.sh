@@ -2162,6 +2162,107 @@ check  'the COVERS= criterion is inlined unchanged' "COVERS=Big capability
 PRD=" "$out"
 rm -f "$RW/.agents/project-overrides.yaml"
 
+printf '\n== handoff bundle: inlining and the budget carry across members (handoff-spec-inlining-t4) ==\n'
+# Same exact word counts as above (Alpha 5003, Beta 1503, Gamma 13), plus
+# Delta = 3 + 3 = 6 words over 2 lines. A bundle shares ONE seen-anchor set
+# and ONE running count, so a reader that resets either per member inlines a
+# repeated section twice, or never crosses a budget no single member crosses.
+mkdir -p "$RW/gspec/features/bnd"
+cp "$RW/gspec/features/big/prd.md" "$RW/gspec/features/bnd/prd.md"
+{ cat "$RW/gspec/features/big/arch.md"
+  printf '\n### Entity: Delta\nd1 d2 d3\n'
+} > "$RW/gspec/features/bnd/arch.md"
+mk_plan_v2 "$RW" bnd <<'EOF'
+- [ ] **T1** **P0** first names gamma
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma
+- [ ] **T2** **P0** names delta only
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Delta
+- [ ] **T3** **P0** names gamma again, another form
+  - deps: —
+  - covers: Big capability
+  - arch: #entity-gamma
+- [ ] **T4** **P0** alpha alone fits
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Alpha
+- [ ] **T5** **P0** beta crosses the bundle budget
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Beta · Entity: Gamma
+- [ ] **T6** **P0** delta after the crossing
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Delta
+- [ ] **T7** **P0** one task naming gamma twice
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · #entity-gamma
+EOF
+
+# A three-member bundle where two members name one anchor: text once, at the
+# first member; the later one points back at it by packet id.
+out="$("$ADAPTER" handoff bnd-t3,bnd-t2,bnd-t1 "$RW")"
+[ "$(printf '%s\n' "$out" | grep -c '^  g1 g2 g3')" = "1" ] \
+  && ok 'bundle: a section two members name is inlined exactly once' \
+  || bad 'bundle: a section two members name is inlined exactly once' \
+      "count: $(printf '%s\n' "$out" | grep -c '^  g1 g2 g3')"
+m1="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t1$/{f=1} /^PACKET=bnd-t2$/{exit} f')"
+m3="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t3$/{f=1} f')"
+check  'bundle: the text sits at the FIRST member that names it' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2 g3' "$m1"
+check  'bundle: the later member prints ARCH-SEEN= naming the first member' 'ARCH-SEEN=#entity-gamma packet=bnd-t1' "$out"
+refute 'bundle: the later member carries no Gamma text' 'g1 g2' "$m3"
+refute 'bundle: the later member prints no ARCH-SECTION= for it' 'ARCH-SECTION=' "$m3"
+check  'bundle: the other member still inlines its own distinct section' 'ARCH-SECTION=Entity: Delta
+  ### Entity: Delta
+  d1 d2 d3' "$out"
+refute 'bundle under budget: no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+refute 'bundle under budget: no ARCH-HEADING= marker' 'ARCH-HEADING=' "$out"
+no_arch_line 'bundle (seen case): no ARCH= line in any member' "$out"
+
+# A bundle crossing the budget in its SECOND member: no member alone crosses
+# 6000 (T4 5003, T5 1516, T6 6), only their sum does.
+for t in t4 t5 t6; do
+  refute "bnd-$t alone stays under budget" 'BUDGET-REACHED=' "$("$ADAPTER" handoff "bnd-$t" "$RW")"
+done
+out="$("$ADAPTER" handoff bnd-t4,bnd-t5,bnd-t6 "$RW")"
+m4="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t4$/{f=1} /^PACKET=bnd-t5$/{exit} f')"
+m5="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t5$/{f=1} /^PACKET=bnd-t6$/{exit} f')"
+m6="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t6$/{f=1} f')"
+check  'bundle budget: the first member inlines Alpha' 'ARCH-SECTION=Entity: Alpha' "$m4"
+check  'bundle budget: the second member names Beta by heading' 'ARCH-HEADING=Entity: Beta lines=16
+  ### Entity: Beta' "$m5"
+check  'bundle budget: and Gamma after it by heading' 'ARCH-HEADING=Entity: Gamma lines=2
+  ### Entity: Gamma' "$m5"
+check  'bundle budget: the third member names Delta by heading' 'ARCH-HEADING=Entity: Delta lines=2
+  ### Entity: Delta' "$m6"
+refute 'bundle budget: Delta text is not inlined' 'd1 d2' "$out"
+refute 'bundle budget: Gamma text is not inlined' 'g1 g2' "$out"
+[ "$(printf '%s\n' "$out" | grep -c '^BUDGET-REACHED=')" = "1" ] \
+  && ok 'bundle budget: exactly one BUDGET-REACHED= line' \
+  || bad 'bundle budget: exactly one BUDGET-REACHED= line' "got: $(printf '%s\n' "$out" | grep '^BUDGET-REACHED=')"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "BUDGET-REACHED=6000 words" ] \
+  && ok 'bundle budget: the statement line is the last line of the bundle' \
+  || bad 'bundle budget: the statement line is the last line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+no_arch_line 'bundle (budget case): no ARCH= line in any member' "$out"
+
+# A single id is unchanged: the seen set is not consulted (one task naming a
+# section twice inlines it twice, as before t4), and state never leaks in.
+expected="$(printf 'PACKET=bnd-t7\nFEATURE=bnd\nID=T7\nCHECKED=0\nTEXT=one task naming gamma twice\nFILES=\nCOVERS=Big capability\n    - %s\nPRD=gspec/features/bnd/prd.md\nARCH-SECTION=Entity: Gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\nARCH-SECTION=#entity-gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10' "$crit500")"
+out="$("$ADAPTER" handoff bnd-t7 "$RW")"
+[ "$out" = "$expected" ] && ok 'single id: output byte-identical to the pre-bundle-state shape' \
+  || bad 'single id: output changed' "expected:
+$expected
+got:
+$out"
+refute 'single id: no ARCH-SEEN= marker' 'ARCH-SEEN=' "$out"
+default_shape 'single id after t4 (default 6000)' "$("$ADAPTER" handoff big-t1 "$RW")"
+
 printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
 # The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
 # wrapped continuation line, a blank separator and a trailing paragraph, with

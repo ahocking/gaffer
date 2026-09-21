@@ -190,6 +190,11 @@
 #                            resolved section prints `ARCH-HEADING=<anchor>
 #                            lines=<n>` with its heading only, then one
 #                            `BUDGET-REACHED=<budget> words` line (t3).
+#                            For a bundle the budget spans the whole
+#                            handoff, `BUDGET-REACHED=` prints once after the
+#                            last member, and a section already inlined by
+#                            an earlier member prints `ARCH-SEEN=<anchor>
+#                            packet=<that member's packet id>` instead (t4).
 #                            A `covers:` quote matching no PRD
 #                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
@@ -2134,8 +2139,13 @@ cmd_complete_capabilities() {
 #   ARCH-HEADING=<anchor> lines=<n>          (in place of ARCH-SECTION= for a
 #     <the section's heading line, indented>   resolved section at or past the
 #                                              word budget)
+#   ARCH-SEEN=<anchor> packet=<packet id>    (bundle only: in place of
+#                                              ARCH-SECTION= for a section an
+#                                              earlier member already inlined)
 #   BUDGET-REACHED=<budget> words            (once, last, only when some
-#                                              section was named by heading)
+#                                              section was named by heading;
+#                                              in a bundle, printed by
+#                                              `_handoff_bundle` instead)
 _handoff_one() {
   local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
   local root; root="$(_root "${2:-}")"
@@ -2287,20 +2297,47 @@ EOF
   # text is counted — the COVERS= criteria above are outside the budget. An
   # unmatched anchor inlines nothing, so it counts nothing and is still
   # reported as before.
-  local anchor secout block nwords nlines
+  #
+  # Inside a bundle (handoff-spec-inlining-t4) the running count, the reached
+  # flag and the seen-anchor set are the `_HB_*` globals `_handoff_bundle`
+  # resets once and carries across every member, so the budget spans the
+  # whole bundle handoff; a distinct anchor — keyed by the heading line it
+  # resolves to, so two anchor forms naming one heading are one anchor — is
+  # inlined once, at the first member that inlines it, and a later naming
+  # prints `ARCH-SEEN=<anchor> packet=<that member's packet id>` with no text
+  # and no count. `BUDGET-REACHED=` is then printed once, by the bundle, after
+  # its last member. On the single-id path all three are reset here and the
+  # seen set is never consulted, so a single id's output is unchanged.
+  local anchor secout block nwords nlines heading firstpkt
   local budget; budget="$(_handoff_word_budget "$root")"
-  local used=0 reached=0
+  if [ "$_HB_BUNDLE" != "1" ]; then
+    _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
+  fi
   while IFS= read -r anchor; do
     [ -n "$anchor" ] || continue
     secout="$(_arch_section "$archabs" "$anchor")"
     if [ "${secout%%$'\n'*}" = "MATCH" ]; then
       block="$(printf '%s\n' "$secout" | tail -n +2)"
-      nwords="$(printf '%s\n' "$block" | awk '{ n += NF } END { print n + 0 }')"
-      if [ "$reached" = "0" ] && [ $((used + nwords)) -gt "$budget" ]; then
-        reached=1
+      heading="${block%%$'\n'*}"
+      if [ "$_HB_BUNDLE" = "1" ] && [ -n "$_HB_SEEN" ]; then
+        firstpkt="$(printf '%s\n' "$_HB_SEEN" | WANT="$heading" awk -F'\t' '
+          $1 == ENVIRON["WANT"] && !got { p = $2; got = 1 }
+          END { print p }
+        ')"
+        if [ -n "$firstpkt" ]; then
+          printf 'ARCH-SEEN=%s packet=%s\n' "$anchor" "$firstpkt"
+          continue
+        fi
       fi
-      if [ "$reached" = "0" ]; then
-        used=$((used + nwords))
+      nwords="$(printf '%s\n' "$block" | awk '{ n += NF } END { print n + 0 }')"
+      if [ "$_HB_REACHED" = "0" ] && [ $((_HB_USED + nwords)) -gt "$budget" ]; then
+        _HB_REACHED=1
+      fi
+      if [ "$_HB_REACHED" = "0" ]; then
+        _HB_USED=$((_HB_USED + nwords))
+        if [ "$_HB_BUNDLE" = "1" ]; then
+          _HB_SEEN="${_HB_SEEN}${heading}"$'\t'"${slug}-${idlc}"$'\n'
+        fi
         printf 'ARCH-SECTION=%s\n' "$anchor"
         printf '%s\n' "$block" | sed 's/^/  /'
       else
@@ -2312,10 +2349,20 @@ EOF
       printf 'UNMATCHED-ARCH=%s\n' "$anchor"
     fi
   done < <(_split_covers "$archv")
-  if [ "$reached" = "1" ]; then
+  if [ "$_HB_BUNDLE" != "1" ] && [ "$_HB_REACHED" = "1" ]; then
     printf 'BUDGET-REACHED=%s words\n' "$budget"
   fi
 }
+
+# Bundle-wide inlining state (handoff-spec-inlining-t4): set by
+# `_handoff_bundle`, read and advanced by each `_handoff_one` it calls. The
+# members are called directly (never in a subshell), which is what lets the
+# updates survive from one member to the next. `_HB_SEEN` holds one
+# "<heading line>\t<packet id>" line per section already inlined.
+_HB_BUNDLE=0
+_HB_USED=0
+_HB_REACHED=0
+_HB_SEEN=""
 
 # _handoff_word_budget <root> — the most words of spec-section text one
 # handoff inlines (handoff-spec-inlining-t3), from `handoff_inline_word_budget`
@@ -2762,9 +2809,17 @@ _handoff_bundle() {
   rm -f "$nodesfile"
   printf 'BUNDLE_FILES=%s\n' "$bundle_files"
 
+  # One seen-anchor set and one running word count across every member
+  # (handoff-spec-inlining-t4): reset once here, advanced by each member, and
+  # the single `BUDGET-REACHED=` line printed after the last one.
+  _HB_BUNDLE=1; _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
   for oi in "${order_idx[@]}"; do
     _handoff_one "${raw_ids[$oi]}" "$root"
   done
+  _HB_BUNDLE=0
+  if [ "$_HB_REACHED" = "1" ]; then
+    printf 'BUDGET-REACHED=%s words\n' "$(_handoff_word_budget "$root")"
+  fi
 }
 
 # cmd_handoff <packet-id[,packet-id...]> [root] — the real dispatcher; see the

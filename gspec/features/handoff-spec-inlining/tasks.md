@@ -85,7 +85,7 @@ Every regression sweep must pass green after every task.
   - covers: A word budget bounds what one handoff inlines
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh, .agents/project-overrides.yaml, templates/spec-driven-base/.agents/project-overrides.yaml
-- [ ] **T4** **P0** Carry the inlining and the budget through a bundle.
+- [x] **T4** **P0** Carry the inlining and the budget through a bundle.
   (a) `_handoff_bundle` holds one seen-anchor set and one running word count across all members, reset on the single-id path.
   (b) A distinct anchor's text is inlined once, at the first member that names it. A later member naming it prints `ARCH-SEEN=<anchor> packet=<first member's packet id>` with no text.
   (c) The budget spans the whole bundle handoff, and `BUDGET-REACHED=` prints once.

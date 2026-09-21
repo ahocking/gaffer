@@ -298,7 +298,10 @@ if [ "$combine_mode" = "1" ]; then
       >> "$tmp/combine.ndjson" || die "--combine: could not read '$f'"
     idx=$((idx + 1))
   done
-  jq -s -f /dev/stdin "$tmp/combine.ndjson" > "$tmp/combined.json" <<'JQPROG' || die "--combine: could not build the combined report"
+  # The program goes through a temp file, not `-f /dev/stdin`: a native
+  # Windows jq (Git Bash) cannot open /dev/stdin (MSYS hands it
+  # /proc/self/fd/0, which a win32 binary has no such path for).
+  cat > "$tmp/combine.jq" <<'JQPROG'
 def r6(n): (n*1000000|round)/1000000;
 def zero: { tokens: {input: 0, cache_write_5m: 0, cache_write_1h: 0, cache_read: 0, output: 0},
             dollars: 0, unpriced_tokens: 0, cache_write_unmeasured_tokens: 0 };
@@ -374,6 +377,8 @@ def win: "\(.window.since)..\(.window.until)";
     ]
   }
 JQPROG
+  jq -s -f "$tmp/combine.jq" "$tmp/combine.ndjson" > "$tmp/combined.json" \
+    || die "--combine: could not build the combined report"
   cat "$tmp/combined.json"
   jqr '.warnings[] | "WARNING: " + .' "$tmp/combined.json" >&2
   exit 0
@@ -609,16 +614,10 @@ done < "$tmp/projdirs.txt"
 # JOIN + DEDUP + WINDOW + PRICE + GROUP, in one jq program (single source of
 # truth for the dedup/window rules, rather than re-deriving them per axis).
 # =============================================================================
-jq -n \
-  --arg since "$since" --arg until "$until" \
-  --arg projects_dir_status "$projects_dir_status" \
-  --arg table_date "$table_date" \
-  --argjson price_table_overridden "$price_table_overridden" \
-  --argjson files_scanned "$files_scanned" \
-  --arg project_filter "$project_filter" \
-  --arg project_status "$project_status" \
-  --slurpfile pricefile "$price_table" \
-  -f /dev/stdin "$tmp/raw.ndjson" > "$tmp/report.json" <<'JQPROG'
+# Written to a temp file and run with `-f <file>`, never `-f /dev/stdin`: a
+# native Windows jq (Git Bash) cannot open /dev/stdin (MSYS hands it
+# /proc/self/fd/0, which a win32 binary has no such path for).
+cat > "$tmp/report.jq" <<'JQPROG'
 def r6(n): (n*1000000|round)/1000000;
 
 def sumtok(rows):
@@ -939,6 +938,16 @@ def cause_report(w):
     ]
   }
 JQPROG
+jq -n \
+  --arg since "$since" --arg until "$until" \
+  --arg projects_dir_status "$projects_dir_status" \
+  --arg table_date "$table_date" \
+  --argjson price_table_overridden "$price_table_overridden" \
+  --argjson files_scanned "$files_scanned" \
+  --arg project_filter "$project_filter" \
+  --arg project_status "$project_status" \
+  --slurpfile pricefile "$price_table" \
+  -f "$tmp/report.jq" "$tmp/raw.ndjson" > "$tmp/report.json"
 report_rc=$?
 cat "$tmp/report.json"
 [ "$report_rc" -eq 0 ] || exit "$report_rc"

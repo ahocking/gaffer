@@ -144,6 +144,28 @@
 #                        [A-Za-z0-9._-] only. Deliberately NOT defaulted from
 #                        the hostname: a hostname often carries the user's
 #                        name, which is exactly what a committed file must not.
+#   --combine FILE...    (loop-measurement T15) read NO transcripts; instead
+#                        combine files written by --save, from one or more
+#                        machines, into one report: counts, totals and the
+#                        by_project / by_model / by_role / by_effort breakdowns
+#                        (each with its five cost-part token labels) summed by
+#                        key, and `machines[]` naming every machine counted.
+#                        Every argument after --combine up to the next --option
+#                        is a file. Of two files sharing a machine label AND a
+#                        window, only the later-saved (saved_at) is counted; the
+#                        other is listed in `superseded[]` and warned about (a
+#                        tie on saved_at counts the one given later on the
+#                        command line, and says so). Files whose windows or
+#                        price-table dates differ are combined, with a warning
+#                        naming each machine's window / date — in `warnings[]`
+#                        and as a WARNING: line on stderr — and the top-level
+#                        `window` / `price_table_date` read null (no single
+#                        value), never one machine's value passed off as all.
+#                        A file that is not a saved-totals shape is refused
+#                        (exit 1, naming it). Cannot be mixed with any scan
+#                        option (--save, --machine, --project, --projects-dir,
+#                        --since, --until, --days, --price-table): the dollars
+#                        were priced when each file was saved.
 #
 # Prints one JSON report to stdout. Exit 0 on success (including an empty
 # window — that is a legitimate report, not a failure); exit 1 on a usage or
@@ -199,12 +221,16 @@ spend.sh — machine-wide API-equivalent spend report (requires jq)
   spend.sh [--projects-dir DIR] [--since ISO] [--until ISO] [--days N]
            [--price-table FILE] [--project FOLDER]
            [--save FILE --machine LABEL]
+  spend.sh --combine FILE...
 Prints one JSON report to stdout, over a window (default: the last 7 days).
 --project FOLDER scopes the whole report to one Claude-projects folder name
 (exact match), so by_role/by_model/by_effort/totals read as that one repo.
 --save FILE also writes the window's totals (counts, tokens, dollars, labels,
 window, price-table date, save time, machine label, home-stripped project
 folder names — nothing else) to FILE, for combining across machines.
+--combine FILE... reads no transcripts: it combines --save files from one or
+more machines into one report (later-saved wins per machine+window; window or
+price-table-date mismatches are combined with a warning naming them).
 USAGE
 }
 
@@ -212,20 +238,146 @@ projects_dir="${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}"
 since="" until="" days=7 price_table="${HERE}/spend-prices.json"
 project_filter=""
 save_file="" machine=""
+combine_mode=0 combine_files=() scan_opts=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --save) save_file="${2:-}"; [ -n "$save_file" ] || die "--save needs a file path"; shift 2 ;;
-    --machine) machine="${2:-}"; shift 2 ;;
-    --projects-dir) projects_dir="${2:-}"; shift 2 ;;
-    --since) since="${2:-}"; shift 2 ;;
-    --until) until="${2:-}"; shift 2 ;;
-    --days) days="${2:-}"; shift 2 ;;
-    --price-table) price_table="${2:-}"; shift 2 ;;
-    --project) project_filter="${2:-}"; shift 2 ;;
+    --combine)
+      combine_mode=1; shift
+      while [ $# -gt 0 ]; do
+        case "$1" in --*) break ;; esac
+        combine_files+=("$1"); shift
+      done ;;
+    --save) save_file="${2:-}"; [ -n "$save_file" ] || die "--save needs a file path"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --machine) machine="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --projects-dir) projects_dir="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --since) since="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --until) until="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --days) days="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --price-table) price_table="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
+    --project) project_filter="${2:-}"; scan_opts="$scan_opts $1"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1' (try --help)" ;;
   esac
 done
+
+# =============================================================================
+# COMBINE (loop-measurement T15): sum --save files by key. No transcript is
+# read and no price table is consulted — each file's dollars were priced when
+# it was saved, which is why a price-table-date mismatch is warned about rather
+# than re-priced.
+# =============================================================================
+if [ "$combine_mode" = "1" ]; then
+  [ -z "$scan_opts" ] || die "--combine reads saved files only and cannot be mixed with:$scan_opts"
+  [ "${#combine_files[@]}" -gt 0 ] || die "--combine needs at least one saved-totals file"
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  : > "$tmp/combine.ndjson"
+  idx=0
+  for f in "${combine_files[@]}"; do
+    [ -f "$f" ] && [ -r "$f" ] || die "--combine: cannot read '$f'"
+    # A saved-totals file (the --save shape): every field the combine reads is
+    # present and of the right type, or the file is refused — a missing number
+    # summed as 0 would read as a measurement.
+    jq -e '
+      def num: type == "number";
+      def slim_ok: type == "object" and (.tokens | type) == "object"
+        and all(.tokens.input, .tokens.cache_write_5m, .tokens.cache_write_1h,
+                .tokens.cache_read, .tokens.output; num)
+        and (.dollars | num) and (.unpriced_tokens | num)
+        and (.cache_write_unmeasured_tokens | num);
+      type == "object"
+      and (.machine | type) == "string" and (.machine | length) > 0
+      and (.saved_at | type) == "string" and (.price_table_date | type) == "string"
+      and (.window.since | type) == "string" and (.window.until | type) == "string"
+      and (.counts | type) == "object" and all(.counts[]; num)
+      and (.totals | slim_ok)
+      and all(.by_project, .by_model, .by_role, .by_effort;
+              type == "object" and all(.[]; slim_ok))
+    ' "$f" >/dev/null 2>&1 \
+      || die "--combine: '$f' is not a saved-totals file (written by spend.sh --save): a required field is missing or not the right type"
+    jq -c --arg file "$(basename "$f")" --argjson idx "$idx" '. + {_file: $file, _idx: $idx}' "$f" \
+      >> "$tmp/combine.ndjson" || die "--combine: could not read '$f'"
+    idx=$((idx + 1))
+  done
+  jq -s -f /dev/stdin "$tmp/combine.ndjson" > "$tmp/combined.json" <<'JQPROG' || die "--combine: could not build the combined report"
+def r6(n): (n*1000000|round)/1000000;
+def zero: { tokens: {input: 0, cache_write_5m: 0, cache_write_1h: 0, cache_read: 0, output: 0},
+            dollars: 0, unpriced_tokens: 0, cache_write_unmeasured_tokens: 0 };
+def addslim(a; b):
+  { tokens: (a.tokens | with_entries(.value += b.tokens[.key])),
+    dollars: r6(a.dollars + b.dollars),
+    unpriced_tokens: (a.unpriced_tokens + b.unpriced_tokens),
+    cache_write_unmeasured_tokens: (a.cache_write_unmeasured_tokens + b.cache_write_unmeasured_tokens) };
+def sumslims(xs): reduce xs[] as $x (zero; addslim(.; $x));
+def bykey(files; f):
+  [ files[] | f | to_entries[] ] | group_by(.key)
+  | map({key: .[0].key, value: sumslims(map(.value))}) | from_entries;
+def win: "\(.window.since)..\(.window.until)";
+# One group per (machine, window); the later saved_at wins, a tie goes to the
+# file given later on the command line (_idx), and the rest are superseded.
+( group_by([.machine, .window.since, .window.until])
+  | map(sort_by(.saved_at, ._idx)) ) as $groups
+| ( $groups | map(last) | sort_by(.machine, .window.since, .window.until) ) as $kept
+| ( [ $groups[] | last as $k | .[:-1][]
+      | { machine, window, saved_at, file: ._file,
+          superseded_by: { file: $k._file, saved_at: $k.saved_at },
+          tie: (.saved_at == $k.saved_at) } ] ) as $dropped
+| ( $kept | map(.window) | unique ) as $windows
+| ( $kept | map(.price_table_date) | unique ) as $dates
+| {
+    label: "API-equivalent spend estimate from published per-token API prices — not a bill. Combined from saved totals; each file's dollars were priced when it was saved.",
+    machines: ( $kept | map({ machine, saved_at, window, price_table_date, file: ._file }) ),
+    superseded: ( $dropped | map(del(.tie)) ),
+    # One shared value, or null when the counted files disagree (the mismatch
+    # is named in warnings[]) — never one machine's value standing for all.
+    window: (if ($windows | length) == 1 then $windows[0] else null end),
+    price_table_date: (if ($dates | length) == 1 then $dates[0] else null end),
+    warnings: (
+      [ (if ($windows | length) > 1 then
+           "window mismatch: " + ($kept | map("\(.machine) \(win)") | join(", "))
+           + " — combined anyway; the totals span different periods."
+         else empty end),
+        (if ($dates | length) > 1 then
+           "price-table date mismatch: " + ($kept | map("\(.machine) \(.price_table_date)") | join(", "))
+           + " — combined anyway; each file's dollars are summed as priced from its own table."
+         else empty end),
+        ( $kept | group_by(.machine)[] | select(length > 1)
+          | "machine \(.[0].machine) is counted from \(length) files with different windows ("
+            + (map(win) | join(", ")) + "); spend in overlapping periods is counted twice." ),
+        ( $dropped[]
+          | "superseded: \(.file) (machine \(.machine), window \(win), saved \(.saved_at)) is not counted; "
+            + (if .tie then "\(.superseded_by.file) was saved at the same time and was given later on the command line, so only it is counted."
+               else "\(.superseded_by.file), saved later at \(.superseded_by.saved_at), is counted instead." end) )
+      ] ),
+    counts: ( [ $kept[] | .counts | to_entries[] ] | group_by(.key)
+              | map({key: .[0].key, value: (map(.value) | add)}) | from_entries ),
+    totals: sumslims([ $kept[] | .totals ]),
+    by_project: bykey($kept; .by_project),
+    by_model:   bykey($kept; .by_model),
+    by_role:    bykey($kept; .by_role),
+    by_effort:  bykey($kept; .by_effort),
+    unmeasured: (
+      [ sumslims([ $kept[] | .totals ]) as $t
+        | (if $t.unpriced_tokens > 0 then
+             "\($t.unpriced_tokens) token(s) are from models absent from a machine's price table; they are not in any dollar figure (never priced as free)."
+           else empty end),
+          (if $t.cache_write_unmeasured_tokens > 0 then
+             "\($t.cache_write_unmeasured_tokens) cache-write token(s) lacked the 5m/1h split; they are excluded from dollar totals."
+           else empty end),
+        ( [ "by_model", "by_role", "by_effort" ][] as $ax
+          | select([ $kept[] | .[$ax] | has("unrecorded") ] | any)
+          | "some messages had no recorded \($ax | ltrimstr("by_")); grouped under 'unrecorded' in \($ax)." ),
+        "per-role cache-read shape and cache-write causes are not measured in a combined report: saved files do not carry them (medians and per-context causes do not add across machines)."
+      ] ),
+    notes: [
+      "each machine's totals are summed by key as saved; no transcript was read and no price table was consulted when combining.",
+      "of two files sharing a machine label and window, only the later-saved one is counted (see superseded[])."
+    ]
+  }
+JQPROG
+  cat "$tmp/combined.json"
+  jqr '.warnings[] | "WARNING: " + .' "$tmp/combined.json" >&2
+  exit 0
+fi
 
 case "$days" in ''|*[!0-9]*) die "--days must be a non-negative integer, got '$days'" ;; esac
 

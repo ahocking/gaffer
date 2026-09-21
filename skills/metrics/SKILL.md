@@ -1,7 +1,7 @@
 ---
 name: metrics
-description: Assemble, show, or analyze a run-metrics packet (ADR 0019 Tier 1). `collect` joins the event log + `[orch packet:<id>]` commit trailers + best-effort transcript tokens into a self-contained `.agents/metrics/<run-id>/run-metrics.json`; `show` prints a compact summary; `status` reports whether metrics is on and which sources are present; `analyze` hands the packet to Claude for ranked, concrete optimization advice; `spend` reports machine-wide API-equivalent token spend over a time window, priced from the published API rate card (not a bill). Use when the user asks where a run's compute went, how to make the loop cheaper/faster, to collect/see metrics for a run, or how much a window of usage cost across the machine.
-argument-hint: collect | show | status | analyze | spend [--days N | --since ISO --until ISO] (omit to show the latest packet)
+description: Assemble, show, or analyze a run-metrics packet (ADR 0019 Tier 1). `collect` joins the event log + `[orch packet:<id>]` commit trailers + best-effort transcript tokens into a self-contained `.agents/metrics/<run-id>/run-metrics.json`; `show` prints a compact summary; `status` reports whether metrics is on and which sources are present; `analyze` hands the packet to Claude for ranked, concrete optimization advice; `spend` reports machine-wide API-equivalent token spend over a time window, priced from the published API rate card (not a bill), and can `--save` a window's totals to a file and `--combine` saved files from several machines into one report. Use when the user asks where a run's compute went, how to make the loop cheaper/faster, to collect/see metrics for a run, or how much a window of usage cost across the machine (or across several machines).
+argument-hint: collect | show | status | analyze | spend [--days N | --since ISO --until ISO] [--save FILE --machine LABEL] | spend --combine FILE... (omit to show the latest packet)
 ---
 
 # Metrics → $ARGUMENTS
@@ -30,7 +30,8 @@ emits (and see step 3 — this report takes no header tally).
 - **`status`** → report enabled-state + source availability (step 4).
 - **`analyze`** → collect if needed, then reason over the packet (step 5).
 - **`spend [--days N] [--since ISO] [--until ISO] …`** → machine-wide API-equivalent
-  spend report over a window (step 6); pass any window flags through verbatim.
+  spend report over a window (step 6); pass any window, `--save`/`--machine` or
+  `--combine` flags through verbatim.
 - **anything else** → say the valid verbs are `collect | show | status | analyze | spend`.
 
 ## 2. `collect` — assemble the run packet
@@ -254,6 +255,52 @@ titles-over-ids and one line per finding still apply.
   synthetic no-cost turn), and `counts.messages_no_id` (kept, not deduped, per
   `notes[]`). If `projects_dir.status` is `absent`, say the scan directory itself was
   not found rather than reporting zero spend.
+
+### Saving a window's totals, and combining machines
+
+`spend` reads only the machine it runs on. To total spend across machines, save each
+machine's window, then combine the saved files on any one of them:
+
+```bash
+# on each machine, over the SAME window
+${CLAUDE_PLUGIN_ROOT}/scripts/spend.sh --since ISO --until ISO \
+  --save FILE --machine LABEL
+# anywhere, once every file is in hand
+${CLAUDE_PLUGIN_ROOT}/scripts/spend.sh --combine FILE [FILE...]
+```
+
+- **`--save FILE --machine LABEL`** prints the normal report **and** writes the window's
+  totals to `FILE`: counts, tokens, dollars, the model / agent-role / effort / cost-part
+  labels, the window, the price-table date, the save time, the machine label and project
+  folder names with the home-directory prefix stripped (so the file carries no user name
+  and two machines with the same layout share keys) — nothing else. `--machine` is
+  required and is never defaulted from the hostname. It refuses, writing nothing, with
+  `--project`, when the transcript directory does not exist, or when a home-directory
+  segment would survive into the file.
+- **`--combine FILE...`** reads no transcripts and consults no price table — each file's
+  dollars were priced when it was saved. It prints one JSON report summing `counts`,
+  `totals`, `by_project`, `by_model`, `by_role` and `by_effort` by key (each with its five
+  cost-part token counts), with `machines[]` naming every machine counted. It cannot be
+  mixed with any scan option, and a file that is not a `--save` file is refused, naming it.
+
+Render the combined report like the single-machine one (price-table date and label first,
+unpriced tokens never as dollars, every `unmeasured[]` entry in words), plus:
+
+- **Name every machine in `machines[]`**, with its window and price-table date.
+- **Relay every `warnings[]` entry**, as a ⚠️ line above the totals — they are also
+  printed to stderr as `WARNING:` lines. A **window mismatch** or **price-table date
+  mismatch** means the files were combined anyway: the totals span different periods,
+  or sum dollars priced from different tables, and the top-level `window` /
+  `price_table_date` is then `null` — say "differs by machine", never one machine's
+  value.
+- **Of two files with the same machine label and window, only the later-saved one is
+  counted**; the other is in `superseded[]`. Name it and say it was not counted (on a tie
+  in save time, the file given later on the command line is counted, and the warning
+  says so). A machine counted from two files with *different* windows is not superseded
+  — both are counted, and the warning says their overlap is counted twice.
+- A combined report carries **no** per-role cache-read shape and **no** cache-write
+  causes (saved files do not hold them); its `unmeasured[]` says so — report them as not
+  measured, never as zero.
 
 ## Config
 

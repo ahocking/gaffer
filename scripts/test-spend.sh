@@ -595,6 +595,150 @@ check "user-name segment backstop: refusal names the segment" "1" "$(grep -c 'ho
 "$SPEND" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine m >/dev/null 2>"$ROOT/r6.err"; RC6=$?
 check "--machine without --save: non-zero exit" "1" "$( [ "$RC6" -ne 0 ] && echo 1 || echo 0 )"
 
+# =============================================================================
+# FIXTURE SET H — spend --combine (loop-measurement T15). SAVE_F (Set F,
+# machine "laptop-2") is combined with a second machine's real --save output
+# ("desk-1"), whose home differs but whose "workspace-app" folder strips to the
+# same key, so the by-key sum across machines is exercised end to end. The
+# supersede / mismatch cases derive variants of those two files with jq.
+# Hand-verified figures: laptop-2 input 1000+5+200+30+4 = 1239, of which
+# ~-workspace-app is 1000+5+200 = 1205; desk-1 input 500.
+# =============================================================================
+PROJ_H_ROOT="$ROOT/projects-h"; mkdir -p "$PROJ_H_ROOT/-Users-fixture-zq-desk-workspace-app"
+cat > "$PROJ_H_ROOT/-Users-fixture-zq-desk-workspace-app/SH1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T09:00:00Z","effort":"max","message":{"id":"msg_h1","model":"model-c","usage":{"input_tokens":500,"output_tokens":50,"cache_read_input_tokens":40,"cache_creation_input_tokens":6,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":6}}}}
+JSON
+PRICES_H="$ROOT/prices-h.json"
+cat > "$PRICES_H" <<'JSON'
+{"table_date":"2026-09-01","prices":{"model-c":{"input":2,"cache_write_5m":3,"cache_write_1h":4,"cache_read":1,"output":8}}}
+JSON
+SAVE_H="$ROOT/saved-h.json"
+HOME="/Users/fixture-zq-desk" "$SPEND" --projects-dir "$PROJ_H_ROOT" --price-table "$PRICES_H" "${F_WIN[@]}" \
+  --save "$SAVE_H" --machine desk-1 >/dev/null 2>/dev/null
+echo "== Fixture Set H: spend --combine sums saved totals across machines =="
+check "combine fixture: desk-1 save written" "1" "$( [ -f "$SAVE_H" ] && echo 1 || echo 0 )"
+
+C1="$ROOT/comb-1.json"
+"$SPEND" --combine "$SAVE_F" "$SAVE_H" > "$C1" 2>"$ROOT/comb-1.err"
+check "combine: exit 0" "0" "$?"
+check "combine: names each machine included" "desk-1,laptop-2" "$(jq -r '[.machines[].machine] | join(",")' "$C1")"
+check "combine: machines carry file, window, date and save time" "true" \
+  "$(jq '[.machines[] | has("file") and has("window") and has("price_table_date") and has("saved_at")] | all' "$C1")"
+check "combine: total input tokens summed (1239 + 500)" "1739" "$(jq -r '.totals.tokens.input' "$C1")"
+check "combine: every cost part summed" "true" \
+  "$(jq -n --slurpfile c "$C1" --slurpfile a "$SAVE_F" --slurpfile b "$SAVE_H" \
+      '$c[0].totals.tokens == ($a[0].totals.tokens | with_entries(.value += $b[0].totals.tokens[.key]))')"
+check "combine: dollars summed" "true" \
+  "$(jq -n --slurpfile c "$C1" --slurpfile a "$SAVE_F" --slurpfile b "$SAVE_H" \
+      '$c[0].totals.dollars == ((($a[0].totals.dollars + $b[0].totals.dollars) * 1000000 | round) / 1000000)')"
+check "combine: unpriced tokens carried, not priced (laptop-2's model-b)" "22" "$(jq -r '.totals.unpriced_tokens' "$C1")"
+check "combine: same project key across machines sums (1205 + 500)" "1705" \
+  "$(jq -r '.by_project["~-workspace-app"].tokens.input' "$C1")"
+check "combine: project keys are the union" "-opt-shared-repo,~,~-workspace-app" "$(jq -r '.by_project | keys | join(",")' "$C1")"
+check "combine: model, role and effort breakdowns are the union" "model-a,model-b,model-c|main,reviewer|high,max,unrecorded,xhigh" \
+  "$(jq -r '"\(.by_model|keys|join(","))|\(.by_role|keys|join(","))|\(.by_effort|keys|join(","))"' "$C1")"
+check "combine: role main sums across machines" "true" \
+  "$(jq -n --slurpfile c "$C1" --slurpfile a "$SAVE_F" --slurpfile b "$SAVE_H" \
+      '$c[0].by_role.main.tokens.input == ($a[0].by_role.main.tokens.input + $b[0].by_role.main.tokens.input)')"
+check "combine: every breakdown value carries the five cost parts" "true" \
+  "$(jq '[.by_project, .by_model, .by_role, .by_effort | .[] | .tokens | keys == ["cache_read","cache_write_1h","cache_write_5m","input","output"]] | all' "$C1")"
+check "combine: breakdowns sum to the totals" "true" \
+  "$(jq '([.by_project[].tokens.input] | add) == .totals.tokens.input and ([.by_model[].tokens.output] | add) == .totals.tokens.output' "$C1")"
+check "combine: counts summed" "true" \
+  "$(jq -n --slurpfile c "$C1" --slurpfile a "$SAVE_F" --slurpfile b "$SAVE_H" \
+      '$c[0].counts.messages_counted == ($a[0].counts.messages_counted + $b[0].counts.messages_counted)')"
+check "combine: shared window and date reported" "2026-09-15T00:00:00Z..2026-09-15T23:59:59Z|2026-09-01" \
+  "$(jq -r '"\(.window.since)..\(.window.until)|\(.price_table_date)"' "$C1")"
+check "combine: matching files raise no warning" "0|0" \
+  "$(jq -r '.warnings | length' "$C1")|$(grep -c 'WARNING' "$ROOT/comb-1.err")"
+check "combine: nothing superseded" "0" "$(jq -r '.superseded | length' "$C1")"
+check "combine: cache-read shape and causes stated as not measured, not zero" "1" \
+  "$(jq '[.unmeasured[] | select(test("not measured in a combined report"))] | length' "$C1")"
+
+echo "-- later-saved wins for one machine label and window --"
+# An OLDER save from laptop-2 for the same window, with different (doubled)
+# numbers: it must not be counted, whichever order the files are given.
+OLD_F="$ROOT/saved-f-older.json"
+jq '.saved_at = "2026-09-01T00:00:00Z" | .totals.tokens.input *= 2 | .totals.dollars *= 2
+    | .by_project["~-workspace-app"].tokens.input *= 2' "$SAVE_F" > "$OLD_F"
+C2="$ROOT/comb-2.json"; C2R="$ROOT/comb-2r.json"
+"$SPEND" --combine "$OLD_F" "$SAVE_F" "$SAVE_H" > "$C2" 2>"$ROOT/comb-2.err"
+check "supersede: exit 0" "0" "$?"
+"$SPEND" --combine "$SAVE_F" "$SAVE_H" "$OLD_F" > "$C2R" 2>/dev/null
+check "supersede: only the later-saved is counted (totals as without the older file)" "1739|true" \
+  "$(jq -r '.totals.tokens.input' "$C2")|$(jq -n --slurpfile x "$C2" --slurpfile y "$C1" '$x[0].totals == $y[0].totals and $x[0].by_project == $y[0].by_project')"
+check "supersede: order of arguments does not change what is counted" "true" \
+  "$(jq -n --slurpfile x "$C2" --slurpfile y "$C2R" '$x[0].totals == $y[0].totals')"
+check "supersede: the older file is listed as superseded" "saved-f-older.json|laptop-2|saved-f.json" \
+  "$(jq -r '.superseded[] | "\(.file)|\(.machine)|\(.superseded_by.file)"' "$C2")"
+check "supersede: machine counted once" "desk-1,laptop-2" "$(jq -r '[.machines[].machine] | join(",")' "$C2")"
+check "supersede: warning names the superseded file" "1" \
+  "$(jq '[.warnings[] | select(test("superseded: saved-f-older.json"))] | length' "$C2")"
+check "supersede: warning reaches stderr" "1" "$(grep -c '^WARNING: superseded: saved-f-older.json' "$ROOT/comb-2.err")"
+C3="$ROOT/comb-3.json"
+"$SPEND" --combine "$SAVE_F" "$SAVE_F" > "$C3" 2>/dev/null
+check "tie: the same file twice is counted once" "true" \
+  "$(jq -n --slurpfile x "$C3" --slurpfile s "$SAVE_F" '$x[0].totals == $s[0].totals')"
+check "tie: warning says it was saved at the same time" "1" \
+  "$(jq '[.warnings[] | select(test("saved at the same time"))] | length' "$C3")"
+# A tie between DIFFERENT contents: the file given later on the command line
+# is the one counted, and the choice is stated.
+TIE_F="$ROOT/saved-f-tie.json"
+jq '.totals.tokens.input = 9999' "$SAVE_F" > "$TIE_F"
+check "tie: the file given later is counted" "9999|1239" \
+  "$("$SPEND" --combine "$SAVE_F" "$TIE_F" 2>/dev/null | jq -r '.totals.tokens.input')|$("$SPEND" --combine "$TIE_F" "$SAVE_F" 2>/dev/null | jq -r '.totals.tokens.input')"
+
+echo "-- window and price-table-date mismatches combine with a named warning --"
+WIN_H="$ROOT/saved-h-otherwin.json"
+jq '.window.since = "2026-09-14T00:00:00Z"' "$SAVE_H" > "$WIN_H"
+C4="$ROOT/comb-4.json"
+"$SPEND" --combine "$SAVE_F" "$WIN_H" > "$C4" 2>"$ROOT/comb-4.err"
+check "window mismatch: exit 0, both counted" "0|1739" "$?|$(jq -r '.totals.tokens.input' "$C4")"
+check "window mismatch: warning names each machine's window" "1" \
+  "$(jq '[.warnings[] | select(test("^window mismatch: ") and test("desk-1 2026-09-14T00:00:00Z..2026-09-15T23:59:59Z") and test("laptop-2 2026-09-15T00:00:00Z..2026-09-15T23:59:59Z"))] | length' "$C4")"
+check "window mismatch: warning reaches stderr" "1" "$(grep -c '^WARNING: window mismatch' "$ROOT/comb-4.err")"
+check "window mismatch: top-level window is null, not one machine's" "null" "$(jq -c '.window' "$C4")"
+check "window mismatch: no price-table warning when dates agree" "0" \
+  "$(jq '[.warnings[] | select(test("price-table"))] | length' "$C4")"
+DATE_H="$ROOT/saved-h-otherdate.json"
+jq '.price_table_date = "2026-09-14"' "$SAVE_H" > "$DATE_H"
+C5="$ROOT/comb-5.json"
+"$SPEND" --combine "$SAVE_F" "$DATE_H" > "$C5" 2>"$ROOT/comb-5.err"
+check "date mismatch: exit 0, both counted" "0|1739" "$?|$(jq -r '.totals.tokens.input' "$C5")"
+check "date mismatch: warning names each machine's date" "1" \
+  "$(jq '[.warnings[] | select(test("^price-table date mismatch: ") and test("desk-1 2026-09-14") and test("laptop-2 2026-09-01"))] | length' "$C5")"
+check "date mismatch: warning reaches stderr" "1" "$(grep -c '^WARNING: price-table date mismatch' "$ROOT/comb-5.err")"
+check "date mismatch: top-level date is null; window still shared" "null|false" \
+  "$(jq -c '.price_table_date' "$C5")|$(jq -c '.window == null' "$C5")"
+# Same machine label, DIFFERENT windows: not a supersede (both counted), but
+# the overlap is warned about by name.
+WIN_F="$ROOT/saved-f-otherwin.json"
+jq '.window.since = "2026-09-14T00:00:00Z"' "$SAVE_F" > "$WIN_F"
+C6="$ROOT/comb-6.json"
+"$SPEND" --combine "$SAVE_F" "$WIN_F" > "$C6" 2>/dev/null
+check "same label, other window: both counted, nothing superseded" "2478|0" \
+  "$(jq -r '.totals.tokens.input' "$C6")|$(jq -r '.superseded | length' "$C6")"
+check "same label, other window: overlap warned by machine name" "1" \
+  "$(jq '[.warnings[] | select(test("^machine laptop-2 is counted from 2 files"))] | length' "$C6")"
+
+echo "-- --combine refusals --"
+comb_refused() { # comb_refused <label> <expected stderr fragment> <spend args...>
+  local lbl="$1" frag="$2"; shift 2
+  "$SPEND" "$@" >"$ROOT/cr.out" 2>"$ROOT/cr.err"; local rc=$?
+  check "$lbl: non-zero exit" "1" "$( [ "$rc" -ne 0 ] && echo 1 || echo 0 )"
+  check "$lbl: stderr names the problem" "1" "$(grep -c -- "$frag" "$ROOT/cr.err")"
+  check "$lbl: no report on stdout" "0" "$(wc -c < "$ROOT/cr.out" | tr -d ' ')"
+}
+BAD_SAVE="$ROOT/saved-bad.json"
+jq 'del(.totals.dollars)' "$SAVE_F" > "$BAD_SAVE"
+comb_refused "not a saved-totals file" "saved-bad.json' is not a saved-totals file" --combine "$SAVE_F" "$BAD_SAVE"
+BAD_SAVE2="$ROOT/saved-bad2.json"
+jq '.by_model["model-a"].tokens.output = "12"' "$SAVE_F" > "$BAD_SAVE2"
+comb_refused "a breakdown value of the wrong type" "saved-bad2.json' is not a saved-totals file" --combine "$BAD_SAVE2"
+comb_refused "missing file" "cannot read" --combine "$ROOT/no-such-save.json"
+comb_refused "no files" "needs at least one" --combine
+comb_refused "mixed with a scan option" "cannot be mixed with: --since" --combine "$SAVE_F" --since 2026-09-15T00:00:00Z
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-spend.sh: ALL %d checks passed\n' "$pass"; exit 0

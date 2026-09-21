@@ -146,7 +146,7 @@ that it blocks nothing.
   - covers: Saved spend totals combine across machines
   - arch: —
   - files: scripts/spend.sh, scripts/test-spend.sh
-- [ ] **T15** **P1** Add `spend --combine <file>...`, which produces one report with the project, model, agent-role, effort and cost-part breakdowns and names each machine included; it warns by name on a window or price-table-date mismatch and counts only the later-saved of two files sharing a machine label and window, with cases, and document save and combine in `skills/metrics/SKILL.md`
+- [x] **T15** **P1** Add `spend --combine <file>...`, which produces one report with the project, model, agent-role, effort and cost-part breakdowns and names each machine included; it warns by name on a window or price-table-date mismatch and counts only the later-saved of two files sharing a machine label and window, with cases, and document save and combine in `skills/metrics/SKILL.md`
   - deps: T11, T14
   - covers: Saved spend totals combine across machines
   - arch: —

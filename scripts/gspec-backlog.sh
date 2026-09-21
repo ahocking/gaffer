@@ -618,6 +618,37 @@ _resolve_prd_path() {
   fi
 }
 
+# The layouts `arch.md` and `design.html` have existed in, newest first, one
+# printf pattern per line with `%s` standing for the slug. Today that is only
+# the 3.x feature folder - neither file existed before it - but a list, not a
+# literal, so a future relocation is one line here and not a hunt through
+# every caller (the lesson `_resolve_plan_path` paid for).
+_ARCH_LAYOUTS='gspec/features/%s/arch.md'
+_DESIGN_LAYOUTS='gspec/features/%s/design.html'
+
+# _resolve_layout <slug> <root> <layouts> - "<abs>\t<rel>" for the first
+# pattern in <layouts> that exists on disk, or nothing when none does.
+_resolve_layout() {
+  local slug="$1" root="$2" layouts="$3" pat rel
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # shellcheck disable=SC2059  # the pattern IS the format string, by design
+    rel="$(printf "$pat" "$slug")"
+    if [ -f "$root/$rel" ]; then
+      printf '%s\t%s\n' "$root/$rel" "$rel"
+      return 0
+    fi
+  done <<EOF
+$layouts
+EOF
+}
+
+# _resolve_arch_path / _resolve_design_path <slug> <root> - "<abs>\t<rel>", or
+# nothing when the feature has no such file. Callers test for emptiness, the
+# same contract as `_resolve_prd_path` / `_resolve_plan_path`.
+_resolve_arch_path()   { _resolve_layout "$1" "$2" "$_ARCH_LAYOUTS"; }
+_resolve_design_path() { _resolve_layout "$1" "$2" "$_DESIGN_LAYOUTS"; }
+
 # --- check: the ARTIFACT pin (ADR 0020 D3) -----------------------------------
 
 cmd_check() {
@@ -879,10 +910,11 @@ cmd_next() {
     # these PATHS to an implementer so it needs nothing else. Absent is normal
     # (a feature with no UI gets no design; an unmigrated repo has neither) and
     # never an error - /gspec-architect writes them.
-    [ -f "$root/gspec/features/$pick/arch.md" ] \
-      && printf 'ARCH=gspec/features/%s/arch.md\n' "$pick"
-    [ -f "$root/gspec/features/$pick/design.html" ] \
-      && printf 'DESIGN=gspec/features/%s/design.html\n' "$pick"
+    local sib
+    sib="$(_resolve_arch_path "$pick" "$root")"
+    [ -n "$sib" ] && printf 'ARCH=%s\n' "$(printf '%s' "$sib" | cut -f2)"
+    sib="$(_resolve_design_path "$pick" "$root")"
+    [ -n "$sib" ] && printf 'DESIGN=%s\n' "$(printf '%s' "$sib" | cut -f2)"
   else
     printf 'PLAN=none\n'
     printf 'HINT=run /gspec-plan %s to decompose the PRD before the loop can execute it\n' "$pick"
@@ -2101,7 +2133,8 @@ EOF
   [ -n "$prdrel" ] || prdrel="none"
 
   local archrel="absent"
-  [ -f "$root/gspec/features/$slug/arch.md" ] && archrel="gspec/features/$slug/arch.md"
+  local archpp; archpp="$(_resolve_arch_path "$slug" "$root")"
+  [ -n "$archpp" ] && archrel="$(printf '%s' "$archpp" | cut -f2)"
 
   printf 'PACKET=%s-%s\n' "$slug" "$idlc"
   printf 'FEATURE=%s\n' "$slug"

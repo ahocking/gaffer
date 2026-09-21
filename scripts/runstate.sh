@@ -530,6 +530,38 @@
 #                                    unmeasured: absence is an answer (no
 #                                    records, hence 0; no override, hence the
 #                                    default).
+#   reorder-pending <run-state> <id[,id...]>
+#                                    escalation-decider T3: replaces
+#                                    backlog.pending with exactly the given
+#                                    order, through the same validated
+#                                    whole-file `write` every other block
+#                                    rewrite here goes through. NEVER `set`:
+#                                    `pending` is nested under `backlog:`,
+#                                    which `set` refuses (_set_target_shape's
+#                                    `nested-only`) precisely because appending
+#                                    it at column 0 creates a second `pending:`
+#                                    no reader uses — two sources of truth at
+#                                    exit 0.
+#                                    Prints REORDERED=yes|no, PENDING=<the new
+#                                    order>, ADDED=<ids not previously pending>
+#                                    and REMOVED=<ids dropped from it> — a
+#                                    fixed field set, so a reader sees one
+#                                    shape whether or not the order changed.
+#                                    REORDERED=no means the requested order was
+#                                    already on disk and nothing was written.
+#                                    Refuses (leaving the file byte-identical,
+#                                    since every check runs before the write):
+#                                    an empty list, a repeated id — refused,
+#                                    not de-duplicated, or the surviving order
+#                                    is not the one asked for — an id outside
+#                                    [a-zA-Z0-9._-], a file with no `pending:`
+#                                    key or with more than one, a `pending:`
+#                                    carrying a value on its own line (a flow
+#                                    list), and any line inside the block that
+#                                    is not a `- <id>` item. The cursor, the
+#                                    findings index and every other key are
+#                                    outside the rewritten span and are copied
+#                                    through byte-for-byte.
 #   bundle-cap                       packet-bundling T2: prints CAP=<n> the
 #                                    way periodic-pause prints EVERY=. Pure
 #                                    reader, no side effect. Comes from
@@ -4432,6 +4464,267 @@ cmd_prune_questions() {
   printf 'PRUNED=yes\nDROPPED=%d\nKEPT=%d\n' "$dropped_count" "$((total - dropped_count))"
 }
 
+# --- reorder-pending: replace backlog.pending with a given order ------------
+# --- (escalation-decider T3) --------------------------------------------------
+# `reorder` is the one decider decision that is a WRITE rather than a question,
+# and `backlog.pending` is where it lands. It cannot go through `set`:
+# `pending` lives INSIDE `backlog:`, which is exactly the `nested-only` shape
+# `_set_target_shape` refuses (and refuses for a reason -- before that refusal
+# existed, `set` appended a SECOND, column-0 key while every reader kept reading
+# the nested one: exit 0, two sources of truth, no signal). So this subcommand
+# rewrites the block in place and hands the WHOLE file to `cmd_write`, which is
+# the only validated write path in this file (structural check + the
+# last-known-good `run-state-prev.yaml` copy).
+#
+# WHAT IT REFUSES, and each refusal leaves the file byte-identical because the
+# decision is made before anything is written:
+#   - an empty id list (a reorder to nothing is a `pending` delete, not a
+#     reorder -- if that is ever wanted it is a different subcommand)
+#   - a repeated id (silently de-duplicating, as `_normalize_id_list` does for
+#     `--packets` membership tests, would accept an order the caller did not
+#     ask for and report a `REMOVED=` that never happened)
+#   - an id outside [a-zA-Z0-9._-] (written bare into the list; see below)
+#   - no `pending:` key at all, or MORE THAN ONE -- two of them is the
+#     two-sources-of-truth corruption this subcommand exists not to create, and
+#     guessing which one the readers use would entrench it
+#   - a `pending:` carrying a value on its own line (a flow list `[a, b]`), or a
+#     block holding any line that is not `- <id>` -- the same rule
+#     `prune-questions` follows for an unrecognized shape: refuse to act rather
+#     than rewrite something this parser does not actually understand
+#
+# BOTH INDENT STYLES of the block list are rewritten in place, and in their own
+# style: items indented under the key (what `templates/run-state.yaml` ships)
+# and items LEVEL WITH the key (what `yaml.safe_dump` emits by default, and what
+# `cmd_summary` and `_findings_pending_ids` have always read). A run-state whose
+# `pending:` sits at COLUMN 0 with column-0 items parses as YAML but is refused
+# on write, by `_write_check`: a column-0 `- b` is not a `key:` line, so the
+# whole FILE is a shape `cmd_write` declines wherever it came from. That is a
+# loud rc=1 leaving the file byte-identical, not a silent rewrite, and it is not
+# a run-state shape -- `pending` is nested under `backlog:` in every file this
+# loop writes.
+#
+# IDS ARE WRITTEN BARE, deliberately, and this is NOT a reintroduction of the
+# plain-scalar allowlist `_yaml_encode_value` documents and rejects. That
+# allowlist was a claim about arbitrary future VALUES; these are ids already
+# constrained to [a-zA-Z0-9._-] (no `:`, no leading `-`, no quote), the shape
+# `templates/run-state.yaml` writes and the shape `_findings_pending_ids` and
+# `cmd_summary` read RAW -- quoting them here would make `findings --stale`
+# compare `'pkt-1'` against `pkt-1` and read every pending packet as unknown.
+# Existing entries are DECODED on read, so a quoted entry left by a hand edit
+# is recognized rather than reported as removed-and-re-added.
+#
+# An existing item's TRAILING `# comment` is read as part of its id, so
+# `- b   # why` reports `REMOVED=b   # why` against an `ADDED=b`. That is the
+# same raw read `_findings_pending_ids` and `cmd_summary` already do -- a
+# pre-existing convention of this list, not a rule this subcommand introduces --
+# and it costs only report noise: the rewritten list carries the validated ids
+# and the comment does not survive, which is the same thing a hand reorder does.
+#
+# _rs_pending_block <file> -- one TSV record per line, for the shell below:
+#   KEYS  <n>                  lines matching ^\s*pending: (any indent)
+#   START <line> <indent> <rest-after-the-colon>
+#   ITEM  <line> <indent-width> <raw value>   width as a COUNT, never the
+#                                    leading whitespace itself: the shell below
+#                                    reads these with tab as IFS, and tab is IFS
+#                                    WHITESPACE, so an EMPTY indent field (an
+#                                    item at column 0, reachable now that an
+#                                    item level with its key is admitted) is
+#                                    collapsed with its neighbour and the id
+#                                    lands in the indent variable. A count is
+#                                    never empty. Same reason `_rs_pending_block`
+#                                    reconstructs it with `printf '%*s'`, which
+#                                    is what the no-item fallback already did.
+#   BAD   <line> <line text>   a line inside the block this parser cannot read
+#   END   <line>               last line of the block (after trailing blanks)
+# Emits KEYS alone when there is not exactly one `pending:` key.
+_rs_pending_block() {
+  awk '
+    { lines[NR] = $0 }
+    /^[[:space:]]*pending:/ { keys++; if (keys == 1) start = NR }
+    END {
+      print "KEYS\t" keys + 0
+      if (keys != 1) exit 0
+      line = lines[start]
+      ki = match(line, /[^[:space:]]/) - 1
+      rest = line; sub(/^[[:space:]]*pending:/, "", rest)
+      print "START\t" start "\t" ki "\t" rest
+      # The block runs to the first non-blank line indented no deeper than the
+      # key (a sibling key, or any column-0 key), or to EOF. A COMMENT-ONLY line
+      # is skipped like a blank one whatever its indent, and that is load-bearing
+      # rather than tidy: a comment is legal at ANY column in YAML and carries no
+      # structure, so ending the block on a column-0 one left every item after it
+      # in place while the rewritten order was inserted above -- rc=0,
+      # `REORDERED=yes`, and a `pending` that parses with a DUPLICATE id, which is
+      # the one thing the `seen` check below refuses to write. Skipping it instead
+      # sends that item into the BAD branch, so the shape is refused and the file
+      # is left byte-identical.
+      # A `- ` line AT THE INDENT OF THE KEY ITSELF is an item of this list, not
+      # a sibling key, and it is the same silent-wrong class as the comment
+      # above: YAML permits a block sequence level with its parent mapping key,
+      # a mapping cannot have sequence entries as children, and this is the
+      # shape `yaml.safe_dump` emits BY DEFAULT -- so it is what a hand edit
+      # through a YAML library leaves behind. `cmd_summary` and
+      # `_findings_pending_ids` already read it (neither tests indent), so every
+      # other subcommand treats such a file as valid. Ending the block on it
+      # left `end` at `start`: no ITEM records, an empty `old_csv`, the new
+      # order inserted under the key and no old item skipped -- rc=0,
+      # `REORDERED=yes`, `ADDED=` naming ids that were already pending, and a
+      # file that no longer PARSES AT ALL, written by the one subcommand whose
+      # reason for existing is to avoid a silent-wrong write.
+      #
+      # `-` followed by a space or end-of-line, deliberately not a bare `-`
+      # prefix: `- b` is unambiguously a sequence entry, while `-foo: bar` is a
+      # legal mapping key that merely starts with a dash, and continuing past
+      # THAT would read a sibling key as an item and delete it. The cost of the
+      # narrow test is that `-b` (no space, not a sequence entry in YAML, so
+      # only reachable in a file that already does not parse) still ends the
+      # block early; a file no parser accepts cannot be rewritten safely either
+      # way, and that shape is reported as unchanged rather than claimed fixed.
+      end = NR
+      for (i = start + 1; i <= NR; i++) {
+        if (lines[i] ~ /^[[:space:]]*$/) continue
+        if (lines[i] ~ /^[[:space:]]*#/) continue
+        ind = match(lines[i], /[^[:space:]]/) - 1
+        if (ind == ki && lines[i] ~ /^[[:space:]]*-([[:space:]]|$)/) continue
+        if (ind <= ki) { end = i - 1; break }
+      }
+      # Trailing blank AND comment lines belong to whatever follows, not to the
+      # list: leave them in place so a blank separator, or the column-0 comment
+      # block `templates/run-state.yaml` ships between `pending` and
+      # `pending_questions:`, survives the rewrite untouched.
+      while (end > start && lines[end] ~ /^[[:space:]]*(#.*)?$/) end--
+      for (i = start + 1; i <= end; i++) {
+        l = lines[i]
+        if (l ~ /^[[:space:]]*-[[:space:]]*[^[:space:]]/) {
+          v = l; sub(/^[[:space:]]*-[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+          print "ITEM\t" i "\t" (index(l, "-") - 1) "\t" v
+        } else {
+          print "BAD\t" i "\t" l
+        }
+      }
+      print "END\t" end
+    }
+  ' "$1"
+}
+
+cmd_reorder_pending() {
+  local f="${1:-}" raw="${2:-}"
+  # `$# -eq 2` rather than `-n "$raw"`: an explicitly empty order is a real
+  # call with a bad argument, and it earns the empty-list refusal below by name
+  # rather than a usage line that says the argument was missing.
+  [ -n "$f" ] && [ "$#" -eq 2 ] \
+    || die "usage: reorder-pending <run-state> <id[,id...]>"
+  need_file "$f"
+
+  # --- the requested order: validated, never de-duplicated silently ----------
+  local new_csv="" seen="," id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!a-zA-Z0-9._-]*)
+        die "reorder-pending: packet id '${id}' must be [a-zA-Z0-9._-] (it is written bare into the pending list)" ;;
+    esac
+    case "$seen" in
+      *",${id},"*)
+        die "reorder-pending: '${id}' appears more than once in the requested order -- refusing rather than de-duplicating, since the surviving order would not be the one asked for; run-state is left unchanged" ;;
+    esac
+    seen="${seen}${id},"
+    new_csv="${new_csv:+${new_csv},}${id}"
+  done <<EOF
+$(_split_ids "$raw")
+EOF
+  [ -n "$new_csv" ] || die "reorder-pending: the requested order is empty -- a reorder to nothing would delete the backlog, not reorder it; run-state is left unchanged"
+
+  # --- locate the block ------------------------------------------------------
+  local blk keys start key_ind key_rest end
+  blk="$(_rs_pending_block "$f")"
+  keys="$(awk -F'\t' '$1 == "KEYS" { print $2 }' <<<"$blk")"
+  if [ "${keys:-0}" = 0 ]; then
+    die "reorder-pending: no 'pending:' key in '${f}' -- this subcommand replaces an existing backlog.pending list and will not create one; write the whole file with \`write\` instead"
+  fi
+  if [ "${keys:-0}" != 1 ]; then
+    die "reorder-pending: '${f}' carries ${keys} 'pending:' keys -- that is already two sources of truth, and rewriting one of them would entrench it; repair the file with \`write\` first"
+  fi
+  start="$(awk -F'\t' '$1 == "START" { print $2 }' <<<"$blk")"
+  key_ind="$(awk -F'\t' '$1 == "START" { print $3 }' <<<"$blk")"
+  key_rest="$(awk -F'\t' '$1 == "START" { print $4 }' <<<"$blk")"
+  end="$(awk -F'\t' '$1 == "END" { print $2 }' <<<"$blk")"
+
+  # A value on the key line is a flow list (or a scalar) -- a shape this
+  # parser does not write and must not half-rewrite. A trailing comment is
+  # fine: templates/run-state.yaml ships one on this very line.
+  local rest_stripped
+  rest_stripped="$(printf '%s' "$key_rest" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  case "$rest_stripped" in
+    ''|'#'*) : ;;
+    *) die "reorder-pending: 'pending:' carries a value on its own line ('${rest_stripped}') -- only an indented '- <id>' list is rewritten here; run-state is left unchanged" ;;
+  esac
+
+  local bad
+  bad="$(awk -F'\t' '$1 == "BAD" { print $2 ": " $3; exit }' <<<"$blk")"
+  [ -z "$bad" ] || die "reorder-pending: line ${bad%%:*} inside the pending block is not a '- <id>' item -- refusing to rewrite a list shape this parser does not understand; run-state is left unchanged"
+
+  # --- what was there before, decoded ----------------------------------------
+  # `item_ind_seen` and not `[ -n "$item_ind" ]`: an item at column 0 has a
+  # width of 0, whose reconstructed indent is the empty string, so testing the
+  # indent itself would read "column 0" as "no items at all" and fall through to
+  # the key+2 default -- re-indenting a list the caller only asked to reorder.
+  local old_csv="" item_ind="" item_ind_seen="" ind v
+  while IFS="$(printf '\t')" read -r _ _ ind v; do
+    [ -n "$ind$v" ] || continue
+    [ -n "$item_ind_seen" ] || { item_ind_seen=y; item_ind="$(printf '%*s' "$ind" '')"; }
+    v="$(_yaml_decode_value "$v")"
+    old_csv="${old_csv:+${old_csv},}${v}"
+  done <<<"$(awk -F'\t' '$1 == "ITEM"' <<<"$blk")"
+  # No existing item to copy an indentation from: one level in from the key,
+  # which is what templates/run-state.yaml uses.
+  [ -n "$item_ind_seen" ] || item_ind="$(printf '%*s' "$((key_ind + 2))" '')"
+
+  # --- added / removed, reported in the requested order then the old order ---
+  local added="" removed="" old_set="," new_set=","
+  local IFS_SAVE="$IFS"
+  # `set -f` for the duration: these loops word-split on `,` UNQUOTED, which is
+  # how the split is done at all, and that leaves globbing on. `new_csv` is
+  # charset-validated above, but the OLD ids come off disk unvalidated -- an
+  # entry a hand edit left as `- "*"` expanded to the working directory's
+  # listing, so `REMOVED=` reported thirteen filenames instead of the one id.
+  # The written file was still right (only `new_csv` reaches the rebuild); the
+  # REPORT was wrong, and the report is what a caller acts on.
+  set -f
+  IFS=','
+  for id in $old_csv; do [ -n "$id" ] && old_set="${old_set}${id},"; done
+  for id in $new_csv; do new_set="${new_set}${id},"; done
+  for id in $new_csv; do
+    case "$old_set" in *",${id},"*) : ;; *) added="${added:+${added},}${id}" ;; esac
+  done
+  for id in $old_csv; do
+    [ -n "$id" ] || continue
+    case "$new_set" in *",${id},"*) : ;; *) removed="${removed:+${removed},}${id}" ;; esac
+  done
+  IFS="$IFS_SAVE"
+  set +f
+
+  if [ "$new_csv" = "$old_csv" ]; then
+    printf 'REORDERED=no\nPENDING=%s\nADDED=\nREMOVED=\n' "$new_csv"
+    return 0
+  fi
+
+  # --- rebuild: everything outside the block byte-for-byte ------------------
+  local items="" new_content
+  IFS=','
+  for id in $new_csv; do items="${items}${item_ind}- ${id}"$'\n'; done
+  IFS="$IFS_SAVE"
+
+  new_content="$(ITEMS="$items" awk -v s="$start" -v e="$end" '
+    NR == s { print; printf "%s", ENVIRON["ITEMS"]; next }
+    NR > s && NR <= e { next }
+    { print }
+  ' "$f")"
+
+  printf '%s\n' "$new_content" | cmd_write "$f"
+  printf 'REORDERED=yes\nPENDING=%s\nADDED=%s\nREMOVED=%s\n' "$new_csv" "$added" "$removed"
+}
+
 # --- stamp updated_at = now (UTC), atomically -------------------------------
 cmd_touch() {
   local f="${1:-}"
@@ -5005,6 +5298,7 @@ case "$cmd" in
   run-digest)        cmd_run_digest        "$@" ;;
   run-tally)         cmd_run_tally         "$@" ;;
   prune-questions)   cmd_prune_questions   "$@" ;;
+  reorder-pending)   cmd_reorder_pending   "$@" ;;
   bundle-cap)        cmd_bundle_cap        "$@" ;;
   # The header block, printed to its OWN end rather than to a hardcoded line
   # number. The number was `498` while the header actually ran to 553, so help

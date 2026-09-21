@@ -4266,6 +4266,258 @@ assert_true "review-due writes nothing: both logs are byte-unchanged after a cal
   "[ \"\$RVR_BYTES\" = \"\$RVR_BYTES_AFTER\" ]"
 
 echo
+echo "== reorder-pending: backlog.pending replaced in place, through the validated"
+echo "   whole-file write -- never appended at column 0 (escalation-decider T3) =="
+# THE mutation this block exists to rule out is the `set`-shaped implementation:
+# `pending` lives INSIDE `backlog:`, so a naive `grep -qE '^pending:'` finds
+# nothing, falls through to an append, and leaves a SECOND, column-0 `pending:`
+# at the bottom of the file. That file still PARSES (two distinct mapping keys,
+# `backlog.pending` and a top-level `pending`), `reorder-pending` reports the
+# new order, and every reader in this script -- `_findings_pending_ids`,
+# `cmd_summary` -- keeps reading the nested one. Exit 0, two sources of truth,
+# no signal. So the load-bearing assertion here is the COUNT of `pending:`
+# keys, not the reported output, and it is asserted alongside a real parse of
+# the nested value: either alone passes the wrong implementation.
+#
+# `cursor` and `findings:` are asserted INTACT for the second half of the same
+# failure: a rewrite that finds the block by scanning for the next column-0 key
+# can swallow its siblings (cursor sits one line above `pending:` inside
+# `backlog:`) or the whole `findings:` index below it -- and a dropped index
+# line does not delete a finding, it unlinks a body still on disk (ADR 0022).
+ROP="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$ROP/.agents"
+rop_rs() { "$RUNSTATE" reorder-pending "$ROP/.agents/run-state.yaml" "$@"; }
+rop_fixture() {
+  cat > "$ROP/.agents/run-state.yaml" <<'ROPEOF'
+schema: 3
+status: running
+branch: orch/rop
+backlog:
+  cursor: rop-a                        # next packet to pick up
+  pending:                             # packets not yet started, in order
+    - rop-b
+    - rop-c
+    - rop-d
+
+findings:
+  - id: rop-f1
+    summary: 'guard.sh: fails closed on unreadable input'
+    packets: [rop-c]
+note: where we stopped
+ROPEOF
+}
+# The nested value, read by a REAL parser -- `backlog.pending` as a csv, and
+# `backlog.cursor`. Not a grep: the whole point of this block is that the grep
+# view and the parsed view can disagree. Only meaningful when have_yaml is
+# true; every caller pairs it with yamlok, which reports a loud counted skip.
+_yaml_backlog() {
+  python3 -c "
+import sys, yaml
+b = (yaml.safe_load(open(sys.argv[1])) or {}).get('backlog') or {}
+v = b.get(sys.argv[2])
+sys.stdout.write(','.join(str(x) for x in v) if isinstance(v, list) else ('' if v is None else str(v)))
+" "$1" "$2"
+}
+_pending_key_count() { grep -cE '^[[:space:]]*pending:' "$1"; }
+
+rop_fixture
+ROP_OUT="$(rop_rs rop-d,rop-b 2>&1)"
+assert_true "reorder-pending reports the new order, what it added and what it removed" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-d,rop-b\nADDED=\nREMOVED=rop-c\n')\" ]"
+# THE assertion: one `pending:` key, not two. An append-based implementation
+# passes every other assertion in this block and fails this one.
+assert_true "reorder-pending leaves exactly ONE pending: key -- no second source of truth" \
+  "[ \"\$(_pending_key_count \"\$ROP/.agents/run-state.yaml\")\" = 1 ]"
+assert_true "reorder-pending leaves a file a real YAML parser accepts" \
+  "yamlok \"\$ROP/.agents/run-state.yaml\""
+assert_true "the PARSED backlog.pending is the requested order, not just the grep view" \
+  "yamlok \"\$ROP/.agents/run-state.yaml\" && [ \"\$(_yaml_backlog \"\$ROP/.agents/run-state.yaml\" pending)\" = 'rop-d,rop-b' ]"
+assert_true "cursor survives the rewrite, parsed" \
+  "yamlok \"\$ROP/.agents/run-state.yaml\" && [ \"\$(_yaml_backlog \"\$ROP/.agents/run-state.yaml\" cursor)\" = 'rop-a' ]"
+assert_true "cursor survives the rewrite, as runstate.sh itself reads it" \
+  "[ \"\$(\"\$RUNSTATE\" cursor \"\$ROP/.agents/run-state.yaml\" | sed -E 's/[[:space:]]*#.*$//')\" = 'rop-a' ]"
+assert_true "the findings index survives the rewrite, entry and body pointer intact" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"\$ROP/.agents/run-state.yaml\")\" = \"\$(printf 'rop-f1\tguard.sh: fails closed on unreadable input\t\trop-c')\" ]"
+assert_true "every other key survives: note and status are untouched" \
+  "[ \"\$(\"\$RUNSTATE\" get \"\$ROP/.agents/run-state.yaml\" note)\" = 'where we stopped' ] \
+   && [ \"\$(\"\$RUNSTATE\" get \"\$ROP/.agents/run-state.yaml\" status)\" = 'running' ]"
+# An id not previously pending is an ADD, reported by name -- the decider's
+# `append-task` puts a brand-new packet ahead of the one it came from.
+ROP_OUT="$(rop_rs 'rop-new, rop-d ,rop-b' 2>&1)"
+assert_true "an id not already pending is reported as ADDED, and the list keeps the given order" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-new,rop-d,rop-b\nADDED=rop-new\nREMOVED=\n')\" ]"
+assert_true "an add still leaves exactly one pending: key and a parseable file" \
+  "[ \"\$(_pending_key_count \"\$ROP/.agents/run-state.yaml\")\" = 1 ] && yamlok \"\$ROP/.agents/run-state.yaml\""
+# Idempotence is not cosmetic: the decider re-reads and re-writes the order on
+# every reorder decision, and a no-op call must not rotate run-state-prev.yaml
+# (the last known good copy) past the state a crash would need.
+ROP_BEFORE="$(cksum < "$ROP/.agents/run-state.yaml")"
+ROP_OUT="$(rop_rs rop-new,rop-d,rop-b 2>&1)"
+ROP_AFTER="$(cksum < "$ROP/.agents/run-state.yaml")"
+assert_true "re-requesting the order already on disk reports REORDERED=no and writes nothing" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=no\nPENDING=rop-new,rop-d,rop-b\nADDED=\nREMOVED=\n')\" ] \
+   && [ \"\$ROP_BEFORE\" = \"\$ROP_AFTER\" ]"
+
+# --- refusals: every one leaves the file BYTE-identical ---------------------
+# The check that matters as much as the non-zero exit: a refusal that has
+# already written half a file is worse than no refusal at all, which is why
+# every shape decision is made before cmd_write is reached.
+rop_refuses() {  # rop_refuses <label> <arg...>
+  local label="$1"; shift
+  local before after rc
+  before="$(cksum < "$ROP/.agents/run-state.yaml")"
+  set +o pipefail
+  rop_rs "$@" >/dev/null 2>&1; rc=$?
+  set -o pipefail
+  after="$(cksum < "$ROP/.agents/run-state.yaml")"
+  if [ "$rc" -ne 0 ] && [ "$before" = "$after" ]; then
+    ok "reorder-pending refuses $label, run-state byte-identical"
+  else
+    bad "reorder-pending refuses $label, run-state byte-identical" "rc=$rc before=$before after=$after"
+  fi
+}
+rop_refuses "an empty order"        ""
+rop_refuses "a whitespace-only order" " , "
+rop_refuses "a repeated id"         "rop-b,rop-d,rop-b"
+# A `/` and not a space: whitespace is a SEPARATOR here (`_split_ids` splits on
+# `[,[:space:]]+`), so `rop d` is two valid ids, not one invalid one. The first
+# cut of this case used a space and passed the call, which is the reminder that
+# the charset refusal can only ever be reached by a non-separator character.
+rop_refuses "an id outside [a-zA-Z0-9._-]" "rop-b,rop/d"
+
+# No `pending:` key at all, and more than one: both refused rather than
+# guessed at. The two-key fixture is exactly what the append bug produces, and
+# refusing it is what stops this subcommand from entrenching the corruption it
+# exists not to create.
+printf 'schema: 3\nbacklog:\n  cursor: rop-a\n' > "$ROP/.agents/run-state.yaml"
+rop_refuses "a run-state with no pending: key" rop-b
+printf 'schema: 3\nbacklog:\n  cursor: rop-a\n  pending:\n    - rop-b\npending:\n  - rop-c\n' \
+  > "$ROP/.agents/run-state.yaml"
+rop_refuses "a run-state already carrying two pending: keys" rop-b
+# A flow list and a non-item line inside the block: shapes this parser does not
+# write and must not half-rewrite (same rule prune-questions follows).
+printf 'schema: 3\nbacklog:\n  pending: [rop-b, rop-c]\n' > "$ROP/.agents/run-state.yaml"
+rop_refuses "a flow-list pending:" rop-b
+printf 'schema: 3\nbacklog:\n  pending:\n    - rop-b\n    stray: 1\n' > "$ROP/.agents/run-state.yaml"
+rop_refuses "a pending block holding a line that is not a - item" rop-b
+# A COLUMN-0 `pending:` with column-0 items parses as YAML, and the same-indent
+# rule above reads its items correctly -- but `_write_check` refuses any
+# column-0 line that is not a `key:` line, so `cmd_write` declines the whole
+# file. Pinned as a REFUSAL, not a rewrite: loud rc=1 and byte-identical is the
+# acceptable outcome for a shape no run-state has (`pending` is nested under
+# `backlog:` everywhere the loop writes it), and this case is what would notice
+# if it ever started writing a file half in that shape instead.
+printf 'schema: 3\npending:\n- rop-b\n- rop-c\nnote: x\n' > "$ROP/.agents/run-state.yaml"
+rop_refuses "a column-0 pending: with column-0 items (cmd_write declines the file)" "rop-c,rop-b"
+# A COMMENT between two items, indented no deeper than the `pending:` key. A
+# comment is legal at any column in YAML and carries no structure, so a
+# boundary scan that treats it like a sibling key ends the block early: the
+# rewritten order is inserted above it and the items BELOW it are left in
+# place. That file still parses -- and the parsed list then carries a
+# DUPLICATE id, the one thing the requested order is validated against. It is
+# the rc=0 silent-wrong class, so what this case pins is the refusal AND the
+# byte-identical file, not the exit code alone.
+printf 'schema: 3\nbacklog:\n  cursor: rop-a\n  pending:\n    - rop-b\n# a stray comment\n    - rop-c\nnote: x\n' \
+  > "$ROP/.agents/run-state.yaml"
+rop_refuses "a comment line between two pending items" "rop-c,rop-b"
+# ...and the same scan must NOT refuse the shape templates/run-state.yaml
+# actually ships: items, a blank, then a column-0 comment block, then the next
+# key. That block belongs to `pending_questions:`, not to the list, so it has
+# to stay OUTSIDE the rewritten span -- untouched, and still above the key it
+# documents. The two cases are a pair: skipping comments in the boundary scan
+# is what makes the one above refuse, and stepping back over them in the
+# trailing trim is what keeps this one working.
+cat > "$ROP/.agents/run-state.yaml" <<'ROPEOF'
+schema: 3
+backlog:
+  cursor: rop-a
+  pending:                             # packets not yet started, in order
+    - rop-b
+    - rop-c
+
+# Questions the human must answer before blocked packets can proceed.
+# severity: blocking = the loop cannot continue until answered;
+pending_questions: []
+ROPEOF
+ROP_OUT="$(rop_rs rop-c,rop-b 2>&1)"
+assert_true "a column-0 comment block AFTER the list is left outside the rewrite" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-c,rop-b\nADDED=\nREMOVED=\n')\" ] \
+   && [ \"\$(_pending_key_count \"\$ROP/.agents/run-state.yaml\")\" = 1 ] \
+   && yamlok \"\$ROP/.agents/run-state.yaml\" \
+   && [ \"\$(_yaml_backlog \"\$ROP/.agents/run-state.yaml\" pending)\" = 'rop-c,rop-b' ]"
+# The comment block survives verbatim, still ABOVE pending_questions: -- a trim
+# that swallowed it would pass every assertion above while deleting the
+# documentation the template ships.
+assert_true "that comment block survives the rewrite, verbatim and still above its key" \
+  "[ \"\$(sed -n '/^# Questions the human/,/^pending_questions:/p' \"\$ROP/.agents/run-state.yaml\")\" \
+    = \"\$(printf '# Questions the human must answer before blocked packets can proceed.\n# severity: blocking = the loop cannot continue until answered;\npending_questions: []')\" ]"
+# A list whose items sit LEVEL WITH the `pending:` key. This is not an exotic
+# hand edit: it is what `yaml.safe_dump` emits by default, and both of this
+# script's own readers already accept it (`cmd_summary` reports `2 pending`,
+# `_findings_pending_ids` resolves `blocked_by`), so every other subcommand
+# treats such a file as valid. A boundary scan that ends the block on the first
+# line indented no deeper than the key cannot tell this list's own item from a
+# sibling key: it found NO items, so it inserted the new order under the key and
+# skipped nothing -- rc=0, `REORDERED=yes`, `ADDED=` naming ids that were
+# already pending, and a run-state that no longer PARSES. Strictly worse than
+# the comment case above, which at least left a parseable file. So this case
+# asserts the parse and the parsed VALUE, not the exit code: the wrong
+# implementation exits 0 and prints a plausible `PENDING=`.
+cat > "$ROP/.agents/run-state.yaml" <<'ROPEOF'
+schema: 3
+status: running
+backlog:
+  cursor: rop-a
+  pending:
+  - rop-b
+  - rop-c
+findings:
+  - id: rop-f1
+    summary: 'guard.sh: fails closed on unreadable input'
+    packets: [rop-c]
+note: where we stopped
+ROPEOF
+ROP_OUT="$(rop_rs rop-c,rop-b 2>&1)"
+assert_true "a list level with its pending: key is reordered, not appended above its own items" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-c,rop-b\nADDED=\nREMOVED=\n')\" ] \
+   && [ \"\$(_pending_key_count \"\$ROP/.agents/run-state.yaml\")\" = 1 ]"
+assert_true "that file still parses, with the requested order and cursor intact" \
+  "yamlok \"\$ROP/.agents/run-state.yaml\" \
+   && [ \"\$(_yaml_backlog \"\$ROP/.agents/run-state.yaml\" pending)\" = 'rop-c,rop-b' ] \
+   && [ \"\$(_yaml_backlog \"\$ROP/.agents/run-state.yaml\" cursor)\" = 'rop-a' ]"
+# The same-indent STYLE is preserved, not normalised to the template's: the
+# caller asked for a reorder, and a re-indent is a second change it did not ask
+# for. Two items at the key indent (2), and no item at 4.
+assert_true "the same-indent style survives the rewrite -- a reorder is not a re-indent" \
+  "[ \"\$(grep -cE '^  - rop-' \"\$ROP/.agents/run-state.yaml\")\" = 2 ] \
+   && [ \"\$(grep -cE '^    - rop-' \"\$ROP/.agents/run-state.yaml\")\" = 0 ]"
+assert_true "the findings index survives a same-indent rewrite" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"\$ROP/.agents/run-state.yaml\")\" = \"\$(printf 'rop-f1\tguard.sh: fails closed on unreadable input\t\trop-c')\" ]"
+# ...and the narrow `- ` test that admits those items must NOT admit a sibling
+# MAPPING KEY whose name starts with a dash (`-weird:` is legal YAML). Reading
+# that as an item would report it under REMOVED and delete the key.
+printf 'schema: 3\nbacklog:\n  pending:\n  - rop-b\n  - rop-c\n  -weird: 1\nnote: x\n' \
+  > "$ROP/.agents/run-state.yaml"
+ROP_OUT="$(rop_rs rop-c,rop-b 2>&1)"
+assert_true "a dash-named sibling key is not read as an item: it survives and is not reported REMOVED" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-c,rop-b\nADDED=\nREMOVED=\n')\" ] \
+   && yamlok \"\$ROP/.agents/run-state.yaml\" \
+   && grep -qE '^  -weird: 1\$' \"\$ROP/.agents/run-state.yaml\""
+
+# The added/removed REPORT is the thing a caller acts on, and it is built by
+# splitting on an unquoted `,`. Old ids come off disk unvalidated, so a hand
+# edit leaving `- "*"` globbed the working directory into `REMOVED=`. The
+# written file was right and only the report was wrong, which is why this
+# asserts the report text and not the file.
+printf 'schema: 3\nbacklog:\n  pending:\n    - "*"\n    - rop-a\n' > "$ROP/.agents/run-state.yaml"
+# The cwd must CONTAIN something for `*` to expand to, or this case is vacuous:
+# bash leaves an unmatched glob as the literal `*`, which is exactly the string
+# the fixed code emits, so an empty directory would pass the bug too.
+mkdir -p "$ROP/globcwd" && : > "$ROP/globcwd/decoy-file"
+ROP_OUT="$(cd "$ROP/globcwd" && rop_rs rop-a,rop-z 2>&1)"
+assert_true "an unvalidated existing id is reported literally, never glob-expanded" \
+  "[ \"\$ROP_OUT\" = \"\$(printf 'REORDERED=yes\nPENDING=rop-a,rop-z\nADDED=rop-z\nREMOVED=*\n')\" ]"
+
+echo
 echo "== run-tally: the four digest-derived tally figures, counted from the digest's own"
 echo "   lines for the whole run (report-render-conformance T1) =="
 rd_tally() { (cd "$RD" && "$RUNSTATE" run-tally .agents/run-state.yaml "$@"); }

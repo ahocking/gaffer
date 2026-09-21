@@ -91,7 +91,7 @@ the right-sizing bar is not.
   - covers: A periodic review keeps the findings index small and honest
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh, templates/spec-driven-base/.agents/project-overrides.yaml
-- [ ] **T3** **P0** Add `runstate.sh reorder-pending <run-state> <id[,id...]>`, which replaces `backlog.pending` with the given order through the same validated whole-file write `cmd_write` already guards (never `set`, which refuses a key nested under `backlog:` and would otherwise append a second column-0 `pending:` nothing reads), refusing an empty list or a repeated id and printing which ids it added and removed; `scripts/test-runstate.sh` gains a case asserting the file still parses as YAML with `cursor` and `findings:` intact, ruling out an append that leaves two `pending:` keys and two sources of truth.
+- [x] **T3** **P0** Add `runstate.sh reorder-pending <run-state> <id[,id...]>`, which replaces `backlog.pending` with the given order through the same validated whole-file write `cmd_write` already guards (never `set`, which refuses a key nested under `backlog:` and would otherwise append a second column-0 `pending:` nothing reads), refusing an empty list or a repeated id and printing which ids it added and removed; `scripts/test-runstate.sh` gains a case asserting the file still parses as YAML with `cursor` and `findings:` intact, ruling out an append that leaves two `pending:` keys and two sources of truth.
   - deps: —
   - covers: The decider acts only within fixed authority
   - arch: —

@@ -151,7 +151,7 @@ that it blocks nothing.
   - covers: Saved spend totals combine across machines
   - arch: —
   - files: scripts/spend.sh, scripts/test-spend.sh, skills/metrics/SKILL.md
-- [ ] **T16** **P1** Run `spend` against the preserved transcripts for the 7-day window ending 2026-09-14 20:07 UTC, using a price table dated no later than 2026-09-14, and confirm:
+- [x] **T16** **P1** Run `spend` against the preserved transcripts for the 7-day window ending 2026-09-14 20:07 UTC, using a price table dated no later than 2026-09-14, and confirm:
   - the primary machine is within 5% of $2,078, with cache reads at 66–70%;
   - combined with the second machine's saved totals, the total is within 5% of $2,666.
 

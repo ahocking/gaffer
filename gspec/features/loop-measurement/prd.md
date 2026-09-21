@@ -62,7 +62,7 @@ This feature **takes over `metrics-coverage-gaps`' P1 capability "Failed and unc
   - it groups cache writes above a size the report states by cause, each with count and dollars: cache lifetime expired during an idle gap, model changed, effort changed, new session or subagent started, context compacted or its prefix changed, or new content added
   - each large write is counted once, under the first cause that fits, trying causes in an order the report states. A write whose cause the transcript cannot show is counted as "unknown cause", never given a guessed one
 
-- [ ] **P1**: Saved spend totals combine across machines
+- [x] **P1**: Saved spend totals combine across machines
   - `/gaffer:metrics spend` can save a window's totals to a file holding only counts, tokens, dollars, the model, agent-role, effort and cost-part labels the combined breakdowns need, the window, the price-table date, the time it was saved, a machine label and project folder names
   - given saved files from several machines, it produces one combined report with the project, model, agent-role, effort and cost-part breakdowns, naming each machine included
   - files whose windows or price-table dates differ are combined only with a warning naming the mismatch, and of two files with the same machine label and window, only the later-saved one is counted

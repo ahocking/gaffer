@@ -1,0 +1,373 @@
+{
+  "machine": "rainbow-unicorn",
+  "saved_at": "2026-09-21T15:33:25Z",
+  "window": {
+    "since": "2026-09-07T20:07:00Z",
+    "until": "2026-09-14T20:07:00Z"
+  },
+  "price_table_date": "2026-09-15",
+  "counts": {
+    "files_scanned": 339,
+    "messages_counted": 3661,
+    "messages_no_id": 0,
+    "messages_deduped_dropped": 18742,
+    "messages_excluded_no_usage_or_ts": 0,
+    "messages_excluded_synthetic": 5
+  },
+  "totals": {
+    "tokens": {
+      "input": 46920,
+      "cache_write_5m": 16328459,
+      "cache_write_1h": 9037696,
+      "cache_read": 605066019,
+      "output": 3034869
+    },
+    "dollars": 586.663266,
+    "unpriced_tokens": 0,
+    "cache_write_unmeasured_tokens": 0
+  },
+  "by_project": {
+    "~-AppData-Roaming-com-kesomannen-gale-valheim": {
+      "tokens": {
+        "input": 4492,
+        "cache_write_5m": 1252643,
+        "cache_write_1h": 1526984,
+        "cache_read": 56381456,
+        "output": 467730
+      },
+      "dollars": 72.072943,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-AppData-Roaming-r2modmanPlus-local-Valheim-profiles-Default": {
+      "tokens": {
+        "input": 2508,
+        "cache_write_5m": 488720,
+        "cache_write_1h": 1847286,
+        "cache_read": 27232649,
+        "output": 262156
+      },
+      "dollars": 62.995778,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-workspace-rune-fellowship": {
+      "tokens": {
+        "input": 39788,
+        "cache_write_5m": 14587096,
+        "cache_write_1h": 5616710,
+        "cache_read": 520994102,
+        "output": 2290274
+      },
+      "dollars": 450.530092,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-workspace-video-library": {
+      "tokens": {
+        "input": 132,
+        "cache_write_5m": 0,
+        "cache_write_1h": 46716,
+        "cache_read": 457812,
+        "output": 14709
+      },
+      "dollars": 1.064453,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_model": {
+    "claude-fable-5-1": {
+      "tokens": {
+        "input": 17552,
+        "cache_write_5m": 2922281,
+        "cache_write_1h": 4357536,
+        "cache_read": 212970766,
+        "output": 1176832
+      },
+      "dollars": 235.939131,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "claude-opus-5": {
+      "tokens": {
+        "input": 28066,
+        "cache_write_5m": 11378910,
+        "cache_write_1h": 4680160,
+        "cache_read": 345676095,
+        "output": 1792702
+      },
+      "dollars": 335.716143,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "claude-sonnet-5": {
+      "tokens": {
+        "input": 1302,
+        "cache_write_5m": 2027268,
+        "cache_write_1h": 0,
+        "cache_read": 46419158,
+        "output": 65335
+      },
+      "dollars": 15.007992,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_role": {
+    "Explore": {
+      "tokens": {
+        "input": 20,
+        "cache_write_5m": 100058,
+        "cache_write_1h": 0,
+        "cache_read": 608642,
+        "output": 4722
+      },
+      "dollars": 1.047834,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "architecture-validator": {
+      "tokens": {
+        "input": 626,
+        "cache_write_5m": 649170,
+        "cache_write_1h": 0,
+        "cache_read": 3064537,
+        "output": 882
+      },
+      "dollars": 5.614771,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "architecture-writer": {
+      "tokens": {
+        "input": 620,
+        "cache_write_5m": 727480,
+        "cache_write_1h": 0,
+        "cache_read": 11560438,
+        "output": 14537
+      },
+      "dollars": 10.69352,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-architect": {
+      "tokens": {
+        "input": 864,
+        "cache_write_5m": 1374011,
+        "cache_write_1h": 0,
+        "cache_read": 16962486,
+        "output": 27395
+      },
+      "dollars": 17.758028,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-architecture-validator": {
+      "tokens": {
+        "input": 858,
+        "cache_write_5m": 869916,
+        "cache_write_1h": 0,
+        "cache_read": 1843808,
+        "output": 10367
+      },
+      "dollars": 6.62235,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-validator": {
+      "tokens": {
+        "input": 350,
+        "cache_write_5m": 1015902,
+        "cache_write_1h": 0,
+        "cache_read": 2316875,
+        "output": 517
+      },
+      "dollars": 7.522511,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-writer": {
+      "tokens": {
+        "input": 3920,
+        "cache_write_5m": 1730899,
+        "cache_write_1h": 0,
+        "cache_read": 4495019,
+        "output": 12818
+      },
+      "dollars": 22.962936,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:architect": {
+      "tokens": {
+        "input": 1952,
+        "cache_write_5m": 1435769,
+        "cache_write_1h": 0,
+        "cache_read": 11264788,
+        "output": 34797
+      },
+      "dollars": 15.485652,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:implementer": {
+      "tokens": {
+        "input": 1302,
+        "cache_write_5m": 2027268,
+        "cache_write_1h": 0,
+        "cache_read": 46419158,
+        "output": 65335
+      },
+      "dollars": 15.007992,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:reviewer": {
+      "tokens": {
+        "input": 3936,
+        "cache_write_5m": 1529658,
+        "cache_write_1h": 0,
+        "cache_read": 6418525,
+        "output": 3825
+      },
+      "dollars": 12.884948,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "main": {
+      "tokens": {
+        "input": 27348,
+        "cache_write_5m": 0,
+        "cache_write_1h": 9037696,
+        "cache_read": 481558277,
+        "output": 2830167
+      },
+      "dollars": 423.286872,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "plan-decomposer": {
+      "tokens": {
+        "input": 260,
+        "cache_write_5m": 531299,
+        "cache_write_1h": 0,
+        "cache_read": 1925001,
+        "output": 2225
+      },
+      "dollars": 4.340052,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "plan-validator": {
+      "tokens": {
+        "input": 962,
+        "cache_write_5m": 1105509,
+        "cache_write_1h": 0,
+        "cache_read": 4751767,
+        "output": 5653
+      },
+      "dollars": 9.431459,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "practices-validator": {
+      "tokens": {
+        "input": 280,
+        "cache_write_5m": 430273,
+        "cache_write_1h": 0,
+        "cache_read": 680400,
+        "output": 1762
+      },
+      "dollars": 3.074859,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "practices-writer": {
+      "tokens": {
+        "input": 432,
+        "cache_write_5m": 246326,
+        "cache_write_1h": 0,
+        "cache_read": 1362954,
+        "output": 6492
+      },
+      "dollars": 2.38548,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "profile-validator": {
+      "tokens": {
+        "input": 12,
+        "cache_write_5m": 90928,
+        "cache_write_1h": 0,
+        "cache_read": 107874,
+        "output": 23
+      },
+      "dollars": 0.622874,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "profile-writer": {
+      "tokens": {
+        "input": 26,
+        "cache_write_5m": 44471,
+        "cache_write_1h": 0,
+        "cache_read": 423904,
+        "output": 1489
+      },
+      "dollars": 0.527252,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "stack-validator": {
+      "tokens": {
+        "input": 206,
+        "cache_write_5m": 238958,
+        "cache_write_1h": 0,
+        "cache_read": 1088044,
+        "output": 192
+      },
+      "dollars": 2.043343,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "stack-writer": {
+      "tokens": {
+        "input": 440,
+        "cache_write_5m": 353604,
+        "cache_write_1h": 0,
+        "cache_read": 4188178,
+        "output": 6706
+      },
+      "dollars": 4.473975,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "web-fetch": {
+      "tokens": {
+        "input": 2506,
+        "cache_write_5m": 1826960,
+        "cache_write_1h": 0,
+        "cache_read": 4025344,
+        "output": 4965
+      },
+      "dollars": 20.876558,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_effort": {
+    "xhigh": {
+      "tokens": {
+        "input": 46920,
+        "cache_write_5m": 16328459,
+        "cache_write_1h": 9037696,
+        "cache_read": 605066019,
+        "output": 3034869
+      },
+      "dollars": 586.663266,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  }
+}

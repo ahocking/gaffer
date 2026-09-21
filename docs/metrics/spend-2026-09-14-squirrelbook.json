@@ -1,0 +1,349 @@
+{
+  "machine": "squirrelbook",
+  "saved_at": "2026-09-21T15:38:21Z",
+  "window": {
+    "since": "2026-09-07T20:07:00Z",
+    "until": "2026-09-14T20:07:00Z"
+  },
+  "price_table_date": "2026-09-15",
+  "counts": {
+    "files_scanned": 1820,
+    "messages_counted": 23418,
+    "messages_no_id": 0,
+    "messages_deduped_dropped": 101921,
+    "messages_excluded_no_usage_or_ts": 0,
+    "messages_excluded_synthetic": 33
+  },
+  "totals": {
+    "tokens": {
+      "input": 124142,
+      "cache_write_5m": 80776643,
+      "cache_write_1h": 14045028,
+      "cache_read": 5599491484,
+      "output": 5428503
+    },
+    "dollars": 2076.351488,
+    "unpriced_tokens": 0,
+    "cache_write_unmeasured_tokens": 0
+  },
+  "by_project": {
+    "~-workspace-chains-and-charms-v2": {
+      "tokens": {
+        "input": 117434,
+        "cache_write_5m": 80004341,
+        "cache_write_1h": 11991483,
+        "cache_read": 5565568828,
+        "output": 4957223
+      },
+      "dollars": 2000.412501,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-workspace-gaffer": {
+      "tokens": {
+        "input": 114,
+        "cache_write_5m": 174363,
+        "cache_write_1h": 100476,
+        "cache_read": 678492,
+        "output": 9703
+      },
+      "dollars": 1.796876,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-workspace-jg": {
+      "tokens": {
+        "input": 6544,
+        "cache_write_5m": 597939,
+        "cache_write_1h": 1871053,
+        "cache_read": 30688279,
+        "output": 416708
+      },
+      "dollars": 70.922027,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "~-workspace-z-game": {
+      "tokens": {
+        "input": 50,
+        "cache_write_5m": 0,
+        "cache_write_1h": 82016,
+        "cache_read": 2555885,
+        "output": 44869
+      },
+      "dollars": 3.220084,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_model": {
+    "claude-fable-5-1": {
+      "tokens": {
+        "input": 49224,
+        "cache_write_5m": 1097199,
+        "cache_write_1h": 5990933,
+        "cache_read": 455647581,
+        "output": 1988560
+      },
+      "dollars": 347.366002,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "claude-haiku-4-5-20251001": {
+      "tokens": {
+        "input": 1502,
+        "cache_write_5m": 580672,
+        "cache_write_1h": 0,
+        "cache_read": 8344031,
+        "output": 372
+      },
+      "dollars": 1.563612,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "claude-opus-5": {
+      "tokens": {
+        "input": 40956,
+        "cache_write_5m": 24232714,
+        "cache_write_1h": 8054095,
+        "cache_read": 882434310,
+        "output": 2117601
+      },
+      "dollars": 726.358156,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "claude-sonnet-5": {
+      "tokens": {
+        "input": 32460,
+        "cache_write_5m": 54866058,
+        "cache_write_1h": 0,
+        "cache_read": 4253065562,
+        "output": 1321970
+      },
+      "dollars": 1001.063718,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_role": {
+    "claude-code-guide": {
+      "tokens": {
+        "input": 158,
+        "cache_write_5m": 212212,
+        "cache_write_1h": 0,
+        "cache_read": 686819,
+        "output": 30
+      },
+      "dollars": 0.334255,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-validator": {
+      "tokens": {
+        "input": 608,
+        "cache_write_5m": 757529,
+        "cache_write_1h": 0,
+        "cache_read": 3049754,
+        "output": 259
+      },
+      "dollars": 6.268955,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "feature-writer": {
+      "tokens": {
+        "input": 1752,
+        "cache_write_5m": 783519,
+        "cache_write_1h": 0,
+        "cache_read": 2765793,
+        "output": 6369
+      },
+      "dollars": 8.943574,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:architect": {
+      "tokens": {
+        "input": 4388,
+        "cache_write_5m": 4321716,
+        "cache_write_1h": 0,
+        "cache_read": 61522918,
+        "output": 35782
+      },
+      "dollars": 58.688753,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:doc-writer": {
+      "tokens": {
+        "input": 1344,
+        "cache_write_5m": 368460,
+        "cache_write_1h": 0,
+        "cache_read": 7657212,
+        "output": 342
+      },
+      "dollars": 1.229357,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:implementer": {
+      "tokens": {
+        "input": 32366,
+        "cache_write_5m": 54333392,
+        "cache_write_1h": 0,
+        "cache_read": 4249183125,
+        "output": 1321620
+      },
+      "dollars": 998.951874,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:researcher": {
+      "tokens": {
+        "input": 54,
+        "cache_write_5m": 376932,
+        "cache_write_1h": 0,
+        "cache_read": 3101595,
+        "output": 129
+      },
+      "dollars": 1.564049,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:reviewer": {
+      "tokens": {
+        "input": 14530,
+        "cache_write_5m": 15351610,
+        "cache_write_1h": 0,
+        "cache_read": 202873239,
+        "output": 49254
+      },
+      "dollars": 198.322302,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "gaffer:ux-designer": {
+      "tokens": {
+        "input": 662,
+        "cache_write_5m": 2217342,
+        "cache_write_1h": 0,
+        "cache_read": 96655101,
+        "output": 81143
+      },
+      "dollars": 64.217858,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "general-purpose": {
+      "tokens": {
+        "input": 232,
+        "cache_write_5m": 315735,
+        "cache_write_1h": 0,
+        "cache_read": 1075652,
+        "output": 53
+      },
+      "dollars": 3.141559,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "main": {
+      "tokens": {
+        "input": 66532,
+        "cache_write_5m": 0,
+        "cache_write_1h": 14045028,
+        "cache_read": 957816339,
+        "output": 3931721
+      },
+      "dollars": 714.737833,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "opposing-review": {
+      "tokens": {
+        "input": 424,
+        "cache_write_5m": 205221,
+        "cache_write_1h": 0,
+        "cache_read": 453493,
+        "output": 76
+      },
+      "dollars": 2.68668,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "plan-decomposer": {
+      "tokens": {
+        "input": 182,
+        "cache_write_5m": 591553,
+        "cache_write_1h": 0,
+        "cache_read": 6393134,
+        "output": 1349
+      },
+      "dollars": 6.928416,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "plan-validator": {
+      "tokens": {
+        "input": 200,
+        "cache_write_5m": 693521,
+        "cache_write_1h": 0,
+        "cache_read": 5273955,
+        "output": 279
+      },
+      "dollars": 6.97947,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "source-verifier": {
+      "tokens": {
+        "input": 710,
+        "cache_write_5m": 247901,
+        "cache_write_1h": 0,
+        "cache_read": 983355,
+        "output": 97
+      },
+      "dollars": 3.356553,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  },
+  "by_effort": {
+    "high": {
+      "tokens": {
+        "input": 75518,
+        "cache_write_5m": 41084431,
+        "cache_write_1h": 6855420,
+        "cache_read": 2720951780,
+        "output": 2868503
+      },
+      "dollars": 1024.693002,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "unrecorded": {
+      "tokens": {
+        "input": 1502,
+        "cache_write_5m": 580672,
+        "cache_write_1h": 0,
+        "cache_read": 8344031,
+        "output": 372
+      },
+      "dollars": 1.563612,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    },
+    "xhigh": {
+      "tokens": {
+        "input": 47122,
+        "cache_write_5m": 39111540,
+        "cache_write_1h": 7189608,
+        "cache_read": 2870195673,
+        "output": 2559628
+      },
+      "dollars": 1050.094874,
+      "unpriced_tokens": 0,
+      "cache_write_unmeasured_tokens": 0
+    }
+  }
+}

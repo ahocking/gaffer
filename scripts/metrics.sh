@@ -1802,11 +1802,16 @@ cmd_show() {
     # kickoff enter never stated a real threshold; a threshold present but
     # max_context null means the windows had no main-thread usage data. Never
     # render a bare number without saying which of the two nulls it is, per
-    # the same rule as every other null above.
+    # the same rule as every other null above. The null-threshold line names
+    # the cause and the settings KEY that would supply a threshold -- the key
+    # alone: no scope that can carry it, no precedence among scopes, and never
+    # a suggested value (a value here would reinstate in prose the invented
+    # default thin-loop-driver T6 deleted from the reader). Its only numbers
+    # are the two diagnostics counts.
     (((.totals.driver_mode_context // {threshold:null,max_context:null})) as $dc
      | ((.totals.driver_mode_context_diagnostics // {windows:0,turns_in_window:0})) as $dcd
      | if $dc.threshold == null then
-         "main-session context (driver mode): unmeasured — no stated compaction threshold in scope (\($dcd.windows) window(s), \($dcd.turns_in_window) turn(s))"
+         "main-session context (driver mode): unmeasured — no compaction threshold was set here, not a quantity that cannot be measured; the settings key autoCompactWindow supplies one (\($dcd.windows) window(s), \($dcd.turns_in_window) turn(s))"
        elif $dc.max_context == null then
          "main-session context (driver mode): unmeasured — no main-thread usage data in \($dcd.windows) window(s) (threshold \($dc.threshold))"
        else

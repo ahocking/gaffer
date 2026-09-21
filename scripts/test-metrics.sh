@@ -2083,8 +2083,19 @@ check "collect: no threshold stated -- max_context is null too, despite real usa
 check "collect: no threshold stated -- diagnostics still show the window and turn were seen" "1 1" \
   "$(jq -r '"\(.totals.driver_mode_context_diagnostics.windows) \(.totals.driver_mode_context_diagnostics.turns_in_window)"' "$DCNOUT")"
 check "show: renders unmeasured, not a lying number" \
-  "main-session context (driver mode): unmeasured — no stated compaction threshold in scope (1 window(s), 1 turn(s))" \
+  "main-session context (driver mode): unmeasured — no compaction threshold was set here, not a quantity that cannot be measured; the settings key autoCompactWindow supplies one (1 window(s), 1 turn(s))" \
   "$("$METRICS" show "$DCNOUT" | grep -F 'main-session context')"
+# driver-context-window-default T2: the unmeasured line names the settings key
+# that would supply a threshold, and carries NO number other than the two
+# diagnostics counts -- a remedy clause suggesting a value (e.g. "set
+# autoCompactWindow to 200000") would reinstate in prose the invented default
+# thin-loop-driver T6 removed. Strip the "(N window(s), M turn(s))" tail and
+# require no digit to remain.
+DCN_LINE="$("$METRICS" show "$DCNOUT" | grep -F 'main-session context')"
+check "show: null-threshold line names the settings key autoCompactWindow" "yes" \
+  "$([[ "$DCN_LINE" == *autoCompactWindow* ]] && echo yes || echo no)"
+check "show: null-threshold line carries no number but the two diagnostics counts" "none" \
+  "$(printf '%s' "$DCN_LINE" | sed -E 's/\([0-9]+ window\(s\), [0-9]+ turn\(s\)\)$//' | grep -oE '[0-9]+' | tr '\n' ' ' | sed 's/ $//' | grep . || echo none)"
 
 # --- case 4: a threshold IS stated but no main-thread turn with usage data falls
 # inside the window (no transcript at all here). This is the state the two-fields-

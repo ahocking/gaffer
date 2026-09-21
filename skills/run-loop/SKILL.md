@@ -8,7 +8,7 @@ argument-hint: (optional — a backlog source or a starting packet; else reads .
 
 `Read` `${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now, once, before anything
 else — it is your role for the rest of this run (ADR 0028). That file holds the
-**judgment**: routing, the escalation-decider stand-in, operator Q&A, and
+**judgment**: routing, the escalation-decider dispatch, operator Q&A, and
 mid-run edits. This skill holds the **mechanics**: preflight, the backlog,
 dispatch ordering, commit trailers, and termination. Read both once; your
 context persists across packets, so do not re-read either per packet.
@@ -561,12 +561,18 @@ nothing. Read the result exactly as §4 states it for the stop report.
      cursor.
    - **`decider`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
      chief-engineer` (non-empty → `model`; empty → omit `model`), then
-     dispatch the `chief-engineer` (the interim
-     `escalation-decider` stand-in) with the handoff and review paths, **plus
-     the `ATTEMPTS=`/`LIMIT=` this same `route` call just printed** (so it
-     knows whether a `retry` is even possible), and nothing else. Pass its
-     returned token, with its status line as `--status` (single-quoted, same
-     rule as above), back to `route`; record nothing yourself.
+     dispatch the `chief-engineer` as the **escalation decider** — its
+     contract is `${CLAUDE_PLUGIN_ROOT}/agents/chief-engineer.md`
+     §Escalation decider — with the handoff path, the review path, and the
+     `ATTEMPTS=`/`LIMIT=` this same `route` call printed, and nothing else.
+     It returns one status line whose status is one of `retry`, `reorder`,
+     `append-task`, `hand-off-feature`, or `ask-operator`; every write its
+     decision needs — `reorder-pending`, `amend-handoff`, the `add-finding`
+     and `record-decision` records, and any `[orch decider:<packet-id>]`
+     commit — is already on disk when that line returns. Pass the token
+     straight back to `route`, with its status line as `--status`
+     (single-quoted, same rule as above); record nothing yourself and apply
+     no order of your own.
    - **`discard-advance`** — before discarding, check for a decider commit on
      this branch (`git log <base>..HEAD --grep '\[orch decider:'`); if one
      exists, **do not delete the branch** — it is left behind, unmerged, and
@@ -579,16 +585,33 @@ nothing. Read the result exactly as §4 states it for the stop report.
      and a stash is recoverable — one stash covers the whole bundle's
      uncommitted work, since nothing was ever committed member-by-member).
      `runstate.sh record-outcome "$MEMBERS" rolled-back` — one call, every
-     member — then advance the cursor **past every member of `$MEMBERS`**.
-     `group` forms `$MEMBERS` from the plan in plan order, but `pending` is
-     the loop's own chosen order — a resume, an explicit reorder, or an
-     arm-1 `append-task` mid-run can each put a member somewhere other than
-     a consecutive prefix of `pending`, or leave one out of `pending`
-     altogether — so never assume the prefix shape: **remove every member of
-     `$MEMBERS` from `pending` wherever it sits** (a member absent from
-     `pending` is simply not there to remove), then set `cursor` to whatever
-     entry remains first in `pending` (or none, if nothing does), via
-     `runstate.sh write`, so no part of the bundle lands on its own. Then report it the same way §3.6 does — shape A
+     member. Then set the cursor, by the token that brought you here:
+     - **`reorder`** — remove nothing from `pending`. The decider's
+       `reorder-pending` has already placed every member of `pending`, this
+       packet included, in the order the loop now runs; set `cursor` to
+       whatever is now first in `pending`, via `runstate.sh write`, and
+       leave every entry where it sits. Checkable: the `reorder`ed packet is
+       still in `pending` and is not the cursor. If it is first in
+       `pending`, the reorder placed nothing ahead of it and dispatching it
+       again would repeat the attempt that just failed — hand that to
+       `/gaffer:pause` as a blocking question naming the packet and the
+       order now in `pending`, exactly as `stop` below does.
+     - **`append-task`** and **`hand-off-feature`** — advance the cursor
+       **past every member of `$MEMBERS`**. `group` forms `$MEMBERS` from
+       the plan in plan order, but `pending` is the loop's own chosen order
+       — a resume, a decider `reorder`, or an arm-1 `append-task` mid-run
+       can each put a member somewhere other than a consecutive prefix of
+       `pending`, or leave one out of `pending` altogether — so never assume
+       the prefix shape: **remove every member of `$MEMBERS` from `pending`
+       wherever it sits** (a member absent from `pending` is simply not
+       there to remove), then set `cursor` to whatever entry remains first
+       in `pending` (or none, if nothing does), via `runstate.sh write`, so
+       no part of the bundle lands on its own. For `append-task`, the task
+       the decider appended is already in `pending` ahead of where this
+       packet sat, placed by its own `reorder-pending`; it stays.
+     In neither case is a proposed order surfaced as a question — every
+     order the decider decided is already applied, and the next report
+     carries it as a fact. Then report it the same way §3.6 does — shape A
      rendered from `runstate.sh run-digest .agents/run-state.yaml --since
      "$SINCE"`: the bundle's own `packet` line, its title rendered from
      every member of `$MEMBERS` (the `MEMBER=<id>\t<title>` lines `group`
@@ -596,12 +619,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
      `<title>` field alone is only the cursor's), one ⚠️ line per
      `SWEPT=`/`OUTCOME=` pair in `$SWEEP` (§3.2, above) reading *swept as
      interrupted* or *swept as abandoned* per that pair's own `OUTCOME`,
-     plus one 🔀 per `decision` line other than `retry`.
-     **`reorder`'s mechanism is not built**
-     (that is `escalation-decider`'s job): treat it exactly like
-     `append-task`/`hand-off-feature` here — discard-advance as above — and
-     surface the decider's proposed new order as a question in the stop
-     report for the operator to act on; do not reorder `pending` yourself.
+     plus one 🔀 per `decision` line other than `retry` — a `reorder`'s
+     reads as the order now applied, never as a proposal for the operator
+     to apply.
    - **`stop`** — the hard-gate/genuine-ambiguity path. Take the question
      text verbatim from `route`'s own `question:` line when it printed one
      (the retry-past-limit case); otherwise use the status line of whichever
@@ -912,7 +932,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
     The architect appends a new unchecked task line to that feature's plan
     file as an `Edit` anchored on an unchecked line, carrying a truthful
     `covers:` naming that capability, and **commits that edit itself** (the
-    same pattern the escalation-decider stand-in uses for its own
+    same pattern the escalation decider uses for its own
     `append-task`) — write bounds: append only, never modify an existing
     line, never touch a PRD checkbox. Choose the plan by **scope match**,
     never by proximity or convenience.

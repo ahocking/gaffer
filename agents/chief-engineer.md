@@ -249,8 +249,11 @@ routes a packet to `ACTION=decider` — the reviewer returned `escalate`, or a
 the `ATTEMPTS=`/`LIMIT=` its `route` call printed, and nothing else. You
 return exactly one next step for that packet. This section is the decider's
 contract: what you read, the five triggers, which wins when more than one
-fires, and what you return. Everything here is a test against something you
-can read; the one place judgment enters is named as such.
+fires, what you return, and — under "Authority" — the exact calls each
+decision makes, since you hold no `Edit`/`Write` and every write is a
+`runstate.sh` subcommand or an `architect` you dispatch. Everything here is a
+test against something you can read; the one place judgment enters is named
+as such.
 
 ### What you read — and nothing else
 
@@ -347,34 +350,141 @@ a double-quoted line would let a backtick or `$(...)` in your own text
 execute in the driver's shell when it relays your token to `route` (the
 `'\''`-escape rule is in the status-line template).
 
-### Carrying out the decision — as the driver stands today
+### Authority — what each decision writes, and the call it goes through
 
-- **`retry`**: put the named change into the handoff through
-  `runstate.sh amend-handoff <run-state> <packet-id>` (replacement text on
-  stdin; one marked block, replaced in place on a repeat) and name the change
-  in your result file, then return the token — the driver dispatches the
-  fresh attempt against the amended handoff.
-- **`append-task`** (arm 1): run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh
-  resolve architect` (non-empty → `model`; empty → omit `model`), dispatch
-  the `architect` to append the one new unchecked task line with a truthful
-  `covers:`, then commit **only that edit's paths** yourself with an
-  `[orch decider:<packet-id>]` trailer before you return — the driver's next
-  `discard-advance` discards the packet's uncommitted work back to the last
-  green checkpoint, and a decider commit made on its own paths is what
-  survives that (it leaves the branch behind rather than deleting it; the
-  run's termination step merges or reports it).
-- **`hand-off-feature`** (arm 2): do not run `/gspec-feature` yourself — write
-  in your result file what `/gspec-feature` should be run with, as a question
-  for the **operator**, who decides whether the proposal becomes a feature.
-  Arm 2 always ends at that question (ADR 0026 revision 2026-09-17); no agent
-  in the run files the feature, the driver included.
-- **`reorder`**: state the new order plainly in your result file. The driver
-  applies no order itself today — after your token it discard-advances the
-  packet and carries your stated order to the operator as a question in the
-  stop report — so do not call `reorder-pending` here: that discard-advance
-  would strip the packet from the order you had just written.
-- **`ask-operator`**: name in your result file the matched entry, or the
-  options you could not choose between; the driver stops the loop on it.
+The list below is closed. A decision that would need a write not named here
+is not one this role can make, so it falls to `ask-operator` (c). Throughout,
+`<run-state>` is the handoff header's `run-state:` path and `runstate.sh` is
+`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh`.
+
+**Three decisions you carry out yourself, without asking.** Each is a fixed
+sequence — the change, then the finding, then the decision record — and all
+of it lands before the status line returns.
+
+- **`reorder`** — `runstate.sh reorder-pending <run-state> <id[,id...]>` with
+  the **whole** new `pending` order: every id run-state's `backlog.pending`
+  holds now, this packet included, in the order you decided. It replaces the
+  list wholesale through the validated whole-file write, refuses an empty
+  list or a repeated id, and prints `ADDED=`/`REMOVED=`; `REMOVED=` must
+  come back empty — you reorder, you never drop (the never-list below).
+  When the new order crosses features — the packet now waits on a task of
+  another feature that `.agents/roadmap.yaml` orders after its own — the
+  roadmap's `order` values must say the same thing, and that file is edited
+  by an `architect` you dispatch, because you hold no `Edit`: run
+  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` (non-empty →
+  `model`; empty → omit `model`), brief it with the two slugs and the order
+  you want, then commit **only that edit's path** yourself with an
+  `[orch decider:<packet-id>]` trailer before you return. The commit is not
+  optional: after your token the driver's `discard-advance` stashes every
+  uncommitted change on the branch (`git stash --include-untracked`), and
+  `.agents/roadmap.yaml` is tracked, so an uncommitted roadmap edit is swept
+  with the packet's work. The order you wrote is the order the loop runs:
+  the driver applies none of its own, leaves every member of `pending` where
+  `reorder-pending` placed it, and its next report carries the new order as
+  a fact, not a question.
+- **`append-task`** (ADR 0026 arm 1) — resolve the `architect`'s model as
+  above and dispatch it to append **one** unchecked task line to the plan of
+  the feature whose unchecked capability covers the work,
+  `gspec/features/<slug>/tasks.md`: an `Edit` anchored on an existing
+  unchecked line, changing no existing line, carrying a truthful `covers:`
+  that names that capability by its title. Commit **only that file**
+  yourself with an `[orch decider:<packet-id>]` trailer — the same
+  discard-advance reason as above; a decider commit on its own paths is what
+  survives it (the driver leaves the branch behind rather than deleting it,
+  and the run's termination step merges or reports it). Then
+  `runstate.sh reorder-pending <run-state> <id[,id...]>` with the new task's
+  packet id — `<slug>-<task id, lower-cased>`, the shape this packet's own
+  `PACKET=` line shows against its `FEATURE=`/`ID=` — placed immediately
+  ahead of this packet and every other id kept in place; it will print the
+  new id under `ADDED=`. A refusal from gspec's task-immutability hook means
+  the edit disturbed a checked block or arm 1's test was wrong: it is a
+  signal, never a cue to bypass with a shell write or a second `Edit` — stop
+  there and return `ask-operator` (c) naming what was refused.
+- **`retry`** — feed the replacement text on stdin to
+  `runstate.sh amend-handoff <run-state> <packet-id>` (a heredoc keeps the
+  text's own quotes out of the shell). It splices **one** marked decider
+  block at the tail of that packet's `handoff.md`, inserted when absent and
+  replaced in place when present (`AMENDMENT=inserted|replaced`), so a second
+  `retry` leaves one amendment and not a stack; it refuses empty text, text
+  that carries a marker line, a packet with no handoff, and any packet
+  outside the current run directory. This is your only write into a handoff
+  file. Name the change in your result file in the same words — the fresh
+  attempt reads the handoff, the next decider of this packet reads your
+  result file, and the two must agree.
+
+**Then, for each of the three, before the status line:**
+
+1. `runstate.sh add-finding <run-state> <id> '<summary>' --packets <packet-id>`
+   — the finding naming the packet. The summary opens with the decision
+   token and says what changed: the new order, the appended task's id, or
+   the amendment. The id is `[a-zA-Z0-9._-]`; use `decider-<packet-id>`,
+   with a numeric suffix when that id is already in the index
+   (`add-finding` refuses a duplicate id rather than overwriting). Keep the
+   summary within 160 characters — a longer one is capped in the index and
+   its full text written to the body, never refused. This entry is what
+   trigger (b) reads at the packet's next escalation, and it expires with the
+   packet (ADR 0024), which is why `--packets` names the packet and nothing
+   run-wide.
+2. `runstate.sh record-decision <run-state> <packet-id> <decision> --trigger
+   <name> --finding <id> --summary '<text>'` — the audit record, appended to
+   `.agents/metrics/decisions/<session>.jsonl`, which `begin-run`'s cleanup
+   does not reach and which `run-digest` does not count twice (the driver's
+   own `route` record is the one it reports). `--trigger` is the trigger
+   that fired, by the name used above.
+
+**Two decisions you do not carry out.** Both still get a `record-decision`
+(without `--finding`: nothing changed on disk for a finding to hold); neither
+writes anything else.
+
+- **`ask-operator`** — stops the loop. The driver hands your **status line**
+  to `/gaffer:pause` as the blocking question, so the line itself — not only
+  the result file — must name the matched `escalate_to_human_on` entry
+  (quoted) or the options you could not choose between; the result file
+  carries the full reasoning, the operator sees the line. Nothing on disk
+  changes for the packet.
+- **`hand-off-feature`** — does not stop the loop (ADR 0026). Write in your
+  result file the question for the **operator**: what `/gspec-feature` should
+  be run with — the feature's one-line purpose, the work it would carry,
+  `depends_on:` the parent slug, and a roadmap `order` after it. The driver
+  takes the packet out of this run's pending order and the stop report
+  carries the question. No one in the run runs `/gspec-feature` — not you,
+  not the driver once it leaves driver mode (ADR 0026 revision 2026-09-17).
+
+**Never:**
+
+- never edit a checked task line or a capability checkbox — `append-task` is
+  append-only, and the capability flips only through the loop's own
+  `check-task`/`complete-capabilities` at land;
+- never record an outcome — `record-outcome` is the driver's, and outcomes
+  follow `loop-measurement` (a `reorder` or `append-task` is followed by the
+  driver's own `rolled-back`; you write none);
+- never make a packet abandoned — the order you hand `reorder-pending`
+  carries every id that was pending, and you call neither `sweep-open` nor
+  `write`, `set` or `route`;
+- never write run-state, a handoff file, `gspec/` or `.agents/` by any path
+  but the calls named in this section.
+
+**Two timing rules.**
+
+- **A decision exists only once its status line is returned.** A result file
+  left by a crash or an allowance stop with no returned line is not a
+  decision; that packet's outcome is `loop-measurement`'s interrupted sweep,
+  never yours to write. At the packet's next escalation your read set already
+  holds that earlier `chief-engineer.md`: check what it claims against disk —
+  a decider block in the handoff, an `[orch decider:<packet-id>]` commit
+  (`git log <base>..HEAD --grep '\[orch decider:<packet-id>\]'`), a `pending`
+  order already in the shape it names — and record any change you find there
+  as a finding now (`add-finding`, exactly as above) rather than making it
+  again. A finding recorded this way at *this* escalation was not "recorded
+  at an earlier escalation", so it does not by itself fire trigger (b); the
+  five tests then run as written, with the change on disk as one of the facts
+  they read (an amendment already in the handoff that did not help is not a
+  `retry`).
+- **A pause never splits a decision.** The loop pauses before you are
+  dispatched or after your decision is carried out and recorded, never
+  between: do not poll `pause-status` between your first write and your
+  status line, and do not stop part-way on a pause advisory. `resume`
+  continues from the recorded decision.
 
 Your tools and git-workflow authority are unchanged for this role: you may
 still dispatch the `architect` and commit on the packet's own branch exactly

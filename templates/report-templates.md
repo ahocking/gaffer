@@ -338,20 +338,22 @@
 
 ▶ **Stops at** <branch ready for review | integrated on <branch>>
 
-# - **`▶ Session` states model and effort, and the auto-compaction threshold only
-#   when one is in effect, asking for nothing.** Model and effort are taken
-#   verbatim from the digest's `enter` line. Where effort is `unknown`, say so in
-#   words — *effort unknown* — since effort is always in effect and merely
+# - **`▶ Session` states model and effort, and the auto-compaction threshold as a
+#   number only when one is in effect, asking for nothing.** Model and effort are
+#   taken verbatim from the digest's `enter` line. Where effort is `unknown`, say
+#   so in words — *effort unknown* — since effort is always in effect and merely
 #   unrecorded. Where the whole `enter` line is absent, write *`▶ **Session** —
-#   can't tell: no driver-mode record`*. **The threshold element is omitted
-#   entirely whenever the reader's `SOURCE` named no value in effect**
-#   (`gaffer-default` or `unknown` — neither is a value the harness enforces): say
-#   nothing about compaction at all — not a figure, and not the word `unknown` —
-#   for a value that genuinely does not exist, rather than only a number nothing
-#   is actually enforcing. State a real number, and only then show the element at
-#   all, when the repo or the operator set one — the harness enforces those. This
-#   line never carries a `SOURCE` slot of its own; the source is what decided
-#   whether the threshold element appears, not something rendered alongside it.
+#   can't tell: no driver-mode record`*. **Whenever the reader's `SOURCE` named no
+#   value in effect** (`gaffer-default` or `unknown` — neither is a value the
+#   harness enforces), the threshold element states the absence in exactly the
+#   words the two loop entry points use — *no compaction threshold in effect for
+#   this session — the settings key `autoCompactWindow` supplies one* — in place
+#   of `compaction <threshold>`: never a figure, and never the bare word
+#   `unknown`, since omitting the element would read as a measured run. State a
+#   real number, as `compaction <threshold>`, only when the repo or the operator
+#   set one — the harness enforces those. This line never carries a `SOURCE` slot
+#   of its own; the source decides which form the threshold element takes, not
+#   something rendered alongside it.
 #   **Never ask the operator to raise the effort, switch model or change the
 #   threshold.** It is their setting; the line exists so a surprising run cost is
 #   explainable afterwards, not to open a negotiation at the top of a report. A
@@ -406,7 +408,8 @@
 #   > **Won't touch:** the transactions table schema — totals cache alongside it
 #   > rather than adding a column, so no migration.
 #
-#   ▶ **Session** claude-opus-5[1m] · effort unknown
+#   ▶ **Session** claude-opus-5[1m] · effort unknown · no compaction threshold in
+#   effect for this session — the settings key `autoCompactWindow` supplies one
 #
 #   ▶ **Routing** implementer sonnet → opus
 #

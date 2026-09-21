@@ -91,8 +91,11 @@ effort level this session — nothing records it automatically yet.
 the kickoff — the harness genuinely enforces it. When `SOURCE` reads
 `gaffer-default` or `unknown` — the enumerated set naming no value in effect
 — pass `--threshold unknown` instead, regardless of what `THRESHOLD`
-printed, and state no threshold in the kickoff at all: the measurement should
-read unmeasured rather than flag a threshold nothing enforces. **Never ask the
+printed, and state the absence in the kickoff in exactly these words —
+*no compaction threshold in effect for this session — the settings key
+`autoCompactWindow` supplies one* — and never a number: the measurement should
+read unmeasured rather than flag a threshold nothing enforces, and silence
+would read as a measured run. **Never ask the
 operator to change either** — state what applies, as read, and move on. If
 `driver-mode enter` refuses (no session id available, from neither an
 argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report

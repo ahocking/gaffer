@@ -114,7 +114,7 @@ the dependency rule.
     and asserts the rendering names that key, and that no rendering of the line
     carries a numeric threshold while the collected threshold is null
 
-- [ ] **P2**: The kickoff distinguishes no threshold in effect from silence
+- [x] **P2**: The kickoff distinguishes no threshold in effect from silence
   - both loop entry points state, in the same words, that no compaction threshold
     is in effect for the session when the reader names no value — where today
     they correctly state no number and therefore say nothing at all, which a

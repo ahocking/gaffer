@@ -291,6 +291,73 @@ check "default 7-day window: today's message is counted" "1" "$(jq -r '.counts.m
 check "default 7-day window: window.since is ~7 days before window.until" "true" \
   "$(jq -r '(.window.since < .window.until)' "$OUT_DEFWIN")"
 
+# =============================================================================
+# FIXTURE SET D — per-role cache-read shape (loop-measurement T12). Values are
+# chosen so median, p90 and max are three DIFFERENT numbers, a turn sits EXACTLY
+# on the stated threshold (must not count as "over"), a duplicated message id
+# must not add a turn, and a turn with no cache_read_input_tokens field must be
+# excluded from the shape rather than read as a 0-token turn.
+# =============================================================================
+PROJ_D_ROOT="$ROOT/projects-d"
+mkdir -p "$PROJ_D_ROOT/proj-d/SD/subagents" "$PROJ_D_ROOT/proj-d/SD2/subagents"
+# drow <minute> <id> <attribution-json-fragment> <usage-cache-read-fragment>
+drow() {
+  printf '{"type":"assistant","timestamp":"2026-09-13T10:%02d:00Z","effort":"high"%s,"message":{"id":"%s","model":"model-a","usage":{"input_tokens":1,"output_tokens":1%s,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n' \
+    "$1" "$3" "$2" "$4"
+}
+# main: 11 distinct turns; sorted [1,2,3,4,5,6,7,8,50000,50001,200000]
+# -> median = element floor(11*0.5)=5 -> 6; p90 = element floor(11*0.9)=9 -> 50001;
+#    max 200000; strictly over 50000: 50001 and 200000 -> 2 (50000 itself is not).
+# Plus a duplicate row of the 200000 turn (same id, 2s later): dedup keeps 11 turns.
+{
+  m=0
+  for v in 7 3 50000 1 200000 5 8 50001 2 6 4; do
+    m=$((m+1)); drow "$m" "msg_d_main$m" "" ",\"cache_read_input_tokens\":$v"
+  done
+  drow 5 "msg_d_main5" "" ',"cache_read_input_tokens":200000'
+} > "$PROJ_D_ROOT/proj-d/SD.jsonl"
+# reviewer: [30, 10] measured + one turn with the field ABSENT.
+#   Correct: turns 2, turns_unmeasured 1, median element 1 of [10,30] -> 30.
+#   If the absent turn were read as 0: [0,10,30] -> median 10, turns 3.
+{
+  drow 20 msg_d_rev1 ',"attributionAgent":"reviewer"' ',"cache_read_input_tokens":30'
+  drow 21 msg_d_rev2 ',"attributionAgent":"reviewer"' ',"cache_read_input_tokens":10'
+  drow 22 msg_d_rev3 ',"attributionAgent":"reviewer"' ''
+} > "$PROJ_D_ROOT/proj-d/SD/subagents/agent-ADREV.jsonl"
+# researcher: its ONLY turn lacks the field -> the whole shape is unmeasured (null).
+drow 30 msg_d_res1 ',"attributionAgent":"researcher"' '' \
+  > "$PROJ_D_ROOT/proj-d/SD2/subagents/agent-ADRES.jsonl"
+
+echo "== Fixture Set D: per-role cache-read shape (median / p90 / max / over-threshold) =="
+OUT_D="$ROOT/out-d.json"
+"$SPEND" --projects-dir "$PROJ_D_ROOT" --price-table "$PRICES_MIXED" \
+  --since "2026-09-13T00:00:00Z" --until "2026-09-13T23:59:59Z" > "$OUT_D" 2>"$ROOT/out-d.err"
+check "set D: exit 0" "0" "$?"
+check "report states the threshold size (50000 tokens)" "50000" \
+  "$(jq -r '.cache_read_shape_method.threshold_tokens' "$OUT_D")"
+check "report states 'over' means strictly greater" "1" \
+  "$(jq -r '[.cache_read_shape_method.over_threshold | select(test("strictly greater"))] | length' "$OUT_D")"
+check "main: turns = 11 (duplicate message id not counted twice)" "11" \
+  "$(jq -r '.by_role.main.cache_read_shape.turns' "$OUT_D")"
+check "main: median = 6" "6" "$(jq -r '.by_role.main.cache_read_shape.median' "$OUT_D")"
+check "main: p90 = 50001 (distinct from max)" "50001" "$(jq -r '.by_role.main.cache_read_shape.p90' "$OUT_D")"
+check "main: max = 200000" "200000" "$(jq -r '.by_role.main.cache_read_shape.max' "$OUT_D")"
+check "main: turns_over_threshold = 2 (a turn AT 50000 is not over)" "2" \
+  "$(jq -r '.by_role.main.cache_read_shape.turns_over_threshold' "$OUT_D")"
+check "main: turns_unmeasured = 0" "0" "$(jq -r '.by_role.main.cache_read_shape.turns_unmeasured' "$OUT_D")"
+check "reviewer: absent cache-read field excluded -> turns 2" "2" \
+  "$(jq -r '.by_role.reviewer.cache_read_shape.turns' "$OUT_D")"
+check "reviewer: turns_unmeasured = 1" "1" "$(jq -r '.by_role.reviewer.cache_read_shape.turns_unmeasured' "$OUT_D")"
+check "reviewer: median = 30 (not 10, which reading the absent turn as 0 would give)" "30" \
+  "$(jq -r '.by_role.reviewer.cache_read_shape.median' "$OUT_D")"
+check "researcher: no measured turn -> median/p90/max/turns_over_threshold all null, never 0" \
+  "null null null null" \
+  "$(jq -r '.by_role.researcher.cache_read_shape | "\(.median) \(.p90) \(.max) \(.turns_over_threshold)"' "$OUT_D")"
+check "unmeasured[] names the missing cache-read field (2 messages)" "1" \
+  "$(jq -r '[.unmeasured[] | select(test("^2 message\\(s\\) carried no cache_read_input_tokens"))] | length' "$OUT_D")"
+check "set A: every role in by_role carries a cache_read_shape" "true" \
+  "$(jq -r '[.by_role[] | has("cache_read_shape")] | all' "$OUT_A")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-spend.sh: ALL %d checks passed\n' "$pass"; exit 0

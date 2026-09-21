@@ -224,6 +224,7 @@ scan_main() { # scan_main <file> <project> <sid>
           kind:"turn", project:$proj, role:"main", aid:("main:"+$sid),
           id:(.message.id // null), ts:.timestamp,
           model:($m // "unrecorded"), effort:(.effort // null),
+          cache_read_measured:($u.cache_read_input_tokens != null),
           tok: {
             input:($u.input_tokens // 0),
             output:($u.output_tokens // 0),
@@ -250,6 +251,7 @@ scan_sub() { # scan_sub <file> <project> <aid>
           kind:"turn", project:$proj, role:(.attributionAgent // "unrecorded"), aid:$aid,
           id:(.message.id // null), ts:.timestamp,
           model:($m // "unrecorded"), effort:(.effort // null),
+          cache_read_measured:($u.cache_read_input_tokens != null),
           tok: {
             input:($u.input_tokens // 0),
             output:($u.output_tokens // 0),
@@ -383,6 +385,30 @@ def groupreport(rows; keyfn):
              cache_write_unmeasured_tokens: sumunsplit(.), priced: (sumunpriced(.) == 0) }
   }) | from_entries;
 
+# PER-TURN CACHE-READ SHAPE (loop-measurement T12). A turn's cache-read tokens
+# are the context it re-read; the TOTAL cannot separate "many small warm turns"
+# from "a few turns re-reading a huge context", so each role gets the shape:
+# median = the typical turn, p90/max = how large the standing context gets,
+# turns_over_threshold = how often a turn re-reads more than the stated size.
+# Mirrors metrics.sh's cc_shape idiom (nearest-rank percentile, index
+# floor(n*p) into the ascending sort, clamped to the last element; "over" is
+# strictly greater than the threshold) so the two reports read the same way.
+# A turn whose usage block carried NO cache_read_input_tokens field is NOT a
+# 0-token turn: it is excluded from the shape and counted in turns_unmeasured,
+# and a role with no measured turn reports null (unmeasured), never 0.
+def cache_read_threshold: 50000;
+def pctl(s; p):
+  if (s|length) == 0 then null
+  else s[((s|length) * p | floor) | if . >= (s|length) then (s|length)-1 else . end] end;
+def cache_read_shape(rows):
+  (rows | map(select(.cache_read_measured)) | map(.tok.cache_read) | sort) as $s
+  | { turns: ($s|length),
+      turns_unmeasured: (rows | map(select(.cache_read_measured | not)) | length),
+      median: pctl($s; 0.5), p90: pctl($s; 0.9),
+      max: (if ($s|length) == 0 then null else ($s|max) end),
+      turns_over_threshold: (if ($s|length) == 0 then null
+                             else ($s | map(select(. > cache_read_threshold)) | length) end) };
+
 [inputs] as $raw
 | ($pricefile[0].prices // {}) as $P
 | ($raw | map(select(.kind=="excluded_no_usage_or_ts")) | length) as $exc_no_usage_ts
@@ -469,7 +495,19 @@ def groupreport(rows; keyfn):
     },
     by_project: groupreport($priced_rows; .project),
     by_model:   groupreport($priced_rows; .model),
-    by_role:    groupreport($priced_rows; .role),
+    # Per-role values additionally carry cache_read_shape (T12); the size a
+    # turn must exceed to count in turns_over_threshold is stated once, here.
+    cache_read_shape_method: {
+      threshold_tokens: cache_read_threshold,
+      over_threshold: "strictly greater than threshold_tokens",
+      percentile: "nearest-rank: element floor(n*p) of the ascending per-turn cache-read list, clamped to the last element",
+      unit: "one deduplicated assistant turn's cache_read_input_tokens"
+    },
+    by_role:    ( groupreport($priced_rows; .role) as $g
+                  | ($priced_rows | group_by(.role)
+                     | map({key: (.[0].role | tostring), value: cache_read_shape(.)})
+                     | from_entries) as $shape
+                  | $g | with_entries(.value += {cache_read_shape: $shape[.key]}) ),
     by_effort:  groupreport($priced_rows; (.effort // "unrecorded")),
     unmeasured: (
       [ (if $project_status == "absent" then
@@ -485,6 +523,10 @@ def groupreport(rows; keyfn):
         (if (($priced_rows | length) > 0) and (($priced_rows | map(select(.effort==null)) | length) == ($priced_rows | length)) then
            "no scanned message in this window recorded an effort level; all grouped under 'unrecorded' in by_effort."
          else empty end),
+        ($priced_rows | map(select(.cache_read_measured | not)) | length) as $ucr
+        | (if $ucr > 0 then
+             "\($ucr) message(s) carried no cache_read_input_tokens field; they are excluded from by_role.*.cache_read_shape (counted there as turns_unmeasured), and a role with no measured turn reports its shape as null."
+           else empty end),
         ($priced_rows | map(select(.model=="unrecorded")) | length) as $umodel
         | (if $umodel > 0 then
              "\($umodel) message(s) had no readable model id; grouped as model 'unrecorded' and priced as unpriced."

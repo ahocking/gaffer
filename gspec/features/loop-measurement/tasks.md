@@ -127,7 +127,7 @@ that it blocks nothing.
   - covers: `/gaffer:metrics spend` reports API-equivalent spend over a time window
   - arch: —
   - files: skills/metrics/SKILL.md
-- [ ] **T12** **P1** Add to the spend report, per agent role, the per-turn cache-read shape (median, 90th percentile, maximum) and the count of turns above a size the report states, with cases
+- [x] **T12** **P1** Add to the spend report, per agent role, the per-turn cache-read shape (median, 90th percentile, maximum) and the count of turns above a size the report states, with cases
   - deps: T10
   - covers: The spend report shows where context cost comes from
   - arch: —

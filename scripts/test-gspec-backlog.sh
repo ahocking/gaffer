@@ -1563,6 +1563,38 @@ check 'DESIGN is surfaced when present'       'DESIGN=gspec/features/folded/desi
 out="$("$ADAPTER" check "$R" 2>&1)"
 check 'enriched siblings are outside the asserted contract' 'CHECK=ok' "$out"
 
+# The two siblings resolve through `_resolve_arch_path`/`_resolve_design_path`,
+# each walking its own layout list. Pin each resolver independently (one present,
+# the other absent, both ways) and pin the LIST: a copy sitting anywhere the list
+# does not name is never surfaced, so a resolver pointed at another directory
+# turns these red rather than quietly reading the wrong file.
+mv "$R/gspec/features/folded/design.html" "$R/gspec/features/folded.design.html.bak"
+out="$("$ADAPTER" next "$R")"
+check  'arch resolver finds arch.md with design.html absent' 'ARCH=gspec/features/folded/arch.md' "$out"
+refute 'design resolver returns nothing when design.html is absent' 'DESIGN=' "$out"
+mv "$R/gspec/features/folded.design.html.bak" "$R/gspec/features/folded/design.html"
+mv "$R/gspec/features/folded/arch.md" "$R/gspec/features/folded.arch.md.bak"
+out="$("$ADAPTER" next "$R")"
+check  'design resolver finds design.html with arch.md absent' 'DESIGN=gspec/features/folded/design.html' "$out"
+refute 'arch resolver returns nothing when arch.md is absent' 'ARCH=' "$out"
+# Off-layout copies: shapes a guess might try. Neither file ever lived there, so
+# neither may be read from there. (No stray under gspec/features/*.md -- that
+# glob is the pre-3.x PRD layout and would add a phantom feature to `next`.)
+mkdir -p "$R/gspec/arch" "$R/gspec/design"
+printf 'stray\n' > "$R/gspec/arch/folded.md"
+printf 'stray\n' > "$R/gspec/design/folded.html"
+mv "$R/gspec/features/folded/design.html" "$R/gspec/features/folded.design.html.bak"
+out="$("$ADAPTER" next "$R")"
+refute 'arch resolver ignores files outside its layout list'   'ARCH=' "$out"
+refute 'design resolver ignores files outside its layout list' 'DESIGN=' "$out"
+rm -f "$R/gspec/arch/folded.md" "$R/gspec/design/folded.html"
+rmdir "$R/gspec/arch" "$R/gspec/design"
+mv "$R/gspec/features/folded.design.html.bak" "$R/gspec/features/folded/design.html"
+mv "$R/gspec/features/folded.arch.md.bak" "$R/gspec/features/folded/arch.md"
+out="$("$ADAPTER" next "$R")"
+check 'fixture restored: ARCH back'   'ARCH=gspec/features/folded/arch.md' "$out"
+check 'fixture restored: DESIGN back' 'DESIGN=gspec/features/folded/design.html' "$out"
+
 out="$("$ADAPTER" nodes folded "$R")"
 check 'nodes emits the folder plans tasks'    'folded-t1' "$out"
 check 'and the second one'                    'folded-t2' "$out"

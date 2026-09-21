@@ -230,6 +230,33 @@
 #                                    written before the mechanism existed; a
 #                                    file that is PRESENT but unreadable is
 #                                    refused exactly as a missing template is.
+#   amend-handoff <run-state> <packet-id>
+#                                    escalation-decider T4: splices stdin into
+#                                    ONE marked decider block at the end of that
+#                                    packet's handoff.md — appended when the
+#                                    block is absent, replaced in place when it
+#                                    is present, so repeated `retry` decisions
+#                                    leave ONE amendment rather than a stack.
+#                                    The decider's only write into a handoff
+#                                    file, and the reason it needs no Edit tool.
+#                                    The file is SPLICED, never regenerated:
+#                                    the `# <pkt>: <title>` first line
+#                                    run-digest parses and the verification
+#                                    contract at the tail are both left exactly
+#                                    as handoff wrote them. Refuses, writing
+#                                    nothing: a packet-id resolving outside the
+#                                    CURRENT run directory (lexically first,
+#                                    then by REAL path against a symlinked
+#                                    packet directory, exactly as write-result
+#                                    decides it), a packet with no handoff.md,
+#                                    empty/whitespace-only stdin, replacement
+#                                    text carrying either marker line, and a
+#                                    file whose existing block is malformed
+#                                    (unpaired or duplicated markers — there is
+#                                    no end for the splice to stop at, and
+#                                    guessing would swallow the contract).
+#                                    Prints HANDOFF=<path> and
+#                                    AMENDMENT=inserted|replaced.
 #   check-status --status "<line>"   loop-driver-run-gaps T1: the ONE mechanical
 #                                    reading of templates/status-line.md, run by
 #                                    the driver on every returned line. Prints
@@ -3242,6 +3269,164 @@ cmd_handoff() {
   printf 'HANDOFF=%s\n' "$target"
 }
 
+# --- amend-handoff: the decider's ONE write into a handoff file -------------
+# escalation-decider T4. `retry` is the only decision that changes what the
+# implementer is asked to do, and that change has to reach the agent through
+# the one file it is handed. The decider holds no `Edit`/`Write` — ADR 0028
+# kept the read-only agents read-only by routing every write they need through
+# this script, exactly as `write-result` did — so this subcommand IS that
+# write, and it is deliberately the only one into a handoff file.
+#
+# ONE marked block, replaced in place on every later call. Three retries leave
+# one amendment carrying the current instruction, not three stacked ones an
+# implementer has to date-order for itself. The markers are HTML comments (a
+# markdown reader renders them invisibly) matched as WHOLE lines, never as a
+# substring, and replacement text carrying either marker is refused outright
+# rather than spliced in — text that could open or close the block is the one
+# input that could make a later call replace the wrong span.
+#
+# SPLICED, never regenerated, and that is the point of the whole function:
+#   - `run-digest` reads the packet's title out of the handoff's FIRST line
+#     (`# <pkt>: <title>` — see _rs_digest_title), so a rewrite that rebuilt
+#     the file would have to reproduce that line exactly or the packet would
+#     silently start reporting its own id as its title; and
+#   - the verification contract ADR 0029 appends is the file's tail, and there
+#     is no option anywhere that writes a handoff without it.
+# Splicing one block into the file already on disk reproduces neither, so
+# neither can drift.
+#
+# PLACEMENT is the end of the file. The alternative — between the header and
+# the body — was rejected: a `##` heading has no closing form in markdown, so
+# the whole task body below it would read as part of the amendment, and an
+# implementer could no longer tell what actually changed. At the end the only
+# thing "inside" the section is the amendment itself.
+_RS_AMEND_BEGIN='<!-- orch:decider-amendment -->'
+_RS_AMEND_END='<!-- /orch:decider-amendment -->'
+
+_rs_amend_block() {
+  printf '%s\n' "$_RS_AMEND_BEGIN"
+  printf '## Decider amendment\n\n'
+  printf 'The escalation decider changed this packet'"'"'s brief after an earlier attempt.\n'
+  printf 'It adds to the task above; nothing above it has been removed.\n\n'
+  printf '%s\n' "$1"
+  printf '%s\n' "$_RS_AMEND_END"
+}
+
+cmd_amend_handoff() {
+  local f="" pkt="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --*) die "usage: amend-handoff <run-state> <packet-id> (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) pkt="$1" ;;
+          *) die "usage: amend-handoff <run-state> <packet-id> (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$pkt" ] || die "usage: amend-handoff <run-state> <packet-id>"
+  need_file "$f"
+  _rs_check_pkt_id "$pkt"
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "amend-handoff: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" amend-handoff)"
+
+  # LEXICAL containment first, exactly as write-result decides it: pure string
+  # normalization, no filesystem access at all, so a path that resolves outside
+  # the run directory is refused before anything is read or written. The packet
+  # id is charset-validated above, so this is belt-and-braces today — and it
+  # stays, because the day a caller builds the id from somewhere else is
+  # precisely the day nobody re-derives this check.
+  local abs_rundir abs_target pktdir
+  abs_rundir="$(_rs_lexical_abspath "$rundir")"
+  abs_target="$(_rs_lexical_abspath "${rundir}/${pkt}/handoff.md")"
+  case "$abs_target" in
+    "${abs_rundir}/"*) ;;
+    *) die "amend-handoff: packet '${pkt}' resolves outside the current run directory (${abs_rundir})" ;;
+  esac
+  pktdir="$(dirname "$abs_target")"
+
+  # stdin drained HERE, before any refusal that can still fire: the caller pipes
+  # the replacement text in, and a die ahead of this leaves that producer taking
+  # SIGPIPE mid-write and reporting rc=141 in place of the real reason (the same
+  # placement, for the same reason, as cmd_handoff's contract read).
+  local text
+  text="$(cat)"
+  case "$text" in
+    *[![:space:]]*) ;;
+    *) die "amend-handoff: the replacement text is empty — an empty amendment says nothing and would replace one that did" ;;
+  esac
+  case "$text" in
+    *"$_RS_AMEND_BEGIN"*|*"$_RS_AMEND_END"*)
+      die "amend-handoff: the replacement text carries a decider-block marker — refused rather than written, because the next call would then replace the wrong span" ;;
+  esac
+
+  [ -f "$abs_target" ] \
+    || die "amend-handoff: no handoff file for packet '${pkt}' at ${abs_target} — handoff has not been called for it in this run"
+
+  # SYMLINK-SAFE containment, the second half of write-result's pair: the
+  # lexical check above cannot see a symlinked packet directory under the run
+  # directory that resolves elsewhere on disk. Now that the target exists, its
+  # directory is re-checked by REAL path.
+  local real_rundir real_pktdir
+  real_rundir="$(cd "$abs_rundir" 2>/dev/null && pwd -P)" || die "amend-handoff: cannot resolve the run directory"
+  real_pktdir="$(cd "$pktdir" 2>/dev/null && pwd -P)" || die "amend-handoff: cannot resolve the packet directory"
+  case "$real_pktdir" in
+    "$real_rundir"|"$real_rundir"/*) ;;
+    *) die "amend-handoff: packet '${pkt}' escapes the run directory via a symlink" ;;
+  esac
+
+  # ONE scan of the file on disk: how many of each marker line it carries and
+  # where the first of each sits. Counting BOTH (rather than looking for the
+  # opening marker alone) is what makes the malformed cases refusable instead
+  # of guessable — an unterminated block has no end for the splice to stop at,
+  # and guessing would swallow everything after it, the verification contract
+  # included.
+  local scan sm_count em_count sm_line em_line
+  scan="$(awk -v sm="$_RS_AMEND_BEGIN" -v em="$_RS_AMEND_END" '
+    $0 == sm { smc++; if (!sml) sml = FNR }
+    $0 == em { emc++; if (!eml) eml = FNR }
+    END { printf "%d %d %d %d\n", smc + 0, emc + 0, sml + 0, eml + 0 }
+  ' "$abs_target")"
+  read -r sm_count em_count sm_line em_line <<< "$scan"
+
+  local mode
+  if [ "$sm_count" = 0 ] && [ "$em_count" = 0 ]; then
+    mode=inserted
+  elif [ "$sm_count" = 1 ] && [ "$em_count" = 1 ] && [ "$em_line" -gt "$sm_line" ]; then
+    mode=replaced
+  else
+    die "amend-handoff: ${abs_target} carries a malformed decider block (${sm_count} opening and ${em_count} closing marker lines) — refusing rather than guessing where the block ends"
+  fi
+
+  # GLOBAL, not local -- see cmd_handoff's identical comment on the same
+  # pattern: an EXIT trap referencing a function-LOCAL is bash-version-
+  # dependent while the shell unwinds under `set -e`.
+  _rs_tmp=""
+  trap '[ -n "${_rs_tmp:-}" ] && rm -f "$_rs_tmp"; :' EXIT
+  _rs_tmp="$(mktemp "${pktdir}/.amend-handoff.XXXXXX")" || die "cannot create temp file in ${pktdir}"
+  # `head`/`tail` read a REGULAR FILE here, not a pipe: there is no producer to
+  # take SIGPIPE when head stops, so this is not the early-exit-reader shape the
+  # source guard at the foot of test-runstate.sh scans for.
+  { if [ "$mode" = replaced ]; then
+      head -n "$((sm_line - 1))" "$abs_target"
+      _rs_amend_block "$text"
+      tail -n "+$((em_line + 1))" "$abs_target"
+    else
+      cat "$abs_target"
+      printf '\n'
+      _rs_amend_block "$text"
+    fi
+  } > "$_rs_tmp"
+  mv -f "$_rs_tmp" "$abs_target"
+  trap - EXIT
+  printf 'HANDOFF=%s\nAMENDMENT=%s\n' "$abs_target" "$mode"
+}
+
 # =============================================================================
 # check-status (loop-driver-run-gaps T1)
 # =============================================================================
@@ -5287,6 +5472,7 @@ case "$cmd" in
   driver-mode)   cmd_driver_mode   "$@" ;;
   begin-run)     cmd_begin_run     "$@" ;;
   handoff)       cmd_handoff       "$@" ;;
+  amend-handoff) cmd_amend_handoff "$@" ;;
   check-status)  cmd_check_status  "$@" ;;
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;

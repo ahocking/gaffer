@@ -3250,6 +3250,175 @@ assert_true "  and wrote no mvfail.md either (mv never succeeded)" \
   "[ ! -f \"$WR_MVFAIL_TARGET\" ]"
 
 echo
+echo "== amend-handoff: ONE marked decider block spliced into a handoff the command"
+echo "   must not otherwise disturb (escalation-decider T4) =="
+# Every case below was verified by MUTATION, not inspection: a plausible wrong
+# implementation was applied to cmd_amend_handoff, this sweep re-run and
+# confirmed red for that specific case, then the implementation restored and the
+# sweep reconfirmed green. Each block names what it rules out; see the
+# implementer's result file for the observed pass/fail counts.
+AH="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$AH" init -q
+git -C "$AH" config user.email t@t; git -C "$AH" config user.name t
+mkdir -p "$AH/.agents"
+printf 'schema: 3\nstatus: running\n' > "$AH/.agents/run-state.yaml"
+AH_RUN_ID="$(cd "$AH" && "$RUNSTATE" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+AH_RUN_DIR="$AH/.agents/loop/$AH_RUN_ID"
+AH_FILE="$AH_RUN_DIR/ah-pkt/handoff.md"
+ah_rs()     { (cd "$AH" && "$RUNSTATE" "$@"); }
+ah_digest() { (cd "$AH" && "$RUNSTATE" run-digest .agents/run-state.yaml); }
+
+# The adapter's real shape (a TEXT= line carries the title), so the digest case
+# below is checked against a title the command had no part in choosing.
+printf 'PACKET=ah-pkt\nTEXT=T4 amend the brief\nFILES=scripts/runstate.sh\n' \
+  | ah_rs handoff .agents/run-state.yaml ah-pkt --tier mechanical --agent implementer >/dev/null
+AH_LINE1_BEFORE="$(head -1 "$AH_FILE")"
+AH_REQ_BEFORE="$(grep -c '^REQUIRED [a-z-]*: ' "$AH_FILE")"
+assert_true "the fixture handoff really carries the six REQUIRED lines (so the survival check below is not vacuous)" \
+  "[ \"\$AH_REQ_BEFORE\" = 6 ]"
+
+AH_OUT="$(printf 'Narrow the scope to the marker block.\nSecond line of the amendment.\n' | ah_rs amend-handoff .agents/run-state.yaml ah-pkt)"
+assert_true "amend-handoff reports the handoff path it wrote" \
+  "printf '%s\n' \"\$AH_OUT\" | grep -q '^HANDOFF=.*/ah-pkt/handoff.md\$'"
+assert_true "a first amendment reports AMENDMENT=inserted" \
+  "printf '%s\n' \"\$AH_OUT\" | grep -qx 'AMENDMENT=inserted'"
+assert_true "the replacement text reaches the file, every line of it" \
+  "grep -q 'Narrow the scope to the marker block.' \"$AH_FILE\" && grep -q 'Second line of the amendment.' \"$AH_FILE\""
+assert_true "the text lands inside the marked block, exactly one of each marker line" \
+  "[ \"\$(grep -cxF '<!-- orch:decider-amendment -->' \"$AH_FILE\")\" = 1 ] && [ \"\$(grep -cxF '<!-- /orch:decider-amendment -->' \"$AH_FILE\")\" = 1 ]"
+
+# --- THE TASK'S OWN CASE ---------------------------------------------------
+# RULES OUT a rewrite that regenerates the handoff instead of splicing into it:
+# run-digest reads the packet's title out of the `# <pkt>: <title>` FIRST line
+# (_rs_digest_title), and a regenerated file that lost or reworded that line
+# makes the packet silently report its own id as its title -- with the file
+# still present, still carrying the task text, and every other assertion here
+# still green. The count half rules out the other direction, and it counts
+# EVERY packet line in the run rather than only this packet's: this fixture has
+# exactly one packet directory carrying a handoff.md at this point, so a wrong
+# implementation that left a second one behind -- a pre-amendment backup copied
+# beside the original being the plausible shape -- shows up as a second packet
+# in the run's own digest. Counting `^packet\tah-pkt\t` alone would NOT catch
+# that (the copy has a different id), which is why this one is the whole-digest
+# count; it was written the narrow way first and the backup mutation walked
+# straight through it.
+assert_true "run-digest still prints a packet line carrying the ORIGINAL title after an amendment" \
+  "ah_digest | grep -qx \$'packet\tah-pkt\tT4 amend the brief\topen'"
+assert_true "  and the amendment added no second packet to the run (one packet line, still)" \
+  "[ \"\$(ah_digest | grep -c '^packet')\" = 1 ]"
+assert_true "  and the first line is byte-identical to the one handoff wrote" \
+  "[ \"\$(head -1 \"$AH_FILE\")\" = \"\$AH_LINE1_BEFORE\" ]"
+
+# RULES OUT an amendment that truncates the file at its splice point -- the
+# verification contract ADR 0029 appends is the file's TAIL, so a wrong
+# implementation that wrote the block over the end of the file would leave a
+# handoff with no contract, which an agent cannot tell from one whose contract
+# did not apply.
+assert_true "the six REQUIRED contract lines survive the amendment, all of them" \
+  "[ \"\$(grep -c '^REQUIRED [a-z-]*: ' \"$AH_FILE\")\" = \"\$AH_REQ_BEFORE\" ]"
+assert_true "the contract heading survives too" \
+  "grep -qx '## REQUIRED — the verification contract' \"$AH_FILE\""
+assert_true "the piped task body survives the amendment" \
+  "grep -qx 'FILES=scripts/runstate.sh' \"$AH_FILE\""
+assert_true "the header's absolute result path survives the amendment" \
+  "grep -qx \"result: $AH_RUN_DIR/ah-pkt/implementer.md\" \"$AH_FILE\""
+
+echo "-- a second amendment REPLACES the block rather than stacking a second one --"
+# RULES OUT a plain append: three retries would leave three amendments, and an
+# implementer reading the file would have to date-order them for itself to find
+# which instruction is current -- with the newest text present and the marker
+# count the only thing that gives it away.
+AH_OUT2="$(printf 'The current instruction, replacing the first.\n' | ah_rs amend-handoff .agents/run-state.yaml ah-pkt)"
+assert_true "a second amendment reports AMENDMENT=replaced" \
+  "printf '%s\n' \"\$AH_OUT2\" | grep -qx 'AMENDMENT=replaced'"
+assert_true "still exactly one opening and one closing marker after the second amendment" \
+  "[ \"\$(grep -cxF '<!-- orch:decider-amendment -->' \"$AH_FILE\")\" = 1 ] && [ \"\$(grep -cxF '<!-- /orch:decider-amendment -->' \"$AH_FILE\")\" = 1 ]"
+assert_true "the first amendment's text is GONE, not left above the second" \
+  "! grep -q 'Narrow the scope to the marker block.' \"$AH_FILE\""
+assert_true "the second amendment's text is present" \
+  "grep -q 'The current instruction, replacing the first.' \"$AH_FILE\""
+assert_true "the replacement still leaves the six REQUIRED contract lines intact" \
+  "[ \"\$(grep -c '^REQUIRED [a-z-]*: ' \"$AH_FILE\")\" = \"\$AH_REQ_BEFORE\" ]"
+assert_true "and run-digest still reports exactly one packet line, with the original title" \
+  "[ \"\$(ah_digest | grep -c '^packet')\" = 1 ] && ah_digest | grep -qx \$'packet\tah-pkt\tT4 amend the brief\topen'"
+
+echo "-- every refusal leaves the handoff BYTE-IDENTICAL --"
+# RULES OUT check-after-write: a refusal that exits non-zero but has already
+# rewritten (or truncated) the file leaves the packet's brief in a state nobody
+# chose, while the exit status alone still reads as "nothing happened".
+AH_SNAP="$AH/snapshot-handoff.md"; cp "$AH_FILE" "$AH_SNAP"
+ah_unchanged() { cmp -s "$AH_FILE" "$AH_SNAP"; }
+
+assert_true "amend-handoff refuses whitespace-only replacement text" \
+  "! (printf '   \\n\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-pkt) 2>/dev/null"
+assert_true "  and the handoff is byte-identical afterwards" "ah_unchanged"
+assert_true "amend-handoff refuses text carrying the opening marker line" \
+  "! (printf 'before\\n<!-- orch:decider-amendment -->\\nafter\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-pkt) 2>/dev/null"
+assert_true "amend-handoff refuses text carrying the closing marker line" \
+  "! (printf 'before\\n<!-- /orch:decider-amendment -->\\nafter\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-pkt) 2>/dev/null"
+assert_true "  and the handoff is byte-identical after both marker refusals" "ah_unchanged"
+assert_true "amend-handoff refuses a packet with no handoff file in this run" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-never-dispatched) 2>/dev/null"
+assert_true "  and writes no handoff.md for it either" \
+  "[ ! -f \"$AH_RUN_DIR/ah-never-dispatched/handoff.md\" ]"
+assert_true "amend-handoff refuses a run-state with no run_id (begin-run not called)" \
+  "printf 'schema: 3\\nstatus: running\\n' > \"$AH/norun.yaml\" && ! (printf 'x\\n' | ah_rs amend-handoff \"$AH/norun.yaml\" ah-pkt) 2>/dev/null"
+assert_true "amend-handoff refuses a traversal packet id" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml 'ah/../escape') 2>/dev/null"
+assert_true "amend-handoff refuses a '..' packet id" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml ..) 2>/dev/null"
+assert_true "a '..'-refused amendment never wrote .agents/loop/<run_id>/handoff.md" \
+  "[ ! -f \"$AH_RUN_DIR/handoff.md\" ]"
+
+echo "-- a malformed block is REFUSED, never guessed at --"
+# RULES OUT splicing from the opening marker to end-of-file when the closing one
+# is missing (or picking the first of two): with no end to stop at, the splice
+# swallows everything after the block -- the verification contract included --
+# and reports success doing it.
+printf 'TEXT=T5 a second packet\n' | ah_rs handoff .agents/run-state.yaml ah-mal --tier mechanical --agent implementer >/dev/null
+AH_MAL="$AH_RUN_DIR/ah-mal/handoff.md"
+printf '%s\n' '<!-- /orch:decider-amendment -->' >> "$AH_MAL"
+AH_MAL_SNAP="$AH/snapshot-mal.md"; cp "$AH_MAL" "$AH_MAL_SNAP"
+AH_MAL_ERR="$(printf 'x\n' | ah_rs amend-handoff .agents/run-state.yaml ah-mal 2>&1 >/dev/null || true)"
+assert_true "a closing marker with no opening one is refused" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-mal) 2>/dev/null"
+assert_true "  and the refusal reports the marker counts it saw" \
+  "printf '%s\n' \"\$AH_MAL_ERR\" | grep -q '0 opening and 1 closing'"
+assert_true "  and that handoff is byte-identical afterwards (its contract not swallowed)" \
+  "cmp -s \"$AH_MAL\" \"$AH_MAL_SNAP\""
+printf '%s\n' '<!-- orch:decider-amendment -->' >> "$AH_MAL"
+printf '%s\n' '<!-- orch:decider-amendment -->' >> "$AH_MAL"
+cp "$AH_MAL" "$AH_MAL_SNAP"
+assert_true "two opening markers are refused too" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-mal) 2>/dev/null"
+assert_true "  and that handoff is byte-identical afterwards as well" \
+  "cmp -s \"$AH_MAL\" \"$AH_MAL_SNAP\""
+
+echo "-- containment: a symlinked packet directory cannot carry the write outside the run dir --"
+# The lexical check cannot see this one (the path string is inside the run
+# directory); only the real-path re-check after the target is known can. RULES
+# OUT keeping write-result's lexical half and dropping its symlink half.
+AH_OUTSIDE="$(cd "$(mktemp -d)" && pwd -P)"
+mkdir -p "$AH_OUTSIDE/ah-sym"
+printf '# ah-sym: a handoff outside the run directory\n' > "$AH_OUTSIDE/ah-sym/handoff.md"
+ln -s "$AH_OUTSIDE/ah-sym" "$AH_RUN_DIR/ah-sym"
+assert_true "amend-handoff refuses a packet directory symlinked outside the run directory" \
+  "! (printf 'x\\n' | ah_rs amend-handoff .agents/run-state.yaml ah-sym) 2>/dev/null"
+assert_true "  and wrote nothing into the file outside the run directory" \
+  "! grep -q 'Decider amendment' \"$AH_OUTSIDE/ah-sym/handoff.md\""
+
+echo "-- a failure between mktemp and mv leaves no leftover temp file --"
+# Same shadowed-`mv` technique as the handoff/write-result cases above; amend-
+# handoff calls `mv` exactly once, so this cannot mask a failure elsewhere.
+AH_MVFAIL_RC=0
+printf 'x\n' | (cd "$AH" && PATH="$FAKEMV_DIR:$PATH" "$RUNSTATE" amend-handoff .agents/run-state.yaml ah-pkt) >/dev/null 2>&1 \
+  || AH_MVFAIL_RC=$?
+assert_true "amend-handoff fails when mv itself fails (forced via a shadowed mv)" \
+  "[ \"\$AH_MVFAIL_RC\" != 0 ]"
+assert_true "  and leaves no leftover .amend-handoff.* temp file behind" \
+  "! ls \"$AH_RUN_DIR/ah-pkt\"/.amend-handoff.* >/dev/null 2>&1"
+assert_true "  and left the handoff byte-identical (mv never succeeded)" "ah_unchanged"
+
+echo
 echo "== route: verdict -> action mapping, attempt pool, packet_attempts limit (thin-loop-driver T9) =="
 RT="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RT" init -q
 git -C "$RT" config user.email t@t; git -C "$RT" config user.name t

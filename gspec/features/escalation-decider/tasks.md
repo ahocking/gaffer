@@ -96,7 +96,7 @@ the right-sizing bar is not.
   - covers: The decider acts only within fixed authority
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T4** **P0** Add `runstate.sh amend-handoff <run-state> <packet-id>`, which reads replacement text on stdin into one marked decider block in that packet's `handoff.md`, refusing lexically any path outside the current run directory exactly as `write-result` does; `scripts/test-runstate.sh` gains a case asserting `run-digest` still prints exactly one `packet` line carrying the original title, which rules out a rewrite that loses the `# <pkt>: <title>` first line the digest parses. This is the one task that writes into the handoff file `handoff-verification-contract` is putting a contract on: land it clear of that feature's handoff tasks.
+- [x] **T4** **P0** Add `runstate.sh amend-handoff <run-state> <packet-id>`, which reads replacement text on stdin into one marked decider block in that packet's `handoff.md`, refusing lexically any path outside the current run directory exactly as `write-result` does; `scripts/test-runstate.sh` gains a case asserting `run-digest` still prints exactly one `packet` line carrying the original title, which rules out a rewrite that loses the `# <pkt>: <title>` first line the digest parses. This is the one task that writes into the handoff file `handoff-verification-contract` is putting a contract on: land it clear of that feature's handoff tasks.
   - deps: —
   - covers: The decider acts only within fixed authority
   - arch: —

@@ -67,11 +67,11 @@ ux:
 # invalid entry falls back to that frontmatter default and is reported at
 # run-loop and resume preflight.
 model_routing:
-  reviewer: fable
-  architect: fable
-  chief-engineer: fable
-  ux-designer: fable
-  doc-writer: fable
+  reviewer: opus
+  architect: opus
+  chief-engineer: opus
+  ux-designer: opus
+  doc-writer: opus
   implementer: opus
   researcher: opus
 # Add model aliases the harness accepts before the plugin's list knows them:

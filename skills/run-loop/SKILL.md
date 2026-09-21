@@ -578,8 +578,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
      no order of your own.
    - **`discard-advance`** — before discarding, check for a decider commit on
      this branch (`git log <base>..HEAD --grep '\[orch decider:'`); if one
-     exists, **do not delete the branch** — it is left behind, unmerged, and
-     §4's termination step accounts for it. Then discard the packet's
+     exists, **do not delete the branch** here — an `append-task` merges it
+     below and deletes it only once merged, and any other token leaves it
+     behind, unmerged, for §4's termination step to account for. Then discard the packet's
      uncommitted work non-destructively:
      ```
      git stash push --include-untracked -m "orch discard: <cursor>"
@@ -599,7 +600,42 @@ nothing. Read the result exactly as §4 states it for the stop report.
        again would repeat the attempt that just failed — hand that to
        `/gaffer:pause` as a blocking question naming the packet and the
        order now in `pending`, exactly as `stop` below does.
-     - **`append-task`** and **`hand-off-feature`** — advance the cursor
+     - **`append-task`** — merge the decider's branch now, then remove
+       nothing from `pending`. The appended task line is committed only on
+       this packet's branch, and `gspec-backlog.sh handoff` reads the plan
+       from the integration branch, so the task is runnable in this run only
+       once that branch is merged. List the branch's commits that do **not**
+       carry this packet's trailer: `git log <base>..HEAD --invert-grep
+       --grep '\[orch decider:<packet-id>\]' --format=%H`. When that prints
+       nothing **and** `git log <base>..HEAD --format=%H` prints at least one
+       commit, every commit beyond `<base>` is the decider's: switch to the
+       integration branch and merge `orch/<packet-id>` into it at once,
+       instead of leaving it for §4 — the same merge §3.7 makes, never
+       targeting `main`, and a merge whose incoming diff hits a hard-gate
+       path re-escalates. Once merged, delete the branch with `git branch -d
+       orch/<packet-id>` — the non-forcing `-d`, which refuses a branch not
+       merged into `HEAD`, so it cannot lose work — because this packet stays
+       in `pending`, and §3.1 switches to an existing `orch/<packet-id>`
+       rather than recreating it: left in place, the branch still points at
+       the decider commit and lacks the appended task's work that lands on
+       the integration branch ahead of it, so the re-run would fail the same
+       way and escalate again. Deleted, §3.1 recreates it from the current
+       `<base>`. Otherwise — any commit without that trailer, or no
+       commit at all — **do not merge**: hand `/gaffer:pause` a blocking
+       question naming the branch `orch/<packet-id>` and why it was not
+       merged, exactly as `stop` below does, and change nothing in
+       `pending`. After the merge, the decider's `reorder-pending` has
+       already put the appended task ahead of this packet, so remove nothing
+       from `pending` — set `cursor` to whatever is now first in `pending`,
+       via `runstate.sh write`, exactly as the `reorder` arm does, and leave
+       every entry, every member of `$MEMBERS` included, where it sits.
+       Checkable: the appended task's line is on the integration branch, and
+       the originating packet is still in `pending` behind it and is not the
+       cursor, so the note cannot read "backlog complete" while either is
+       unchecked; and when the originating packet is next dispatched, its
+       branch contains the appended task's commit. §4's termination sweep of decider branches stays as the
+       backstop for a run that stopped between the decision and this merge.
+     - **`hand-off-feature`** — advance the cursor
        **past every member of `$MEMBERS`**. `group` forms `$MEMBERS` from
        the plan in plan order, but `pending` is the loop's own chosen order
        — a resume, a decider `reorder`, or an arm-1 `append-task` mid-run
@@ -609,10 +645,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
        wherever it sits** (a member absent from `pending` is simply not
        there to remove), then set `cursor` to whatever entry remains first
        in `pending` (or none, if nothing does), via `runstate.sh write`, so
-       no part of the bundle lands on its own. For `append-task`, the task
-       the decider appended is already in `pending` ahead of where this
-       packet sat, placed by its own `reorder-pending`; it stays.
-     In neither case is a proposed order surfaced as a question — every
+       no part of the bundle lands on its own.
+     In no case is a proposed order surfaced as a question — every
      order the decider decided is already applied, and the next report
      carries it as a fact. Then report it the same way §3.6 does — shape A
      rendered from `runstate.sh run-digest .agents/run-state.yaml --since

@@ -490,6 +490,223 @@ Your tools and git-workflow authority are unchanged for this role: you may
 still dispatch the `architect` and commit on the packet's own branch exactly
 as the git-workflow authority above describes.
 
+## Periodic review
+
+Between packets — never while one is open — the driver dispatches you for a
+**periodic review** of the findings index when `runstate.sh review-due`
+prints `DUE=yes`: 2 non-green endings or 10 beginnings since the last
+completed review, whichever comes first (both numbers from
+`.agents/project-overrides.yaml`, each falling back to its default), and
+also whenever either count reads `unmeasured`. The brief is the `run-state:`
+path and nothing else — no handoff, no review file, no packet. A review is
+the same role under a narrower question: not *what is this packet's next
+step* but *which entries in the index are duplicates, which are backlog
+items in disguise, and which are spent*. Everything the escalation section
+says about how you write still holds — you hold no `Edit`/`Write`, so every
+write below is a `runstate.sh` subcommand, an `architect` you dispatch, or a
+commit on the path that architect edited — and the whole review lands
+before its status line returns.
+
+### What a review reads — and nothing else
+
+- **The outcomes log**, `.agents/metrics/outcomes/*.jsonl` in the main
+  checkout — every session's file, since a packet can begin in one session
+  and end in another. You read it for one fact per packet the index names:
+  its **latest record by parsed time**. A latest record that is an
+  `outcome` of `green` means the packet is **finished**; a latest record
+  that is any other outcome, or a `kind: start`/`continue` with no outcome
+  after it, means it is not; a packet with no record at all is **unknown**.
+  Timestamps are compared as times, never as strings — older records are
+  whole-second and newer ones sub-second, and `.` sorts before `Z`.
+- **The findings index**, through `runstate.sh findings <run-state>` —
+  id, summary, `file:` and `packets`, one row per entry, and through
+  `runstate.sh findings <run-state> --stale --finished <id[,id...]>`, which
+  reports each entry as `STALE=yes|no` against a finished set **you supply**
+  and prints `INDEX_BYTES=`. An unsupplied set expires nothing; that safety
+  property is the script's, and the review relies on it rather than
+  re-deriving it.
+- **Not** the run's handoff or result files, not `gspec/` or git to re-derive
+  what the outcomes log already says, not the wider repo. **The one
+  widening is a routing:** to decide whether a finding's work is covered you
+  read exactly what the two arm triggers above read — `gspec-backlog.sh
+  features`/`plans`, the PRD and plan of the candidate feature,
+  `.agents/roadmap.yaml` — and to carry the finding's text into a task line
+  or an operator question you `Read` **that finding's body** at its `file:`
+  path, and no other body. A capture that misstates the finding it replaces
+  has captured nothing.
+
+Your result path is `.agents/loop/<run_id>/periodic-review-<UTC
+timestamp>/chief-engineer.md`, where `<run_id>` is `runstate.sh get
+<run-state> run_id` and the timestamp is `YYYYMMDDTHHMMSSZ` at dispatch —
+inside the run directory, which is the only place `write-result` accepts,
+and in a directory of its own with no `handoff.md`, which is what keeps
+`run-digest` from reading it as a packet. That directory is pruned two runs
+later by `begin-run`; the record that outlives it is `record-review`, below.
+
+### Order: measure, merge, route, drop, measure, record
+
+The order is fixed because each step changes what the next one reads. A
+duplicate routed before it is merged is routed twice; a finding dropped
+before it is routed is a backlog item lost; and the evidence drop runs last
+so it reads the index **after** every merge — a survivor names the union of
+both entries' packets, so a merge can only widen what must be finished
+before it expires, never narrow it.
+
+1. **Measure.** `findings <run-state>` for the rows, the outcomes log for
+   each named packet's state, then `findings <run-state> --stale --finished
+   <every named packet whose latest record is green>`. Its `INDEX_BYTES=` is
+   **bytes-before** — taken before any write. Keep that finished set; steps
+   4 and 5 reuse it unchanged, since nothing in a review lands a packet.
+2. **Merge duplicates** — `runstate.sh merge-findings <run-state>
+   <survivor-id> <removed-id>`, one call per pair; three duplicates are two
+   calls into the same survivor. The call unions both `packets:` lists onto
+   the survivor, appends the removed entry's summary and the whole of its
+   body to the survivor's body file — creating that body and the entry's
+   `file:` pointer when the survivor had none — and only then drops the
+   removed entry and its body, both-or-neither; `MERGED=yes` with
+   `PACKETS=`, `FILE=` and `BODY=` is your confirmation, and `MERGED=no`
+   with `REASON=` means nothing changed. Two entries are duplicates when
+   they state the **same constraint, gotcha or decision about the same
+   thing** — not when they merely name the same packet, and not when they
+   are two findings about one file. This is one of the two judgments the
+   PRD names as having no mechanical check; losslessness is what makes
+   being wrong recoverable, and it is why a merge is preferred to a drop
+   whenever both would shrink the index. **The survivor is the entry
+   recorded earlier** — lower in the index, since `add-finding` inserts
+   newest-first — because an older id is the one a decision record or a
+   result file may already name. **An id beginning `decider-` is never the
+   removed entry**: trigger (b) above reads the index for exactly that
+   entry at the packet's next escalation, and merging it away would silence
+   (b) without anyone deciding to. Nothing rewrites a summary: the
+   survivor's stays as it is, and a better summary on the removed side is a
+   fact for the result file, not a cue to add a third entry.
+3. **Route backlog items.** A finding **says something should be built**
+   when its summary or body proposes work — build, fix, change, add — rather
+   than recording a constraint, a gotcha, a decision with its rationale, or
+   a resolved question. That is the ADR 0022 seam: the first belongs in
+   gspec and the index is where it was parked. For each such finding run
+   the two arm tests **exactly as the triggers above state them**:
+   `append-task` when an unchecked capability of an unfinished feature
+   covers the work and that feature's plan still holds an unchecked task;
+   otherwise `hand-off-feature`. The other three decisions do not fit a
+   review — there is no packet to reorder, no handoff to amend, no failure
+   to escalate — and when you cannot settle the arm test (whether a
+   capability covers the work is the PRD's other unchecked judgment), the
+   finding **stays in the index** and the doubt goes to your result file: a
+   review never returns `ask-operator` and never stops the loop. With a
+   run-state or argument backlog there is no PRD to cover and no plan to
+   append to, so a review of such a run routes nothing. Then, per routed
+   finding, in this sequence:
+   - **`append-task`** — the same `architect` dispatch as the escalation
+     authority above: resolve its model, brief it with the slug, the
+     covering capability's title, and the finding's id, summary and body
+     text, so the one appended task line states the work in the finding's
+     own terms and carries a truthful `covers:`; then commit **only
+     `gspec/features/<slug>/tasks.md`** yourself, on the branch you are on,
+     with the trailer `[orch decider:<finding-id>]`. The commit is not
+     optional and the trailer is not decoration: between packets the
+     checkout is on the integration branch or on a branch a
+     `discard-advance` left behind, and the termination step's scan for
+     `[orch decider:` is what merges a left-behind branch — an uncommitted
+     edit would be carried into the next packet's working tree instead. An
+     immutability-hook refusal is the same signal as above: stop, leave the
+     finding in place, name what was refused in the result file. **Do not
+     call `reorder-pending`**: a review leaves `pending` exactly as it
+     found it, and the appended task is picked up when the backlog is next
+     resolved.
+   - **`hand-off-feature`** — compose the question for the operator in the
+     same shape as above: the feature's one-line purpose, the work it would
+     carry, `depends_on:` the parent slug, a roadmap `order` after it. Its
+     capture is the **decision record in the next bullet, whole** — not the
+     result file, which step 6 writes only after this finding's body (the
+     question's source) has been dropped. The result file restates the
+     question later; it is never where it is first written. No one in the
+     run runs `/gspec-feature`.
+   - **Record it**: `runstate.sh record-decision <run-state> <packet-id>
+     <append-task|hand-off-feature> --trigger <the arm's name> --finding
+     <finding-id> --summary '<text>'`, where `<packet-id>` is the **first
+     packet the finding names** (the argument takes one id) and the summary
+     opens with `review:`, names **every** packet the finding names, and
+     then carries the capture itself: for `append-task` the appended task's
+     id; for `hand-off-feature` the **whole** operator question — purpose,
+     the work it would carry, `depends_on:` parent slug, roadmap `order` —
+     never a one-line abridgement of it. `record-decision` puts no cap on
+     the summary's length and escapes it into the record, so a long summary
+     is the intended use, and once the drop below runs this record is the
+     only text on disk the question can be rebuilt from. One record per
+     routed finding — `--routed` below must equal the number of these
+     calls, and `run-digest` renders that many `review-routing` decision
+     lines from the count, never from the records. No `add-finding` here:
+     the routed entry is what the review is removing, and a `decider-`
+     entry naming it would grow the index the review exists to shrink.
+   - **Then drop it**: `runstate.sh drop-finding <run-state> <finding-id>`.
+     Routing **is** ADR 0024's capture, so this drop needs no completion
+     evidence — but capture precedes drop, always: the commit or the
+     recorded question exists, complete, before the entry does not.
+     `drop-finding` deletes the body file with the entry, so anything only
+     the body said and the record did not is gone with it. A finding that
+     names **no packet** (written before ADR 0024 made `--packets`
+     required) is neither routed nor dropped by a review — `record-decision`
+     has nothing truthful to name — it is counted and named in the result
+     file, and `/gaffer:migrate`'s triage (ADR 0024 D7) is where it goes.
+4. **Drop the spent** — `findings <run-state> --stale --finished <the set
+   from step 1>` against the index as it now stands, then `runstate.sh
+   drop-finding <run-state> <id>` for each `STALE=yes` row and **nothing
+   else**. `STALE=yes` is ADR 0024's positive evidence read through the
+   review's own window: every packet the entry names has a `green` outcome
+   record, which the driver writes at land, after the packet commit that
+   flipped the checkbox or carried the trailer. A `STALE=no` row stays,
+   whatever its age or size, and its `blocked_by=<packet>:<pending|unknown>`
+   is the reason: absence from `pending` is *unknown*, a packet whose
+   checkbox is checked but which predates the outcomes log is *unknown*, and
+   unknown blocks expiry — the review errs toward keeping an entry, and the
+   packet-boundary drop and the migration triage cover what it leaves. When
+   the outcomes log could not be read, the finished set is empty and this
+   step drops nothing; say so in the result file, and let steps 2 and 3
+   stand on their own.
+5. **Measure again.** The same `findings --stale --finished` call after the
+   last write; its `INDEX_BYTES=` is **bytes-after**.
+6. **Record and close.** Write the result file first — `runstate.sh
+   write-result <run-state> <your result path> --status '<line>'`, with
+   every merge (survivor, removed), every routing (finding, decision, the
+   task id or the operator question restated from its decision record, the
+   packets named) and every drop (id,
+   and whether by routing or by evidence) listed, plus each entry you left
+   in place with its `blocked_by` or the doubt that kept it. Then, as the
+   **last write before the line returns**: `runstate.sh record-review
+   <run-state> --bytes-before <n> --bytes-after <n> --merged <n> --routed
+   <n> --dropped <n>`. `merged` counts `MERGED=yes` calls, `routed` counts
+   `record-decision` calls, `dropped` counts `DROPPED=yes` calls — the
+   routing drops included, so `merged + dropped` is the number of entries
+   removed; the entry `merge-findings` removed is counted under `merged`,
+   not twice. A byte figure a `findings` call could not produce is the
+   literal `unmeasured`, never `0`; the three action counts are counts of
+   what you did and are never unmeasured. This record is what resets
+   `review-due`'s count, and it lives in
+   `.agents/metrics/decisions/<session>.jsonl` — outside `.agents/loop/`,
+   which `begin-run` prunes, and outside the outcomes log, where a record
+   carrying `kind` would be read as a packet start. A review cut short
+   before this call leaves no record, the count does not reset, and the
+   review runs again at the next boundary: every step above is idempotent
+   on a re-run — a merge already made finds one entry, a drop already made
+   finds none — so the re-run finds less to do and harms nothing.
+
+**What you return**: exactly one status line, `<status>` the word
+`reviewed`, `<what changed>` the three counts and the bytes before and after
+in one clause, `result: needs-reading` whenever a routing was
+`hand-off-feature` or an entry was left with a doubt — the operator question
+lives in the decision record first and the result file second, and nothing
+else carries it to them — and `result: no` otherwise.
+
+**Never, in a review:** never `reorder-pending`, `amend-handoff`,
+`record-outcome`, `sweep-open`, `write` or `set`; never `add-finding`; never
+drop an entry on absence from `pending`, on age, on size, or on a summary
+that reads as done — a `STALE=yes` row or a completed routing are the only
+two grounds; never edit a body file or the index by any path but
+`merge-findings` and `drop-finding`; and never poll `pause-status` between
+your first write and your status line — the driver pauses before it
+dispatches a review or after the line, never between.
+
 ## Reporting
 
 End every orchestration with a tight summary the human can act on immediately: what was

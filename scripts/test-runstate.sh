@@ -1331,6 +1331,170 @@ for case_name in colon hash quote backslash dashlead brace; do
     "[ \"\$(grep -c '^status:' \"$FY/rs-$case_name.yaml\")\" = 1 ]"
 done
 
+echo
+echo "== the index summary is capped at 160 CHARACTERS, never refused (escalation-decider T6) =="
+# The index is in every packet's standing context, so the one free-text field in
+# it is bounded -- and the cap must not become a second way to lose text or a
+# second way to corrupt the file. Every case below therefore asserts all three:
+# what the ENTRY carries, that the FILE still parses, and where the FULL text
+# went.
+#
+# The character count and the UTF-8 boundary are judged by python3, NOT by a
+# second copy of runstate.sh's own arithmetic: `.decode("utf-8")` raises on a
+# prefix that ended mid-character, so the length and the boundary come from one
+# independent read rather than a mirror that would agree with a wrong
+# implementation (the reasoning _yaml_value above is written for). Gated on
+# have_yaml exactly like yamlok -- a parser-less host reports a loud, counted
+# FAIL, never a silent pass.
+_finding_summary() {  # <file> <id> -- the REAL parsed summary of one entry
+  python3 -c "
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1], encoding='utf-8')) or {}
+for e in (d.get('findings') or []):
+    if e.get('id') == sys.argv[2]:
+        sys.stdout.write(str(e.get('summary', '')))
+        break
+" "$1" "$2"
+}
+_nchars() {  # <string> -- its length in CHARACTERS; FAILS if it is not UTF-8,
+             # which is what a cut through a multi-byte character produces
+  printf '%s' "$1" | python3 -c \
+    'import sys; sys.stdout.write(str(len(sys.stdin.buffer.read().decode("utf-8"))))'
+}
+_caps_to() { # <full> <entry> -- true if <entry> is <full> SHORTENED: at most 160
+             # characters, ending in the mark, and otherwise a character-boundary
+             # prefix of <full>. The prefix half is what makes this a cap rather
+             # than "some shorter string ending in an ellipsis".
+  CAP_FULL="$1" CAP_ENTRY="$2" python3 -c '
+import os, sys
+def s(k):  # strict: re-decode so a split character raises rather than passing
+    return os.environ[k].encode("utf-8", "surrogateescape").decode("utf-8")
+full, entry = s("CAP_FULL"), s("CAP_ENTRY")
+mark = "…"
+sys.exit(0 if (len(entry) <= 160 and len(entry) > 1
+               and entry.endswith(mark)
+               and full.startswith(entry[:-1])) else 1)
+'
+}
+FC="$(mktemp -d)/.agents"; mkdir -p "$FC"
+printf 'schema: 3\nstatus: running\nfindings:\nnote: green\n' > "$FC/run-state.yaml"
+# Four fixtures: exactly at the cap, one character over it, and the two shapes a
+# BYTE count gets wrong -- a summary whose 160th BYTE falls inside a multi-byte
+# character, and one well under the cap in characters but double it in bytes.
+# UTF-8 as octal escapes because this sweep runs under bash 3.2 on macOS, which
+# has no \u in printf.
+CAP_AT="$(printf 'a%.0s' $(seq 1 160))"
+CAP_OVER="$(printf 'A%.0s' $(seq 1 100))$(printf 'B%.0s' $(seq 1 59))YZ"
+CAP_WIDE="$(printf '\344\270\255%.0s' $(seq 1 100))"
+# Pin the fixtures themselves: a "wide" case that is not actually over the cap
+# in bytes proves nothing while still passing.
+assert_true "fixture: the at-cap summary is exactly 160 characters" \
+  "[ \"\$(_nchars \"\$CAP_AT\")\" = 160 ]"
+assert_true "fixture: the over-cap summary is 161 characters" \
+  "[ \"\$(_nchars \"\$CAP_OVER\")\" = 161 ]"
+assert_true "fixture: the wide summary is 100 characters in 300 bytes" \
+  "[ \"\$(_nchars \"\$CAP_WIDE\")\" = 100 ] && [ \"\$(printf '%s' \"\$CAP_WIDE\" | wc -c | tr -d ' ')\" = 300 ]"
+
+# -- at the cap: written through UNCHANGED, and still no body without --body ---
+CAP_AT_OUT="$("$RUNSTATE" add-finding "$FC/run-state.yaml" cap-at "$CAP_AT" --packets pkt-cap-a)"
+assert_true "a summary exactly at the cap is added" \
+  "printf '%s\n' \"\$CAP_AT_OUT\" | grep -qx 'ADDED=yes'"
+assert_true "a summary exactly at the cap is not reported capped" \
+  "! printf '%s\n' \"\$CAP_AT_OUT\" | grep -q '^CAPPED='"
+assert_true "a summary exactly at the cap reaches the index unchanged" \
+  "yamlok \"$FC/run-state.yaml\" && [ \"\$(_finding_summary \"$FC/run-state.yaml\" cap-at)\" = \"\$CAP_AT\" ]"
+assert_true "a summary exactly at the cap still writes no body (--body stays opt-in)" \
+  "[ ! -f \"$FC/findings/cap-at.md\" ] && ! printf '%s\n' \"\$CAP_AT_OUT\" | grep -q '^FILE='"
+
+# -- one character over: shortened in the index, whole in the body -------------
+CAP_OVER_OUT="$("$RUNSTATE" add-finding "$FC/run-state.yaml" cap-over "$CAP_OVER" --packets pkt-cap-b --body)"
+CAP_OVER_RC=$?
+assert_true "an over-cap call exits 0 -- never refused for length" "[ $CAP_OVER_RC = 0 ]"
+assert_true "an over-cap call still reports ADDED=yes" \
+  "printf '%s\n' \"\$CAP_OVER_OUT\" | grep -qx 'ADDED=yes'"
+assert_true "an over-cap call reports CAPPED=yes rather than shortening silently" \
+  "printf '%s\n' \"\$CAP_OVER_OUT\" | grep -qx 'CAPPED=yes'"
+assert_true "the over-cap file still parses" "yamlok \"$FC/run-state.yaml\""
+assert_true "the over-cap ENTRY is 160 characters" \
+  "[ \"\$(_nchars \"\$(_finding_summary \"$FC/run-state.yaml\" cap-over)\")\" = 160 ]"
+assert_true "the over-cap ENTRY is the full text shortened, mark and all" \
+  "_caps_to \"\$CAP_OVER\" \"\$(_finding_summary \"$FC/run-state.yaml\" cap-over)\""
+assert_true "the over-cap BODY holds the full text the entry no longer does" \
+  "grep -qF \"\$CAP_OVER\" \"$FC/findings/cap-over.md\""
+assert_true "the over-cap summary reads back shortened through findings too" \
+  "[ \"\$(\"\$RUNSTATE\" findings \"$FC/run-state.yaml\" | awk -F'\t' '\$1==\"cap-over\"{print \$2}')\" = \"\$(_finding_summary \"$FC/run-state.yaml\" cap-over)\" ]"
+
+# -- the cut lands inside a multi-byte character ------------------------------
+# A byte-count truncation here leaves a byte sequence that is not UTF-8 at all,
+# and what that COSTS was measured rather than assumed (byte-counting _cap_chars,
+# this host, macOS sed + awk): the encoder's `sed "s/'/''/g"` refuses the illegal
+# byte sequence outright, so the entry lands as `summary: ''` -- the file still
+# parses, and the whole summary is simply GONE. A sed that passes the bytes
+# through instead leaves non-UTF-8 in the file, where the cost lands on every
+# other key in it. Both are caught here: _nchars decodes strictly (0 characters
+# either way), and yamlok covers the second shape.
+#
+# THREE fixtures, and the three ARE the test. A byte implementation cuts at some
+# fixed byte offset near 157-160, and for any ONE ASCII-prefix length there is
+# an offset in that range that lands on a character boundary by luck -- three
+# consecutive offsets cover all three residues modulo the 3-byte width of the
+# characters below, so a single fixture can always be the one a wrong
+# implementation happens to survive. (Measured, not assumed: the first cut of
+# this case used one 158-character prefix, and a deliberately byte-counting
+# _cap_chars cut it at byte 157 -- still inside the ASCII run, no split, case
+# green.) Across pads 155/156/157 no offset in that range survives all three.
+for CAP_PAD in 155 156 157; do
+  CAP_MB="$(printf 'm%.0s' $(seq 1 "$CAP_PAD"))$(printf '\342\206\222%.0s' $(seq 1 10))"
+  # The pin that keeps the case from going vacuous: the CORRECT cut (159
+  # characters, leaving room for the mark) has to land inside the multi-byte
+  # run, not in the ASCII prefix before it.
+  assert_true "fixture (pad $CAP_PAD): the cut point falls inside the multi-byte run" \
+    "[ \"\$(_nchars \"\$CAP_MB\")\" = $((CAP_PAD + 10)) ] && [ 159 -gt $CAP_PAD ]"
+  CAP_MB_OUT="$("$RUNSTATE" add-finding "$FC/run-state.yaml" "cap-mb-$CAP_PAD" "$CAP_MB" --packets pkt-cap-c)"
+  assert_true "a multi-byte over-cap summary (pad $CAP_PAD) is added and reported capped" \
+    "printf '%s\n' \"\$CAP_MB_OUT\" | grep -qx 'ADDED=yes' && printf '%s\n' \"\$CAP_MB_OUT\" | grep -qx 'CAPPED=yes'"
+  assert_true "run-state still parses after the cut (pad $CAP_PAD)" \
+    "yamlok \"$FC/run-state.yaml\""
+  assert_true "the ENTRY is 160 WHOLE characters -- the cut was a boundary (pad $CAP_PAD)" \
+    "[ \"\$(_nchars \"\$(_finding_summary \"$FC/run-state.yaml\" \"cap-mb-$CAP_PAD\")\")\" = 160 ]"
+  assert_true "the ENTRY is the full text shortened, mark and all (pad $CAP_PAD)" \
+    "_caps_to \"\$CAP_MB\" \"\$(_finding_summary \"$FC/run-state.yaml\" \"cap-mb-$CAP_PAD\")\""
+  assert_true "the BODY holds the full multi-byte text (pad $CAP_PAD)" \
+    "grep -qF \"\$CAP_MB\" \"$FC/findings/cap-mb-$CAP_PAD.md\""
+done
+
+# -- over the cap with NO --body: the body is created anyway -------------------
+# Without this the cap would be a silent delete: --body is opt-in, and the text
+# the cap removes has nowhere else to go.
+CAP_NB_OUT="$("$RUNSTATE" add-finding "$FC/run-state.yaml" cap-nobody "$CAP_OVER" --packets pkt-cap-d)"
+assert_true "an over-cap call without --body still reports a FILE" \
+  "printf '%s\n' \"\$CAP_NB_OUT\" | grep -q '^FILE='"
+assert_true "an over-cap call without --body creates the body file" \
+  "[ -s \"$FC/findings/cap-nobody.md\" ]"
+assert_true "an over-cap call without --body puts the FULL text in that body" \
+  "grep -qF \"\$CAP_OVER\" \"$FC/findings/cap-nobody.md\""
+assert_true "the entry points at that body the way a --body entry does" \
+  "[ -s \"\$(dirname \"$FC\")/\$(\"\$RUNSTATE\" findings \"$FC/run-state.yaml\" | awk -F'\t' '\$1==\"cap-nobody\"{print \$3}')\" ]"
+# A body already on disk under this id must not be clobbered -- and must not be
+# an excuse to drop the capped text either.
+printf '# cap-pre\n\npre-existing detail\n' > "$FC/findings/cap-pre.md"
+"$RUNSTATE" add-finding "$FC/run-state.yaml" cap-pre "$CAP_OVER" --packets pkt-cap-e >/dev/null
+assert_true "an existing body survives an over-cap add" \
+  "grep -qF 'pre-existing detail' \"$FC/findings/cap-pre.md\""
+assert_true "the full text is appended to that existing body, not dropped" \
+  "grep -qF \"\$CAP_OVER\" \"$FC/findings/cap-pre.md\""
+
+# -- under the cap in CHARACTERS, double it in BYTES: written unchanged --------
+# The threshold half of the same rule: a byte threshold would cap this at a
+# third of the budget an English summary gets, while looking like one rule.
+CAP_WIDE_OUT="$("$RUNSTATE" add-finding "$FC/run-state.yaml" cap-wide "$CAP_WIDE" --packets pkt-cap-f)"
+assert_true "a 100-character 300-byte summary is not capped" \
+  "! printf '%s\n' \"\$CAP_WIDE_OUT\" | grep -q '^CAPPED='"
+assert_true "a 100-character 300-byte summary reaches the index unchanged" \
+  "yamlok \"$FC/run-state.yaml\" && [ \"\$(_finding_summary \"$FC/run-state.yaml\" cap-wide)\" = \"\$CAP_WIDE\" ]"
+assert_true "a 100-character 300-byte summary writes no body" \
+  "[ ! -f \"$FC/findings/cap-wide.md\" ]"
+
 # --- `set`'s VALUE is untrusted text too (T4, runstate-write-integrity) -----
 # Every case below produced an unparseable run-state (or a silently injected
 # sibling key) before the shared _yaml_quote/_yaml_encode_value helper. Each

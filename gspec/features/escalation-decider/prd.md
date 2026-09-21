@@ -52,7 +52,7 @@ The decider is the existing `chief-engineer` agent, slimmed, and given this role
   - the review reads the outcomes log and the findings index. It merges duplicate findings into one entry that names every packet either finding named, and loses no text: both bodies' text and the removed entry's summary go into the surviving entry's body file. It routes each finding that says something should be built into gspec through `append-task` or `hand-off-feature`, under the triggers and authority above, leaving pending order unchanged and naming the routed finding's packets, then drops it (routing is ADR 0024's capture); it drops any other finding only on ADR 0024's positive evidence
   - it returns one status line and writes each merge, routing and drop to its result file, and records its completion and the index bytes before and after where `thin-loop-driver`'s cleanup does not reach
 
-- [ ] **P1**: Finding summaries stay within 160 characters
+- [x] **P1**: Finding summaries stay within 160 characters
   - `runstate.sh add-finding`, from any caller, writes a summary of 160 characters or fewer to the index unchanged. Length is counted after newlines are collapsed, which works as it does today
   - it shortens a longer summary in the index to 160 characters or fewer, including a mark showing it was shortened, without splitting a character. It writes the full text to the finding's body file, `.agents/findings/<id>.md`, creating that file even when `--body` was not passed, and the index entry points to that file the way a `--body` entry does
   - the call is never rejected for length and otherwise behaves as it does for a short summary

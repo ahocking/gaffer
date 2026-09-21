@@ -50,7 +50,14 @@
 #                                    backlog (a gspec task). --body also writes
 #                                    the .agents/findings/<id>.md stub (default:
 #                                    index entry only, no body — most findings
-#                                    never need one).
+#                                    never need one). A summary over 160
+#                                    CHARACTERS (counted after the newline
+#                                    collapse) is shortened in the index, with a
+#                                    trailing … mark, and its full text written
+#                                    to the body — created, and pointed at by
+#                                    file:, even without --body. Never refused
+#                                    for length; reports CAPPED=yes when it
+#                                    happened.
 #   findings <file> [--stale] [--finished <id[,id...]>] [--max-bytes <n>]
 #                                    list the finding index: id/summary/file/
 #                                    packets, tab-separated, one per line. --stale
@@ -1449,6 +1456,76 @@ _finding_field() {
   ' "$f" 2>/dev/null || true
 }
 
+# --- cap the index summary at a CHARACTER count (escalation-decider T6) -------
+# The index sits in the standing context of every packet (ADR 0022), so its size
+# is the whole reason the body/index split exists — and nothing bounded the one
+# free-text field in it. The cap is on the ENTRY only: the full text still goes
+# to the body file, and the call is NEVER refused for length, because refusing an
+# agent that has something to record mid-loop is how that text ends up nowhere.
+#
+# CHARACTERS, NOT BYTES, on BOTH halves of the decision, and that is the whole
+# subtlety here:
+#   - the threshold: 160 characters of 3-byte characters is 480 bytes, and a
+#     byte threshold would cap a non-English summary at a third of the budget an
+#     English one gets while looking like one rule;
+#   - the cut: severing a multi-byte character mid-sequence leaves a byte
+#     sequence that is not UTF-8 at all, headed for the loop's only durable
+#     state. What that costs was measured, not assumed (a deliberately
+#     byte-counting version of this function, run under the sweep): on macOS the
+#     `sed "s/'/''/g"` in _yaml_quote below refuses the illegal byte sequence
+#     outright, so the entry lands as `summary: ''` — the file parses and the
+#     WHOLE summary is gone. Where sed passes those bytes through instead, the
+#     non-UTF-8 reaches the file and the cost lands on every OTHER key in it.
+# So this counts UTF-8 character STARTS (every byte outside the 0x80-0xBF
+# continuation range) and cuts only at one. LC_ALL=C is what makes that
+# well-defined rather than host-dependent: awk's length()/substr() are
+# byte-oriented in the C locale everywhere, while under a UTF-8 locale gawk
+# would already be counting characters and the awk macOS ships would not — the
+# same summary would then cut in two different places on two machines. Forcing
+# the byte view and doing the character arithmetic here is the one reading that
+# is the same on all of them.
+#
+# 160 is the PRD's stated STARTING value, with tuning deferred until a review's
+# recorded index size says what it should be — so it is a named constant, not an
+# option nothing sets and nothing tests.
+FINDING_SUMMARY_MAX_CHARS=160
+# One character, so the cap spends 159 of its 160 on the summary itself.
+FINDING_SUMMARY_MARK='…'
+
+# _cap_chars <already-collapsed value> <max chars> <mark>
+#   Prints <value> unchanged when it is at most <max> CHARACTERS; otherwise the
+#   longest whole-character prefix that leaves room for <mark>, with <mark>
+#   appended, so the result is at most <max> characters. Never fails and never
+#   refuses — the caller detects "it was shortened" by comparing the result with
+#   what it passed in, which is also the only definition that cannot drift from
+#   what was actually written.
+_cap_chars() {
+  V="$1" MAXC="$2" MARK="$3" LC_ALL=C awk '
+    function nchars(t,   i, ln, c) {
+      ln = length(t); c = 0
+      for (i = 1; i <= ln; i++) if (index(CONT, substr(t, i, 1)) == 0) c++
+      return c
+    }
+    BEGIN {
+      # Every UTF-8 continuation byte, built BY VALUE: no literal high byte has
+      # to survive this file being read, edited, diffed or re-encoded elsewhere.
+      CONT = ""
+      for (j = 128; j <= 191; j++) CONT = CONT sprintf("%c", j)
+      s = ENVIRON["V"]; max = ENVIRON["MAXC"] + 0; mark = ENVIRON["MARK"]
+      if (nchars(s) <= max) { printf "%s", s; exit }
+      keep = max - nchars(mark)
+      if (keep < 0) keep = 0
+      n = length(s); c = 0; cut = n
+      for (i = 1; i <= n; i++) {
+        if (index(CONT, substr(s, i, 1)) != 0) continue   # mid-character byte
+        if (c == keep) { cut = i - 1; break }             # the cut is a BOUNDARY
+        c++
+      }
+      printf "%s%s", substr(s, 1, cut), mark
+    }
+  '
+}
+
 # --- add a finding: one-line index entry here, body in .agents/findings/ ------
 # ADR 0022/0024. Run-state is read by EVERY packet and sits in the standing context
 # for a whole dispatch, so content useful to one packet is paid for by all of them.
@@ -1518,6 +1595,18 @@ cmd_add_finding() {
   # _yaml_collapse (shared with cmd_set, above) is the ONE place this happens.
   summary="$(_yaml_collapse "$summary")"
 
+  # Cap what goes in the INDEX (escalation-decider T6), counted AFTER the
+  # collapse above -- a newline that became a space is a character the reader
+  # pays for like any other. The full text is kept and written to the body
+  # below, so nothing the cap removes is discarded; $summary from here on is
+  # what the entry carries, $full_summary is what the body carries. Compared
+  # rather than flagged from inside _cap_chars: "the entry differs from what
+  # the caller passed" is the same fact the reader would derive, so the two
+  # cannot disagree.
+  local full_summary="$summary" capped=0
+  summary="$(_cap_chars "$summary" "$FINDING_SUMMARY_MAX_CHARS" "$FINDING_SUMMARY_MARK")"
+  [ "$summary" = "$full_summary" ] || capped=1
+
   # SINGLE-QUOTED YAML scalar, with `'` doubled -- via the shared _yaml_quote
   # helper (defined above cmd_set), which cmd_set now also calls, so a future
   # hardening of one cannot leave the other behind. $summary is already
@@ -1573,17 +1662,37 @@ cmd_add_finding() {
   # them, whether the finding needed the detail or not. Most findings need only
   # the index entry; `file:` appears in the entry ONLY when a body was actually
   # written, so `findings` never points at a file that doesn't exist.
-  if [ "$want_body" = 1 ]; then
+  #
+  # A CAPPED summary forces a body whether or not --body was passed, and it is
+  # the same body, in the same place, pointed at the same way — the cap's whole
+  # licence is that the removed text went somewhere, and "opt-in" cannot apply
+  # to the only copy of it. The `> ` line carries $full_summary in BOTH cases:
+  # an uncapped body repeating the entry verbatim is what it has always done,
+  # and a capped one has to hold what the entry no longer does.
+  local has_body=0
+  if [ "$want_body" = 1 ] || [ "$capped" = 1 ]; then
     mkdir -p "${dir}/findings" 2>/dev/null || die "cannot create ${dir}/findings"
     if [ ! -f "$body" ]; then
       { printf '# %s\n\n' "$id"
-        printf '> %s\n\n' "$summary"
+        printf '> %s\n\n' "$full_summary"
         printf -- '- recorded: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf '## What was found\n\n<the detail that did NOT belong in run-state>\n\n'
         printf '## Why it matters / what to do about it\n\n<so a later packet can act on it>\n\n'
         printf '## Scope\n\n<the evidence tying this finding to the packet(s) already recorded in the index entry above>\n'
       } > "$body" || die "cannot write ${body}"
+    elif [ "$capped" = 1 ]; then
+      # A body already on disk under this id (a hand-written one, or one left by
+      # a `write` that replaced run-state without its findings block) is never
+      # clobbered — but it is also not an excuse to drop the capped text, which
+      # would be the one case where the cap silently loses what it removed. So
+      # append, the way merge-findings appends, leading newline and all, since a
+      # body not ending in one would run its last line into the heading.
+      { if [ -n "$(tail -c 1 "$body")" ]; then printf '\n'; fi
+        printf '\n## full summary (%s)\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '> %s\n' "$full_summary"
+      } >> "$body" || die "cannot append to ${body}"
     fi
+    has_body=1
   fi
 
   # Build the new index entry as one string (real newlines, command substitution
@@ -1602,7 +1711,7 @@ cmd_add_finding() {
     printf '  - id: %s\n' "$id"
     printf '    summary: %s\n' "$q_summary"   # already quoted by _yaml_quote
     printf '    packets: [%s]\n' "$packets_flow"
-    if [ "$want_body" = 1 ]; then printf '    file: %s' "$rel"; fi
+    if [ "$has_body" = 1 ]; then printf '    file: %s' "$rel"; fi
     :
   )"
 
@@ -1631,7 +1740,12 @@ cmd_add_finding() {
   local out="ADDED=yes
 ID=${id}
 PACKETS=${packets_csv}"
-  [ "$want_body" = 1 ] && out="${out}
+  # Reported, not silent: a caller whose text was shortened has to be able to
+  # tell that from one whose text was not, and an optional key (like FILE below,
+  # and REASON above) is how this command already says "and this happened too".
+  [ "$capped" = 1 ] && out="${out}
+CAPPED=yes"
+  [ "$has_body" = 1 ] && out="${out}
 FILE=${body}"
   printf '%s\n' "$out"
   return 0

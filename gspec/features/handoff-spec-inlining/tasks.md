@@ -76,7 +76,7 @@ Every regression sweep must pass green after every task.
   - covers: A handoff inlines the `arch.md` section each `- arch:` anchor names · The two files are read through one resolver and pinned by the sweep
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T3** **P0** Bound what one handoff inlines with a word budget in `scripts/gspec-backlog.sh`.
+- [x] **T3** **P0** Bound what one handoff inlines with a word budget in `scripts/gspec-backlog.sh`.
   (a) A reader for `handoff_inline_word_budget` in `.agents/project-overrides.yaml`, in the same token-scanning shape as `runstate.sh`'s `_rs_packet_attempts_limit`. It returns 6000 for a missing file, missing key, empty, non-numeric or zero value — never unbounded.
   (b) Words are counted by whitespace split over inlined section text only; `COVERS=` criteria are outside the count and unchanged.
   (c) Sections are inlined in `- arch:` order until the next would carry the running count over the budget. From that section on, each remaining resolved section prints `ARCH-HEADING=<anchor> lines=<n>` with its heading instead of its text, and one `BUDGET-REACHED=<budget> words` line follows. An under-budget handoff carries no such line.

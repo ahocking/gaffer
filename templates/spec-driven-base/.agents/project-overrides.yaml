@@ -122,3 +122,12 @@ integration_branch: develop
 # costs a larger review diff, and more discarded work when a bundle ends
 # non-green.
 # bundle_max_tasks: 4
+
+# The most words of spec-section text one handoff inlines (plugin
+# handoff-spec-inlining T3). Sections past it are named by heading and line
+# count instead of inlined. 6000 when missing, empty, non-numeric or 0 -- never
+# unbounded. Only inlined section text counts; a task's acceptance criteria do
+# not. A larger value costs a larger handoff, up to that many more words, which
+# the implementer reads once and carries in its context for every later turn of
+# the packet.
+# handoff_inline_word_budget: 6000

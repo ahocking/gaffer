@@ -109,6 +109,11 @@ compared against. `totals.driver_mode_context_diagnostics`
 reads unmeasured. `show` renders one line: the two numbers and whether the max turn
 came in **under** or **⚠ OVER** the threshold, or the specific reason it is
 unmeasured — relay it verbatim, the same rule as every other null in this packet.
+That includes the no-threshold line's remedy clause (the part naming the settings
+key `autoCompactWindow` as what supplies one): relay it unparaphrased with the rest
+of the line, and never rewrite it into an instruction to set that key or a
+recommended value for it — whether and what to set is the operator's call, not
+this report's to open.
 
 This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
 the tally means "this is a run and here is its state", and there is nothing to count

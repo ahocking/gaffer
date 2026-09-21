@@ -84,7 +84,7 @@ registration changes here, so nothing needs a session boundary beyond that.
   - covers: An unmeasured context metric says why, and what would make it real
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T3** [P] **P1** State in `skills/metrics/SKILL.md`'s main-session-context paragraph that the unmeasured line's remedy clause is relayed unparaphrased along with the rest of the line — never rewritten into an instruction to set a value, which is the operator's call and not this report's to open — extending the verbatim-relay rule already written there rather than adding a second rule beside it, and changing nothing about the two fields' null semantics or either consumer's record selection. Prose only, no sweep case; checkable by reading the relay sentence against the string `show` now renders and confirming an agent following it emits the remedy clause and no recommendation.
+- [x] **T3** [P] **P1** State in `skills/metrics/SKILL.md`'s main-session-context paragraph that the unmeasured line's remedy clause is relayed unparaphrased along with the rest of the line — never rewritten into an instruction to set a value, which is the operator's call and not this report's to open — extending the verbatim-relay rule already written there rather than adding a second rule beside it, and changing nothing about the two fields' null semantics or either consumer's record selection. Prose only, no sweep case; checkable by reading the relay sentence against the string `show` now renders and confirming an agent following it emits the remedy clause and no recommendation.
   - deps: T2
   - covers: An unmeasured context metric says why, and what would make it real
   - arch: —

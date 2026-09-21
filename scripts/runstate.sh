@@ -421,9 +421,12 @@
 #                                    between them, the user
 #                                    (~/.claude/settings.json) and committed-
 #                                    project (.claude/settings.json) scopes
-#                                    specifically, or whether a plugin default
-#                                    can coexist with a repo/operator value
-#                                    without overriding it. "operator" here
+#                                    specifically. (Whether a plugin can
+#                                    supply a default without overriding a
+#                                    repo/operator value was since answered
+#                                    NO on 2.1.278 — ADR 0028's 2026-09-21
+#                                    amendment — so this reader reads no
+#                                    plugin carrier.) "operator" here
 #                                    means, in order: the env var, then
 #                                    .claude/settings.local.json (uncommitted,
 #                                    personal), then ~/.claude/settings.json
@@ -440,10 +443,9 @@
 #                                    harness-wide one, so this reader states
 #                                    no number rather than inventing one.
 #                                    APPLIED therefore never varies here; the
-#                                    field survives so a later carrier (once
-#                                    the ADR's plugin-default probe lands) can
-#                                    report APPLIED=yes without a format
-#                                    change. NO SESSION BOUNDARY TO CONFIRM:
+#                                    field survives so a later carrier, if one
+#                                    is ever adopted, can report APPLIED=yes
+#                                    without a format change. NO SESSION BOUNDARY TO CONFIRM:
 #                                    because nothing is ever written, there is
 #                                    no cross-session effect to check for —
 #                                    this command's output is a snapshot of
@@ -2881,9 +2883,9 @@ cmd_driver_mode_status() {
 # the invented gaffer-default branch) ---------------------------------------
 # The one carrier T1 verified: a flat top-level NUMERIC key, `autoCompactWindow`
 # (tokens), in a Claude Code settings JSON file -- same value, same unit, as
-# the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var. Pure reader: ADR 0028 left
-# "can a plugin default coexist with a repo/operator value without
-# overriding it" unprobed, so this never writes -- see the header comment.
+# the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var. Pure reader: it reads no
+# plugin carrier (ADR 0028's 2026-09-21 amendment found none on 2.1.278)
+# and never writes -- see the header comment.
 
 # Parser-free by design (see test-runstate.sh's no-tools T8 sweep and its
 # comment on this file): a shallow regex scan for one flat top-level numeric

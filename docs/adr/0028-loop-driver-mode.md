@@ -18,6 +18,11 @@
   [Open probe (2026-09-21)](#open-probe-2026-09-21--can-a-plugin-supply-a-compaction-window-default-without-overriding-a-repository-or-operator-value)
   at the end; result 3 and its list are unrevised, and the answer lands beneath that
   section when the operator returns it (T5).
+- Amended (2026-09-21): **the open probe is answered — no.** A `settings.json` at the
+  plugin root is inert on Claude Code 2.1.278 (Opus 5); the hook-written carrier was not
+  tried, by the operator's decision (`driver-context-window-default` T5). See
+  [Amendment (2026-09-21)](#amendment-2026-09-21--the-plugin-default-probe-answered-no)
+  at the end; nothing above it, the open-probe section included, is revised.
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: `gspec/features/thin-loop-driver/prd.md` and its plan T1;
   [ADR 0017](0017-graceful-cooperative-pause.md) (the earlier payload probe that established
@@ -536,3 +541,94 @@ The sessions are the operator's to run: arms A and B and the control against car
 its conditions. T5 records them beneath this section, dated, as an amendment — a
 negative as the answer, never as a failure to answer. Until then the capability stays
 unchecked, which is its intended state and not a stall.
+
+## Amendment (2026-09-21) — the plugin-default probe, answered: no
+
+The operator ran the procedure above on 2026-09-21 and returned three readings. This
+section records them and the answer they give. It revises nothing above it: result 3,
+its not-probed list, and the open-probe section (its predictions included) stand as
+written, and where a reading contradicts a prediction that is stated here rather than
+corrected there.
+
+### Conditions shared by all three readings
+
+- **Harness:** `2.1.278 (Claude Code)`.
+- **Model:** Opus 5, in all three sessions.
+- **Sessions:** each a fresh `claude` from the repository root, never `--resume`.
+- **Environment variable:** `CLAUDE_CODE_AUTO_COMPACT_WINDOW` unset.
+- **Settings scopes:** no managed/policy settings; user `~/.claude/settings.json` and
+  committed-project `.claude/settings.json` carry no `autoCompactWindow`; local
+  `.claude/settings.local.json` carries it only in arm A, as stated there.
+- **Plugin enabled state:** the committed `.claude/settings.json` sets
+  `"gaffer@gaffer-marketplace": false`, so "enabled" below means launched with
+  `--plugin-dir .` — a command-line flag, not any of the five settings scopes. The
+  plugin root is therefore the repository root.
+- **Carrier tried:** carrier 1 only — a `settings.json` at the plugin root containing
+  `{"autoCompactWindow": 150000}`.
+
+The test files were removed afterwards: no root `settings.json`, and no
+`autoCompactWindow` in `.claude/settings.local.json`.
+
+### The readings
+
+1. **Control** — plugin disabled (no `--plugin-dir`), no scope carrying the key.
+   `/context`: `Auto-compact window: 1m tokens`.
+   `compact-threshold`: `THRESHOLD=unknown` / `SOURCE=unknown` / `APPLIED=no`.
+2. **Arm B, carrier 1** — plugin enabled, plugin-root `settings.json` at 150000, no
+   other scope carrying the key.
+   `/context`: `Auto-compact window: 1m tokens`.
+   `compact-threshold`: `THRESHOLD=unknown` / `SOURCE=unknown` / `APPLIED=no`.
+3. **Arm A, carrier 1** — plugin enabled, plugin-root `settings.json` at 150000 kept,
+   `"autoCompactWindow": 100000` in `.claude/settings.local.json`.
+   `/context`: `Auto-compact window: 100k tokens`.
+   `compact-threshold`: `THRESHOLD=100000` / `SOURCE=operator` / `APPLIED=no`.
+
+### The answer: no
+
+**Carrier 1 is inert.** Arm B read the control's value, `1m tokens`, and not the
+plugin's 150k — the "reads what the control read" case, which the section above names
+**no** for this carrier. Arm A read 100k, so the plugin value did not override the
+operator's; for a carrier already inert in arm B that half is moot, since a carrier
+that does nothing in either arm is not a carrier. On 2.1.278 a root `settings.json` is
+read in neither role: not as project settings (those live under `.claude/`), and not as
+plugin settings (the version has no plugin settings scope, as the carrier-1 prediction
+expected from the binary's own scope list).
+
+**Carrier 2 (a `SessionStart` hook writing the key) was not tried — the operator's
+decision, not a failed attempt.** The section above already classes any *yes* through
+it as "yes, by writing the operator's file", which the PRD's deferred decision weighs as
+a separate feature rather than as this probe closing the gap; so no reading through it
+could have changed this answer. It is recorded as **not tried**. With the only carrier
+that could have closed the gap inert, the answer to the question this probe asked —
+can a plugin supply a compaction-window default without overriding a repository or
+operator value — is **no**, on 2.1.278, on Opus 5.
+
+This is the answer, not a failure to answer. It changes no code:
+`runstate.sh compact-threshold` reads no plugin carrier, keeps printing
+`THRESHOLD=unknown` / `SOURCE=unknown` when neither a repository nor an operator value
+is set, and no value enters it on the strength of this probe. Both `compact-threshold`
+triples above are what the section predicted "whatever `/context` says". Its header
+comments no longer name this probe as outstanding; they still name the operator-over-
+repo precedence as documented and unverified, and the user and committed-project scopes
+as unprobed — the three result-3 items this probe did not take up are as open as before.
+
+### Where a reading contradicts a prediction above
+
+**No source label appeared on any `/context` line** — not `(from settings)` in arm A,
+not `(default for this model)` in the control. The claim above that the line labels its
+source as one of five parentheticals does not hold on 2.1.278 as observed; attribution
+here rests on the distinct numbers alone (100k, 150k, and the control's 1m), which the
+section's choice of values already allowed for. A later version that does print the
+label should not be read as contradicting these readings.
+
+### Limits of this answer
+
+- **One harness version, one model.** Taken on 2.1.278 and Opus 5 only; a later version
+  that adds a plugin settings scope, or a different model, is not covered, and a reader
+  change on the strength of such a version is a new decision, not this record.
+- **Plugin activation was inferred from the launch, not independently observed.** The
+  readings record `--plugin-dir .` as the enabling condition; they do not record a
+  separate check (for example `/plugin` output) that the plugin was loaded in the arm
+  sessions. The carrier-1 result agrees with the binary's own scope list, so the answer
+  does not rest on activation alone, but a re-take that wants to rule this out should
+  record that check.

@@ -1,8 +1,8 @@
 # Status line — what every loop-dispatched agent returns (thin-loop-driver, ADR 0028)
 
 Every agent the loop dispatches — the `implementer`, `doc-writer`, `researcher`,
-`architect`, `ux-designer`, `reviewer`, and the escalation-decider stand-in
-(`chief-engineer`, interim) — returns **exactly one line** as the whole of its
+`architect`, `ux-designer`, `reviewer`, and the escalation decider
+(`chief-engineer` in its loop role, which also runs the periodic review) — returns **exactly one line** as the whole of its
 response to the driver, and writes everything else (diffs described, review
 findings, research answers, reasoning) to its **result file** via
 `runstate.sh write-result`. The driver never opens that file — it passes the
@@ -22,8 +22,11 @@ exact order:
 1. **`<status>`** — one word, first field, so the driver can split on ` · `
    and take the first token without parsing anything else. For the
    `reviewer` this is one of `pass`, `fix`, `escalate` (its verdict). For the
-   escalation-decider stand-in this is one of `retry`, `reorder`,
-   `append-task`, `hand-off-feature`, `ask-operator` (its decision). Any
+   escalation decider this is one of `retry`, `reorder`, `append-task`,
+   `hand-off-feature`, `ask-operator` (its decision) when it decides an
+   escalated packet, and the word `reviewed` when it returns from a periodic
+   review — `reviewed` is not a sixth decision and nothing routes on it; the
+   review's routings reach the report through `run-digest`, not this word. Any
    other dispatched agent — a fresh implementer attempt, the architect or
    UX designer implementing a design-heavy packet, the doc-writer, the
    researcher answering an operator question — reports its own outcome in

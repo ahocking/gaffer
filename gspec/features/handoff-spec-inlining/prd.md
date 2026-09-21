@@ -94,7 +94,7 @@ files twice, and a fourth silent reader is the trap.
 
 ## Capabilities
 
-- [ ] **P0**: A handoff inlines the `arch.md` section each `- arch:` anchor names
+- [x] **P0**: A handoff inlines the `arch.md` section each `- arch:` anchor names
   - `scripts/gspec-backlog.sh handoff` splits the task's `- arch:` value on
     ` · ` exactly as `_split_covers` splits `covers:`, and accepts each entry
     in any of the three forms gspec's plan floor treats as one anchor —
@@ -134,7 +134,7 @@ files twice, and a fourth silent reader is the trap.
     gains a case for a screen's design block inlined, and one for
     `design.html` unnamed when no screen is inlined
 
-- [ ] **P0**: A word budget bounds what one handoff inlines
+- [x] **P0**: A word budget bounds what one handoff inlines
   - the budget defaults to 6,000 words and a key in
     `.agents/project-overrides.yaml` overrides it, and the annotated reference
     copy under `templates/spec-driven-base/` documents the key, its default,

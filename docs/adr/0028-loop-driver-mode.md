@@ -7,6 +7,10 @@
   per run that is not a verdict** (`loop-driver-run-gaps` T1–T5). See
   [Amendment (2026-09-20)](#amendment-2026-09-20--a-status-line-is-refused-by-a-subcommand-and-one-routing-record-is-not-a-verdict)
   below; the 2026-09-16 amendment above it is unchanged.
+- Amended (2026-09-21): **the interim decider paragraph of the 2026-09-16 amendment is
+  superseded in place** — `escalation-decider` shipped, and "The interim decider, and
+  what `escalation-decider` replaces" now states what replaced it, with the original
+  text kept marked beneath it.
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: `gspec/features/thin-loop-driver/prd.md` and its plan T1;
   [ADR 0017](0017-graceful-cooperative-pause.md) (the earlier payload probe that established
@@ -221,21 +225,68 @@ assemble a report from first lines without ever opening a result body.
 
 ### The interim decider, and what `escalation-decider` replaces
 
-There is no escalation decider yet, so `agents/chief-engineer.md` carries an interim
-stand-in section and `route` maps `escalate` and an exhausted `fix` to `ACTION=decider`.
-The stand-in decides with its existing judgment — **not** the decider's exclusive
-triggers or their precedence, which this feature deliberately did not build — and
-returns one of `retry`, `reorder`, `append-task`, `hand-off-feature` or `ask-operator` as
-its status, which the driver passes straight back to `route`. It returns `retry` only
-while an attempt remains; `route` refuses one past the limit rather than trusting that.
-An `append-task` line (ADR 0026 arm 1) is written by an architect it dispatches and
-committed on its own paths with an `[orch decider:<packet-id>]` trailer *before* the
-token returns, so the `discard-advance` that follows keeps it.
+**Superseded in place (2026-09-21).** `escalation-decider` shipped (`8d8bb3e` the
+decision log, `251795b`/`62be31b`/`e996163` the contract in `agents/chief-engineer.md`,
+`23bffc2`/`7763178` the two driver surfaces). What follows is the arrangement as it now
+stands; the two paragraphs this section carried on 2026-09-16 are kept, marked, at the
+end of it, as the record of what was true on that date.
 
-When `escalation-decider` ships it replaces **that section of
-`agents/chief-engineer.md` and the one dispatch line in `skills/run-loop/SKILL.md`** —
-and it must keep its own decision records **outside `.agents/loop/`**, which
-`begin-run`'s cleanup removes.
+`route` still maps `escalate` and an exhausted `fix` to `ACTION=decider`, and the driver
+still passes the returned token straight back to `route`. What changed is who answers.
+The `chief-engineer`, in its loop role, **is** the escalation decider, under a contract
+that is its own two sections — §Escalation decider and §Periodic review — rather than
+its general judgment. It is dispatched with the handoff path, the review path and the
+`ATTEMPTS=`/`LIMIT=` the same `route` call printed, and nothing else; it reads that
+packet's files, the findings naming the packet, and what its triggers test, and no other
+packet's files. The five triggers each exclude the others, and when more than one fits
+the first of `ask-operator` → `hand-off-feature` → `append-task` → `reorder` → `retry`
+wins; the only judgment call is `ask-operator`'s catch-all. Its authority is a closed
+list of `runstate.sh` calls plus an `architect` it dispatches, because it holds no
+`Edit`/`Write`: `reorder-pending` for a `reorder`, that architect appending one unchecked
+task (committed on its own path with the `[orch decider:<packet-id>]` trailer, as before,
+so `discard-advance` keeps it) then `reorder-pending` for an `append-task`, and
+`amend-handoff` — its one write into a handoff file — for a `retry`, which `route` still
+refuses past the attempt limit rather than trusting the decider. Each of those three
+lands an `add-finding` naming the packet and a `record-decision` before the status line
+returns; `ask-operator` and `hand-off-feature` record a decision and change nothing else
+on disk.
+
+The decision records live where the 2026-09-16 text required: **outside
+`.agents/loop/`**, in a third log, `.agents/metrics/decisions/<session>.jsonl`, written
+only by `record-decision` and `record-review`. It is outside the run directory because
+`begin-run`'s prune would remove it two runs later, and outside the outcomes log for the
+same reason the mark's enter/exit records are: `_rs_open_packets` reads any record
+carrying `packet` and a non-empty `kind` as a packet boundary, and these carry
+`kind: decision` / `kind: review`. Every record is stamped with `run_id`, since the log is
+session-keyed and a session outlives a run. `run-digest` reads it for its `review` line
+and for one `decision` line per review routing, and reports a packet's own decision once
+— from the `routing.jsonl` record the driver wrote — treating the decider's record as the
+audit copy.
+
+The same agent also runs a **periodic review** of the findings index, dispatched by the
+driver between packets and never while one is open, when `runstate.sh review-due` prints
+`DUE=yes` (2 non-green endings or 10 beginnings since the last `record-review`, or either
+count `unmeasured`). It merges duplicates only through the lossless `merge-findings`,
+routes findings that propose work through the two arms and drops them as the capture,
+and drops anything else only on `findings --stale --finished` evidence — the terms are
+[ADR 0024](0024-findings-are-packet-scoped-and-expire.md)'s amendment of the same date.
+Its `record-review` is its last write and the record that resets `review-due`'s count; a
+review cut short leaves none and runs again at the next boundary.
+
+> **As written 2026-09-16, superseded above.** There is no escalation decider yet, so
+> `agents/chief-engineer.md` carries an interim stand-in section and `route` maps
+> `escalate` and an exhausted `fix` to `ACTION=decider`. The stand-in decides with its
+> existing judgment — **not** the decider's exclusive triggers or their precedence, which
+> this feature deliberately did not build — and returns one of `retry`, `reorder`,
+> `append-task`, `hand-off-feature` or `ask-operator` as its status, which the driver
+> passes straight back to `route`. It returns `retry` only while an attempt remains;
+> `route` refuses one past the limit rather than trusting that. An `append-task` line
+> (ADR 0026 arm 1) is written by an architect it dispatches and committed on its own
+> paths with an `[orch decider:<packet-id>]` trailer *before* the token returns, so the
+> `discard-advance` that follows keeps it. When `escalation-decider` ships it replaces
+> **that section of `agents/chief-engineer.md` and the one dispatch line in
+> `skills/run-loop/SKILL.md`** — and it must keep its own decision records **outside
+> `.agents/loop/`**, which `begin-run`'s cleanup removes.
 
 ### One contract widened elsewhere
 

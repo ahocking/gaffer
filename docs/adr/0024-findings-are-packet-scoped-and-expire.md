@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-08-10
+- Amended (2026-09-21): **a periodic review inside the loop may merge two entries
+  through the lossless `merge-findings` and may route a finding that proposes work,
+  then drop it as the D3 capture; it may not drop on judgment** (`escalation-decider`
+  T5, T10, T12). See
+  [Amendment (2026-09-21)](#amendment-2026-09-21--a-periodic-review-may-merge-and-route-inside-the-loop-it-still-may-not-prune)
+  below; D5 and the Consequences it feeds are unchanged as the record of that date.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) — its index-hot/body-cold split
   is retained unchanged; its retention model and its "durable and reviewable" framing are
@@ -340,3 +346,88 @@ entry without `packets:` still parses — it just reads as `LIVE=unknown`. So sc
   relevance — 0022's own objection to `trim-note` as a substitute for findings.
 - **Automatic pruning inside `migrate apply`.** Rejected: `apply` is non-interactive, and
   the material being deleted includes the only copy of things nobody has decided about yet.
+
+## Amendment (2026-09-21) — a periodic review may merge and route inside the loop; it still may not prune
+
+`escalation-decider` landed (`3390e49` `merge-findings`, `e996163` the review section of
+`agents/chief-engineer.md`, `7763178` the boundary check in `skills/run-loop/SKILL.md`
+§3.8). Two sentences above are now incomplete, and this section amends them without
+rewriting them: D5's *"never an LLM-judgment prune over the whole index inside the
+loop"*, and the Consequences entry that lists *"no unattended judgment prune in the loop
+(D5)"* as one of the three things replacing the zero-orphan guarantee.
+
+### What changed
+
+Between packets — never while one is open — the loop driver dispatches the
+`chief-engineer` for a **periodic review** of the whole findings index, unattended, when
+`runstate.sh review-due` prints `DUE=yes`: 2 non-green endings or 10 beginnings since the
+last completed review (`review_after_non_green_endings` / `review_after_beginnings` in
+`.agents/project-overrides.yaml`), and also whenever either count reads `unmeasured`. The
+review reads the outcomes log and the index and makes two judgments D5 kept out of the
+loop: whether two entries say the same thing, and whether an entry proposes work rather
+than recording a constraint. On the first it calls `runstate.sh merge-findings
+<survivor> <removed>`; on the second it routes through ADR 0026's two arms (`append-task`
+or `hand-off-feature`), records the routing with `record-decision`, and then
+`drop-finding`s the entry. Its last write is `record-review`, carrying `INDEX_BYTES`
+before and after and the three action counts, to `.agents/metrics/decisions/`.
+
+### Why a merge is admitted where a prune was refused
+
+The objection D5 states is that a judgment made over the whole index, with no human in
+the path, destroys the only copy of something. A merge under `merge-findings` cannot: it
+unions both `packets:` lists onto the survivor, appends the removed entry's summary and
+the **whole** of its body to the survivor's body file (creating that file, and the
+entry's `file:` pointer, when the survivor had none), and only then drops the removed
+entry and its body, both-or-neither on `drop-finding`'s own sequence. A failure in the
+middle restores both. So the index shrinks by one entry and the content by zero bytes,
+and being wrong about "duplicate" costs a reader some noise in one body — never a
+sentence that no longer exists anywhere. The union matters for expiry as much as for
+text: the survivor now expires only once every packet **either** entry named has
+finished, so a merge can only widen what must be finished before it expires, never narrow
+it. That is the whole licence, and it is the mechanism's, not the reviewer's: the
+regression case asserts every line of the removed body appears in the survivor's, because
+copying only the summary before deleting the body is the one failure every count would
+read as a complete merge.
+
+Routing is not new permission either. It is D3's capture — filing a gspec task *is* the
+capture, and the finding dies at the moment of filing — performed by an agent that has
+read the finding's body, with the capture on disk before the drop: an `append-task` is
+one appended line committed with an `[orch decider:<finding-id>]` trailer, and a
+`hand-off-feature` is the **whole** operator question in the `record-decision` summary,
+which is the only text the question can be rebuilt from once the body is gone. What D3
+called "the live session at the moment of resolution" is, for a finding parked in the
+index as a backlog item in disguise, the review.
+
+### What it does not license
+
+- **No drop on judgment.** Every drop that is not a routing still needs
+  `findings --stale --finished <set>` to print `STALE=yes`, with the finished set
+  supplied from the outcomes log's `green` records; `unknown` still blocks expiry, and
+  absence from `pending`, age, size, or a summary that reads as done are not grounds.
+  The script's safety property — an unsupplied set expires nothing — is what the review
+  relies on, not a rule it re-derives.
+- **No prune of the index by any path but `merge-findings` and `drop-finding`**, and no
+  edit to a body or a summary: the survivor's summary stays as it was, and a better one on
+  the removed side is a fact for the result file.
+- **An entry whose id begins `decider-` is never the removed side of a merge.** The
+  escalation decider's trigger (b) reads the index for exactly that entry at the packet's
+  next escalation, and merging it away would silence (b) with nobody deciding to.
+- **A finding naming no packet is neither routed nor dropped** by a review; it goes to
+  D7's triage in `/gaffer:migrate`, which still deletes nothing under `apply`.
+- **A review never stops the loop and never returns `ask-operator`.** Where the arm test
+  cannot be settled, the entry stays and the doubt goes to the result file.
+- **D5's packet-boundary drop is unchanged and still the intended path.** The review is
+  the bounded backstop that `findings --stale`'s one-line warning was, now with hands.
+
+### Consequence for the falsifier
+
+The Consequences section says the failure this ADR trades for boundedness — a drop
+without a capture — is invisible in `INDEX_BYTES`, and asks that the ratio of drops to
+captures be watched instead. A review's drops are now each one of two things by
+construction: a routing, whose capture is recorded before the drop, or an evidence drop.
+`record-review` writes `merged`, `routed` and `dropped` beside the bytes before and after,
+and `run-digest`'s `review` line carries them into the next report, so that ratio is a
+recorded figure per review rather than something to reconstruct. A review that reports
+`dropped` far above `routed` with no `STALE=yes` rows to show for it is the shape to look
+for; a byte figure the `findings` call could not produce is recorded as the literal
+`unmeasured`, never `0`.

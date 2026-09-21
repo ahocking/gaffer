@@ -857,19 +857,67 @@ passing sweeps.
   unchanged). An architect that routed everything to arm 1, or found nothing to route,
   records nothing and changes no figure. The operator gate is untouched — the record
   counts the proposal; nobody in the run files it.
-  **The escalation decider does not exist yet, and `chief-engineer` is an INTERIM
-  stand-in for it.** It decides with its existing judgment — *not* the decider's
-  exclusive triggers or their precedence, which `thin-loop-driver` deliberately did not
-  build — and returns one of `retry`, `reorder`, `append-task`, `hand-off-feature`,
-  `ask-operator`. An `append-task` (ADR 0026 arm 1) is written by an architect it
-  dispatches and **committed on its own paths with an `[orch decider:<packet-id>]`
-  trailer before the token returns**, so the `discard-advance` that follows keeps it;
-  a `hand-off-feature` is recorded as a question **for the operator** and `/gspec-feature`
-  is run by nobody in the run — not from a dispatched context (no `Skill` tool there) and
-  not by the driver once driver mode exits (ADR 0026 revision 2026-09-17). When
-  `escalation-decider` ships it replaces **that section of `agents/chief-engineer.md`
-  and the one dispatch line in `skills/run-loop/SKILL.md`**, and it must keep its own
-  decision records **outside `.agents/loop/`**, which `begin-run`'s cleanup removes.
+  **The escalation decider is `chief-engineer` in its loop role, and its contract is
+  the two sections `agents/chief-engineer.md` §Escalation decider and §Periodic review**
+  (`escalation-decider` T1–T12 and T14, landed 2026-09-20/21; ADR 0028 keeps the history
+  of what preceded it). The driver dispatches it on `ACTION=decider` with the handoff path, the review path and the
+  `ATTEMPTS=`/`LIMIT=` that `route` printed, and nothing else; it reads that packet's
+  files, the findings naming the packet, and what its triggers test
+  (`escalate_to_human_on`, the backlog's PRDs and plans, `.agents/roadmap.yaml`) — never
+  another packet's handoff or result file. **Precedence is fixed:** the five triggers are
+  each a test that excludes the others, and when more than one fits the first of
+  `ask-operator` → `hand-off-feature` → `append-task` → `reorder` → `retry` wins. The one
+  judgment call is `ask-operator`'s catch-all — it also fires on a matched
+  `escalate_to_human_on` entry, or when the packet escalates again while a
+  `decider-<packet-id>` finding is still in the index — and the two arm decisions fit
+  only a gspec backlog (no PRD to cover, no plan to append to, otherwise). **Authority is
+  a closed list of calls, because it holds no `Edit`/`Write`:** `reorder` →
+  `runstate.sh reorder-pending` with the whole new order (`REMOVED=` must come back
+  empty), plus a dispatched `architect` editing `.agents/roadmap.yaml` when the order
+  crosses features; `append-task` → that same dispatch appending one unchecked task with
+  a truthful `covers:`, then `reorder-pending` placing it ahead of the packet;
+  `retry` → `runstate.sh amend-handoff`, one marked block spliced into the packet's
+  `handoff.md` and its only write to a handoff, and only while an attempt remains
+  (`route` refuses one past the limit rather than trusting the decider). Each of those
+  three is followed by `add-finding --packets <packet-id>` and `record-decision`, all
+  landed before the status line returns, and a roadmap or plan edit is **committed on
+  that path alone with an `[orch decider:<packet-id>]` trailer** so the
+  `discard-advance` that follows keeps it. `ask-operator` and `hand-off-feature` get a
+  `record-decision` and nothing else: the first stops the loop with its status line as
+  the blocking question; the second does not stop it, records the question naming what
+  `/gspec-feature` should be run with, and `/gspec-feature` is run by nobody in the run
+  (ADR 0026 revision 2026-09-17). It **never** edits a checked task or a capability
+  checkbox, never calls `record-outcome` (the driver's own `rolled-back` follows a
+  `reorder`/`append-task`), never makes a packet abandoned, and never writes run-state, a
+  handoff, `gspec/` or `.agents/` by any other path. A decision exists only once its
+  status line is returned — a result file left by a crash is not one, and a change it
+  already put on disk is recorded as a finding at the packet's next escalation, not
+  repeated — and a pause never splits one: the loop pauses before the dispatch or after
+  the decision is recorded, never between. **The decision log is a THIRD log, beside
+  (b)'s two, and it is new for the same reason plus one.** `record-decision` and
+  `record-review` append to `.agents/metrics/decisions/<session>.jsonl` — not
+  `.agents/loop/<run_id>/`, which `begin-run` prunes to the current run plus the single
+  newest other, so an audit record there stops being readable two runs later, which is
+  exactly when the audit question gets asked; and not the outcomes log, where
+  `_rs_open_packets` classifies by **field shape** (any line carrying `packet` and a
+  non-empty `kind` is a packet boundary), so a record carrying `kind: decision` there
+  would reopen a packet whose green outcome was already recorded and `sweep-open` would
+  then close it as `interrupted`. Both record kinds DO carry `kind`, which is safe only
+  because of where they are written — the placement is the mechanism. Every record is
+  stamped with `run_id`, because the log is session-keyed and a session outlives a run.
+  `run-digest` reads it for the `review` line and the per-routing `decision` lines and
+  reports a packet decision **once** — the driver's own `route` record is the one it
+  counts, and the decider's record is the audit copy. **The periodic review is the same
+  agent between packets, never while one is open**: `runstate.sh review-due` prints
+  `DUE=yes` at 2 non-green endings or 10 beginnings since the last `record-review`
+  (`review_after_non_green_endings` / `review_after_beginnings` in
+  `project-overrides.yaml`; a count that could not be read is `unmeasured`, never `0`,
+  and `unmeasured` still runs the review). It merges duplicates only through
+  `merge-findings` (lossless — the ADR 0024 amendment of 2026-09-21 is what admits it),
+  routes findings that propose work through the two arms and drops them as ADR 0024's
+  capture, drops anything else only on `findings --stale --finished` evidence, and ends
+  with `record-review` as its last write — that record is what resets the count, so a
+  review cut short leaves none and runs again at the next boundary.
   **Reflexivity, because this repo self-hosts:** `runstate.sh` and hook bodies take
   effect mid-run, but a **mark** is only written by a loop that already entered driver
   mode, so a run that lands a driver-mode change is itself running the old contract —

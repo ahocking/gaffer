@@ -63,7 +63,7 @@ Every regression sweep must pass green after every task.
   - covers: The two files are read through one resolver and pinned by the sweep
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T2** **P0** Make `_handoff_one` in `scripts/gspec-backlog.sh` inline the `arch.md` section each `- arch:` anchor names.
+- [x] **T2** **P0** Make `_handoff_one` in `scripts/gspec-backlog.sh` inline the `arch.md` section each `- arch:` anchor names.
   (a) `_task_record` emits the task's `- arch:` value as a header key, and the line stays out of the printed body.
   (b) The value is split on ` · ` through `_split_covers`. Each entry is accepted as `#entity-order`, `### Entity: Order` or `Entity: Order`, compared by slug with hyphens ignored; `—` means no anchors.
   (c) Each anchor is resolved against the H3 headings of the `arch.md` that `_resolve_arch_path` names, using the gspec-conventions H2/H3 grammar only. A heading form it does not recognise resolves to nothing.

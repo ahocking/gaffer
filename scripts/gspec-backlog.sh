@@ -179,11 +179,12 @@
 #                            second copy of it; each `covers:` capability
 #                            (split on the `' · '` separator) with that
 #                            capability's PRD acceptance-criteria sub-bullets
-#                            verbatim (ADR 0020's D2 amendment); and the PRD
-#                            and `arch.md` paths — `ARCH=` is always printed,
-#                            as `absent` when there is no arch.md, so a caller
-#                            never has to guess whether the line was omitted
-#                            or forgotten. A `covers:` quote matching no PRD
+#                            verbatim (ADR 0020's D2 amendment); the PRD
+#                            path; and, per `- arch:` anchor, the `arch.md`
+#                            section it names inlined under `ARCH-SECTION=`,
+#                            or `UNMATCHED-ARCH=<anchor>` (handoff-spec-
+#                            inlining-t2 — no `ARCH=` path line is printed).
+#                            A `covers:` quote matching no PRD
 #                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
 #                            as check-task/task-status, resolved by the SAME
@@ -1438,15 +1439,15 @@ _task_history_probe() {
 # how it typed the lookup), the header line's own inline text (marker-stripped
 # exactly as `_nodes_for` strips it — [P] / **P<n>** / [GATE:...] — the same
 # clean description `_nodes_for` uses for its fingerprint comparison), the raw
-# `- covers:` value (unsplit — `_split_covers` is the one place that
-# ' · '-splits it), and the task's FULL BODY: every line between the header
+# `- covers:` value and the raw `- arch:` value (both unsplit —
+# `_split_covers` is the one place that ' · '-splits either), and the task's FULL BODY: every line between the header
 # and the next task line, EXCLUDING the `- deps:` / `- covers:` / `- arch:` /
 # `- files:` / `- supersedes:` metadata lines. Nested bullets and a trailing
 # paragraph are body, not metadata, and are captured verbatim, in order.
 # Prints nothing when <idlc> is not a task in <plan>.
 #
 # Output is line-oriented, NEVER one row split with `cut`: one `KEY<TAB>value`
-# line per header field (CHECKED, ID, COVERS, TEXT), then a bare `BODY` line,
+# line per header field (CHECKED, ID, COVERS, ARCH, TEXT), then a bare `BODY` line,
 # then the task's body lines verbatim, one per output line. A `cut -f<n>`
 # against a single joined row is exactly what a tab embedded in free text (a
 # task's own text, or a covers quote) would silently corrupt — shifting every
@@ -1480,8 +1481,12 @@ _task_record() {
       l = $0; sub(/^[[:space:]]+-[[:space:]]*covers[[:space:]]*:[[:space:]]*/, "", l); covers = l
       next
     }
+    in_target && /^[[:space:]]+-[[:space:]]*arch[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*arch[[:space:]]*:[[:space:]]*/, "", l); arch = l
+      next
+    }
     # Everything else this plan line-shape uses is metadata, not body.
-    in_target && /^[[:space:]]+-[[:space:]]*(deps|arch|files|supersedes)[[:space:]]*:/ { next }
+    in_target && /^[[:space:]]+-[[:space:]]*(deps|files|supersedes)[[:space:]]*:/ { next }
     # Any other line while inside the target task -- a nested bullet, its
     # wrapped continuation, a blank separator, or a trailing paragraph -- is
     # body, captured verbatim and in order. A markdown heading ends the task
@@ -1495,6 +1500,7 @@ _task_record() {
       printf "CHECKED\t%s\n", checked
       printf "ID\t%s\n", realid
       printf "COVERS\t%s\n", covers
+      printf "ARCH\t%s\n", arch
       printf "TEXT\t%s\n", taskdesc
       print "BODY"
       for (i = 1; i <= bn; i++) print body[i]
@@ -1593,6 +1599,79 @@ _split_covers() {
       }
     }
   '
+}
+
+# _arch_section <arch> <anchor> — the `arch.md` block one `- arch:` anchor
+# names. Prints "MATCH" followed by every physical line of the block, from its
+# H3 heading through the line before the next H1/H2/H3 (trailing blank lines
+# dropped, as separators), or "NOMATCH" alone — never a nearest match, the
+# `_prd_capability` rule for covers quotes. A missing <arch> is NOMATCH.
+#
+# The anchor is accepted in the three forms gspec's plan floor treats as one
+# anchor — `#entity-order`, `### Entity: Order`, `Entity: Order` — by
+# comparing SLUGS: lowercased, with every ASCII punctuation and whitespace
+# character removed (the leading `#`s and the hyphens included), so
+# `Entity: OrderLine`, `### Entity: OrderLine` and `#entity-order-line` are one
+# anchor.
+# LC_ALL=C keeps `[:punct:]` to the ASCII set, so a non-ASCII name keeps its
+# bytes rather than collapsing onto a different name.
+#
+# Only a heading in the gspec-conventions anchor grammar is a candidate: an H3
+# of the exact form `### <Kind>: <Name>`, where <Kind> is owned by the H2
+# section it sits under (`## Data` -> Entity, `## API` -> Endpoint, `## UI` ->
+# Screen/Component, `## Logic` -> Rule/Machine), an Entity name is PascalCase
+# and an Endpoint is `<UPPERCASE METHOD> /<path>`. Any other H3 — a wrong-case
+# kind, a kind under another section's H2, free prose — resolves to nothing,
+# so the caller reports it unmatched rather than guessing. It still ENDS the
+# block before it, being an H3. Lines inside a ``` / ~~~ fence are never
+# headings. Everything else between headings — `####` sub-headings, and the
+# `- **route:**` status line gspec 3.2.0 writes into a `### Screen:` block —
+# is block text, never a boundary. No regex interval (`{m,n}`) is used: not
+# every awk this runs under supports one.
+_arch_section() {
+  local arch="$1" want="$2"
+  if [ ! -f "$arch" ]; then printf 'NOMATCH\n'; return 0; fi
+  LC_ALL=C WANT="$want" awk '
+    function slug(s) { s = tolower(s); gsub(/[[:punct:][:space:]]/, "", s); return s }
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    function owns(sec, kind) {
+      return (sec == "Data" && kind == "Entity") ||
+             (sec == "API" && kind == "Endpoint") ||
+             (sec == "UI" && (kind == "Screen" || kind == "Component")) ||
+             (sec == "Logic" && (kind == "Rule" || kind == "Machine"))
+    }
+    # the anchor slug of a grammar H3 under section <sec>, or "" when <h>
+    # (the heading text after "### ") is not in the grammar
+    function anchor_of(h, sec,    kind, name, p) {
+      h = trim(h)
+      p = index(h, ": ")
+      if (p == 0) return ""
+      kind = substr(h, 1, p - 1); name = trim(substr(h, p + 2))
+      if (name == "" || !owns(sec, kind)) return ""
+      if (kind == "Entity" && name !~ /^[A-Z][A-Za-z0-9]*$/) return ""
+      if (kind == "Endpoint" && name !~ /^[A-Z]+ \/[^ \t]*$/) return ""
+      return slug(kind name)
+    }
+    BEGIN { want = slug(ENVIRON["WANT"]) }
+    /^[ \t]*(```|~~~)/ { fence = !fence }
+    !fence && /^(#|##|###)([ \t]|$)/ {
+      if (found) exit
+      if ($0 ~ /^##([ \t]|$)/) { sec = $0; sub(/^##[ \t]*/, "", sec); sec = trim(sec) }
+      else if ($0 ~ /^#([ \t]|$)/) { sec = "" }
+      else if (want != "") {
+        h = $0; sub(/^###[ \t]*/, "", h)
+        if (anchor_of(h, sec) == want) { found = 1; n = 1; blk[1] = $0 }
+      }
+      next
+    }
+    found { n++; blk[n] = $0 }
+    END {
+      if (!found) { print "NOMATCH"; exit }
+      while (n > 1 && blk[n] ~ /^[[:space:]]*$/) n--
+      print "MATCH"
+      for (i = 1; i <= n; i++) print blk[i]
+    }
+  ' "$arch"
 }
 
 # --- capability-drift: has a finished plan outrun its own PRD checkbox? -----
@@ -2041,7 +2120,11 @@ cmd_complete_capabilities() {
 #                                              no covers: at all)
 #   UNMATCHED=<covers quote matching no PRD capability>   (zero or more)
 #   PRD=<relpath, or "none">
-#   ARCH=<relpath, or "absent">
+#   ARCH-SECTION=<anchor>                    (one per `- arch:` anchor that
+#     <arch.md block line, 2-space indented>  resolves, in anchor order; see
+#     ...                                     `_arch_section`)
+#   UNMATCHED-ARCH=<anchor>                  (in place of ARCH-SECTION= for an
+#                                              anchor matching no heading)
 _handoff_one() {
   local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
   local root; root="$(_root "${2:-}")"
@@ -2087,7 +2170,7 @@ _handoff_one() {
   # on the FIRST tab (parameter expansion, not a second `read`) keeps any
   # further embedded tab in a value intact, the same remainder-capture
   # `_resolve_task_id`'s callers already rely on `read` for elsewhere.
-  local checked="" realid="" covers="" text="" mode="header" line key val body=""
+  local checked="" realid="" covers="" archv="" text="" mode="header" line key val body=""
   while IFS= read -r line; do
     if [ "$mode" = "header" ]; then
       if [ "$line" = "BODY" ]; then
@@ -2100,6 +2183,7 @@ _handoff_one() {
         CHECKED) checked="$val" ;;
         ID)      realid="$val" ;;
         COVERS)  covers="$val" ;;
+        ARCH)    archv="$val" ;;
         TEXT)    text="$val" ;;
       esac
     else
@@ -2132,9 +2216,11 @@ EOF
   prdrel="$(printf '%s' "$prdpp" | cut -f2)"
   [ -n "$prdrel" ] || prdrel="none"
 
-  local archrel="absent"
+  # The arch.md path is resolved (never a literal), used to READ sections and
+  # never printed: no `ARCH=` line of any form is part of this output.
+  local archabs=""
   local archpp; archpp="$(_resolve_arch_path "$slug" "$root")"
-  [ -n "$archpp" ] && archrel="$(printf '%s' "$archpp" | cut -f2)"
+  [ -n "$archpp" ] && archabs="$(printf '%s' "$archpp" | cut -f1)"
 
   printf 'PACKET=%s-%s\n' "$slug" "$idlc"
   printf 'FEATURE=%s\n' "$slug"
@@ -2174,7 +2260,24 @@ EOF
   fi
 
   printf 'PRD=%s\n' "$prdrel"
-  printf 'ARCH=%s\n' "$archrel"
+
+  # One marker per `- arch:` anchor, in the task's own order, after every
+  # COVERS=/UNMATCHED= block so `runstate.sh handoff`'s appended REQUIRED
+  # block still follows them. A resolved anchor's block is indented two
+  # spaces, the way COVERS= indents criteria; an unresolved one is reported,
+  # never replaced by a nearest heading -- on a checked task too, where a
+  # frozen anchor may name a superseded heading. No anchors, no marker.
+  local anchor secout
+  while IFS= read -r anchor; do
+    [ -n "$anchor" ] || continue
+    secout="$(_arch_section "$archabs" "$anchor")"
+    if [ "${secout%%$'\n'*}" = "MATCH" ]; then
+      printf 'ARCH-SECTION=%s\n' "$anchor"
+      printf '%s\n' "$secout" | tail -n +2 | sed 's/^/  /'
+    else
+      printf 'UNMATCHED-ARCH=%s\n' "$anchor"
+    fi
+  done < <(_split_covers "$archv")
 }
 
 # --- group: bundle the cursor with the unchecked tasks that safely follow it -

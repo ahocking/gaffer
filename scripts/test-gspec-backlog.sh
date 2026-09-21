@@ -1822,7 +1822,7 @@ check 'a multi-line wrapped criterion stays whole (line 1)' 'second criterion wr
 check 'a multi-line wrapped criterion stays whole (line 2)' 'onto a second physical'  "$out"
 check 'a multi-line wrapped criterion stays whole (line 3)' 'line, verbatim'          "$out"
 check 'handoff prints the PRD path'                 'PRD=gspec/features/hoff/prd.md' "$out"
-check 'ARCH= is printed even when arch.md is absent' 'ARCH=absent'                    "$out"
+refute 'no ARCH= line of any form when arch.md is absent (the absent sentinel is gone)' $'\nARCH=' $'\n'"$out"
 
 # The capability-block boundary: this is exactly what removing `if (found)
 # exit` in `_prd_capability` would break (`found` is sticky, so without that
@@ -1837,7 +1837,8 @@ check 'the canonical <feature>#T<n> form resolves identically' 'PACKET=hoff-t1' 
 
 touch "$R/gspec/features/hoff/arch.md"
 out="$("$ADAPTER" handoff hoff-t1 "$R")"
-check 'ARCH= carries the real path once arch.md exists' 'ARCH=gspec/features/hoff/arch.md' "$out"
+refute 'no ARCH= line of any form once arch.md exists either' $'\nARCH=' $'\n'"$out"
+refute 'and the arch.md path is not named' 'arch.md' "$out"
 
 printf '\n== handoff: a checked task still prints, and a bad covers quote is reported ==\n'
 out="$("$ADAPTER" handoff hoff-t2 "$R")"
@@ -1855,6 +1856,212 @@ check 'and says why, so empty does not read as "forgot to scope it"' 'NOTE=' "$o
 check 'a covers quote matching no capability is reported, never guessed' \
   'UNMATCHED=A quote nothing matches' "$out"
 refute 'an unmatched quote never becomes a COVERS= block' 'COVERS=A quote nothing matches' "$out"
+
+printf '\n== handoff: each arch: anchor inlines the arch.md section it names (handoff-spec-inlining-t2) ==\n'
+# No handoff line may START with `ARCH=` (the old path line, `absent` included).
+# The newline prefix makes the refute line-anchored: `UNMATCHED-ARCH=` also
+# contains the bytes `ARCH=`, and a bare substring refute would read it as one.
+no_arch_line() { refute "$1" $'\nARCH=' $'\n'"$2"; }
+RA="$TMPROOT/handoff-arch"; mkdir -p "$RA/gspec/features/shop"
+cat > "$RA/gspec/features/shop/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: shop
+
+## Capabilities
+
+- [ ] **P0**: Shop capability
+  - a criterion
+
+## Dependencies
+EOF
+cat > "$RA/gspec/features/shop/arch.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Architecture: shop
+
+## Data
+
+### Entity: Order
+- **module:** api
+- **defined-in:** gspec/features/shop/arch.md
+
+Order body line.
+
+#### Added
+- a sub-heading is block text
+
+### Entity: OrderLine
+- **module:** api
+
+OrderLine body line.
+
+### Model: Invoice
+Invoice is under a heading outside the grammar.
+
+### Entity: Refund
+Refund body line.
+
+## API
+
+### Endpoint: GET /orders/{id}
+Endpoint body line.
+
+### Entity: Misplaced
+An Entity under ## API is outside the grammar.
+
+## UI
+
+### Screen: Checkout
+- **module:** web
+- **route:** /checkout
+Screen text after the route line.
+
+```
+## not a heading inside a fence
+```
+Screen text after the fence.
+
+### Component: Cart
+Cart body line.
+
+## Logic
+
+### Rule: Pricing
+Pricing body line.
+EOF
+mk_plan_v2 "$RA" shop <<'EOF'
+- [ ] **T1** **P0** hash form
+  - deps: —
+  - covers: Shop capability
+  - arch: #entity-order
+- [ ] **T2** **P0** heading form
+  - deps: —
+  - covers: Shop capability
+  - arch: ### Entity: Order
+- [ ] **T3** **P0** bare form, several anchors
+  - deps: —
+  - covers: Shop capability
+  - arch: Entity: OrderLine · Rule: Pricing
+- [ ] **T4** **P0** unmatched anchor on an unchecked task
+  - deps: —
+  - covers: Shop capability
+  - arch: Entity: Ord · Entity: Refund
+- [x] **T5** **P0** unmatched anchor on a checked task
+  - deps: —
+  - covers: Shop capability
+  - arch: #entity-superseded
+- [ ] **T6** **P0** no anchors
+  - deps: —
+  - covers: Shop capability
+  - arch: —
+- [ ] **T7** **P0** a screen block with a route line
+  - deps: —
+  - covers: Shop capability
+  - arch: Screen: Checkout
+- [ ] **T8** **P0** headings outside the grammar
+  - deps: —
+  - covers: Shop capability
+  - arch: Model: Invoice · #entity-misplaced
+- [ ] **T9** **P0** no arch line at all
+  - deps: —
+  - covers: Shop capability
+EOF
+# The three forms name one anchor, so each must print the same block. A blank
+# line inside a block is indented like every other line (`COVERS=`'s rule).
+order_block='  ### Entity: Order
+  - **module:** api
+  - **defined-in:** gspec/features/shop/arch.md
+  
+  Order body line.
+  
+  #### Added
+  - a sub-heading is block text'
+for pair in 't1|#entity-order' 't2|### Entity: Order'; do
+  t="${pair%%|*}"; a="${pair#*|}"
+  out="$("$ADAPTER" handoff "shop-$t" "$RA")"
+  check "anchor form '$a' prints its marker" "ARCH-SECTION=$a" "$out"
+  check "anchor form '$a' inlines the whole H3 block, indented, H4 included" \
+    "ARCH-SECTION=$a
+$order_block" "$out"
+  [ "${out##*$order_block}" = "" ] && ok "anchor form '$a': trailing blank lines are dropped, the block ends the output" \
+    || bad "anchor form '$a' block end" "got: $out"
+  refute "anchor form '$a' stops before the next H3" 'OrderLine body line.' "$out"
+  no_arch_line "anchor form '$a' prints no ARCH= line" "$out"
+  refute "anchor form '$a' leaves the arch: line out of the body" '- arch:' "$out"
+done
+out="$("$ADAPTER" handoff shop-t3 "$RA")"
+check 'bare form Entity: OrderLine resolves by slug' 'ARCH-SECTION=Entity: OrderLine
+  ### Entity: OrderLine
+  - **module:** api
+  
+  OrderLine body line.
+ARCH-SECTION=Rule: Pricing
+  ### Rule: Pricing
+  Pricing body line.' "$out"
+refute 'OrderLine is not Order: slugs compare whole, never by prefix' 'Order body line.' "$out"
+# f: markers follow every COVERS=/UNMATCHED= block (and the PRD= line).
+order_ok="$(printf '%s\n' "$out" | awk '/^COVERS=/{c=NR} /^PRD=/{p=NR} /^ARCH-SECTION=/ && !a{a=NR} END{print (c && p && a > c && a > p) ? "yes" : "no"}')"
+[ "$order_ok" = "yes" ] && ok 'arch markers print after the COVERS= block and PRD= line' \
+  || bad 'arch markers print after the COVERS= block' "got: $out"
+
+out="$("$ADAPTER" handoff shop-t4 "$RA")"
+check 'an anchor naming no heading prints UNMATCHED-ARCH= (unchecked task)' 'UNMATCHED-ARCH=Entity: Ord' "$out"
+refute 'and never inlines a nearest (prefix) match for it' 'Order body line.' "$out"
+refute 'and never a marker for it' 'ARCH-SECTION=Entity: Ord' "$out"
+check 'a matched anchor beside it still resolves' 'ARCH-SECTION=Entity: Refund
+  ### Entity: Refund
+  Refund body line.' "$out"
+no_arch_line 'an unmatched anchor prints no ARCH= line' "$out"
+
+out="$("$ADAPTER" handoff shop-t5 "$RA")"
+check 'a frozen anchor on a CHECKED task is reported unmatched too' 'UNMATCHED-ARCH=#entity-superseded' "$out"
+no_arch_line 'the checked task prints no ARCH= line' "$out"
+
+for t in t6 t9; do
+  out="$("$ADAPTER" handoff "shop-$t" "$RA")"
+  refute "no-anchor task ($t) prints no ARCH-SECTION= marker" 'ARCH-SECTION=' "$out"
+  refute "no-anchor task ($t) prints no UNMATCHED-ARCH= marker" 'UNMATCHED-ARCH=' "$out"
+  no_arch_line "no-anchor task ($t) prints no ARCH= line" "$out"
+  refute "no-anchor task ($t) names no arch.md path" 'arch.md' "$out"
+done
+
+out="$("$ADAPTER" handoff shop-t7 "$RA")"
+check 'a route: line is block text and never ends its screen block' 'ARCH-SECTION=Screen: Checkout
+  ### Screen: Checkout
+  - **module:** web
+  - **route:** /checkout
+  Screen text after the route line.
+' "$out"
+check 'an H2 inside a fence does not end the block' 'Screen text after the fence.' "$out"
+refute 'the screen block still ends at the next H3' 'Cart body line.' "$out"
+
+out="$("$ADAPTER" handoff shop-t8 "$RA")"
+check 'an H3 outside the grammar resolves to nothing (unmatched)' 'UNMATCHED-ARCH=Model: Invoice' "$out"
+check 'a kind under another section'"'"'s H2 is outside the grammar too' 'UNMATCHED-ARCH=#entity-misplaced' "$out"
+refute 'no text is inlined for an out-of-grammar heading' 'Invoice is under' "$out"
+refute 'nor for a misplaced kind' 'An Entity under ## API' "$out"
+
+# The Endpoint form: method and path slug with punctuation dropped.
+mk_plan_v2 "$RA" shop <<'EOF'
+- [ ] **T1** **P0** endpoint
+  - deps: —
+  - arch: Endpoint: GET /orders/{id}
+EOF
+out="$("$ADAPTER" handoff shop-t1 "$RA")"
+check 'an Endpoint anchor resolves' 'ARCH-SECTION=Endpoint: GET /orders/{id}
+  ### Endpoint: GET /orders/{id}
+  Endpoint body line.' "$out"
+
+# No arch.md at all: every anchor is unmatched, and no path is named.
+rm "$RA/gspec/features/shop/arch.md"
+out="$("$ADAPTER" handoff shop-t1 "$RA")"
+check 'with no arch.md, an anchor is reported unmatched' 'UNMATCHED-ARCH=Endpoint: GET /orders/{id}' "$out"
+no_arch_line 'and no ARCH= line (not even absent)' "$out"
 
 printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
 # The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
@@ -2533,7 +2740,7 @@ mk_plan_v2 "$R" solo <<'EOF'
   - covers: Only capability
   - files: [src/solo.ts]
 EOF
-expected="$(printf 'PACKET=solo-t1\nFEATURE=solo\nID=T1\nCHECKED=0\nTEXT=the only task\nFILES=src/solo.ts\nCOVERS=Only capability\n    - the only criterion\nPRD=gspec/features/solo/prd.md\nARCH=absent')"
+expected="$(printf 'PACKET=solo-t1\nFEATURE=solo\nID=T1\nCHECKED=0\nTEXT=the only task\nFILES=src/solo.ts\nCOVERS=Only capability\n    - the only criterion\nPRD=gspec/features/solo/prd.md')"
 out="$("$ADAPTER" handoff solo-t1 "$R")"
 [ "$out" = "$expected" ] && ok 'a single id'"'"'s output is byte-identical to the pre-bundling shape' \
   || bad 'single id output changed' "expected:

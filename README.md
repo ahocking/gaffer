@@ -59,7 +59,7 @@ but is retired; see `retire-unused-loop-modes`.)
 | --- | --- |
 | `.claude-plugin/plugin.json` | Plugin manifest (name, version, author). |
 | `agents/loop-driver.md` | **inherit** — the role the session *driving* the loop takes (ADR 0028). Passes paths, reads one status line per agent, never opens a result file, routes every verdict through `runstate.sh route`. Declares no `tools:` restriction, so `claude --agent gaffer:loop-driver` keeps `Task`/`Bash`/`Read` for the run and `Edit`/`Write` for after the stop report. |
-| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits on non-`main` branches. Also the **interim stand-in escalation decider** the loop dispatches on `ACTION=decider`, until `escalation-decider` ships. |
+| `agents/chief-engineer.md` | **opus** — the loop's **escalation decider**, dispatched on `ACTION=decider` to return exactly one of five next steps for one packet on exclusive triggers, and between packets for the **periodic review** that merges, routes and expires findings; outside a loop packet, the orchestrator that interprets intent, routes work, delegates, gates risk, and owns routine commits on non-`main` branches. Holds no `Edit`/`Write`: every write is a `runstate.sh` subcommand, a `git` call, or an agent it dispatches. |
 | `agents/architect.md` | **opus** read-mostly design authority and spec author; writes design/spec prose under `docs/**`, `adr/**`, and any doc/spec paths the repo declares in `.agents/project-overrides.yaml` (`allowed_paths.docs`/`.specs`, e.g. `gspec/**`) — never code; flags security/auth/financial concerns. |
 | `agents/ux-designer.md` | **opus** visual/UX design specialist; iterates against the rendered UI via a **context-adaptive** preview loop — a web DOM preview or a live Unity Editor (via the Unity MCP), selected by `ux.preview_mode` in `.agents/project-overrides.yaml` (auto-detected, **web** default; ADR 0010) — and researches comparable products; writes presentation only under `allowed_paths.frontend` + `.agents/ux-references.md` + `.claude/launch.json` (web). Opt-in for repos with a user-facing surface. |
 | `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. Returns one of three verdicts on exclusive triggers — `pass` / `fix` / `escalate` — which is what the loop routes on. |
@@ -287,11 +287,26 @@ logging every decision to `.agents/loop/<run_id>/routing.jsonl`:
 | `ask-operator` | **stop** |
 
 Attempts count `fix` and `retry` together since the packet's latest start, against
-`packet_attempts` in `.agents/project-overrides.yaml` (default **1**). **There is no
-escalation decider agent yet:** on `decider` the driver dispatches the `chief-engineer`
-as an **interim stand-in**, which decides with its existing judgment and returns one of
-the five decisions above. A planned `escalation-decider` feature replaces that section
-of `agents/chief-engineer.md` and the single dispatch line in the loop skill.
+`packet_attempts` in `.agents/project-overrides.yaml` (default **1**). **On `decider`
+the driver dispatches the `chief-engineer` as the escalation decider** with the
+packet's handoff and review paths and the `ATTEMPTS=`/`LIMIT=` the `route` call
+printed, and nothing else. The decider reads that packet's handoff, result and review
+files and the findings naming it, plus what its triggers test —
+`escalate_to_human_on` in `.agents/project-overrides.yaml`, the backlog's PRDs and
+plans, `.agents/roadmap.yaml` — and returns exactly one decision on exclusive
+triggers; when more than one fits, the first of `ask-operator` → `hand-off-feature`
+→ `append-task` → `reorder` → `retry` wins. It carries out `reorder`, `append-task`
+and `retry` itself through `runstate.sh reorder-pending`, an `architect` it dispatches
+to append the one task line, and `runstate.sh amend-handoff`, each followed by a
+finding naming the packet and a `runstate.sh record-decision` record in
+`.agents/metrics/decisions/<session>.jsonl` — outside `.agents/loop/`, which
+`begin-run` prunes. `ask-operator` stops the loop on its status line; `hand-off-feature`
+takes the packet out of the run and leaves a question for the operator, who runs
+`/gspec-feature` (ADR 0026). The same agent is dispatched between packets, when
+`runstate.sh review-due` says so, for a **periodic review** of the findings index —
+merging duplicates losslessly, routing backlog-in-disguise findings through the two
+arm decisions, and dropping entries only on positive completion evidence. The full
+contract is `agents/chief-engineer.md` §Escalation decider and §Periodic review.
 
 **Run directories are per run and pruned.** `runstate.sh begin-run` mints a `run_id`
 into run-state once — a resume keeps it, so a run spans sessions — and keeps the current

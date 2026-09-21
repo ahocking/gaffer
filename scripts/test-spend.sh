@@ -452,6 +452,149 @@ check "unmeasured[] names the 2 unknown-cause writes" "1" \
 check "set A: every cause bucket is listed even when zero" "7" \
   "$(jq -r '.cache_write_causes.by_cause | length' "$OUT_A")"
 
+# =============================================================================
+# FIXTURE SET F — spend --save (loop-measurement T14). A fake HOME whose user
+# name ("fixture-zq-user") must not survive into the saved file. Three project
+# folders, named the way Claude Code names them (every non-alphanumeric
+# character of the absolute path replaced by '-'):
+#   -Users-fixture-zq-user-workspace-app   under home      -> "~-workspace-app"
+#   -Users-fixture-zq-user                 home itself     -> "~"
+#   -opt-shared-repo                       outside home    -> kept as-is
+# =============================================================================
+FAKE_HOME="/Users/fixture-zq-user"
+PROJ_F_ROOT="$ROOT/projects-f"
+mkdir -p "$PROJ_F_ROOT/-Users-fixture-zq-user-workspace-app/SF1/subagents" \
+         "$PROJ_F_ROOT/-Users-fixture-zq-user" "$PROJ_F_ROOT/-opt-shared-repo"
+cat > "$PROJ_F_ROOT/-Users-fixture-zq-user-workspace-app/SF1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T10:00:00Z","effort":"high","message":{"id":"msg_f1","model":"model-a","content":[{"type":"text","text":"SECRET_PROMPT_MARKER_fff"}],"usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":10,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+{"type":"assistant","timestamp":"2026-09-15T10:02:00Z","message":{"id":"msg_f1b","model":"model-b","usage":{"input_tokens":5,"output_tokens":5,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}}
+JSON
+cat > "$PROJ_F_ROOT/-Users-fixture-zq-user-workspace-app/SF1/subagents/agent-AF1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T10:01:00Z","effort":"xhigh","attributionAgent":"reviewer","message":{"id":"msg_f2","model":"model-a","usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":2,"cache_creation_input_tokens":8,"cache_creation":{"ephemeral_5m_input_tokens":8,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_F_ROOT/-Users-fixture-zq-user/SF2.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T11:00:00Z","effort":"high","message":{"id":"msg_f3","model":"model-a","usage":{"input_tokens":30,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_F_ROOT/-opt-shared-repo/SF3.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T12:00:00Z","effort":"high","message":{"id":"msg_f4","model":"model-a","usage":{"input_tokens":4,"output_tokens":4,"cache_read_input_tokens":4,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+
+F_WIN=(--since "2026-09-15T00:00:00Z" --until "2026-09-15T23:59:59Z")
+SAVE_F="$ROOT/saved-f.json"
+echo "== Fixture Set F: spend --save writes only the allowed fields, home prefix stripped =="
+HOME="$FAKE_HOME" "$SPEND" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" \
+  --save "$SAVE_F" --machine laptop-2 > "$ROOT/out-f.json" 2>"$ROOT/out-f.err"
+check "save: exit 0" "0" "$?"
+check "save: file written" "1" "$( [ -f "$SAVE_F" ] && echo 1 || echo 0 )"
+check "save: stderr names the saved file" "1" "$(grep -c "^SAVED=$SAVE_F\$" "$ROOT/out-f.err")"
+HOME="$FAKE_HOME" "$SPEND" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" \
+  > "$ROOT/out-f-nosave.json" 2>/dev/null
+check "save: stdout report is byte-identical to a run without --save" "0" \
+  "$(cmp -s "$ROOT/out-f.json" "$ROOT/out-f-nosave.json"; echo $?)"
+check "save: top-level fields are exactly the allowed set" \
+  "by_effort,by_model,by_project,by_role,counts,machine,price_table_date,saved_at,totals,window" \
+  "$(jq -r 'keys | join(",")' "$SAVE_F")"
+# Every LEAF path must be one of the allowed shapes; the check prints any that
+# is not, so an extra nested field (a label, a shape, a note, a path) fails by
+# name. Expected: no disallowed path, and a non-trivial number of leaves.
+check "save: no leaf field outside counts/tokens/dollars/labels/window/date/time/machine" "[]" \
+  "$(jq -c '
+    ["input","cache_write_5m","cache_write_1h","cache_read","output"] as $parts
+    | ["dollars","unpriced_tokens","cache_write_unmeasured_tokens"] as $money
+    | ["files_scanned","messages_counted","messages_no_id","messages_deduped_dropped",
+       "messages_excluded_no_usage_or_ts","messages_excluded_synthetic"] as $counts
+    | [ paths(scalars) | select(
+          ( . == ["machine"] or . == ["saved_at"] or . == ["price_table_date"]
+            or . == ["window","since"] or . == ["window","until"]
+            or (length == 2 and .[0] == "counts" and (.[1] as $k | $counts | index($k)))
+            or (length == 2 and .[0] == "totals" and (.[1] as $k | $money | index($k)))
+            or (length == 3 and .[0] == "totals" and .[1] == "tokens" and (.[2] as $k | $parts | index($k)))
+            or (length == 3 and (.[0] | IN("by_project","by_model","by_role","by_effort")) and (.[2] as $k | $money | index($k)))
+            or (length == 4 and (.[0] | IN("by_project","by_model","by_role","by_effort")) and .[2] == "tokens" and (.[3] as $k | $parts | index($k)))
+          ) | not ) ]' "$SAVE_F")"
+check "save: leaf count is non-trivial (the allowlist check had something to check)" "true" \
+  "$(jq '[paths(scalars)] | length > 50' "$SAVE_F")"
+check "save: by_project keys have the home prefix stripped" "-opt-shared-repo,~,~-workspace-app" \
+  "$(jq -r '.by_project | keys | join(",")' "$SAVE_F")"
+check "save: no home-directory segment (user name) survives anywhere" "0" "$(grep -c 'fixture-zq-user' "$SAVE_F")"
+check "save: no 'Users' path segment survives anywhere" "0" "$(grep -c 'Users' "$SAVE_F")"
+check "save: no fixture filesystem path survives" "0" "$(grep -c "$ROOT" "$SAVE_F")"
+check "save: no prompt text, session id or .jsonl name" "0" "$(grep -cE 'SECRET_PROMPT|SF1|AF1|\.jsonl' "$SAVE_F")"
+check "save: machine label" "laptop-2" "$(jq -r '.machine' "$SAVE_F")"
+check "save: window and price-table date match the report" "true" \
+  "$(jq -n --slurpfile s "$SAVE_F" --slurpfile r "$ROOT/out-f.json" \
+      '$s[0].window == $r[0].window and $s[0].price_table_date == $r[0].price_table.date')"
+check "save: saved_at is a UTC ISO time" "1" \
+  "$(jq -r '.saved_at' "$SAVE_F" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')"
+check "save: totals equal the report's totals (tokens, dollars, unpriced, unsplit)" "true" \
+  "$(jq -n --slurpfile s "$SAVE_F" --slurpfile r "$ROOT/out-f.json" '$s[0].totals == $r[0].totals')"
+check "save: project values sum to the totals (nothing lost in the key rewrite)" "true" \
+  "$(jq '([.by_project[].tokens.input] | add) == .totals.tokens.input
+         and ([.by_project[].unpriced_tokens] | add) == .totals.unpriced_tokens' "$SAVE_F")"
+check "save: unpriced and unsplit tokens carried, not zeroed (model-b 5+5+5+7; unsplit 7)" "22 7" \
+  "$(jq -r '"\(.totals.unpriced_tokens) \(.totals.cache_write_unmeasured_tokens)"' "$SAVE_F")"
+check "save: model, role and effort labels present" "model-a,model-b|main,reviewer|high,unrecorded,xhigh" \
+  "$(jq -r '"\(.by_model|keys|join(","))|\(.by_role|keys|join(","))|\(.by_effort|keys|join(","))"' "$SAVE_F")"
+
+echo "-- --save refusals write nothing --"
+refused() { # refused <label> <save-path> <spend args...>
+  local lbl="$1" f="$2"; shift 2
+  HOME="$FAKE_HOME" "$SPEND" "$@" --save "$f" >/dev/null 2>"$ROOT/refuse.err"; local rc=$?
+  check "$lbl: non-zero exit" "1" "$( [ "$rc" -ne 0 ] && echo 1 || echo 0 )"
+  check "$lbl: no file written" "0" "$( [ -e "$f" ] && echo 1 || echo 0 )"
+}
+refused "no --machine" "$ROOT/r1.json" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}"
+refused "bad --machine label" "$ROOT/r2.json" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine 'a/b'
+refused "with --project" "$ROOT/r3.json" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine m --project -opt-shared-repo
+refused "projects dir absent (unmeasured, not zero)" "$ROOT/r4.json" --projects-dir "$ROOT/no-such-dir" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine m
+# A label read from a transcript that carries the raw home path (here, an
+# attributionAgent) must trip the backstop rather than be saved.
+PROJ_G_ROOT="$ROOT/projects-g"; mkdir -p "$PROJ_G_ROOT/-opt-x/SG/subagents"
+cat > "$PROJ_G_ROOT/-opt-x/SG/subagents/agent-AG.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T10:00:00Z","attributionAgent":"/Users/fixture-zq-user/agents/x","message":{"id":"msg_g1","model":"model-a","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+refused "home path in a label (backstop)" "$ROOT/r5.json" --projects-dir "$PROJ_G_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine m
+check "backstop: refusal names the surviving home segment" "1" "$(grep -c 'home-directory segment would survive' "$ROOT/refuse.err")"
+
+echo "-- --save on a Windows (Git Bash) home: native drive-letter folders --"
+# Git Bash sets HOME=/c/Users/<name>, but Claude Code names the folder from the
+# native path C:\Users\<name> -> C--Users-<name>-..., which the POSIX encoding
+# (-c-Users-<name>) never matches. Two folders, the drive letter in both cases,
+# must strip; USERPROFILE is unset so the drive-letter rewrite is what is tested.
+PROJ_W_ROOT="$ROOT/projects-w"
+mkdir -p "$PROJ_W_ROOT/C--Users-fixture-zq-win-workspace-app" "$PROJ_W_ROOT/c--users-fixture-zq-win-workspace-lib"
+cat > "$PROJ_W_ROOT/C--Users-fixture-zq-win-workspace-app/SW1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T10:00:00Z","message":{"id":"msg_w1","model":"model-a","usage":{"input_tokens":3,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+cat > "$PROJ_W_ROOT/c--users-fixture-zq-win-workspace-lib/SW2.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-15T10:05:00Z","message":{"id":"msg_w2","model":"model-a","usage":{"input_tokens":4,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+JSON
+SAVE_W="$ROOT/saved-w.json"
+env -u USERPROFILE HOME="/c/Users/fixture-zq-win" "$SPEND" --projects-dir "$PROJ_W_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" \
+  --save "$SAVE_W" --machine win >/dev/null 2>"$ROOT/w.err"
+check "windows home: exit 0" "0" "$?"
+check "windows home: drive-letter folders stripped (either case)" "~-workspace-app,~-workspace-lib" \
+  "$(jq -r '.by_project | keys | join(",")' "$SAVE_W" 2>/dev/null)"
+check "windows home: user name never in the file" "0" "$(grep -ci 'fixture-zq-win' "$SAVE_W" 2>/dev/null || true)"
+# USERPROFILE names the home when HOME does not look like one (HOME unrelated).
+SAVE_W2="$ROOT/saved-w2.json"
+USERPROFILE='C:\Users\fixture-zq-win' HOME="/home/fixture-other" "$SPEND" --projects-dir "$PROJ_W_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" \
+  --save "$SAVE_W2" --machine win >/dev/null 2>/dev/null
+check "USERPROFILE home: folders stripped" "~-workspace-app,~-workspace-lib" \
+  "$(jq -r '.by_project | keys | join(",")' "$SAVE_W2" 2>/dev/null)"
+# Encoding-independent backstop: a folder carrying the user name under a home
+# form nothing strips (another drive, another root) must refuse, not save.
+PROJ_W3_ROOT="$ROOT/projects-w3"; mkdir -p "$PROJ_W3_ROOT/D--home-FIXTURE-ZQ-WIN-x"
+cp "$PROJ_W_ROOT/C--Users-fixture-zq-win-workspace-app/SW1.jsonl" "$PROJ_W3_ROOT/D--home-FIXTURE-ZQ-WIN-x/SW3.jsonl"
+env -u USERPROFILE HOME="/c/Users/fixture-zq-win" "$SPEND" --projects-dir "$PROJ_W3_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" \
+  --save "$ROOT/r7.json" --machine win >/dev/null 2>"$ROOT/r7.err"; RC7=$?
+check "user-name segment backstop: non-zero exit" "1" "$( [ "$RC7" -ne 0 ] && echo 1 || echo 0 )"
+check "user-name segment backstop: no file written" "0" "$( [ -e "$ROOT/r7.json" ] && echo 1 || echo 0 )"
+check "user-name segment backstop: refusal names the segment" "1" "$(grep -c 'home-directory segment would survive' "$ROOT/r7.err")"
+
+"$SPEND" --projects-dir "$PROJ_F_ROOT" --price-table "$PRICES_MIXED" "${F_WIN[@]}" --machine m >/dev/null 2>"$ROOT/r6.err"; RC6=$?
+check "--machine without --save: non-zero exit" "1" "$( [ "$RC6" -ne 0 ] && echo 1 || echo 0 )"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-spend.sh: ALL %d checks passed\n' "$pass"; exit 0

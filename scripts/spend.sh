@@ -115,6 +115,35 @@
 #                        window is legitimate" rule --projects-dir absent
 #                        already follows. Omit it for the prior machine-wide
 #                        behavior, unchanged.
+#   --save FILE          ALSO write the window's totals to FILE (loop-measurement
+#                        T14), for combining with other machines' saved totals.
+#                        The full report is still printed to stdout, unchanged.
+#                        Requires --machine. The file holds ONLY: machine,
+#                        saved_at, window, price_table_date, counts, totals,
+#                        and by_project / by_model / by_role / by_effort, each
+#                        value carrying only tokens (the five cost-part labels),
+#                        dollars, unpriced_tokens and cache_write_unmeasured_
+#                        tokens. Nothing prose-shaped, no path, no per-role
+#                        cache-read shape and no cache-write causes (medians
+#                        and per-context causes do not add across machines).
+#                        by_project keys have the home-directory prefix
+#                        stripped (see strip_home below), so a committed file
+#                        carries no user name and two machines with the same
+#                        layout under different home directories share keys.
+#                        Every available home form is stripped, case-
+#                        insensitively: $HOME, its native drive-letter form on
+#                        Git Bash (/c/Users/a -> C--Users-a), $USERPROFILE and
+#                        cygpath -w "$HOME". Refused (exit 1, nothing written) with --project (a
+#                        saved file reads as a machine's whole window), when
+#                        projects_dir does not exist (nothing was measured, so
+#                        zeros would read as a measurement), or when a home-
+#                        directory segment would survive in the file (an
+#                        encoded home form, the raw $HOME, or the user name as
+#                        a whole delimited segment of any key or value).
+#   --machine LABEL      the machine label written into a --save file;
+#                        [A-Za-z0-9._-] only. Deliberately NOT defaulted from
+#                        the hostname: a hostname often carries the user's
+#                        name, which is exactly what a committed file must not.
 #
 # Prints one JSON report to stdout. Exit 0 on success (including an empty
 # window — that is a legitimate report, not a failure); exit 1 on a usage or
@@ -169,17 +198,24 @@ usage() {
 spend.sh — machine-wide API-equivalent spend report (requires jq)
   spend.sh [--projects-dir DIR] [--since ISO] [--until ISO] [--days N]
            [--price-table FILE] [--project FOLDER]
+           [--save FILE --machine LABEL]
 Prints one JSON report to stdout, over a window (default: the last 7 days).
 --project FOLDER scopes the whole report to one Claude-projects folder name
 (exact match), so by_role/by_model/by_effort/totals read as that one repo.
+--save FILE also writes the window's totals (counts, tokens, dollars, labels,
+window, price-table date, save time, machine label, home-stripped project
+folder names — nothing else) to FILE, for combining across machines.
 USAGE
 }
 
 projects_dir="${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}"
 since="" until="" days=7 price_table="${HERE}/spend-prices.json"
 project_filter=""
+save_file="" machine=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --save) save_file="${2:-}"; [ -n "$save_file" ] || die "--save needs a file path"; shift 2 ;;
+    --machine) machine="${2:-}"; shift 2 ;;
     --projects-dir) projects_dir="${2:-}"; shift 2 ;;
     --since) since="${2:-}"; shift 2 ;;
     --until) until="${2:-}"; shift 2 ;;
@@ -192,6 +228,55 @@ while [ $# -gt 0 ]; do
 done
 
 case "$days" in ''|*[!0-9]*) die "--days must be a non-negative integer, got '$days'" ;; esac
+
+# --save validation, all BEFORE any scanning so a refusal writes nothing.
+if [ -n "$save_file" ]; then
+  [ -n "$machine" ] || die "--save needs --machine LABEL (not defaulted from the hostname, which often carries the user's name)"
+  case "$machine" in *[!A-Za-z0-9._-]*) die "--machine must match [A-Za-z0-9._-], got '$machine'" ;; esac
+  [ -z "$project_filter" ] || die "--save cannot be combined with --project: a saved file reads as one machine's whole window, and a one-project file would combine as if it were"
+  [ -d "$(dirname "$save_file")" ] || die "--save: directory does not exist: $(dirname "$save_file")"
+  # strip_home: Claude Code names each projects folder by replacing every
+  # non-alphanumeric character of the absolute path with '-', so $HOME
+  # encodes the same way (/Users/alice -> -Users-alice). A HOME of "" or "/"
+  # would encode to "" or "-" and match everything, so it is refused.
+  enc_home="$(printf '%s' "${HOME:-}" | sed 's/[^A-Za-z0-9]/-/g')"
+  case "$enc_home" in ''|'-') die "--save: cannot determine the home directory to strip (HOME='${HOME:-}')" ;; esac
+  # On Windows (Git Bash) HOME is /c/Users/alice, but Claude Code names the
+  # folder from the NATIVE path C:\Users\alice -> C--Users-alice, which the
+  # POSIX encoding above never matches. So every form of the home that is
+  # available is encoded and stripped: $HOME, a drive-letter HOME rewritten to
+  # its native form, $USERPROFILE, and `cygpath -w "$HOME"` (probed by running
+  # it). Matched case-insensitively in the jq below. An extra form that encodes
+  # to (almost) nothing, e.g. "C:\" -> "C--", would match every folder on the
+  # drive, so it is skipped.
+  home_forms="$HOME"
+  case "$HOME" in
+    /[A-Za-z]/*) home_forms="$home_forms
+$(printf '%s' "$HOME" | cut -c2 | tr '[:lower:]' '[:upper:]'):$(printf '%s' "$HOME" | cut -c3- | tr '/' '\\')" ;;
+  esac
+  [ -n "${USERPROFILE:-}" ] && home_forms="$home_forms
+$USERPROFILE"
+  if cyg_home="$(cygpath -w "$HOME" 2>/dev/null)" && [ -n "$cyg_home" ]; then
+    home_forms="$home_forms
+$cyg_home"
+  fi
+  enc_homes=""
+  while IFS= read -r hf; do
+    e="$(printf '%s' "$hf" | sed 's/[^A-Za-z0-9]/-/g')"
+    [ "$(printf '%s' "$e" | tr -d '-' | wc -c | tr -d ' ')" -gt 1 ] || continue
+    enc_homes="$enc_homes$e
+"
+  done <<EOF
+$home_forms
+EOF
+  # The user names (last segment of each home), for the encoding-independent
+  # backstop: refused if one appears as a whole delimited segment anywhere.
+  home_names="$(printf '%s\n' "$HOME" "${USERPROFILE:-}" | tr '\\' '/' | sed 's:/*$::; s:.*/::' | grep -v '^$' || true)"
+  [ -n "$(printf '%s' "$HOME" | sed 's:/*$::; s:.*/::')" ] \
+    || die "--save: cannot determine the user name to check for (HOME='${HOME:-}')"
+elif [ -n "$machine" ]; then
+  die "--machine only applies with --save"
+fi
 
 [ -n "$until" ] || until="$(now_iso)"
 [ -n "$since" ] || since="$(days_ago_iso "$days")"
@@ -365,6 +450,9 @@ while IFS= read -r pf; do
   done <<< "$sub_files"
 done < "$tmp/projdirs.txt"
 
+[ -z "$save_file" ] || [ "$projects_dir_status" = "present" ] \
+  || die "--save: projects dir does not exist, so nothing was measured; refusing to save zeros that would read as a measurement"
+
 # =============================================================================
 # JOIN + DEDUP + WINDOW + PRICE + GROUP, in one jq program (single source of
 # truth for the dedup/window rules, rather than re-deriving them per axis).
@@ -378,7 +466,7 @@ jq -n \
   --arg project_filter "$project_filter" \
   --arg project_status "$project_status" \
   --slurpfile pricefile "$price_table" \
-  -f /dev/stdin "$tmp/raw.ndjson" <<'JQPROG'
+  -f /dev/stdin "$tmp/raw.ndjson" > "$tmp/report.json" <<'JQPROG'
 def r6(n): (n*1000000|round)/1000000;
 
 def sumtok(rows):
@@ -699,3 +787,84 @@ def cause_report(w):
     ]
   }
 JQPROG
+report_rc=$?
+cat "$tmp/report.json"
+[ "$report_rc" -eq 0 ] || exit "$report_rc"
+[ -n "$save_file" ] || exit 0
+
+# =============================================================================
+# SAVE (loop-measurement T14): project the report onto the saved-totals shape.
+# An ALLOWLIST, built field by field — never "the report minus some keys" — so
+# a field added to the report later cannot leak into a committed file. Home
+# stripping: a by_project key equal to the encoded home becomes "~", one
+# starting with the encoded home plus '-' becomes "~" + the rest (so it can
+# never collide with a folder outside home, which starts with '-'); anything
+# else is kept. Keys that land on the same stripped name are SUMMED, the same
+# by-key combining a later --combine does across machines.
+# =============================================================================
+jq --arg machine "$machine" --arg saved_at "$(now_iso)" --arg enc_homes "$enc_homes" '
+  def r6(n): (n*1000000|round)/1000000;
+  def parts: {input, cache_write_5m, cache_write_1h, cache_read, output};
+  def slim: { tokens: (.tokens | parts), dollars, unpriced_tokens, cache_write_unmeasured_tokens };
+  # Every encoded home form, longest first, compared case-insensitively (a
+  # Windows path is case-insensitive, so C--Users-Alice and c--users-alice are
+  # the same home). The encoding is one char per char, so the remainder is cut
+  # at the matched form length and keeps its own case.
+  ($enc_homes | split("\n") | map(select(length > 0)) | sort_by(-length)) as $homes |
+  def strip_home:
+    . as $k | ($k | ascii_downcase) as $lk
+    | ([ $homes[] | ascii_downcase | . as $e | select($lk == $e or ($lk | startswith($e + "-"))) ] | .[0]) as $h
+    | if $h == null then $k
+      elif $lk == $h then "~"
+      else "~" + $k[($h|length):] end;
+  def addslim(a; b):
+    { tokens: (a.tokens | with_entries(.value += b.tokens[.key])),
+      dollars: r6(a.dollars + b.dollars),
+      unpriced_tokens: (a.unpriced_tokens + b.unpriced_tokens),
+      cache_write_unmeasured_tokens: (a.cache_write_unmeasured_tokens + b.cache_write_unmeasured_tokens) };
+  def slimmap: with_entries(.value |= slim);
+  {
+    machine: $machine,
+    saved_at: $saved_at,
+    window: { since: .window.since, until: .window.until },
+    price_table_date: .price_table.date,
+    counts: (.counts | {files_scanned, messages_counted, messages_no_id,
+                        messages_deduped_dropped, messages_excluded_no_usage_or_ts,
+                        messages_excluded_synthetic}),
+    totals: (.totals | slim),
+    by_project: ( .by_project | to_entries
+                  | map({key: (.key | strip_home), value: (.value | slim)})
+                  | group_by(.key)
+                  | map({key: .[0].key, value: (reduce .[1:][] as $e (.[0].value; addslim(.; $e.value)))})
+                  | from_entries ),
+    by_model:  (.by_model  | slimmap),
+    by_role:   (.by_role   | slimmap),
+    by_effort: (.by_effort | slimmap)
+  }
+' "$tmp/report.json" > "$tmp/saved.json" || die "--save: could not build the saved totals"
+
+# Mechanical backstop for "no home-directory segment survives": refuse if ANY
+# key or string value still equals an encoded home form, contains one as a
+# path segment, contains the raw $HOME, or — independent of any encoding —
+# carries a user name (the last segment of $HOME / $USERPROFILE) as a whole
+# segment delimited by non-alphanumerics, all case-insensitively. Checked on
+# the built file, so it holds whatever a future edit to the projection above
+# does. The name test errs toward refusing: a user named like a label (say
+# "main") refuses every save, which is loud, rather than leaking silently.
+leak="$(jq -r --arg enc_homes "$enc_homes" --arg names "$home_names" --arg home "$HOME" '
+  def norm: ascii_downcase | gsub("[^a-z0-9]"; "-");
+  ($enc_homes | split("\n") | map(select(length > 0) | ascii_downcase)) as $homes |
+  ($names | split("\n") | map(norm) | map(select(test("[a-z0-9]")))) as $nm |
+  [ paths | .[] | strings ] + [ .. | strings ]
+  | map(select(
+      (ascii_downcase) as $l | ("-" + norm + "-") as $seg
+      | contains($home)
+        or any($homes[]; . as $e | $l == $e or ($l | startswith($e + "-")) or ($l | contains("-" + ($e | ltrimstr("-")) + "-")))
+        or any($nm[]; . as $n | $seg | contains("-" + $n + "-"))))
+  | unique | .[0] // empty
+' "$tmp/saved.json" | tr -d '\r')"
+[ -z "$leak" ] || die "--save: a home-directory segment would survive in the saved file ('$leak'); nothing written"
+
+cp "$tmp/saved.json" "$save_file.tmp.$$" && mv -f "$save_file.tmp.$$" "$save_file" \
+  || { rm -f "$save_file.tmp.$$"; die "--save: could not write $save_file"; }
+printf 'SAVED=%s\n' "$save_file" >&2

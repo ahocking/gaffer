@@ -141,7 +141,7 @@ that it blocks nothing.
   - covers: The spend report shows where context cost comes from
   - arch: —
   - files: scripts/spend.sh, scripts/test-spend.sh
-- [ ] **T14** **P1** Add `spend --save`, which writes a window's totals to a file holding only counts, tokens, dollars, the breakdown labels, the window, the price-table date, the save time, a machine label and project folder names with the home-directory prefix stripped (so a committed file carries no user name, and two machines with the same layout combine by key), with a case asserting no other field is present and no home-directory segment survives
+- [x] **T14** **P1** Add `spend --save`, which writes a window's totals to a file holding only counts, tokens, dollars, the breakdown labels, the window, the price-table date, the save time, a machine label and project folder names with the home-directory prefix stripped (so a committed file carries no user name, and two machines with the same layout combine by key), with a case asserting no other field is present and no home-directory segment survives
   - deps: T10
   - covers: Saved spend totals combine across machines
   - arch: —

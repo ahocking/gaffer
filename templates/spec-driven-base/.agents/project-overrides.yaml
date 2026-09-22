@@ -116,6 +116,23 @@ integration_branch: develop
 # review_after_non_green_endings: 2
 # review_after_beginnings: 10
 
+# The implementer's budget for one dispatch, in tool calls (plugin
+# implementer-continuation T1). Every `implementer` handoff states it, and no
+# other agent's does. At the budget the implementer stops at a safe boundary,
+# leaves the partial work uncommitted, writes what is done and what remains to
+# its result file, and returns `continue` -- which the driver routes to a
+# continuation, spending no attempt and skipping the reviewer. 120 when
+# missing, invalid, or 0. Lower it to checkpoint more often at the cost of more
+# continuations; raise it to let one dispatch carry a long packet further.
+# implementer_turn_budget: 120
+
+# How many `continue` continuations `runstate.sh route` allows a packet before
+# refusing with a blocking question (plugin implementer-continuation T3).
+# Counted PER ATTEMPT -- a `fix` or `retry` starts the count over -- so this
+# bounds how far one attempt can run without a review, not the packet's whole
+# life. 3 when missing, invalid, or 0.
+# packet_continuations: 3
+
 # The largest number of tasks a bundle may hold (plugin packet-bundling T2).
 # 1 when missing, invalid, zero or negative -- bundling is off until this
 # repository raises it. A recommended starting value is 4; a larger value

@@ -125,6 +125,29 @@ execute in whichever shell runs this; `${CLAUDE_PLUGIN_ROOT}/templates/status-li
 states the `'\''`-escape rule once). The driver never opens that file; the
 reviewer does.
 
+## Your turn budget, and stopping at it
+
+A loop handoff carries one **`BUDGET:`** line stating this dispatch's budget in
+tool calls. It is a real limit, not a target: work the packet normally, and if
+you reach the budget with work still to do, **stop at a safe boundary — never
+mid-edit.** Finish the edit you are on to a compilable, non-half-written state,
+then stop; leave the partial work **uncommitted in the working tree** exactly as
+the "Do not commit" rule below requires, write what is done and what remains to
+your result file, and return a status line whose **first token is `continue`**.
+
+**A `continue` is the correct outcome, not a failure.** It is the one
+implementer status the driver routes on: it dispatches a fresh implementer to
+carry the same packet on from where you stopped, spending no attempt and
+skipping the reviewer entirely. Do **not** report running out of budget as
+`blocked` — `blocked` says the packet cannot proceed and sends it somewhere
+else entirely. Reserve it for what it means.
+
+If your handoff contains a **`## Partial work on disk`** block, you are that
+continuation. The files it lists were left uncommitted by an earlier dispatch on
+this packet, each listed with whether it still exists or was deleted: **read
+them as they now stand, verify them, and continue from them — do not recreate
+them.**
+
 ## The handoff's verification contract
 
 The handoff ends with a block headed **"REQUIRED — the verification

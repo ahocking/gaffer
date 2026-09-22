@@ -32,7 +32,7 @@ feature: implementer-continuation
   - covers: Every implementer handoff states its budget and the stop rule
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T2** **P0** Make `runstate.sh route` accept `continue` as its ninth token. Within the cap it maps to `ACTION=continue` and prints `ATTEMPTS=` as the packet's live attempt count from `_rs_route_attempts`, never incremented, writing a routing record carrying `ts`, `packet`, `token`, `action` and `status` and nothing else. `scripts/test-runstate.sh` gains cases for the in-cap route, `ATTEMPTS=` unchanged across a `continue`, and a `fix` routed after a continuation printing `ATTEMPTS=1` — which rules out counting `continue` into the shared `fix`/`retry` attempt pool, where three stops at the budget would exhaust the packet's attempts without any review
+- [x] **T2** **P0** Make `runstate.sh route` accept `continue` as its ninth token. Within the cap it maps to `ACTION=continue` and prints `ATTEMPTS=` as the packet's live attempt count from `_rs_route_attempts`, never incremented, writing a routing record carrying `ts`, `packet`, `token`, `action` and `status` and nothing else. `scripts/test-runstate.sh` gains cases for the in-cap route, `ATTEMPTS=` unchanged across a `continue`, and a `fix` routed after a continuation printing `ATTEMPTS=1` — which rules out counting `continue` into the shared `fix`/`retry` attempt pool, where three stops at the budget would exhaust the packet's attempts without any review
   - deps: —
   - covers: The driver routes `continue` to a continuation without a review or an attempt · Continuations are capped per attempt and every one leaves a record
   - arch: —

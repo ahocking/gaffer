@@ -3933,6 +3933,59 @@ assert_true "the refusal names the reason" \
 assert_true "a refused handoff writes no handoff.md" \
   "[ ! -f \"$RT/.agents/loop/$RT_RUN_ID/rt-hof/handoff.md\" ]"
 
+echo "-- route continue: in-cap ACTION=continue, spends no attempt (implementer-continuation T2) --"
+# Run once on a full PATH and once with jq/python3 scrubbed from runstate.sh's
+# PATH (the plan's standing rule); each run gets its own repo so neither
+# routing.jsonl nor outcomes log can leak into the other.
+CT_STATUS='continue · stopped at the turn budget, route half done · result: needs-reading · /tmp/run/ct-pkt/implementer.md'
+ct_cases() {
+  local sfx="$1" scrub="$2" d run_id routing out
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  git -C "$d" config user.email t@t; git -C "$d" config user.name t
+  mkdir -p "$d/.agents"
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  ct_rs() {
+    if [ -n "$scrub" ]; then (cd "$d" && PATH="$scrub:$PATH" "$RUNSTATE" "$@")
+    else (cd "$d" && "$RUNSTATE" "$@"); fi
+  }
+  run_id="$(ct_rs begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  routing="$d/.agents/loop/$run_id/routing.jsonl"
+  ct_rs record-start ct-pkt S1 >/dev/null
+
+  out="$(ct_rs route .agents/run-state.yaml ct-pkt continue --status "$CT_STATUS")"
+  assert_true "route continue$sfx: within the cap it prints ACTION=continue" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+  assert_true "route continue$sfx: ATTEMPTS= is the live count (0 on a fresh start), never incremented to 1" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ATTEMPTS=0'"
+  assert_true "route continue$sfx: the routing record carries ts, packet, token, action and status and nothing else" \
+    "tail -1 \"$routing\" | jq -e --arg s \"\$CT_STATUS\" '(keys == [\"action\",\"packet\",\"status\",\"token\",\"ts\"]) and .packet == \"ct-pkt\" and .token == \"continue\" and .action == \"continue\" and .status == \$s and (.ts | length > 0)' >/dev/null"
+
+  # The driver's own step after an in-cap continue (record-start --continue),
+  # then a second stop at the budget: ATTEMPTS= stays where it was.
+  ct_rs record-start ct-pkt --continue S1 >/dev/null
+  out="$(ct_rs route .agents/run-state.yaml ct-pkt continue --status "$CT_STATUS")"
+  assert_true "route continue$sfx: ATTEMPTS= is unchanged across a continuation (still 0 after a second continue)" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ATTEMPTS=0' && printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+  ct_rs record-start ct-pkt --continue S1 >/dev/null
+  ct_rs route .agents/run-state.yaml ct-pkt continue --status "$CT_STATUS" >/dev/null
+
+  # Three continuations recorded; a fix now must count exactly one attempt.
+  # Counting `continue` into the fix/retry pool would print ATTEMPTS=4 and
+  # route the packet to the decider without it ever having been reviewed.
+  out="$(ct_rs route .agents/run-state.yaml ct-pkt fix)"
+  assert_true "route continue$sfx: a fix routed after continuations prints ATTEMPTS=1 (continue never enters the attempt pool)" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ATTEMPTS=1'"
+  assert_true "route continue$sfx: and so it is still an attempt under the default limit of 1, not the decider" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=attempt'"
+
+  # After that fix, a continue reports the live count (1) without spending one.
+  out="$(ct_rs route .agents/run-state.yaml ct-pkt continue --status "$CT_STATUS")"
+  assert_true "route continue$sfx: after a fix, continue prints the live count ATTEMPTS=1, not 2" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ATTEMPTS=1' && printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+}
+ct_cases "" ""
+ct_cases " (no-tools host)" "$NOTOOLS"
+
 echo "-- a hand-off-feature record in a PREVIOUS run does not refuse the SAME packet id in a NEW run (review fix 5/8) --"
 # A genuinely fresh run-state (no run_id yet) mints a DIFFERENT run_id, so
 # its own routing.jsonl starts empty -- the refusal must be scoped to the

@@ -472,7 +472,7 @@ migrates toward the layout you are trying to leave — reporting success as it d
 
 The full sequence, with the hazards and the two checks that tell a broken
 migration from a finished backlog, is
-**[docs/gspec-3.1.1-migration.md](docs/gspec-3.1.1-migration.md)**.
+**[docs/gspec-migration.md](docs/gspec-migration.md)**.
 
 Try it out inside the session:
 

@@ -1462,7 +1462,8 @@ if [ -f "$RB" ]; then
     *) ok 'the runbook carries no literal pinned version' ;; esac
   rb_has 'it reads the version from gspec-backlog.sh pin' 'gspec-backlog.sh pin'
   rb_has 'and installs by that placeholder, not a literal' 'gspec@<pinned version>'
-  rb_has 'and the supported spec-version set'      "GSPEC_SPEC_VERSIONS=$SPECVERS"
+  case "$RB_TXT" in *"GSPEC_SPEC_VERSIONS=$SPECVERS"*) bad 'the runbook carries no literal spec-version set' "found $SPECVERS in $RB" ;;
+    *) ok 'the runbook carries no literal spec-version set' ;; esac
   # No versioned runbook left behind beside it: a docs/gspec-<version>-migration.md
   # is exactly the second copy of the value this section exists to forbid.
   STALE_RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null || true)"

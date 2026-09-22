@@ -60,8 +60,9 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   the next dispatch. A packet weakening `hooks/guard.sh` is live on the next matching
   call. `.agents/guard-extra-review` names this surface for the ASK tier
   (`self-host-hardening`), pinned by `test-guard.sh`.
-- **Do not move `hooks/guard.sh`, `.agents/guard-extra-*` or `project-overrides.yaml`
-  into `.agents/guard-extra-paths`** — this repo develops them.
+- **Never hard-deny `hooks/guard.sh`, `.agents/guard-extra-*` or `project-overrides.yaml`
+  via `.agents/guard-extra-paths` in this repo** — it develops them (a consumer repo is a
+  separate question).
 - **Load timing:** `guard.sh` re-reads `project-overrides.yaml` and
   `.agents/guard-extra-*` on **every tool call**; only hook *registration*
   (`hooks/hooks.json`, `.claude/settings.json`) needs a session boundary.
@@ -119,8 +120,9 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 
 ### Run-metrics (ADR 0019 — read its revision sections before touching the collector)
 
-- Hooks (`metrics-log.sh`, `metrics-skill.sh`) **print nothing and always exit 0**;
-  they cannot emit a `permissionDecision`.
+- Advisory hooks (`metrics-log.sh`, `metrics-skill.sh`, `pause-check.sh`,
+  `report-conventions.sh`) **never emit a `permissionDecision`** and fail open;
+  the metrics hooks print nothing and always exit 0.
 - **No full command text or file path is ever logged** — Bash is reduced to a
   `cmd_class` head, files to a 12-char hash; the packet must stay safe to paste.
 - **`jq -r` output consumed by `read` goes through `tr -d '\r'`**; scalar captures use
@@ -206,9 +208,12 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   never record an outcome for it.
 - The decider's authority is a closed list (`agents/chief-engineer.md` §Escalation
   decider, §Periodic review).
-- **A plugin cannot supply `autoCompactWindow`**; add no `SOURCE` branch without a named
-  provenance.
-- A run that edits driver mode runs the old contract; the change lands next run.
+- **A `settings.json` at the plugin root does not supply `autoCompactWindow`** (ADR 0028
+  2026-09-21 amendment: one harness version, hook route untried); add no value, carrier
+  or `SOURCE` branch without a named provenance.
+- A run that lands a driver-mode change keeps the old contract for its mark (written at
+  entry), even though `runstate.sh` and hook edits apply mid-run; the first run under
+  the change is the next `/gaffer:run-loop`.
 
 ### Reports (ADR 0023)
 
@@ -217,6 +222,9 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   (the loop's shapes), `report-conventions-card.md` (the source L2 and L3 copy).
 - **Deliver the contract (`Read` it), never just name a path**; scope by role and need.
 - **L2 suppresses L3**; **never describe L3 (the hook) as enforcing the format.**
+- **`report-conventions.sh` and `session-start.sh` are separate `SessionStart` entries in
+  `hooks.json` on purpose**: the card re-fires on `clear|compact`, and `session-start.sh`
+  must not (it reads `status: running` as a crash).
 - Driver-mode reports come from `run-digest` plus status lines already read.
 - **Scope is reports, not responses.** Glyphs and ⚠️ (blocked) vs 🔀 (waiting on you)
   are fixed; no decorative section markers, no tables, no bare ids.
@@ -234,8 +242,8 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   2.x, pre-2.0) are read, newer shadows older. **Trap:** in 3.x the slug is the
   *directory* — `basename <path> .md` yields `prd`/`tasks` for every feature.
 - **Two pin axes:** tool pin `GSPEC_PINNED_VERSION` (`gspec-backlog.sh pin`) and
-  artifact pin `spec-version` (`check`, fails loud; accepts `v1` and `v2` — do not
-  narrow). The pin catches unparseable formats; it is not a migration nudge.
+  artifact pin `spec-version` (`GSPEC_SPEC_VERSIONS`; `check` fails loud — never narrow
+  the supported set to drop a format the adapter still reads). The pin catches unparseable formats; it is not a migration nudge.
 - **Runbook: `docs/gspec-migration.md`** (agent path: `skills/migrate/SKILL.md` §2b);
   neither restates the pinned version, and `test-migrate.sh` asserts that.
 - **The 3.x relocation is `/gspec-migrate`'s move, never `/gaffer:migrate`'s**; install

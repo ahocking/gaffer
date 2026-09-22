@@ -107,11 +107,11 @@ just installed, and the supported artifact set is:
 ```bash
 scripts/gspec-backlog.sh pin
 # GSPEC_PINNED_VERSION=<pinned version>
-# GSPEC_SPEC_VERSIONS=v1 v2
+# GSPEC_SPEC_VERSIONS=<supported spec-versions>
 ```
 
-The supported set is **both** versions on purpose. Narrowing it to `v2` would
-make `check` return rc=3 — stopping the loop — on a repo whose backlog the
+The supported set deliberately includes older spec-versions the adapter still
+reads. Narrowing it to drop one would make `check` return rc=3 — stopping the loop — on a repo whose backlog the
 adapter reads perfectly well. The pin catches a format the code *cannot parse*;
 it is not a lever for nagging a repo into migrating.
 

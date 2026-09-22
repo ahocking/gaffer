@@ -151,7 +151,7 @@ files twice, and a fourth silent reader is the trap.
     outside it and unchanged; for a bundle the budget spans the whole bundle
     handoff
 
-- [ ] **P0**: The handoff says the spec it needs is in it
+- [x] **P0**: The handoff says the spec it needs is in it
   - whenever at least one section was inlined and none was named-not-inlined
     or reported unmatched, the body carries one fixed line stating that the
     specification text this
@@ -169,7 +169,7 @@ files twice, and a fourth silent reader is the trap.
     than inlined, or to investigate an anchor it reported unmatched, and then
     by heading with `offset`/`limit`, never whole
 
-- [ ] **P1**: The implementer keeps its own context lean
+- [x] **P1**: The implementer keeps its own context lean
   - `agents/implementer.md` states: run the narrowest test target that covers
     the change, and report the summary and failures rather than piping a whole
     test log into context — the full log belongs in the result file when the

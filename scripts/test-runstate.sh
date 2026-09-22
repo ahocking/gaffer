@@ -3295,6 +3295,110 @@ assert_true "the six lines follow the heading" \
 assert_true "a handoff built from empty stdin carries the block too" \
   "grep -q '^REQUIRED second-run: ' \"$HW_RUN_DIR/pkt-empty/handoff.md\""
 
+echo "-- handoff: an implementer handoff states its budget and the stop rule (implementer-continuation T1) --"
+# MUTATIONS RULED OUT: (a) the line written for every agent (drop the
+# `agent = implementer` test) -- the doc-writer assertion turns red; (b) the
+# override ignored (a hard-coded 120) -- the override and quoted/commented
+# assertions turn red; (c) a missing/invalid/zero value passed through rather
+# than defaulted -- those three turn red; (d) the line written AFTER the body
+# (between the driver's conditional REQUIRED lines and the six) -- the
+# byte-identity assertion turns red, since the tail below the header no longer
+# matches a handoff written without the line.
+HB_BODY='TEXT=Budget case
+REQUIRED: the regression sweep covering runstate.sh passes'
+hb_handoff() {  # <pkt> <agent> -- writes a handoff with the fixed body
+  printf '%s\n' "$HB_BODY" \
+    | (cd "$HW" && "$RUNSTATE" handoff .agents/run-state.yaml "$1" --tier integration --agent "$2") >/dev/null
+}
+hb_budget_count() { grep -c '^BUDGET: ' "$HW_RUN_DIR/$1/handoff.md" || true; }
+hb_has_budget() {  # <pkt> <n>
+  grep -qx "BUDGET: this dispatch has a budget of $2 tool calls\\. At the budget, stop at a safe boundary — never mid-edit — leave the partial work uncommitted in the working tree, write what is done and what remains to the result file, and return a status line whose first token is \`continue\`\\." \
+    "$HW_RUN_DIR/$1/handoff.md"
+}
+rm -f "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bdef implementer
+assert_true "default: with no project-overrides.yaml, the implementer budget line reads 120 and states the stop rule" \
+  "hb_has_budget pkt-bdef 120"
+assert_true "the implementer handoff carries exactly ONE budget line" \
+  "[ \"\$(hb_budget_count pkt-bdef)\" = 1 ]"
+# Placement: line 9 -- directly after the header's blank line (header is
+# lines 1-8: title, blank, tier, agent, run-state, result, review, blank).
+assert_true "the budget line sits directly after the header, before the body" \
+  "[ \"\$(sed -n 8p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 9p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -q '^BUDGET: ' && [ \"\$(sed -n 10p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 11p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -qx 'TEXT=Budget case'"
+
+printf 'schema: 1\nimplementer_turn_budget: 150\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bov implementer
+assert_true "override: implementer_turn_budget: 150 is honoured" "hb_has_budget pkt-bov 150"
+printf "implementer_turn_budget: '75'   # quoted, comment-trailed\n" > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bq implementer
+assert_true "override: a quoted, comment-trailed value is honoured (75, not 120)" "hb_has_budget pkt-bq 75"
+
+printf 'schema: 1\npacket_attempts: 3\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bmiss implementer
+assert_true "a missing implementer_turn_budget key reads as 120" "hb_has_budget pkt-bmiss 120"
+printf 'implementer_turn_budget: lots\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-binv implementer
+assert_true "an invalid implementer_turn_budget reads as 120" "hb_has_budget pkt-binv 120"
+printf 'implementer_turn_budget: 0\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bzero implementer
+assert_true "implementer_turn_budget: 0 reads as 120" "hb_has_budget pkt-bzero 120"
+printf 'implementer_turn_budget: 00\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bzero2 implementer
+assert_true "implementer_turn_budget: 00 (zero with a leading zero) reads as 120" "hb_has_budget pkt-bzero2 120"
+rm -f "$HW/.agents/project-overrides.yaml"
+
+hb_handoff pkt-bdoc doc-writer
+assert_true "a doc-writer handoff carries no budget line" \
+  "[ \"\$(hb_budget_count pkt-bdoc)\" = 0 ]"
+# Byte identity: everything below the header (and, for the implementer, below
+# the budget line and its blank) is identical to the doc-writer handoff built
+# from the same body -- body, driver's conditional line, and the REQUIRED block.
+tail -n +9  "$HW_RUN_DIR/pkt-bdoc/handoff.md"  > "$HW/hb-doc.tail"
+tail -n +11 "$HW_RUN_DIR/pkt-bdef/handoff.md" > "$HW/hb-impl.tail"
+assert_true "with the budget line removed, the body and REQUIRED block are byte-identical to a handoff written without it" \
+  "[ -s \"$HW/hb-doc.tail\" ] && cmp -s \"$HW/hb-doc.tail\" \"$HW/hb-impl.tail\""
+
+# The same cases on a host with jq and python3 absent (the plan's standing rule
+# for every new case in this feature). `NOTOOLS` wraps ONLY the runstate.sh
+# call, never the sweep's own helpers; distinct packet ids so no dir collides.
+# MUTATION RULED OUT: a budget scan that shells out to jq/python3 -- the
+# no-tools cases below turn red while the full-PATH ones above stay green.
+hb_handoff_nt() {  # <pkt> <agent> -- as hb_handoff, runstate.sh on the no-tools PATH
+  printf '%s\n' "$HB_BODY" \
+    | (cd "$HW" && PATH="$NOTOOLS:$PATH" "$RUNSTATE" handoff .agents/run-state.yaml "$1" --tier integration --agent "$2") >/dev/null
+}
+rm -f "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bdef implementer
+assert_true "default (no-tools host): the implementer budget line reads 120" "hb_has_budget pkt-nt-bdef 120"
+assert_true "(no-tools host) the implementer handoff carries exactly ONE budget line" \
+  "[ \"\$(hb_budget_count pkt-nt-bdef)\" = 1 ]"
+tail -n +9 "$HW_RUN_DIR/pkt-bdef/handoff.md"    > "$HW/hb-full.tail"
+tail -n +9 "$HW_RUN_DIR/pkt-nt-bdef/handoff.md" > "$HW/hb-nt.tail"
+assert_true "(no-tools host) the implementer handoff below the header is byte-identical to the full-PATH one" \
+  "[ -s \"$HW/hb-nt.tail\" ] && cmp -s \"$HW/hb-full.tail\" \"$HW/hb-nt.tail\""
+
+printf 'schema: 1\nimplementer_turn_budget: 150\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bov implementer
+assert_true "override (no-tools host): implementer_turn_budget: 150 is honoured" "hb_has_budget pkt-nt-bov 150"
+printf "implementer_turn_budget: '75'   # quoted, comment-trailed\n" > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bq implementer
+assert_true "override (no-tools host): a quoted, comment-trailed value is honoured (75)" "hb_has_budget pkt-nt-bq 75"
+
+printf 'schema: 1\npacket_attempts: 3\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bmiss implementer
+assert_true "(no-tools host) a missing implementer_turn_budget key reads as 120" "hb_has_budget pkt-nt-bmiss 120"
+printf 'implementer_turn_budget: lots\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-binv implementer
+assert_true "(no-tools host) an invalid implementer_turn_budget reads as 120" "hb_has_budget pkt-nt-binv 120"
+printf 'implementer_turn_budget: 0\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bzero implementer
+assert_true "(no-tools host) implementer_turn_budget: 0 reads as 120" "hb_has_budget pkt-nt-bzero 120"
+rm -f "$HW/.agents/project-overrides.yaml"
+
+hb_handoff_nt pkt-nt-bdoc doc-writer
+assert_true "(no-tools host) a doc-writer handoff carries no budget line" \
+  "[ \"\$(hb_budget_count pkt-nt-bdoc)\" = 0 ]"
+
 echo "-- handoff: an unreadable contract template REFUSES the handoff (handoff-verification-contract T2) --"
 # MUTATION RULED OUT: warn-and-continue. Replace the two `die`s guarding the
 # template with a `printf ... >&2` that falls through to the write, and these

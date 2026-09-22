@@ -3602,6 +3602,37 @@ _rs_latest_routing_token() {
   printf '%s' "$line" | sed -E 's/.*"token":"([^"]*)".*/\1/'
 }
 
+# --- implementer_turn_budget: the implementer's budget, in tool calls ---------
+# implementer-continuation T1. Same token-scanning shape as
+# _rs_packet_attempts_limit: token-scan the remainder after
+# `implementer_turn_budget:`, skipping anything that is not purely digits (so
+# a trailing comment cannot defeat this) and stripping one matching pair of
+# quotes from EACH token before testing digit-ness (`'150'` is legal YAML and
+# must not read as invalid). Missing, invalid and zero all read as 120; leading
+# zeros are stripped in awk, so `00` reads as zero (120) rather than slipping
+# past the `0` case as a "positive" value.
+_rs_implementer_turn_budget() {
+  local main_root="$1" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^implementer_turn_budget:[[:space:]]*/ {
+        line = $0
+        sub(/^implementer_turn_budget:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { sub(/^0+/, "", tok); print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo 120 ;; *) echo "$v" ;; esac
+}
+
 cmd_handoff() {
   local f="" pkt="" tier="" agent="" pos=0
   while [ $# -gt 0 ]; do
@@ -3697,6 +3728,22 @@ cmd_handoff() {
     exit 1
   fi
 
+  # --- the implementer's budget line (implementer-continuation T1) -----------
+  # Written for `--agent implementer` and for no other agent, on every
+  # implementer handoff (first dispatch, continuation, fix/retry re-dispatch
+  # alike -- each is a fresh `handoff` call). It goes directly after the
+  # header and BEFORE the body: placed after the body it would sit between the
+  # driver's own conditional REQUIRED lines and the six, separating the two.
+  # With it removed, the rest of the file is byte-identical to a handoff
+  # written without it (test-runstate.sh pins that).
+  local budget_line=""
+  if [ "$agent" = "implementer" ]; then
+    local budget_root budget
+    budget_root="$(_rs_main_checkout_root)" || die "handoff: not a git repo"
+    budget="$(_rs_implementer_turn_budget "$budget_root")"
+    budget_line="BUDGET: this dispatch has a budget of ${budget} tool calls. At the budget, stop at a safe boundary — never mid-edit — leave the partial work uncommitted in the working tree, write what is done and what remains to the result file, and return a status line whose first token is \`continue\`."
+  fi
+
   # GLOBAL, not local -- an EXIT trap referencing a function-LOCAL is
   # bash-version-dependent while the shell unwinds under `set -e` (see
   # gspec-backlog.sh's cmd_check_task for the same fix and its measured
@@ -3713,6 +3760,7 @@ cmd_handoff() {
     printf 'run-state: %s\n' "$abs_f"
     printf 'result: %s\n' "${abs_pktdir}/${agent}.md"
     printf 'review: %s\n\n' "${abs_pktdir}/review.md"
+    if [ -n "$budget_line" ]; then printf '%s\n\n' "$budget_line"; fi
     printf '%s\n' "$body"
     # Verbatim, and LAST: the body carries the driver's own conditional
     # REQUIRED lines, which stay ahead of the block exactly as the driver wrote

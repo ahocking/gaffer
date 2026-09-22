@@ -280,6 +280,30 @@
 #                                    guessing would swallow the contract).
 #                                    Prints HANDOFF=<path> and
 #                                    AMENDMENT=inserted|replaced.
+#   refresh-handoff <run-state> <packet-id>
+#                                    implementer-continuation T5: splices ONE
+#                                    marked `## Partial work on disk` block into
+#                                    that packet's handoff.md, after the header
+#                                    and budget line and before the body, run by
+#                                    the driver before a continuation and before
+#                                    a fix/retry re-dispatch (never by handoff,
+#                                    so a first dispatch never carries it). The
+#                                    set: paths `git status --porcelain` on the
+#                                    main checkout reports within the union of
+#                                    the handoff's own FILES=/BUNDLE_FILES=
+#                                    lines, each marked existing or deleted;
+#                                    with no scope, only paths dirty since
+#                                    run-state's last_green_commit (none when it
+#                                    is unset). An empty set removes any block,
+#                                    leaving the file byte-identical to one
+#                                    written without this mechanism. Every
+#                                    other byte — the REQUIRED block and any
+#                                    amend-handoff block included — is left
+#                                    alone. Same refusals and containment as
+#                                    amend-handoff (plus a file with no
+#                                    `review: ` header line). Prints
+#                                    HANDOFF=<path>, PARTIAL_WORK=inserted|
+#                                    replaced|removed|none and PATHS=<n>.
 #   check-status --status "<line>"   loop-driver-run-gaps T1: the ONE mechanical
 #                                    reading of templates/status-line.md, run by
 #                                    the driver on every returned line. Prints
@@ -3965,6 +3989,262 @@ cmd_amend_handoff() {
   printf 'HANDOFF=%s\nAMENDMENT=%s\n' "$abs_target" "$mode"
 }
 
+# --- refresh-handoff: splice the partial-work block into a handoff ----------
+# implementer-continuation T5. Run by the driver before a continuation and
+# before a `fix`/`retry` re-dispatch, never by `handoff` itself — so the FIRST
+# dispatch of a packet never carries the block, however dirty the tree is.
+#
+# SPLICED, never regenerated, for the reasons amend-handoff gives above plus
+# one more: a continuation can follow a decider `retry`, and regenerating the
+# file through `handoff` would silently drop that `amend-handoff` block — the
+# retry instruction the re-dispatch exists to carry.
+#
+# THE SET: the paths `git status --porcelain` on the MAIN checkout reports that
+# fall within the packet's scope — the union of every `FILES=`/`BUNDLE_FILES=`
+# line in this packet's own handoff.md (this script's own output, never
+# `gspec/`), outside the marked blocks. A scope entry matches a path exactly, as
+# a directory prefix, or as a shell glob (task-files.yaml may carry
+# `db/migrations/**`). Each path is marked `existing` or `deleted` by whether it
+# is on disk now; a staged rename's source is listed as deleted.
+#
+# NO SCOPE (every FILES=/BUNDLE_FILES= value empty, or none at all): the set is
+# bounded to the paths dirty SINCE run-state's `last_green_commit` — an existing
+# path whose mtime is at or after that commit's committer time, a deleted path
+# that the commit's tree still carries — and never the whole checkout. No
+# `last_green_commit`, or one that does not resolve, bounds the set to nothing.
+# The loop's own `.agents/` files are never listed in this mode.
+#
+# PLACEMENT: after the header and the budget line (T1), before the piped body —
+# so the body stays adjacent to the `REQUIRED` block, in the order ADR 0029
+# fixed. ONE block, marked by whole-line HTML comments, replaced in place.
+# EMPTY SET: any existing block is removed together with the one blank line
+# written after it, and with no block present the file is not rewritten at all
+# — either way the file is byte-identical to one written without this
+# mechanism. The paths are written into the handoff only: this command appends
+# to no routing, outcomes or metrics record, and prints only their count.
+_RS_PARTIAL_BEGIN='<!-- orch:partial-work -->'
+_RS_PARTIAL_END='<!-- /orch:partial-work -->'
+
+# The mtime of $1 in epoch seconds (lstat). GNU `stat -c %Y` is tried FIRST:
+# on GNU, `stat -f` means file-system status and prints no mtime, which is the
+# trap begin-run's prune comment records. Non-digit output is a failure.
+_rs_mtime() {
+  local v=""
+  v="$(stat -c %Y "$1" 2>/dev/null)" || v=""
+  case "$v" in ''|*[!0-9]*) v="$(stat -f %m "$1" 2>/dev/null)" || v="" ;; esac
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$v"
+}
+
+# 0 when path $1 falls within the newline-separated scope entries in $2.
+_rs_in_scope() {
+  local p="$1" scope="$2" e
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    if [ "$p" = "$e" ]; then return 0; fi
+    case "$p" in "${e%/}/"*) return 0 ;; esac
+    # Unquoted on purpose: the entry is a glob pattern here.
+    # shellcheck disable=SC2254
+    case "$p" in $e) return 0 ;; esac
+  done <<< "$scope"
+  return 1
+}
+
+cmd_refresh_handoff() {
+  local f="" pkt="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --*) die "usage: refresh-handoff <run-state> <packet-id> (unknown option: $1)" ;;
+      *)
+        case "$pos" in
+          0) f="$1" ;;
+          1) pkt="$1" ;;
+          *) die "usage: refresh-handoff <run-state> <packet-id> (too many arguments)" ;;
+        esac
+        pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [ -n "$f" ] && [ -n "$pkt" ] || die "usage: refresh-handoff <run-state> <packet-id>"
+  need_file "$f"
+  _rs_check_pkt_id "$pkt"
+
+  local run_id
+  run_id="$(cmd_get "$f" run_id)"
+  [ -n "$run_id" ] || die "refresh-handoff: run-state has no run_id (begin-run has not been called)"
+  local rundir; rundir="$(_rs_run_dir "$run_id" refresh-handoff)"
+
+  # LEXICAL containment first, exactly as amend-handoff decides it.
+  local abs_rundir abs_target pktdir
+  abs_rundir="$(_rs_lexical_abspath "$rundir")"
+  abs_target="$(_rs_lexical_abspath "${rundir}/${pkt}/handoff.md")"
+  case "$abs_target" in
+    "${abs_rundir}/"*) ;;
+    *) die "refresh-handoff: packet '${pkt}' resolves outside the current run directory (${abs_rundir})" ;;
+  esac
+  pktdir="$(dirname "$abs_target")"
+
+  [ -f "$abs_target" ] \
+    || die "refresh-handoff: no handoff file for packet '${pkt}' at ${abs_target} — handoff has not been called for it in this run"
+
+  # SYMLINK-SAFE containment, the second half of the pair.
+  local real_rundir real_pktdir
+  real_rundir="$(cd "$abs_rundir" 2>/dev/null && pwd -P)" || die "refresh-handoff: cannot resolve the run directory"
+  real_pktdir="$(cd "$pktdir" 2>/dev/null && pwd -P)" || die "refresh-handoff: cannot resolve the packet directory"
+  case "$real_pktdir" in
+    "$real_rundir"|"$real_rundir"/*) ;;
+    *) die "refresh-handoff: packet '${pkt}' escapes the run directory via a symlink" ;;
+  esac
+
+  # ONE scan of the file: the partial-work markers (counts and first
+  # positions), the insertion point after the header and budget line, and the
+  # scope -- every FILES=/BUNDLE_FILES= value outside both marked blocks, one
+  # entry per line.
+  local scan sm_count em_count sm_line em_line ins_line
+  scan="$(awk -v sm="$_RS_PARTIAL_BEGIN" -v em="$_RS_PARTIAL_END" \
+               -v am="$_RS_AMEND_BEGIN" -v ae="$_RS_AMEND_END" '
+    { line[FNR] = $0 }
+    $0 == sm { smc++; if (!sml) sml = FNR; inb = 1 }
+    $0 == em { emc++; if (!eml) eml = FNR; inb = 0; next }
+    $0 == am { ina = 1 }
+    $0 == ae { ina = 0; next }
+    !review && /^review: / { review = FNR }
+    !inb && !ina && /^(BUNDLE_)?FILES=/ {
+      v = $0; sub(/^(BUNDLE_)?FILES=/, "", v)
+      n = split(v, a, "|")
+      for (i = 1; i <= n; i++) if (a[i] != "") scope = scope a[i] "\n"
+    }
+    END {
+      ins = 0
+      if (review) {
+        ins = review
+        if (line[ins + 1] == "") ins++
+        if (line[ins + 1] ~ /^BUDGET: / && line[ins + 2] == "") ins += 2
+      }
+      printf "%d %d %d %d %d\n", smc + 0, emc + 0, sml + 0, eml + 0, ins
+      printf "%s", scope
+    }
+  ' "$abs_target")"
+  read -r sm_count em_count sm_line em_line ins_line <<< "${scan%%$'\n'*}"
+  local scope=""
+  case "$scan" in *$'\n'*) scope="${scan#*$'\n'}" ;; esac
+
+  [ "$ins_line" -gt 0 ] \
+    || die "refresh-handoff: ${abs_target} has no 'review: ' header line — not a handoff this script wrote, refusing rather than guessing where its header ends"
+
+  local mode
+  if [ "$sm_count" = 0 ] && [ "$em_count" = 0 ]; then
+    mode=absent
+  elif [ "$sm_count" = 1 ] && [ "$em_count" = 1 ] && [ "$em_line" -gt "$sm_line" ]; then
+    mode=present
+  else
+    die "refresh-handoff: ${abs_target} carries a malformed partial-work block (${sm_count} opening and ${em_count} closing marker lines) — refusing rather than guessing where the block ends"
+  fi
+
+  # A block this mechanism wrote always starts BELOW the insertion point, so a
+  # block at or above it was placed by something else -- and the splice below
+  # re-inserts at `sml - 1`, which is no record number at all when the block
+  # starts at line 1. Refuse, the way `set` refuses a key it cannot address,
+  # rather than deleting the old block and silently reporting `replaced` for a
+  # block that was never written back.
+  if [ "$mode" = present ] && [ "$sm_line" -le "$ins_line" ]; then
+    die "refresh-handoff: ${abs_target} carries a partial-work block at line ${sm_line}, at or above the end of its header (line ${ins_line}) — not one this script wrote, refusing rather than splicing over the header"
+  fi
+
+  local root
+  root="$(_rs_main_checkout_root)" || die "refresh-handoff: not a git repo"
+
+  # No-scope bound: the committer time of last_green_commit. Unset or
+  # unresolvable leaves green_ts empty, which bounds the set to nothing.
+  local green="" green_ts=""
+  if [ -z "$scope" ]; then
+    green="$(cmd_get "$f" last_green_commit)"
+    if [ -n "$green" ]; then
+      green_ts="$(git -C "$root" log -1 --format=%ct "${green}^{commit}" -- 2>/dev/null || true)"
+      case "$green_ts" in ''|*[!0-9]*) green_ts="" ;; esac
+    fi
+  fi
+
+  # GLOBAL, not local -- see cmd_handoff's comment on the same pattern. The
+  # status listing is NUL-delimited (-z), so it goes through a temp file rather
+  # than a command substitution, which would drop the NULs.
+  _rs_tmp="" _rs_tmp2=""
+  trap '[ -n "${_rs_tmp:-}" ] && rm -f "$_rs_tmp"; [ -n "${_rs_tmp2:-}" ] && rm -f "$_rs_tmp2"; :' EXIT
+  _rs_tmp2="$(mktemp "${pktdir}/.refresh-status.XXXXXX")" || die "cannot create temp file in ${pktdir}"
+  git -C "$root" status --porcelain -z --untracked-files=all > "$_rs_tmp2" 2>/dev/null \
+    || die "refresh-handoff: git status failed on the main checkout (${root})"
+
+  local ent xy p src listed="" seen=$'\n' count=0 state mt
+  local -a cands
+  while IFS= read -r -d '' ent; do
+    xy="${ent:0:2}"; p="${ent:3}"
+    cands=("$p")
+    case "$xy" in
+      R*|C*) IFS= read -r -d '' src || src=""
+             case "$xy" in R*) [ -n "$src" ] && cands+=("$src") ;; esac ;;
+    esac
+    for p in "${cands[@]}"; do
+      [ -n "$p" ] || continue
+      case "$seen" in *$'\n'"$p"$'\n'*) continue ;; esac
+      if [ -e "${root}/${p}" ] || [ -L "${root}/${p}" ]; then state=existing; else state=deleted; fi
+      if [ -n "$scope" ]; then
+        _rs_in_scope "$p" "$scope" || continue
+      else
+        [ -n "$green_ts" ] || continue
+        case "$p" in .agents/*) continue ;; esac
+        if [ "$state" = existing ]; then
+          mt="$(_rs_mtime "${root}/${p}")" || continue
+          [ "$mt" -ge "$green_ts" ] || continue
+        else
+          git -C "$root" cat-file -e "${green}:${p}" 2>/dev/null || continue
+        fi
+      fi
+      seen="${seen}${p}"$'\n'
+      # A newline or CR inside a path would open a line of its own in the
+      # handoff (a marker line included); shown escaped instead.
+      p="${p//$'\n'/\\n}"; p="${p//$'\r'/\\r}"
+      listed="${listed}- ${p} (${state})"$'\n'
+      count=$((count + 1))
+    done
+  done < "$_rs_tmp2"
+  rm -f "$_rs_tmp2"; _rs_tmp2=""
+
+  local result
+  if [ "$count" = 0 ]; then
+    if [ "$mode" = absent ]; then
+      trap - EXIT
+      printf 'HANDOFF=%s\nPARTIAL_WORK=none\nPATHS=0\n' "$abs_target"
+      return 0
+    fi
+    result=removed
+  elif [ "$mode" = absent ]; then
+    result=inserted
+  else
+    result=replaced
+  fi
+
+  _rs_tmp="$(mktemp "${pktdir}/.refresh-handoff.XXXXXX")" || die "cannot create temp file in ${pktdir}"
+  # awk over a REGULAR FILE, splicing by line number: the old block (and the
+  # one blank line after it) is dropped, and the new one, when there is one, is
+  # written at the insertion point. ENVIRON, never -v, for the block text.
+  local block=""
+  if [ "$count" != 0 ]; then
+    block="${_RS_PARTIAL_BEGIN}"$'\n'"## Partial work on disk"$'\n\n'
+    block="${block}An earlier dispatch on this packet left the work below uncommitted in the working tree. Read these files as they now stand, verify them, and continue from them — do not recreate them."$'\n\n'
+    block="${block}${listed}${_RS_PARTIAL_END}"$'\n'
+  fi
+  RS_BLOCK="$block" awk -v mode="$mode" -v sml="$sm_line" -v eml="$em_line" -v ins="$ins_line" '
+    BEGIN { blk = ENVIRON["RS_BLOCK"] }
+    mode == "present" && FNR >= sml && FNR <= eml { if (FNR == eml) skip_blank = 1; next }
+    skip_blank { skip_blank = 0; if ($0 == "") next }
+    { print }
+    FNR == ins && mode == "absent" && blk != "" { printf "%s\n", blk }
+    mode == "present" && FNR == sml - 1 && blk != "" { printf "%s\n", blk }
+  ' "$abs_target" > "$_rs_tmp"
+  mv -f "$_rs_tmp" "$abs_target"
+  trap - EXIT
+  printf 'HANDOFF=%s\nPARTIAL_WORK=%s\nPATHS=%s\n' "$abs_target" "$result" "$count"
+}
+
 # =============================================================================
 # check-status (loop-driver-run-gaps T1)
 # =============================================================================
@@ -6358,6 +6638,7 @@ case "$cmd" in
   begin-run)     cmd_begin_run     "$@" ;;
   handoff)       cmd_handoff       "$@" ;;
   amend-handoff) cmd_amend_handoff "$@" ;;
+  refresh-handoff) cmd_refresh_handoff "$@" ;;
   check-status)  cmd_check_status  "$@" ;;
   write-result)  cmd_write_result  "$@" ;;
   route)         cmd_route         "$@" ;;

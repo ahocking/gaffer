@@ -97,8 +97,8 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   `--relay`/`--inline` still accepted as a no-op.
 - **Parallel mode** — retired (ADR 0016, `retire-unused-loop-modes` T2, 2026-09-15);
   `--parallel` still accepted as a no-op. Still live: schema-3 `lanes:`/`mode:
-  parallel` run-state is **read-only compatibility** (`runstate.sh lanes` projects it
-  for `resume`); nothing may write it again. Concurrency is loop-driver guidance
+  parallel` run-state is **read-only compatibility**: `resume` stops on it and reports
+  its lanes via `runstate.sh lanes`, with no auto-migration; nothing may write it again. Concurrency is loop-driver guidance
   (`agents/chief-engineer.md` Concurrency); never use a worktree for a loop packet.
 - **Rate-limit auto-pause** — retired (ADR 0018, `retire-unused-loop-modes` T2,
   2026-09-15). `/gaffer:migrate` cleans up a leftover `rate_limit_pause:` block or stale

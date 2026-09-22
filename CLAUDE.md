@@ -105,6 +105,11 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   2026-09-15). `/gaffer:migrate` cleans up a leftover `rate_limit_pause:` block or stale
   `statusLine` entry only with operator confirmation, never touching a foreign
   `statusLine`.
+- **End-of-run ADR 0026 routing** — retired (ADR 0026 amendment, 2026-09-22). No
+  architect dispatch at termination and no `end-of-run-review` routing record; the
+  whole-branch review stays, its status line is relayed with the review file's path,
+  and each note it reports becomes one `add-finding` entry. The decider's own
+  `append-task`/`hand-off-feature` are a different mechanism and stay.
 - **Autonomy levels** — retired (`retire-autonomy-levels`, 2026-09-20; ADR 0004/0006
   in part). One guard rule set; a stricter mode is specced fresh, never by restoring
   the ladder. `/gaffer:migrate` removes `.agents/autonomy`/`autonomy_ceiling` and only
@@ -171,16 +176,6 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 - **A probe that does not reproduce the phenomenon cannot eliminate a cause** (the
   `trim-note` SIGPIPE flake, `runstate-write-integrity` tasks).
 
-### Post-completion findings (ADR 0026)
-
-- **Arm 1:** an incomplete feature with an unchecked task and an unchecked capability
-  covering the finding → append one unchecked task (truthful `covers:`); never modify
-  existing lines or capability checkboxes.
-- **Arm 2** (everything else) **always ends at a question for the operator; no agent
-  ever files the feature.**
-- A task-immutability rejection means the edit was wrong — never bypass it or patch
-  the vendored hook. `-gaps` features do not stack.
-
 ### Driver mode (ADR 0028, ADR 0029)
 
 - **Refusal rule:** `guard.sh` refuses main-thread edits and recognised shell writes
@@ -233,8 +228,6 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 - **A packet-close `write` must carry** `schema`, `run_id`, `branch`, every `driver_*`
   key, `status`, `pending_questions` and `findings:` from the on-disk file (`run-loop`
   §3.6).
-- **`end-of-run-review` is a fixed non-packet id**, recorded before `run-tally` is read;
-  never record an outcome for it.
 - The decider's authority is a closed list (`agents/chief-engineer.md` §Escalation
   decider, §Periodic review).
 - **A `settings.json` at the plugin root does not supply `autoCompactWindow`** (ADR 0028

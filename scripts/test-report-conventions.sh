@@ -668,84 +668,120 @@ _cont_order() { # label, span
 _cont_order 'run-loop §3.5: record-start, then refresh-handoff, then the dispatch' "$cont_arm_skill"
 _cont_order 'loop-driver: record-start, then refresh-handoff, then the dispatch'   "$cont_arm_agent"
 
-printf '\n== the end-of-run arm-2 proposal is recorded through the core (loop-driver-run-gaps T5) ==\n'
-# ADR 0026 arm 2 ends at a question for the operator, and until now that question
-# existed only as prose the driver typed into the stop report: nothing recorded it,
-# so `run-tally` counted no decision for it and the header read `🔀 0` beside a
-# rendered decision block. The fix is a routing record for a FIXED id --
-# `end-of-run-review`, which is not a packet -- written from the architect's own
-# status line. This section pins the clause that tells the driver to write it.
+printf '\n== the whole-branch review survives its routing step, and its notes become findings ==\n'
+# The end-of-run ADR 0026 routing step is RETIRED (ADR 0026 amendment 2026-09-22): §4
+# no longer dispatches an architect over the review file, and writes no
+# `end-of-run-review` routing record. Arm 1 needed an incomplete feature with an
+# unchecked task AND an unchecked capability, and by §4 every task and capability of
+# the feature just finished is already checked (§3.6 flips them at each land) -- so
+# arm 1 was structurally unreachable there and arm 2 could only ever propose.
 #
-# Four things in it are each the whole point, and each is a needle below: the fixed
-# id (any other id either collides with a packet or is a path-traversal segment);
-# the `hand-off-feature` token with that status line as `--status` (the record is
-# what `run-digest` renders and `run-tally` counts); the printed `ACTION` being NOT
-# acted on (it reads `discard-advance`, verified by running it -- there is no packet
-# to discard and no cursor to advance at termination, and a driver that obeyed it
-# would try to advance a finished backlog); and NO outcome recorded for that id
-# (`record-outcome` for a non-packet is how the outcomes log grows a start-less
-# record `_rs_open_packets` would later read as an open packet).
+# Two failure modes, and this section pins against both. (1) The subtraction takes
+# the REVIEW with it: §4 stops reviewing the branch at all, and nothing notices
+# because the routing prose it was tangled with is gone. (2) The note goes nowhere:
+# the driver relays a line and the note dies with the run directory, which
+# `begin-run` prunes after two runs, leaving the findings index -- the only thing
+# §2's fresh-run write carries forward -- with no record of it.
 #
-# The ORDERING needles are the ones that rule out the defect itself: a driver told
-# to record the proposal without being told WHEN can record it after the stop
-# report has already read `run-tally`, which prints `DECISIONS=0` beside a decision
-# block -- exactly the state this feature exists to remove, reached by following
-# the clause. Asserted twice over: the clause states the ordering, and the route
-# call physically precedes the `run-tally` read in the file.
+# So: the reviewer dispatch and its bounded diff must still be there, the reviewer's
+# own line must be relayed with the review file's path (the driver never opens that
+# file -- that rule is now absolute, with no exception to explain), and each note the
+# line reports must become one `add-finding` entry with mandatory `--packets`.
 #
 # Extracted by its own content anchor and guarded non-empty before anything is
 # scanned over it, as the extractions above are: a range matching nothing yields an
 # empty span that satisfies every scan, and deleting the clause is exactly what
-# empties this range -- the mutation check, verified by making that deletion. Both
-# anchors sit on ONE wrapped line of the clause; an end anchor spanning a line wrap
-# matches nothing and the range runs on to swallow the rest of the file. That is
-# the vacuous pass the non-empty guard cannot catch: it only sees that the span is
-# non-empty, and an overrun span is the least empty thing there is. The ceiling
-# below is what catches it, and the margin is measured, not assumed: the live span
-# is 28 lines, while a span run on to end of file is 221.
-_extract_termination_record() { # file -> §4's arm-2 termination routing record clause
-  sed -n '/When that status line reports an arm-2 proposal/,/no call, no record, and no figure changes/p' "$1"
+# empties this range. Both anchors sit on ONE wrapped line; an end anchor spanning a
+# line wrap matches nothing and the range runs on to swallow the rest of the file --
+# the vacuous pass the non-empty guard cannot catch, which the ceiling is for.
+_extract_review_record() { # file -> §4's relay-and-record clause
+  sed -n '/You do not open that review file/,/no call, no finding, and no figure changes/p' "$1"
 }
-term_record="$(_extract_termination_record "$ROOT/skills/run-loop/SKILL.md")"
-[ -n "$term_record" ] && ok 'run-loop §4 termination-record clause extracted (anchor holds)' \
-  || bad 'run-loop §4 termination-record clause extracted (anchor holds)' \
-      'empty -- anchor moved, or the arm-2 proposal is again recorded nowhere'
-under_ceiling 'the termination-record span stays inside its ceiling (end anchor still matches)' \
-  "$term_record"
+rev_record="$(_extract_review_record "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$rev_record" ] && ok 'run-loop §4 relay-and-record clause extracted (anchor holds)' \
+  || bad 'run-loop §4 relay-and-record clause extracted (anchor holds)' \
+      'empty -- anchor moved, or the review notes are again recorded nowhere'
+under_ceiling 'the relay-and-record span stays inside its ceiling (end anchor still matches)' \
+  "$rev_record"
 
 # Needles stay short enough to sit on ONE wrapped line of the clause: `has` is a
 # plain substring match over the multi-line span, so a phrase broken by a wrap
 # matches nothing and fails a clause that is present. No pipe into the loop -- a
 # `while read` on the right of one runs in a subshell and every ok/bad it counted
 # would be discarded.
-while IFS='|' read -r tr_label tr_needle; do
-  [ -n "$tr_label" ] || continue
-  has "run-loop §4 termination record: $tr_label" "$tr_needle" "$term_record"
-done <<'TERM_RECORD_NEEDLES'
-the fixed termination id|end-of-run-review
-which is stated not to be a packet|never a packet
-the routing token|hand-off-feature
-one invocation carrying the id, the token and the status argument|end-of-run-review hand-off-feature --status
-passing the architect's own line as --status|'<that status line>'
-judged from the line already relayed, with nothing new to match on|no new status token
-the printed ACTION is not acted on|is not to be acted on
-and no outcome is recorded for the id|Record no outcome for that id
-the record is written as the status line is read|as you read the architect's status line
-and before the stop report reads the tally|before the stop report reads `run-tally`
-an arm-1-only or empty routing result records nothing|records nothing at all
-TERM_RECORD_NEEDLES
+while IFS='|' read -r rv_label rv_needle; do
+  [ -n "$rv_label" ] || continue
+  has "run-loop §4 relay-and-record: $rv_label" "$rv_needle" "$rev_record"
+done <<'REVIEW_RECORD_NEEDLES'
+the driver still never opens the review file|never open a result file
+the reviewer's own line is what the stop report carries|relay **that line**, verbatim
+and the review file's path is named for the operator|review file's path beside it
+one finding per note the line reports|Record one finding per note that status line reports
+through the existing subcommand, with the mandatory packets flag|runstate.sh add-finding .agents/run-state.yaml <id> '<summary>' --packets
+the flag is stated to be mandatory|`--packets` is mandatory
+the summary comes from the line, never from an unread file|never a finding you invent
+expiry is the existing rule, with nothing new added|expiry stays the positive-evidence rule
+a review with no notes records nothing|reports no notes records nothing at
+the retired step is named as retired|retired (ADR 0026 amendment 2026-09-22)
+and nothing here writes into the spec record|appends a task, or
+REVIEW_RECORD_NEEDLES
 
-# The stated ordering above is prose; this is the same rule read off the file's own
-# structure, so a clause that says "before" while sitting after the tally step fails
-# here even with every needle green.
-tr_route_ln="$(grep -n 'end-of-run-review hand-off-feature --status' "$ROOT/skills/run-loop/SKILL.md" | head -1 | cut -d: -f1)"
-tr_tally_ln="$(grep -n 'runstate.sh run-tally' "$ROOT/skills/run-loop/SKILL.md" | head -1 | cut -d: -f1)"
-if [ -n "$tr_route_ln" ] && [ -n "$tr_tally_ln" ] && [ "$tr_route_ln" -lt "$tr_tally_ln" ]; then
-  ok 'run-loop §4: the route call is stated before the stop report reads run-tally'
-else
-  bad 'run-loop §4: the route call is stated before the stop report reads run-tally' \
-    "route line=${tr_route_ln:-none}, run-tally line=${tr_tally_ln:-none}"
-fi
+# The review itself is the half that must NOT have been subtracted, and it lives
+# above the clause extracted here -- so it is read off §4 as a whole.
+_extract_s4() { # file -> everything from the §4 heading to the end of the skill
+  sed -n '/^## 4\. Termination/,$p' "$1"
+}
+s4="$(_extract_s4 "$ROOT/skills/run-loop/SKILL.md")"
+[ -n "$s4" ] && ok 'run-loop §4 extracted (heading holds)' \
+  || bad 'run-loop §4 extracted (heading holds)' 'empty -- the §4 heading moved'
+while IFS='|' read -r s4_label s4_needle; do
+  [ -n "$s4_label" ] || continue
+  has "run-loop §4 still reviews the branch: $s4_label" "$s4_needle" "$s4"
+done <<'S4_REVIEW_NEEDLES'
+the reviewer's model is resolved at the dispatch site|routing.sh resolve reviewer
+one broad whole-branch review is dispatched|**one broad whole-branch review** (the `reviewer`)
+over this run's own work, not the whole branch|not everything the branch has accumulated since its
+the review writes through the read-only agent's one write|through `write-result` to that path
+and returns one status line|returns one
+S4_REVIEW_NEEDLES
+
+# The retired step, read as an ABSENCE over the same span. Scoped to §4 on purpose:
+# `arm-1 append-task` is still the escalation decider's own mid-run mechanism and is
+# named in §3.5, so a file-wide absence check would fail on live prose.
+while IFS='|' read -r s4x_label s4x_needle; do
+  [ -n "$s4x_label" ] || continue
+  case "$s4" in
+    *"$s4x_needle"*) bad "run-loop §4 no longer routes by ADR 0026's arms: $s4x_label" \
+                       "still present: $s4x_needle" ;;
+    *) ok "run-loop §4 no longer routes by ADR 0026's arms: $s4x_label" ;;
+  esac
+done <<'S4_ABSENT_NEEDLES'
+no architect is dispatched at termination|routing.sh resolve architect
+no routing record under the fixed termination id|end-of-run-review
+no arm-1 routing|arm 1
+no arm-2 routing|arm 2
+no hyphenated arm-2 routing|arm-2
+S4_ABSENT_NEEDLES
+
+# The other two sites that carried a duty for the retired step.
+case "$(cat "$ROOT/agents/architect.md")" in
+  *'backlog termination'*) bad 'architect.md carries no termination-routing duty' \
+                             'still dispatched at backlog termination to route findings' ;;
+  *) ok 'architect.md carries no termination-routing duty' ;;
+esac
+blob_ld="$(_squeeze "$ROOT/agents/loop-driver.md")"
+case "$blob_ld" in
+  *'you dispatch the `architect` with that review file'*)
+    bad 'loop-driver.md: never-open-a-result-file has no termination exception' \
+      'still explains the rule by dispatching the architect over the review file' ;;
+  *) ok 'loop-driver.md: never-open-a-result-file has no termination exception' ;;
+esac
+case "$blob_ld" in
+  *'record one finding per note that line reports'*)
+    ok 'loop-driver.md: the termination review is relayed and its notes recorded' ;;
+  *) bad 'loop-driver.md: the termination review is relayed and its notes recorded' \
+      'expected the per-note finding rule beside the never-open rule' ;;
+esac
 
 printf '\n== CRLF checkout does not break site-delivery detection ==\n'
 # core.autocrlf=true + no .gitattributes here means a Windows checkout can
@@ -1490,102 +1526,6 @@ case "$sq_dec" in
       || bad 'second-stop control: the unpruned body carries both decision blocks' "blocks=$sq_ctl_blocks"
     fires 'second-stop control: the body rendered from the unpruned list yields a decision-count finding' \
       decision-count "$(_lint B "$TMP/sq-report-ctl.md" "$TMP/sq-digest")"
-    ;;
-esac
-
-printf '\n== a stop report carrying the end-of-run arm-2 proposal lints clean (loop-driver-run-gaps T6) ==\n'
-# The other half of T6, from the renderer's end: the run-state sweep pins what the
-# `end-of-run-review` record does to `run-digest`/`run-tally`/`sweep-open`; this pins
-# that a stop report rendered from those figures actually holds together.
-#
-# The run is built with the real scripts -- begin-run, record-start, record-outcome,
-# route -- so the digest and the tally come from the same writers §4 calls. One green
-# packet and ONE `hand-off-feature` record for the fixed termination id, which is the
-# defect's exact shape: the record emits TWO digest lines for one id, and the stop
-# report renders ONE decision block for it. The header 🔀 figure is built from the
-# DECISIONS value `run-tally` just printed, never a literal and never a count of
-# anything the renderer did itself, so a tally that counted the proposal twice puts
-# `🔀 2` above one block and `decision-count` fires.
-#
-# The control is the same run, the same printed figure and the same header with the
-# proposal's block (and its heading -- a heading left behind with no block under it is
-# a second, different defect) dropped: `decision-count` then fires, which is what
-# shows the clean result above is the rule holding rather than the rule not looking.
-EOR="$TMP/end-of-run-review"; mkdir -p "$EOR/.agents/metrics/outcomes"; git -C "$EOR" init -q
-printf 'schema: 3\nstatus: running\n' > "$EOR/.agents/run-state.yaml"
-eo_id="$(cd "$EOR" && "$RS" begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
-[ -n "$eo_id" ] && ok 'end-of-run-review fixture: begin-run minted a run id' \
-  || bad 'end-of-run-review fixture: begin-run minted a run id' 'no RUN_ID'
-mkdir -p "$EOR/.agents/loop/$eo_id/eo-t1"
-printf '# eo-t1: Reconcile imported balances\n' > "$EOR/.agents/loop/$eo_id/eo-t1/handoff.md"
-eo_status='hand-off-feature · the balance-drift gotcha needs its own feature, proposed slug balance-drift-audit, parent txn-import · result: needs-reading · .agents/loop/x/end-of-run-review/architect.md'
-(cd "$EOR" && "$RS" record-start eo-t1 EO1 \
-  && "$RS" record-outcome eo-t1 green EO1 \
-  && "$RS" route .agents/run-state.yaml end-of-run-review hand-off-feature --status "$eo_status") >/dev/null 2>&1 \
-  && ok 'end-of-run-review fixture: the landed packet and the termination record written by the real scripts' \
-  || bad 'end-of-run-review fixture: the landed packet and the termination record written by the real scripts' 'a runstate.sh call failed'
-
-(cd "$EOR" && "$RS" run-digest .agents/run-state.yaml) > "$TMP/eo-digest" 2>/dev/null
-eo_digest="$(cat "$TMP/eo-digest")"
-has 'end-of-run-review: the digest carries the handoff-feature line for the termination id' \
-  "$(printf 'handoff-feature\tend-of-run-review\t%s' "$eo_status")" "$eo_digest"
-eo_pkts="$(awk -F'\t' '$1 == "packet" { print $2 }' "$TMP/eo-digest" | tr '\n' ' ')"
-[ "$eo_pkts" = 'eo-t1 ' ] && ok 'end-of-run-review: the only packet line is the real packet -- the report owes the termination id no ✅/⚠️ row' \
-  || bad 'end-of-run-review: the only packet line is the real packet -- the report owes the termination id no ✅/⚠️ row' "packet lines: [$eo_pkts]"
-eo_tally="$(cd "$EOR" && "$RS" run-tally .agents/run-state.yaml 2>&1)"
-eo_dec="$(_rr_fig DECISIONS "$eo_tally")"; eo_ship="$(_rr_fig SHIPPED "$eo_tally")"
-[ "$eo_dec" = 1 ] && ok 'end-of-run-review: run-tally counts the proposal once -- DECISIONS=1' \
-  || bad 'end-of-run-review: run-tally counts the proposal once -- DECISIONS=1' "$eo_tally"
-
-# $1 = DECISIONS figure, $2 = SHIPPED figure, $3 = render the proposal's block (yes|no),
-# $4 = output file. Each bucket is omitted at 0, and the 🔀 figure is whatever was
-# passed in -- the renderer never counts its own blocks.
-_eo_report() {
-  local hdr='✅ **DONE** · Balance imports'
-  [ "${2:-0}" -gt 0 ] && hdr="$hdr · ✅ **$2 shipped**"
-  if [ "${1:-0}" -gt 0 ]; then
-    if [ "$1" = 1 ]; then hdr="$hdr · 🔀 **1 decision**"; else hdr="$hdr · 🔀 **$1 decisions**"; fi
-  fi
-  {
-    printf '%s\n\n' "$hdr"
-    printf 'Finished the backlog after 1 packet. Nothing left half-written.\n\n'
-    printf '✅ **Shipped**\n\n'
-    printf '> ✅ **Reconcile imported balances** (`eo-t1`) — landed green\n'
-    if [ "${3:-no}" = yes ]; then
-      printf '\n🔀 **Decisions** — reply `1A`\n\n'
-      printf '> **1 · File the balance-drift audit as its own feature?**\n>\n'
-      printf '> - **A ›** Yes — I hand you the slug and you run the feature command\n'
-      printf '>   → the proposal is scheduled before the next run picks work up\n'
-      printf '> - **B ›** No\n'
-      printf '>   → the gotcha stays a finding and nothing schedules it\n>\n'
-      printf '> **→ Pick A** — the parent plan is fully checked, so there is no unchecked task to hang it on.\n'
-    fi
-  } > "$4"
-}
-
-case "$eo_dec" in
-  ''|*[!0-9]*)
-    bad 'end-of-run-review: the report headed from the printed DECISIONS figure yields no decision-count finding' "no numeric DECISIONS: $eo_tally"
-    bad 'end-of-run-review control: the same report with the block dropped yields a decision-count finding' "no numeric DECISIONS: $eo_tally"
-    ;;
-  *)
-    case "$eo_ship" in ''|*[!0-9]*) eo_ship=0 ;; esac
-    _eo_report "$eo_dec" "$eo_ship" yes "$TMP/eo-report.md"
-    eo_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/eo-report.md")"
-    [ "$eo_blocks" = 1 ] && ok "end-of-run-review: the body carries one decision block, for the proposal" \
-      || bad "end-of-run-review: the body carries one decision block, for the proposal" "blocks=$eo_blocks"
-    eo_out="$(_lint B "$TMP/eo-report.md" "$TMP/eo-digest")"
-    not_fires 'end-of-run-review: a stop report whose header 🔀 is the printed DECISIONS figure, with one block for the proposal, yields no decision-count finding' \
-      decision-count "$eo_out"
-    [ "$eo_out" = 'REPORT_LINT=clean' ] && ok 'end-of-run-review: and the whole report is clean -- no rule fires on it' \
-      || bad 'end-of-run-review: and the whole report is clean -- no rule fires on it' "$eo_out"
-
-    _eo_report "$eo_dec" "$eo_ship" no "$TMP/eo-report-ctl.md"
-    eo_ctl_blocks="$(grep -c '^> \*\*[0-9][0-9]* · ' "$TMP/eo-report-ctl.md" || true)"
-    [ "${eo_ctl_blocks:-0}" = 0 ] && ok 'end-of-run-review control: the control body carries no decision block' \
-      || bad 'end-of-run-review control: the control body carries no decision block' "blocks=$eo_ctl_blocks"
-    fires 'end-of-run-review control: the same printed figure over a body with the block dropped yields a decision-count finding' \
-      decision-count "$(_lint B "$TMP/eo-report-ctl.md" "$TMP/eo-digest")"
     ;;
 esac
 

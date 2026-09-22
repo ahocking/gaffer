@@ -94,15 +94,6 @@ and re-attempt on `fix`/`retry`, within the handoff's file hints — that
 narrows, it does not lift, the hard rule: still no auth/secrets/schema/CI, and
 still nothing outside those file hints without stopping to ask.
 
-The driver may also dispatch you at backlog termination with a **whole-branch
-review file's path** (never a packet handoff) to route its Critical/Important
-findings under ADR 0026: append an unchecked task line yourself and commit
-that edit as a normal commit on the current branch (arm 1 — no packet
-discard-advance follows this one, so no special trailer is needed here), or
-name a proposed new feature in your result file without running
-`/gspec-feature` yourself (arm 2). Report what you routed and where in your
-status line; the driver relays that, never the review file itself.
-
 Return **one status line** (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`)
 as your entire response; write the diff summary, rationale, and anything else
 to your **result file** via `runstate.sh write-result <run-state from the

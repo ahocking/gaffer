@@ -891,8 +891,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
      single-member packet is unaffected, `$MEMBERS` being `<cursor>` alone.)
      For each `STALE=yes` line naming a member of `<landed>`: file a backlog
      task first if it is really "this should be built/fixed" and not already
-     filed (the arm 1/arm 2 routing in §4); a spent sign-off needs no
-     capture. Either way drop with `runstate.sh drop-finding
+     filed — capture precedes drop (ADR 0024), and "this should be
+     built/fixed" belongs in the backlog, never in a findings file (ADR
+     0022); a spent sign-off needs no capture. Either way drop with `runstate.sh drop-finding
      .agents/run-state.yaml <id>`. That same `findings --stale --finished`
      call also prints `OVER_THRESHOLD=` — when it reads `yes`, name the count
      (`STALE_COUNT`) as `stale-findings: <N>` in the report below; its
@@ -1019,69 +1020,33 @@ nothing. Read the result exactly as §4 states it for the stop report.
   writes its findings through `write-result` to that path and returns one
   status line as usual.
 
-  **You do not open that review file — this would be the one exception to
-  "never open a result file", so instead it stays zero: run
-  `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` (non-empty →
-  `model`; empty → omit `model`), then dispatch the `architect` with the review file's path, `.agents/run-state.yaml`'s path,
-  and a result path of your own choosing under the run directory** to do the
-  ADR 0026 routing itself, for any Critical/Important finding, in two arms
-  tried in order, never editing a completed record and never bypassing the
-  immutability control with a shell append:
+  **You do not open that review file — "never open a result file" has no
+  exception, not even here.** What you have is the reviewer's own status
+  line: relay **that line**, verbatim, in the stop report, and name the
+  review file's path beside it so the operator can open what you did not.
+  Never summarize findings you have not read, and never dispatch a further
+  agent to route them — the end-of-run routing step that once did was
+  retired (ADR 0026 amendment 2026-09-22).
 
-  - **Arm 1** applies when some feature in the backlog is **incomplete**, has
-    a plan file with at least one **unchecked** task line, and an **unchecked
-    capability in its PRD covers the finding** — both tests hold separately.
-    The architect appends a new unchecked task line to that feature's plan
-    file as an `Edit` anchored on an unchecked line, carrying a truthful
-    `covers:` naming that capability, and **commits that edit itself** (the
-    same pattern the escalation decider uses for its own
-    `append-task`) — write bounds: append only, never modify an existing
-    line, never touch a PRD checkbox. Choose the plan by **scope match**,
-    never by proximity or convenience.
-  - **Arm 2** is everything else, including a fully-checked parent plan: the
-    finding becomes a **new feature**. The architect does not run
-    `/gspec-feature` itself — it names the proposed slug/scope/parent in its
-    result file and reports this in its status line. **Neither do you, ever**
-    (ADR 0026 revision 2026-09-17): arm 2 **always terminates at a question in
-    the stop report** for the operator to act on. Being the main context —
-    whether a plain session or `claude --agent gaffer:loop-driver`, ADR 0028 —
-    means you *could* run `/gspec-feature`, and that is exactly what is
-    refused, whether or not driver mode has exited below. A completed feature
-    does not file its successor; the operator decides whether the proposal
-    becomes a feature. Record the slug, its scope in a sentence, and its parent
-    as a question in the stop report, and stop there.
-
-  The architect returns one status line summarizing what it routed and
-  where; relay that, not the review file's contents.
-
-  **When that status line reports an arm-2 proposal in its free-text
-  clause, record it through the core.** You judge that from the line you
-  already relay and from nothing else: arm 2 introduces
-  **no new status token**, so there is nothing mechanical to match on and
-  nothing further to ask the architect for. Run
-  `runstate.sh route .agents/run-state.yaml end-of-run-review hand-off-feature --status '<that status line>'`,
-  quoting the line by `templates/status-line.md`'s `'\''` rule.
-  `end-of-run-review` is a **fixed id naming this run's termination review,
-  never a packet**: it satisfies the packet-id charset, carries no `..`,
-  reads as a title where the stop report renders it, and can collide with
-  no packet — every gspec-sourced packet id is `<slug>-t<n>`. The call
-  prints `ACTION=discard-advance`, and
-  **that `ACTION` is not to be acted on**: there is no packet to discard
-  and no cursor to advance at termination, and the routing record the call
-  writes is the whole purpose of the call. **Record no outcome for that id** — `end-of-run-review` is
-  not a packet, has no handoff file and no start record, so
-  `record-outcome` is never called for it and it earns no `packet` line in
-  the digest.
-
-  **The record goes in as you read the architect's status line — and
-  before the stop report reads `run-tally` below**, which is what counts
-  it: a proposal recorded after that read prints `DECISIONS=0` beside a
-  rendered decision block, the defect this step exists to close. The stop
-  report then carries the proposal as the `handoff-feature` line
-  `run-digest` already emits for that id, and the operator gate is
-  unchanged — you still never run `/gspec-feature` yourself. **An
-  architect that routed everything to arm 1, or found nothing to route,
-  records nothing at all** — no call, no record, and no figure changes.
+  **Record one finding per note that status line reports**, so the note
+  survives this run: the findings index is the only thing §2's fresh-run
+  write carries forward, and `begin-run` prunes the run directory holding
+  the review file after two runs, so a note left only in that file is a
+  note the next run cannot see. For each note the line reports:
+  ```
+  runstate.sh add-finding .agents/run-state.yaml <id> '<summary>' --packets <packet-id[,id...]>
+  ```
+  The `<summary>` is **what that status line says about that note and
+  nothing more** — never a finding you invent about a file you have not
+  read. `--packets` is mandatory, so each finding names the packet or
+  packets the note is about; at termination those are landed packets, which
+  is truthful, and expiry stays the positive-evidence rule (ADR 0024)
+  already governing every finding — this step adds no expiry behaviour of
+  its own. The id is `[a-zA-Z0-9._-]`, and `add-finding` refuses a
+  duplicate rather than overwriting, so suffix a number when the id is
+  already in the index. Nothing here files a feature, appends a task, or
+  writes into `gspec/`. **A review that reports no notes records nothing at
+  all** — no call, no finding, and no figure changes.
 
   **Before declaring done, also account for any branch left behind by a
   `discard-advance` carrying a decider commit** (§3.5): `git branch --list
@@ -1146,7 +1111,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
   outcome recorded for `status` — the run's stop reason is unaffected either
   way.
 
-  Once every finding is routed and the whole-branch review is clean, set
+  Once the whole-branch review's verdict is read and every note it reports
+  is recorded as a finding, set
   `status: done` (`runstate.sh set .agents/run-state.yaml status done`), then
   snapshot run-metrics (best-effort, non-critical): `metrics.sh collect ||
   true`. Emit the **stop report** (`report-templates.md` shape B), assembled
@@ -1155,8 +1121,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
   whether or not this session was the one that ran it (a compaction or a
   resumed session reads the same report): what shipped in plain words,
   anything left undone, any decision still open (its `handoff-feature`
-  lines, including any arm-2 question, plus any un-merged decider-commit
-  branch), the single recommended next action, and `branch <orch/task-id>`
+  lines, plus any un-merged decider-commit branch), the whole-branch
+  review's own status line and the path to its review file, the single
+  recommended next action, and `branch <orch/task-id>`
   ready for review as the state line.
 
   **Its four digest-derived tally figures come from `runstate.sh run-tally

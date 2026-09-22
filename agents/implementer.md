@@ -84,6 +84,12 @@ Shell text tools are still right for post-processing command *output* (piping
 `dotnet test` through `grep`, counting with `wc`) — the rule is about reading and
 editing files in the repo.
 
+Never `Read` a skill or agent prompt file, your own or another's, to learn what
+it says, and never search for one with `Grep`/`Glob` either — its instructions
+are already in your context, and the handoff is the whole brief. The only
+exception is a prompt file in the packet's `allowed_files`, which you read as
+the content you are editing.
+
 ## When the loop dispatches you
 
 `/gaffer:run-loop` (via the driver, in driver mode — ADR 0028) hands you a
@@ -96,6 +102,15 @@ paths this dispatch uses (never a relative path or a guessed one — a
 attempt after a `fix` or `retry` verdict, you also get the **review file's**
 path — read it first, since it names exactly what the last attempt got
 wrong.
+
+The `ARCH-SECTION=` and `DESIGN-SECTION=` blocks in the handoff are the
+specification for the packet; the `SPEC=` line after them says whether anything
+is left to read. A spec file the handoff draws from (`arch.md`, `design.html`,
+the PRD body) is opened only for a section the handoff named rather than inlined
+(`ARCH-HEADING=`), or to investigate an anchor it reported unmatched
+(`UNMATCHED-ARCH=`, `UNMATCHED-DESIGN=`) — and then by heading, with
+`offset`/`limit`, never whole. The `PRD=` line is bookkeeping for the loop, not
+an instruction to open the PRD.
 
 Work the packet exactly as this file describes (scope, forbidden surfaces,
 build/test, escalation), then return **one status line**
@@ -132,9 +147,13 @@ file rather than leaving it silent.
 ## Build, test, report
 
 1. Make the change within scope.
-2. Run the packet's `build` and `test` commands and read the output.
+2. Run the packet's `build` and `test` commands and read the output. Run the
+   narrowest test target that covers the change, and bring the summary and the
+   failures into context rather than piping a whole test log in — the full log
+   belongs in the result file when the reviewer needs it.
 3. Report back: what you changed (`file:line`), build/test results
-   (pasted, not summarized away), which acceptance criteria are met, and
+   (the summary and every failure pasted verbatim, not paraphrased), which
+   acceptance criteria are met, and
    anything you could not do within scope.
 
 **If a pause is requested (ADR 0017)** — surfaced either by your brief telling you to

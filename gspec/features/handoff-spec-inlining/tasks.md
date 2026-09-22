@@ -114,7 +114,7 @@ Every regression sweep must pass green after every task.
   - covers: The design block a screen section names rides with it · The handoff says the spec it needs is in it
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T7** [P] **P0** Add to `agents/implementer.md`:
+- [x] **T7** [P] **P0** Add to `agents/implementer.md`:
   (a) under "When the loop dispatches you", that the `ARCH-SECTION=`/`DESIGN-SECTION=` blocks in the handoff are the specification for the packet. A spec file the handoff draws from is opened only for a section it named by heading, or to investigate an anchor it reported unmatched, and then by heading with `offset`/`limit`, never whole.
   (b) under "Build, test, report", run the narrowest test target that covers the change, and report the summary and failures rather than piping a whole test log into context — the full log belongs in the result file when the reviewer needs it.
   (c) beside "Do not re-read what you already have", never `Read` a skill or agent prompt file, its own or another's, and never search for one with `Grep`/`Glob` — its instructions are already in context, and the handoff is the whole brief.

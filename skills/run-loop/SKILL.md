@@ -524,9 +524,12 @@ nothing. Read the result exactly as §4 states it for the stop report.
    passing the printed reason and nothing else — not a rewritten brief, not
    your own restatement of the packet. On a second refusal: a line the driver
    does not route on proceeds to the reviewer dispatch exactly as today, and a
-   line the driver would have routed on (the reviewer's verdict, the decider's
-   token) is escalated as a blocking question naming the agent and the printed
-   reason, through `/gaffer:pause` exactly as §3.5's `stop` does. The driver
+   line the driver would have routed on — the reviewer's verdict, the
+   decider's token, and the implementer's own line, whose first token
+   decides between a continuation and the reviewer — is
+   escalated as a blocking question naming the agent and the printed reason,
+   never passed to the reviewer, through `/gaffer:pause` exactly as §3.5's
+   `stop` does. The driver
    never substitutes a line of its own, at either refusal — a line you wrote
    reports on work you did not do. The reviewer's content gate is unchanged:
    `check-status` reads the line's shape, never whether it is true, and a
@@ -540,7 +543,17 @@ nothing. Read the result exactly as §4 states it for the stop report.
    re-attempt, also pass the review file's path (from the handoff header,
    per §3.3). Read its one
    status line (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`); never open
-   its result file yourself. Then run
+   its result file yourself.
+
+   **Read and `check-status` that line before any reviewer dispatch, and
+   branch on its first token.** A first token of `continue` — the implementer
+   stopped at its turn budget with work still to do — goes straight to
+   `route` as its token, with that same line as `--status` (single-quoted,
+   the rule below), and **no reviewer is dispatched for it**: §3.5's
+   `continue` arm takes it from there. Any other first token proceeds to the
+   reviewer exactly as today:
+
+   Run
    `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve reviewer` (non-empty →
    `model`; empty → omit `model`) and dispatch the `reviewer` with the handoff
    path (and the review path on a re-attempt) and read its verdict the same
@@ -556,12 +569,32 @@ nothing. Read the result exactly as §4 states it for the stop report.
 5. **Act on `route`'s action** (judgment for `decider` lives in
    `agents/loop-driver.md` §Routing — this is the mechanical shape):
    - **`land`** — commit green, §3.6.
-   - **`attempt`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
+   - **`attempt`** — refresh the handoff first, then re-dispatch. Run
+     `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh refresh-handoff
+     <run-state-from-handoff-header> <cursor>` before **every** `attempt`
+     re-dispatch, so the fresh agent is briefed with the partial work the
+     failed attempt left on disk; then run
+     `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
      <agent>` for the packet's `--agent` (non-empty → `model`; empty → omit
-     `model`), then dispatch a fresh agent with the handoff and review
+     `model`), and dispatch a fresh agent with the handoff and review
      paths; record no start. The handoff still covers every member of
      `$MEMBERS`, so one `attempt` re-does the whole bundle, not just the
      cursor.
+   - **`continue`** — the implementer stopped at its turn budget; carry the
+     same packet on. Do exactly these three, in this order:
+     1. `runstate.sh record-start "$MEMBERS" --continue` — one continuation
+        record per member.
+     2. `runstate.sh refresh-handoff <run-state-from-handoff-header>
+        <cursor>`, which rewrites the packet's handoff in place with the
+        partial work now on disk.
+     3. `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve implementer`
+        (non-empty → `model`; empty → omit `model`), then dispatch a fresh
+        `implementer` with that same handoff path **and no review path**.
+     The order is the point: dispatching before `refresh-handoff` runs
+     briefs the continuation without the partial work it exists to carry on
+     from. A continuation spends no attempt — `route` printed the packet's
+     live `ATTEMPTS=` without incrementing it — and **no reviewer is
+     dispatched and no verdict is recorded for it**.
    - **`decider`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve
      chief-engineer` (non-empty → `model`; empty → omit `model`), then
      dispatch the `chief-engineer` as the **escalation decider** — its
@@ -661,7 +694,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
      to apply.
    - **`stop`** — the hard-gate/genuine-ambiguity path. Take the question
      text verbatim from `route`'s own `question:` line when it printed one
-     (the retry-past-limit case); otherwise use the status line of whichever
+     (the retry-past-limit case, and a `continue` past its continuation cap,
+     which stops exactly as an over-limit `retry` does); otherwise use the status line of whichever
      agent triggered this (the decider's `ask-operator` line, or the
      reviewer's `escalate` line when no decider was dispatched). Hand that
      question, with severity `blocking` and `packet: <cursor>`, to

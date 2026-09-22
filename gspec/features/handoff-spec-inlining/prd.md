@@ -180,7 +180,7 @@ files twice, and a fourth silent reader is the trap.
     brief
   - prose only; no sweep case
 
-- [ ] **P0**: The two files are read through one resolver and pinned by the sweep
+- [x] **P0**: The two files are read through one resolver and pinned by the sweep
   - `arch.md` and `design.html` paths come from a resolver beside
     `_resolve_prd_path`/`_resolve_plan_path`, enumerating the layouts these
     two files have existed in (today only the 3.x feature folder), newest

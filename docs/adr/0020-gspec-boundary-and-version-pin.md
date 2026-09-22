@@ -287,10 +287,15 @@ second, softer place completion could be inferred from — a criterion's
 *wording* is never load-bearing here, only whether the quote naming it exists
 verbatim.
 
-**Scope stays narrow on purpose.** `arch.md` and `design.html` are still
-outside the contract; `handoff` prints their paths (or that they are absent)
-for an implementer to read directly, exactly as `next` already does for
-`arch.md` — it does not parse either. The legacy `**P0 — text**` capability
+**Scope stays narrow on purpose.** `arch.md` and `design.html` are inside the
+contract only by their anchored sections (amended by `handoff-spec-inlining`):
+both are resolved through `_resolve_arch_path` / `_resolve_design_path`, and
+`handoff` inlines the `arch.md` section each `- arch:` anchor names and, for a
+`### Screen:` section, its `design.html` element, so no path to either file
+surfaces as an ARCH/DESIGN line in a handoff. A path appears only on the
+`SPEC=read by heading` line, for a section past the word budget or unmatched.
+The rest of either file is still not consumed, and `next` still only reports
+their paths. The legacy `**P0 — text**` capability
 shape `_feature_done` accepts for completion has no sub-bullet shape reliable
 enough to reproduce, so a quote against a legacy-shaped PRD correctly reads
 `UNMATCHED=` rather than guessing at one; regenerating with `/gspec-feature`
@@ -339,8 +344,10 @@ gspec 3.0 relocated everything about a feature into one folder:
 > `gspec/features/<slug>/tasks.md` — was `gspec/tasks/<slug>.md`
 > `gspec/features/<slug>/arch.md` and `design.html` — **new**, written by
 > `/gspec-architect`, and deliberately **outside the consumed contract**: they say
-> what to build, which is gspec's half of the seam. The loop hands an implementer
-> their paths; the adapter never parses them.
+> what to build, which is gspec's half of the seam. The loop handed an implementer
+> their paths, and the adapter read nothing in them *(amended 2026-09-22,
+> `handoff-spec-inlining`: anchored sections are now inside the contract; see
+> "Scope stays narrow on purpose" above)*.
 
 Plus `spec-version: v1` → **`v2`**, `deployable:` → `module:` in architecture specs,
 and `gspec/design/` retired as a concept.
@@ -460,6 +467,10 @@ The `- **route:**` convention 3.2.0 adds to `arch.md` Screen blocks is invisible
 to this adapter today (`arch.md` is outside the consumed contract) and becomes
 relevant only when `handoff-spec-inlining` pulls anchored sections of it inside —
 at which point it gets a resolver and a sweep case like the other two files.
+*(Amended 2026-09-22: that has now happened. `handoff-spec-inlining` resolves
+`arch.md` through `_resolve_arch_path`, and a `- **route:**` line inside a
+screen block is carried without ending it; see the sweep case in
+`scripts/test-gspec-backlog.sh`.)*
 
 ### D4 — gspec is the only supported spec source, but is not required
 

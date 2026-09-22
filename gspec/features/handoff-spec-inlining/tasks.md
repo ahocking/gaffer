@@ -123,7 +123,7 @@ Every regression sweep must pass green after every task.
   - covers: The handoff says the spec it needs is in it · The implementer keeps its own context lean
   - arch: —
   - files: agents/implementer.md
-- [ ] **T8** [P] **P0** Correct the standing statements that `arch.md` and `design.html` are outside the consumed contract and never parsed, so each says anchored sections are now inside it through `_resolve_arch_path`/`_resolve_design_path` and no path surfaces in a handoff. The statements are:
+- [x] **T8** [P] **P0** Correct the standing statements that `arch.md` and `design.html` are outside the consumed contract and never parsed, so each says anchored sections are now inside it through `_resolve_arch_path`/`_resolve_design_path` and no path surfaces in a handoff. The statements are:
   - in `scripts/gspec-backlog.sh` (comments only): the opening consumed-contract list ("nothing outside this list is read"), the "3.x feature folder also holds" layout comment, the `handoff` output contract in the subcommand summary header, and the output block above `_handoff_one` (replacing the `ARCH=<relpath, or "absent">` line with the T2–T6 markers);
   - the ADR 0020 bullet in `CLAUDE.md`;
   - the "Scope stays narrow on purpose" paragraph of `docs/adr/0020-gspec-boundary-and-version-pin.md`;

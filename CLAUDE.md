@@ -1182,10 +1182,15 @@ passing sweeps.
 
   All three are READ, and the newer shadows the older for a given slug (a slug in
   two layouts is a half-finished `/gspec-migrate`, and the destination is the
-  truth). The 3.x folder also holds `arch.md` and `design.html`; **neither is in
-  the consumed contract** — they say what to build, which is gspec's half of the
-  seam, so the loop hands their PATHS to an implementer and this adapter never
-  parses them. The trap the folder layout sets, and the one to check first if
+  truth). The 3.x folder is also where `arch.md` and `design.html` live, and
+  **their anchored sections are now inside the consumed contract**
+  (`handoff-spec-inlining`): both are resolved through `_resolve_arch_path` /
+  `_resolve_design_path`, and `handoff` inlines the `arch.md` section each
+  `- arch:` anchor names — plus, for a `### Screen:` section, its `design.html`
+  element — so no ARCH/DESIGN path line surfaces in a handoff. A path appears
+  only on the `SPEC=read by heading` line, for a section past the word budget or
+  unmatched. The rest of either file stays gspec's half of the seam, and `next`
+  still only reports their paths. The trap the folder layout sets, and the one to check first if
   anything here breaks: the slug lives in the **directory** name, so `basename
   <path> .md` — what every call site did before the seam — yields the literal
   `"prd"`/`"tasks"` for every feature at once, and N features read as one.

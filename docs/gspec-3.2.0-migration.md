@@ -47,9 +47,13 @@ scripts/gspec-backlog.sh plans .
 # <slug>  <path>  <layout>  <task-lines-read>  <unchecked>
 ```
 
-The 3.x feature folder also holds `arch.md` and `design.html`. Neither is in the
-plugin's consumed contract — they say *what to build*, which is gspec's half of
-the seam — so the loop hands an implementer their paths and never parses them.
+The 3.x feature folder is also where `arch.md` and `design.html` live. Their
+anchored sections are inside the plugin's consumed contract: the adapter
+resolves both files through `_resolve_arch_path` / `_resolve_design_path`, and
+`handoff` inlines the section each task's `- arch:` anchors name, so no path to
+either file surfaces as a line of its own in a handoff. A path appears only on
+the `SPEC=read by heading` line, for a section past the word budget or
+unmatched. The rest of either file stays gspec's half of the seam.
 
 ---
 

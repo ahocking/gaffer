@@ -41,10 +41,21 @@
 #                              makes the checkbox agree with what the plan
 #                              already showed to be true.
 #                              `runstate.sh` still never reads gspec/.
+#   <arch> / <design>          `arch.md` and `design.html`, READ-ONLY and only
+#                              in part (handoff-spec-inlining): `handoff` reads
+#                              the section each `- arch:` anchor names (the
+#                              H2/H3 heading shape, `_arch_section`) and, for an
+#                              inlined `### Screen:` section, its
+#                              `<section id="screen-<kebab>">` element
+#                              (`_design_section`), and inlines that text. The
+#                              rest of either file is not consumed. `next`
+#                              reports the two files' paths and reads nothing
+#                              in them.
 #
 # ...where <plan> and <prd> are LAYOUT-DEPENDENT and resolved in exactly one
 # place each — `_resolve_plan_path` / `_resolve_prd_path`, enumerated by
-# `_plan_paths` / `_prd_paths`. See LAYOUTS below.
+# `_plan_paths` / `_prd_paths`; <arch> and <design> likewise, through
+# `_resolve_arch_path` / `_resolve_design_path`. See LAYOUTS below.
 #   .agents/roadmap.yaml       PLUGIN-OWNED sequencing (order/why, interim
 #                              depends_on, and `deferred` — a human "not now",
 #                              which is NOT the derived `status` D2 prohibits;
@@ -183,7 +194,7 @@
 #                            path; and, per `- arch:` anchor, the `arch.md`
 #                            section it names inlined under `ARCH-SECTION=`,
 #                            or `UNMATCHED-ARCH=<anchor>` (handoff-spec-
-#                            inlining-t2 — no `ARCH=` path line is printed).
+#                            inlining-t2 — no arch.md path line is printed).
 #                            Inlining stops at a word budget
 #                            (`handoff_inline_word_budget`, default 6000):
 #                            from the section that would cross it on, each
@@ -203,6 +214,13 @@
 #                            `ARCH-HEADING=` past it, `DESIGN-SEEN=` in a
 #                            bundle; no screen or no design.html, the file is
 #                            never named (t6).
+#                            A task with anchors ends with one `SPEC=` line
+#                            (t5): the fixed "inlined" statement, which
+#                            carries no path, when every section was inlined;
+#                            otherwise the spec file paths to read the named
+#                            or unmatched sections from by heading — the only
+#                            place an arch.md/design.html path appears in
+#                            `handoff` output.
 #                            A `covers:` quote matching no PRD
 #                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
@@ -417,10 +435,14 @@
 # resolving to the destination is what makes re-running it idempotent. A shadowed
 # flat file is skipped by the enumerators, never read twice under two names.
 #
-# The 3.x feature folder also holds `arch.md` and `design.html`. Neither is in
-# the consumed contract: they say what to build and how it should look, which is
-# gspec's half of the seam — the loop hands their PATHS to an implementer, and
-# this adapter never parses them.
+# The 3.x feature folder is also where `arch.md` and `design.html` live, resolved
+# through `_resolve_arch_path` / `_resolve_design_path` (their own layout lists,
+# `_ARCH_LAYOUTS` / `_DESIGN_LAYOUTS`). Their anchored sections are inside the
+# consumed contract (see <arch> / <design> above): `handoff` inlines the text of
+# each section a task's `- arch:` anchors name, and prints no ARCH/DESIGN path
+# line. A file path appears in handoff output only on the `SPEC=read by heading`
+# line, for a section that was named by heading or unmatched rather than inlined
+# (`_handoff_spec_line`). The rest of either file stays gspec's half of the seam.
 #
 # LEGACY TASK-LINE SHAPES (migration compatibility — /gaffer:migrate).
 # gspec's canonical task line is `- [ ] **T<n>** ...`. Real pre-2.0 consumer repos
@@ -2348,7 +2370,7 @@ EOF
   [ -n "$prdrel" ] || prdrel="none"
 
   # The arch.md path is resolved (never a literal), used to READ sections and
-  # never printed: no `ARCH=` line of any form is part of this output.
+  # never printed: no arch.md path line of any form is part of this output.
   local archabs="" archrel=""
   local archpp; archpp="$(_resolve_arch_path "$slug" "$root")"
   if [ -n "$archpp" ]; then

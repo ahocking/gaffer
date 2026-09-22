@@ -7,6 +7,9 @@
 > (`skills/*/SKILL.md`) prompts instead. Treat this file as notes for a human
 > (or Claude) working *inside this repo*.
 
+This file holds **rules**; reasoning and evidence live in the ADRs (`docs/adr/`) and
+PRDs each rule points to. Append new evidence there, not here.
+
 ## What this repo is
 
 A portable Claude Code plugin — the reusable orchestration layer for AI-driven
@@ -39,1260 +42,231 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 ## This repo self-hosts its own backlog
 
 `gaffer` drives its own development through its own adapter. The backlog is
-**forward-only, plus one retro-spec** — the 25 shipped ADRs are deliberately not
-retro-specced, because that is archaeology over decisions that already have
-passing sweeps.
+**forward-only, plus one retro-spec**; shipped ADRs are deliberately not retro-specced.
 
-- **The one retro-spec is `run-metrics`** (ADR 0019, v1→v3.5), and it exists
-  because that ADR is the clearest case in the repo of a **decision record being
-  used as a status tracker**: 866 lines carrying five stacked `v3.x` revision
-  sections, mirrored again in this file, with **no ADR in the repo having a
-  status field at all**. That absence is what the backlog fixes. All its
-  capabilities and tasks are checked, so it yields **zero** packets and reads as
-  derived-done.
-- **Known gaps of a shipped feature are a SEPARATE feature** (`metrics-coverage-gaps`,
-  not an unchecked capability on `run-metrics`). Completion is derived from
-  capability checkboxes, so folding a gap in would make a shipped collector read
-  as incomplete and — via the dependency rule — block everything downstream of it
-  forever. This is the modelling trap to avoid every time a shipped feature has
-  a known hole.
-- **A specced feature with no `gspec/features/<slug>/tasks.md` is the intended
-  state for deferred work**, not an omission: the adapter reports `PLAN=none` plus
-  the `/gspec-plan` hint. Same for a folder with no `arch.md` or `design.html` —
-  `/gspec-architect` writes those, the loop never reads them, and this repo ships
-  no UI so `design.html` is correct to be absent everywhere. Decompose when the work comes up, so the decomposition
-  reflects the repo as it is then rather than as it was when the ADR was written.
-  Only `self-host-hardening` has a plan today.
-- **Reflexivity is the risk self-hosting adds, and it has no analogue in a
-  consumer repo** — there the plugin sits outside the working tree. Here the loop
-  edits what it runs from, and the timing differs per surface: `scripts/*.sh` take
-  effect **mid-run, in the run that made the edit** (`runstate.sh` is the loop's
-  own single writer); a **hook body is spawned per event**, so it takes effect the
-  same way — mid-run, on the next tool call, in the run that edited it — and only
-  its registration (`hooks/hooks.json`, `.claude/settings.json`) crosses a session
-  boundary; `agents/*.md` and `skills/*/SKILL.md` are read at dispatch.
-  `hooks/guard.sh` is the sharpest case: it is the plugin's own safety floor, and
-  here it is a first-class edit target — a packet weakening the
-  guard is live on the next matching tool call, in the same run, not caught by a
-  loop still running an old copy. Closing this is
-  `self-host-hardening`, and it is ordered first for that reason. Its T1/T2
-  landed in `348f1cc`: `.agents/guard-extra-review` now routes that whole surface
-  to the ASK tier, with 25 cases in `test-guard.sh`.
-- **The ASK tier is OFF here — `bypass-ask-tier: true` in
-  `.agents/project-overrides.yaml` (`2292c96`) — and that is a decision, not a
-  regression of T1.** The surface `.agents/guard-extra-review` names IS this repo's
-  entire backlog — nearly every packet edits a script or a prompt — so leaving the
-  tier on meant a prompt on essentially every packet, which is not review, it is a
-  click-through reflex that teaches you to stop reading. It was already close to
-  inert: measured 2026-08-10, invoking `guard.sh` directly with this repo's cwd
-  correctly returned `permissionDecision: "ask"` naming the matched rule, yet an
-  `Edit` to `scripts/test-guard.sh` in that same session produced **no prompt** —
-  while the hard-deny tier *did* stop an `rm -f`. Denies are enforced; asks were
-  being auto-resolved. So the flip made explicit what was largely already true,
-  rather than removing protection that was working. **Still enforcing, re-verified
-  in-session:** the hard-deny floor (secrets/key material — an `Edit` to `.env`
-  returned `rc=2`, `secret-path` — recursive deletes, history rewrite; a force-push
-  still returned `risky-bash`), the git soft gates on `main`/`master`,
-  `escalate_to_human_on` in `project-overrides.yaml` for the judgement calls the
-  path patterns cannot express, and the reviewer plus the PR gate as the real
-  review boundary. `.agents/guard-extra-review` is **kept, not deleted**: it costs
-  nothing while the bypass is on, it documents what the reflexive surface is,
-  `test-guard.sh` still pins its behaviour, and one line re-arms it. **What
-  specifically stopped, and it is the sharpest part:** T2 added ask cases for the
-  guard's own *configuration* on the rationale that a rule which can be silently
-  deleted is not a rule. All three of those are now silent-allow here —
-  `.agents/guard-extra-*`, `project-overrides.yaml` (which carries the bypass
-  itself), and `.claude/settings.json`; the fourth, `.agents/autonomy`, was deleted
-  with the levels (`retire-autonomy-levels` T7, `5a43a17`), along with its ask rule.
-  That is the control over the control, so the reviewer and the PR boundary are not
-  a second line of defence for this surface; they are the only one.
-- **Hard-denying `hooks/guard.sh` was proposed and rejected — and the flip above
-  does not touch that.** This repo exists to develop the guard, so a hard floor
-  over it makes the repo's central artifact unmaintainable. Same for
-  `.agents/guard-extra-*` and `project-overrides.yaml`. Do not "harden" these to
-  `.agents/guard-extra-paths` — it has been considered and it is wrong *for this
-  repo*. A consumer repo is a different question and unaffected either way, since
-  these patterns are repo-local. **And mind the load timing:**
-  `project-overrides.yaml` and `.agents/guard-extra-*` are re-read by `guard.sh` on
-  **every tool call**, so a change to them takes effect mid-session with no
-  restart — only hook **registration** (`hooks.json`, `.claude/settings.json`)
-  needs a session boundary. Conflating "changing the guard's config" with
-  "changing what the harness loads" is the easy mistake.
+- **The one retro-spec is `run-metrics`** (ADR 0019). All its capabilities and tasks
+  are checked, so it yields zero packets and reads as derived-done. Never run
+  `/gspec-plan` against it (see the scope override at the end).
+- **Known gaps of a shipped feature are a SEPARATE feature** (e.g.
+  `metrics-coverage-gaps`), never an unchecked capability on the shipped one —
+  completion is derived from checkboxes, so a folded-in gap makes the shipped feature
+  read incomplete and blocks everything downstream of it.
+- **A specced feature with no `tasks.md` is the intended state for deferred work**
+  (the adapter reports `PLAN=none` plus the `/gspec-plan` hint); decompose when the
+  work comes up. Same for a folder with no `arch.md` or `design.html` — this repo
+  ships no UI, so `design.html` is correct to be absent everywhere.
+- **Reflexivity: the loop edits what it runs from.** `scripts/*.sh` and hook bodies
+  take effect **mid-run, on the next call**; `agents/*.md` and `skills/*/SKILL.md` at
+  the next dispatch. A packet weakening `hooks/guard.sh` is live on the next matching
+  call. `.agents/guard-extra-review` names this surface for the ASK tier
+  (`self-host-hardening`), pinned by `test-guard.sh`.
+- **Do not move `hooks/guard.sh`, `.agents/guard-extra-*` or `project-overrides.yaml`
+  into `.agents/guard-extra-paths`** — this repo develops them.
+- **Load timing:** `guard.sh` re-reads `project-overrides.yaml` and
+  `.agents/guard-extra-*` on **every tool call**; only hook *registration*
+  (`hooks/hooks.json`, `.claude/settings.json`) needs a session boundary.
 
 ## Conventions
 
-- **Agents** (`agents/*.md`): YAML frontmatter with `name`, `description`,
-  `tools`, `model`. Keep `tools` least-privilege (the reviewer has no
-  Edit/Write on purpose). Each file carries a comment mapping it to the model
-  routing intent: opus = reasoning/architecture/review/security, sonnet =
-  implementation and research, haiku = the summarizer/doc agent (`doc-writer`).
+### Components
+
+- **Agents** (`agents/*.md`): YAML frontmatter with `name`, `description`, `tools`,
+  `model`. Keep `tools` least-privilege (the reviewer has no Edit/Write on purpose).
+  Each file carries a comment mapping it to the model routing intent: opus =
+  reasoning/architecture/review/security, sonnet = implementation and research, haiku
+  = the summarizer/doc agent (`doc-writer`).
 - **Skills** (`skills/<name>/SKILL.md`): frontmatter with `name`, `description`,
   `argument-hint`. Reference shared files via `${CLAUDE_PLUGIN_ROOT}/...`.
-- **The loop has ONE sequential mode; relay is retired** (`run-loop`/`resume` —
-  ADR 0012, superseded by `retire-unused-loop-modes` T4, 2026-09-15). Backlog
-  size no longer switches modes, and no run dispatches a per-packet coordinator
-  subagent. `--relay`/`--inline` are still accepted on the command line — they
-  get the same kickoff notice as the retired `--parallel` flag (next bullet)
-  and the loop runs its one mode regardless. This is a **scope decision, not a
-  retraction of the measurement that motivated it**: the one real production
-  comparison (62 packets across two repos,
-  `docs/metrics/2026-08-10-loop-cost-baseline.json` and the `argent` history)
-  found **relay costs 1.84x inline per packet** (1,332,006 vs 722,989
-  cacheCreation) — the opposite direction from the *token extrapolation*
-  (k≈21, no production comparator) that originally set the crossover at 20
-  packets (later raised to 40 on 2026-08-10). The regime relay was built for
-  was **never reached**: inline compacts around packet ~28, and the largest
-  real run observed across this repo's own history is **9–14 packets**, well
-  under even the original threshold. The one property relay's per-packet
-  dispatch boundary incidentally bought — a fresh, isolated context per unit of
-  work — is not replaced by anything; file-disjoint concurrent editing becomes
-  loop-driver **guidance** instead (see the `agents/chief-engineer.md`
-  Concurrency section). Read ADR 0012, including its v2 measurement revision,
-  as the historical record of a decision retired deliberately rather than
-  measured out further.
-- **Parallel mode is retired; the default loop is single-checkout sequential**
-  (`run-loop`/`resume` — ADR 0016, amends ADR 0009, superseded by
-  `retire-unused-loop-modes` T2, 2026-09-15). `--parallel` ran in one
-  repository for about two weeks (2026-07-19 to 2026-08-04) and was tried
-  twice in another, and **none of 151 recorded metric runs contains a lane** —
-  it spent the same tokens sooner, but the operator is limited by a weekly
-  token allowance, not wall clock. Its machinery is deleted:
-  `scripts/packet-graph.sh`, `scripts/worktree.sh`,
-  `skills/build-packet-dependency-tree/`, `skills/run-loop/parallel.md`, and
-  their test sweeps. `--parallel` is still accepted on the command line — same
-  retired-flag kickoff notice as `--relay`/`--inline`, then the loop runs its
-  one sequential mode regardless. The safety property it provided — concurrent
-  work never sharing `allowed_files` — is not replaced by a scheduler; it
-  becomes loop-driver **guidance** (file-editing agents run one at a time
-  unless their declared scopes are disjoint; read-only agents fan out freely;
-  worktree isolation is for self-contained work off the default branch, never
-  for a loop packet) plus the same-file-overlap **observability**
-  `scripts/metrics.sh` now reports (`totals.same_file_overlaps`,
-  `loop-measurement`). run-state's schema-3 `lanes:`/`mode: parallel` fields
-  are **read-only compatibility** now: a legacy parallel run-state still
-  parses and `runstate.sh lanes` still projects it (so `resume` can name a
-  branch/worktree left behind), but nothing writes those fields again — no
-  `reconcile-parallel`, no lane-writing paths. Read the rest of ADR 0016 as
-  the historical record of a decision that did not earn its keep in practice.
-- **Graceful pause is a cooperative sentinel, not preemption** (`run-loop`/`resume`/
-  `pause`, ADR 0017). A pause REQUEST is a write-once file — `.agents/pause` —
-  kept **separate from run-state** so a human/frontend setting it never contends
-  with the driver's single-writer run-state; run-state records only the OUTCOME
-  (`status: paused`). The sentinel is canonical in the **main checkout** and
-  resolvable from any worktree via `git rev-parse --git-common-dir` (zero env
-  dependency — this originally covered parallel lanes and still covers a
-  self-contained work worktree, e.g. a spike, off the default branch). Parallel
-  mode's per-lane sentinel variant (`.agents/pause.<task-id>`) is retired along
-  with it (`retire-unused-loop-modes` T1) — `request-pause`/`clear-pause`/
-  `pause-status` handle the whole-run sentinel only now; a legacy per-lane file
-  left behind by an old run is inert, and `/gaffer:migrate` cleans it up. The
-  **guaranteed** stop is the prompt-poll (`runstate.sh pause-status`) that the
-  loop/chief-engineer/implementer run at safe boundaries — landing on a green commit
-  or rolling back, **never mid-edit**; `hooks/pause-check.sh` is **best-effort**
-  reinforcement that injects a **context-only** advisory (no `permissionDecision`, so
-  it can never weaken the guard). **Its delivery to subagents is VERIFIED but stays
-  advisory, not enforcement (ADR 0017, probe 2026-07-19):** a probe in a session that
-  loaded the hooks at startup confirmed PreToolUse `additionalContext` — the field this
-  hook already uses — reaches a dispatched subagent's model (hook fired inside the
-  subagent with `agent_id`/`agent_type` set; token quoted back). PostToolUse
-  `additionalContext` delivers identically; PostToolUse `updatedToolOutput` fired but
-  never surfaced. So the hook is NOT on the wrong event/field — the earlier "dead"
-  reading was purely the mid-session-load confounder. **But a correct agent treats the
-  injected advisory as untrusted data** (prompt-injection hygiene — the probe subagents
-  read it and declined its embedded "stop"), so it cannot *force* a halt. The
-  **prompt-poll remains the authoritative mechanism** (its result is a tool output the
-  agent itself requested); correctness must never depend on the hook. Never describe
-  pause as "automatic via the hook." Hard, agent-choice-proof enforcement would need a
-  *coercive* PreToolUse `deny` gated on `agent_id` (subagent-only, sparing the
-  orchestrator) — this stays deferred, and parallel mode's retirement removes
-  the original trigger condition (lanes overshooting poll checkpoints) rather
-  than satisfying it. There is no
-  grace/kill timer — under synchronous dispatch there is nothing to time out; true
-  mid-command preemption would need background-task dispatch, rejected in ADR 0017.
-  Deterministic core in `runstate.sh` (`request-pause`/`clear-pause`/`pause-status`)
-  with a matching `scripts/test-pause.sh`; judgment in the skill/agent prompts.
-- **Rate-limit auto-pause is retired** (ADR 0018, amended ADR 0017, superseded
-  by `retire-unused-loop-modes` T2, 2026-09-15). It watched Claude Code's
-  rolling usage percentages (the 5-hour and 7-day windows, delivered only via
-  the `statusLine` command's stdin JSON) and wrote the same ADR 0017
-  `.agents/pause` sentinel a human would when either crossed a threshold — but
-  it never worked reliably in the operator's own testing, so it is removed:
-  `scripts/statusline-pause-sensor.sh`, the `/gaffer:rate-limit-pause` toggle
-  skill, the `rate_limit_pause:` overrides block, and the sensor cases in
-  `scripts/test-pause.sh` are all deleted. The cooperative whole-run pause it
-  amended (previous bullet) is unaffected and remains the only pause path.
-  `/gaffer:migrate` cleans up a leftover `rate_limit_pause:` block or a stale
-  `statusLine` entry in a consumer repo that had adopted it, ONLY with the
-  operator's explicit confirmation and never touching a foreign `statusLine`.
-  Read the rest of ADR 0018 as the historical record of a decision that did
-  not hold up in practice.
-- **Run-metrics is hook-collect + script-assemble + skill-analyze** (ADR 0019, Tier 1).
-  Collection is a `PostToolUse` hook (`hooks/metrics-log.sh`, matcher **`.*` — ALL tools**,
-  so `Task` dispatches and `Read`/`Grep` context-loading are counted, not just mutations) —
-  the only mechanism that fires on *every* tool call and carries `agent_id`/`agent_type`
-  **inside** dispatched subagents/lanes (verified from a real `git worktree` lane in
-  `test-metrics.sh`) — appending **metadata + low-sensitivity labels** (ts, session,
-  agent id/type, tool, and — ADR 0019 **v2** — `duration_ms`, `tool_use_id`, the running
-  `skill`, dispatched `subagent_type`, and a Bash command **head only** as `cmd_class`:
-  argv0[+subcommand], with env prefixes / args / paths / secrets STRIPPED, so the packet
-  is still safe to hand to Claude and **no full command text or path is ever logged**)
-  JSONL to `.agents/metrics/events/<session>.jsonl`. The loop skills (`run-loop`/`pause`/`resume`)
-  call `metrics.sh collect || true` at checkpoints (best-effort, non-critical) to pin the
-  perishable transcript-token data. It is advisory-safe exactly like
-  `pause-check.sh`: prints **nothing** (no `permissionDecision`, cannot weaken the guard),
-  fails silent, always exits 0. Assembly is the deterministic core `scripts/metrics.sh
-  collect`, which joins the event spine ⟕ **packet boundaries derived from the `[orch
-  packet:<id>]` commit trailers** (a deliberate ADR-0019 refinement: run-state's nested
-  `packets[]` is **left untouched** — no schema migration, no single-writer contention;
-  the trailer already ties every green commit to its packet) ⟕ **best-effort
-  transcript tokens** (the default source; **version-fragile**, so
-  it **fails soft** to structural-only and STAMPS `token_source` — never let an analysis
-  read a partial run as complete) into one portable `.agents/metrics/<run-id>/run-metrics.json`
-  (the `packet-graph.yaml` wave-map join and the per-lane aggregates are gone
-  now that parallel mode is retired — `retire-unused-loop-modes` T3 replaced
-  them with `totals.same_file_overlaps`, a same-file concurrent-edit count).
-  The trailer scan matches **only a trailer on its own line** (prose that merely mentions
-  the format does not count) **and is bounded to the run window, not `git log --all`**
-  (scoping revision 2026-07-21): the window is the **selected session's** span (default the
-  **newest** events log by mtime; `--session`/`--all-sessions`/`--since`/`--until` override),
-  and only trailers with commit time **≥ the window's lower bound** are kept — `--all` stays
-  for lane-branch *ref coverage*, the time filter supplies the *run scope*, and the upper
-  bound is open unless `--until` is given (the run's last packet commits just **after** its
-  last tool event). Without events it falls back to `<integration_branch>..HEAD`. This killed
-  the "156 phantom packets over 17 days vs. one 3-hour session" bug in the first production capture
-  (now an honest 0). The `adhoc` run-id is disambiguated to **`adhoc-<session8>`** so two
-  sessions never overwrite one `run-metrics.json`. Judgment lives in the `/gaffer:metrics <collect|show|
-  status|analyze>` skill — `analyze` hands the compact rollup to Claude/the architect for
-  ranked optimization advice. Tier 0 (OTEL) is **optional/deferred**, not built. **v2
-  (2026-07-22, live-certified in a real session) adds**, all from the same PostToolUse
-  payload: per-packet tokens (bucketed by transcript-turn timestamp, fail-soft null),
-  active/idle wall split, an unattributed-tool-calls bucket, model-per-agent
-  (`by_model`), per-tool `duration_ms`, and the skill/process + command-class dimensions
-  (`by_skill` / `by_command_class` — the latter is the "where an output filter like rtk
-  helps most" map). Field names were payload-**probed** first (not taken from docs):
-  `duration_ms`/`tool_use_id` are native PostToolUse fields; the dispatch tool is named
-  **`Agent`** (not `Task`). **Routing is ONE decision made ONCE (2026-07-23 revision):
-  `tier` (a REQUIRED task-packet field, set at scope time) → **agent** (who you dispatch)
-  → **model** (the `model_routing` map value for that agent when it is mapped, else its
-  `model:` frontmatter). At dispatch, pass `routing.sh resolve <agent>`'s output: a
-  non-empty value goes in as `model`, an empty one means omit `model`, which resolves to
-  the target agent's frontmatter (per-agent-model-routing). The old
-  `dispatches_without_named_model` counter inverted this and **manufactured false
-  positives** (the first production capture read 8 clean architect/reviewer dispatches as 8
-  violations); it is replaced by `dispatches_with_model_override`, where an override is a
-  passed model that **differs from the routing resolved at dispatch** (the hook stamps
-  `routing_resolved` on each Agent event) — a map-routed dispatch counts 0, and the count
-  is `null` when any dispatch is unstamped. Ground truth for what a role really ran on is
-  `by_agent_role.<role>.models`, never the dispatch arg. Unlabelled packets now flag as
-  `unlabelled:` rather than reading as clean — but **only in a mixed run**; a run where
-  *no* packet carries a trailer is legacy, so the per-packet flags are suppressed and a
-  run-level note carries the caveat. Remaining gaps in `notes[]`: guard ASK-tier frequency
-  still uncaptured (PostToolUse sees allowed calls only, and `Notification` does NOT fire
-  on a denied call — probed); failed/uncommitted packets absent. `.agents/metrics/` is
-  gitignored bookkeeping (ADR 0009), in the plugin's
-  own `.gitignore` **and** `templates/spec-driven-base/.gitignore`. Regression sweep:
-  `scripts/test-metrics.sh` (synthetic git repo + event log + fake transcripts; no live agent).
-  **v3 (2026-08-02) fixes three defects the first cross-repo `analyze` exposed** — read
-  ADR 0019 §"v3 revision" before touching the collector. (a) The **trailer scan is now
-  bounded at BOTH ends**, always: `[win_start, last-event + ORCH_METRICS_TRAILER_GRACE]`
-  (default 3600s), `--until` verbatim. The old open upper end assumed collection happens
-  at end-of-run; under *retrospective* collection every run absorbed every later run's
-  packets (an 11-minute session reported **45**; 12 of 19 runs inflated 2x–45x). The grace
-  is not slop — a run's last packet commits just *after* its last tool event. Corrected,
-  the largest real run is **9 packets**, so ADR 0012's 20-packet relay crossover has never
-  fired in production. (b) **`by_skill` was dark, not empty**: slash commands emit no
-  `Skill` tool event (3 in ~6k calls), so `hooks/metrics-skill.sh` (UserPromptSubmit)
-  now records the invoked name to a per-session state file that `metrics-log.sh` stamps
-  onto every event. It is **sticky** (set, never cleared) ⇒ an *upper bound* on a skill's
-  spend; that direction is deliberate, since clearing on each plain prompt would drop a
-  whole `/run-loop` the moment a human nudged it. Like every hook here it prints
-  **nothing** — UserPromptSubmit stdout is injected into context. (c) **`by_tool` added**
-  (run + per-packet): `by_command_class` classifies Bash only, so tool *selection* was
-  invisible — which hid **zero `Grep`/`Glob` calls against 1,568 shell `grep`s** across
-  both repos. Still NOT captured, and stated in `notes[]`: `outcome` is hardcoded
-  `"green"` (no trailer ⇒ no packet, so failed/rolled-back work cannot be seen — "42 of
-  42 green" is survivorship, not quality), and no file paths are logged, so main-vs-
-  implementer edit *overlap* inside a packet cannot separate correction from division of
-  labor. Both are prerequisites for a rework rate by editor role.
-  **v3.1 (2026-08-07) — the collector was blind on Windows, and said so misleadingly.**
-  The native Windows jq build opens stdout in TEXT mode, so **every** jq line ends `\r\n`,
-  on pipes too, and `read` strips only the `\n`. The distinct-session-id list is the one
-  jq-written **line list** a `while read` loop consumes, and its values build **globs**:
-  `$sid` came out 37 chars, so `<uuid>\r.jsonl` matched nothing and `token_source` never
-  left its `none` initialiser — on every Windows run, via the legitimate fail-soft path,
-  with every structural number still correct. **RULE: any `jq -r … > file` consumed by a
-  `read` loop must be piped through `tr -d '\r'`** (a no-op on POSIX). **And do NOT
-  conclude that `$(jq …)` captures are therefore safe** — that reading is what the bug
-  report and the first cut of this fix both assumed. MSYS bash strips a trailing `\r\n`
-  from command substitution; **plain bash does not** (measured: 11 bytes under MSYS bash
-  5.2.37, **12 under Linux bash 5.2.21**), so all seven scalar captures were correct on
-  Windows purely by accident of which bash Git Bash ships. They now go through
-  `jqr() { jq -r "$@" | tr -d '\r'; }` — `pipefail` keeps jq's exit status so the
-  `|| echo <default>` fallbacks still fire. **CI caught this, not the author's machine**:
-  the regression test asserts the CRLF-shimmed packet is BYTE-IDENTICAL to a clean run,
-  which on Linux exercises the exact shell/jq pairing Windows masks (it failed with
-  `"implementer\r"` role keys and every per-packet `tokens` nulled). That assertion was
-  written as redundant belt-and-braces and was the only thing separating *fixed* from
-  *fixed on this machine* — keep it. The shim is written in `awk`, NOT `sed 's/$/\r/'`,
-  because BSD/macOS sed inserts a literal `r` and the test would be silently vacuous
-  exactly where it matters. Second half of the fix: `token_source: none`
-  conflated four failures and its note claimed "no transcript found" while 29 transcripts
-  sat on disk. Packets now carry `token_diagnostics` (counts only, no paths) separating
-  *nothing on disk* / *lookup failure* / *format drift* / *window miss*, the note names
-  which, and `show` prints it whenever `token_source != transcript`. The enum is
-  unchanged.
-  **v3.2 (2026-08-07) closes the overlap v3.1 left open, and adds the effort dimension.**
-  All three changes are **retroactive** — they re-read stored events/git/transcripts, so old
-  runs just re-collect. (a) Trailer times are **author dates** (`%ad`), not committer dates,
-  which rebase/cherry-pick/squash-merge rewrite. This one is **defensive, not a fix for an
-  observed failure**: the analysis that motivated it claimed six absorbed packets, but those
-  commits have *identical* author and committer dates — claim withdrawn. Divergence is real
-  but rare (**1 of 395** trailer commits in one repo, **8 of 107** in the other), so it
-  matters mainly where branches are rebased before merging. That first repo's real
-  attribution gap is not a date bug: only **395 of 899 commits carry a trailer at all**.
-  (b) The trailer grace is **capped at the earliest event of any other session after
-  `win_end`** — a flat grace is only safe when nothing else is running, and this is a bug
-  fix, not the semantics decision v3.1 feared. It reproduces, exactly and automatically, the
-  **7 phantom rows across 5 sessions** a consumer-repo analysis had removed by hand with
-  explicit `--until` — while correctly keeping `wbr-t14`, the one packet that legitimately
-  spans two sessions, in **both**. (c) `totals.by_effort` + `totals.context_invalidations`:
-  reasoning effort is a per-turn request parameter (transcript-only — **no hook payload
-  carries it**), and changing effort **or** model mid-context invalidates the cached prefix.
-  Measured flips cost 372,588 / 380,005 / 115,509 cacheC against medians of 1,380 / 856 /
-  ~1,700, and it fires in **both** directions — which is what makes it invalidation, not
-  "higher effort costs more". Building it answered an open question: **effort propagates to
-  subagents** — one flip produced **9 invalidations across 6 agent contexts totalling 1.53M
-  cacheC**, ~one relayed-coordinator dispatch for one keystroke. The scan is per
-  `(role, agent_id)`, NOT per role, so two dispatches of one role on different models read as
-  normal tier routing rather than a switch; ts-less turns are excluded (degrade to 0), and an
-  empty `by_effort` means *unmeasured*, never *constant*.
-  **v3.3 (2026-08-07) — every token number before it was inflated ~2.6x.** A transcript
-  records the SAME assistant message more than once (observed **3x** for one id, at +2ms and
-  +26s), each row carrying the full `usage` block, and the collector summed rows. **ADR 0012's
-  own measurement deduplicated by `message.id`; the collector never did.** Measured inflation
-  over four real sessions: cacheCreation **2.3x–3.2x**, output **3.3x–6.3x** — *different
-  rates, differing per session*, so it does **NOT** cancel in a ratio: `CC:out` read 6.4 raw
-  vs **9.0** deduped on one session and 14.9 vs **33.8** on another. Directionally the
-  conclusions held (ordering unchanged, best-vs-worst gap *widens* 2.3x → 3.8x) but that was
-  luck. Dedup keeps the **earliest** row per id (duplicates carry identical usage, so the pick
-  is cosmetic for totals but must be deterministic for the `context_invalidations` ts scan);
-  rows with **no** `message.id` are kept verbatim, because `.uuid` is per-**ROW** and keying on
-  it would dedupe nothing while looking like it worked — under-dedupe is the safe direction.
-  `token_diagnostics.duplicate_turns_dropped` makes the rate visible: a drift toward 0 means
-  either the transcript stopped repeating messages **or** stopped carrying `message.id`, and
-  the second silently re-inflates ~2.6x while still stamping `token_source: transcript`.
-  v3.3 also fixed `show` rendering **`null` as `0`** for `dispatches_with_model_override` and
-  `failed_tool_calls` — the collector emits null for pre-instrumentation runs *on purpose*
-  (its own comment calls reporting 0 "a lie") and `show` told that lie via `// 0`, so a legacy
-  run read as fully-audited-and-clean. The audit block also moved **above** the per-packet
-  table: at 14 packets it was off-screen, which is how a real signal goes unread with nothing
-  actually hidden. **Neither was missing instrumentation** — do not reach for a new counter
-  when the existing one is being rendered or placed wrongly.
-  **v3.4 (2026-08-07) measures the PAYLOAD, not the aggregate, and stops assuming green.**
-  (a) **`by_agent_role.<role>.cc_shape`** (median/p90/max/turns_over_50k/cc_over_50k) exists
-  because cacheCreation-per-packet **cannot** detect a context diet: it spans **1.76x across
-  four untouched same-regime sessions** (9x overall), so a ~150k trim (20–30%) sits inside the
-  noise. The aggregate conflates two things — a turn is either a small warm-cache delta or a
-  **full re-cache of everything the role holds**. Split out, the **median is flat everywhere**
-  (1,408–4,683) while `max` separates by an order of magnitude with no overlap: **24,190 and
-  0/300 turns >50k** on the cheap session vs **198,397 and 32/524** on the costly one. So
-  `p90`/`max` read the standing-context SIZE and move when you scope reads — measurable in ONE
-  run. **A flat median with a large max is not an expensive agent; it is a large payload being
-  re-cached.** (b) **`outcome` is now attested or `null`, never assumed `"green"`** — a packet
-  exists here only via its green-commit trailer, so failed/rolled-back work leaves NO row and
-  "42 of 42 green" was survivorship that looked *better* the more work was discarded. The loop
-  calls `runstate.sh record-outcome <pkt> <green|failed|rolled-back|blocked|abandoned>` at
-  **every** boundary; append-only to `.agents/metrics/outcomes/`, deliberately NOT run-state
-  (single-writer contention, same reason boundaries stayed on trailers), last-wins. (c)
-  **`packets[].edits`** turns per-role edit counts into a rework signal: "implementer 34, main
-  3" is either correction or division of labour, and only **same-file overlap**
-  (`contended_files`) tells them apart. The hook stamps a 12-char **hash, never the path** —
-  the packet must stay safe to paste into an issue, and a hash answers "same file?" and
-  nothing else; digest probing is by **execution** (shasum/sha1sum/md5sum → POSIX `cksum`),
-  the guard.sh rule. (d) **`runstate.sh trim-note`** enforces the ONE-line contract
-  `templates/run-state.yaml` already documented but nothing checked — unbounded it hit
-  **164,678 chars, 87% of the run-state, ~41k tokens, 15 stacked histories**, re-read on every
-  relay dispatch to recover two facts. It archives to `run-state-note-archive.md` and trims on
-  **whole lines** so the YAML stays parseable. All four degrade to `null`/absent on legacy
-  runs — **`null` means unmeasured, never clean**.
-  **v3.5 (2026-09-15) — packets from start records; spend is machine-wide; trimmed by operator.**
-  T12–T16 (cache-shape analysis, save/combine, and reproducing the 2026-09-14 figures) were
-  deferred, so this section documents only what shipped. (a) **Packet rows now come from start
-  records as well as commit trailers.** A packet was visible only via its green-commit trailer,
-  so failed, interrupted, and uncommitted work left no row — "42 of 42 green" was survivorship
-  without a record. `runstate.sh record-start <id> [--continue]` writes a start/continuation
-  record into the same append-only outcomes log (`.agents/metrics/outcomes/<session>.jsonl`),
-  and the collector joins both; a packet has a row regardless of outcome. (b) **`interrupted` has
-  exactly one writer.** Only `runstate.sh sweep-open` writes it (closing any packet whose latest
-  start has no terminal outcome); `record-outcome` refuses it, and the script enforces the
-  constraint rather than trusting a prompt. The paused cursor is exempt: a pause is not an
-  interruption. (c) **Spend is machine-wide and lives in `scripts/spend.sh`, not a `metrics.sh`
-  subcommand.** `metrics.sh collect` resolves one repo's checkout; spend reads every transcript
-  across every project, deduplicates assistant rows by `message.id` (a pre-3.3 inflation source
-  now imported), and prices them in API-equivalent dollars from a dated table. The table shipped
-  with Claude 3-era rates overstating Opus **3×**; corrected before commit. Cache reads are 66–70%
-  of real spend, so cache rates are stated rather than derived: Fable 5.1 reads at 0.025×
-  (where the standard 0.1× rule is wrong by 4×). Both fraction and table date carry load-bearing
-  detail. Timestamps are sub-second now (older records are whole-second); `.` < `Z` as ASCII,
-  so string-sorting requires parsed times — both the sweep and collector strip the fraction
-  before any date parse. An `interrupted` record is written by a **later session's sweep**,
-  into that session's own log, but carries the `ts` and `session` of the start it closes, and
-  is attributed to the run it **names** — never the run whose sweep physically wrote it. Plan
-  called this "the collector bug most likely to ship"; it was built right first time and
-  verified against a two-session fixture. Regression sweep: `scripts/test-spend.sh` joins the
-  ten existing sweeps.
-- **Search-tool selection is a PREFERENCE; only the write surface is a real control**
-  (ADR 0019 v3.3 — **v3's cost claim is RETRACTED**). All seven `agents/*.md` carry a
-  "structured tools, not the shell" section: `Grep`/`Glob`/`Read` to search and read,
-  `Edit`/`Write` to change, `Bash` for builds, tests, git, and running the project.
-  v3 asserted this was "a measured cost, not a style preference" and the read-only
-  agents were told shell search was "most of your context budget." **Both were wrong,
-  and the error is instructive:** the finding v3 actually had was **0** `Grep`/`Glob`
-  against 1,568 shell `grep`s — a measurement of tool *selection*, which was then
-  reported as a measurement of tool *cost* without anyone measuring cost. Measured
-  properly (join `tool_use`→`tool_result` in the transcripts and total the result
-  bytes): shell search across 30 sessions is **~187k tokens against 105M deduped lifetime
-  cacheCreation — ~0.18%**, mean 1,164 chars per call. (Result-byte figures needed no
-  dedup correction: the v3.3 duplication is confined to assistant `usage` records, while
-  `tool_use`/`tool_result` blocks measure **1.0x** unique. Only the denominator was
-  wrong.) Eliminating it entirely saves a
-  rounding error. `Read` is **7.6x** all shell search combined, with the top decile of
-  calls carrying half the volume — so the real read-cost lever is scoping what agents
-  read, not how they search. What survives is the WRITE half, and it survives on its
-  own merits: `sed -i`/`cat >` bypass diff review and the guard's path tiers, which is
-  exactly why `guard.sh` must pattern-match them as a write surface. **The general
-  lesson: a frequency count is not a cost measurement.** Keep the (now smaller) block
-  when editing an agent; do not re-add a cost claim to it without a cost measurement.
-- **All seven agents carry a "do not re-read what you already have" block — the RULE only,
-  never the evidence.** Measured across one production week: of **5,243 `Read` calls, 1,366
-  (26%) re-read a file already read in that same context** (~2.4M tokens). That is not a
-  2.4M problem — content in context is re-read on every later turn, so a token read twice is
-  paid for twice on every subsequent turn for the rest of the session. At the measured ~16
-  effective tokens per source token, it is ~**11% of that repo's weekly spend**. Part of the
-  mechanism is confirmed: **63 occurrences of `Read` immediately after `Edit`/`Write` of the
-  SAME file in just 25 subagent contexts** — verify-after-edit, which is unnecessary because
-  those tools error on failure, so a successful result already IS the confirmation. It has to
-  target the **implementer** above all: it is **47.9% of all turns** at 128k average context
-  and does nearly all the reading, whereas the coordinator — which the run-state and
-  read-list work reached — is only **9.5% of turns**. **Keep the evidence HERE, not in the
-  prompts.** The first cut shipped a three-line "Measured:" paragraph into all seven agents
-  — **61 tokens each, 427 total**, re-read on every dispatch to justify a rule the agent
-  follows without it. Small, but it was bloat added by the very block telling agents not to
-  waste context. Rule in the prompt, evidence in this file: this file does not propagate,
-  so it is free here and recurring there.
-- **Findings live in `.agents/findings/<id>.md`; run-state keeps ONLY a one-line index**
-  (ADR 0022). Everything in run-state is read by every packet — a dispatched coordinator
-  reads it at dispatch start, so it sits in the standing context and is re-written to cache
-  on **every** large turn (measured: **32 cache writes >50k in ONE dispatch**, the
-  coordinator the only role with any). A finding useful to one packet was being paid for by
-  all of them. Evidence this is a **design gap, not sloppiness**: the two fields that
-  ballooned were `note` (164,678 chars — documented as *one line*) and
-  **`resolved_questions` (21,664 chars), which is not in the template or `runstate.sh` at
-  all** — the agent invented it because the schema offered nowhere else. The shape is
-  **index hot, body cold**, NOT "links instead of content": moving content out with no
-  index flips the failure from *expensive* to *never read*, and a gotcha exists precisely
-  to prevent the rework that not reading it causes. The summary's one job is to let an
-  agent decide whether it needs the body **without opening it**. Routing is the ADR 0020
-  seam and getting it wrong builds a **shadow backlog competing with gspec**: *"this should
-  be built/fixed"* → **gspec task/feature** (+ `.agents/roadmap.yaml`), never a finding;
-  *gotcha / constraint / decision + rationale / resolved question* → **a finding**;
-  one sentence of "where we stopped" → `note:`. Mechanism is `runstate.sh add-finding`
-  (appends the entry, creates the body stub) and `findings` (prints the index and nothing
-  else) — appending to a YAML list by hand is how agents corrupt the loop's only durable
-  state. Entries insert **immediately after the `findings:` key** (newest-first) because
-  that is the only placement that cannot land in `note:`/`pending_questions:`; ids are
-  `[a-zA-Z0-9._-]` (an id becomes a filename); summary newlines are **collapsed, not
-  rejected** (a raw newline injects a sibling YAML key, and the caller is an agent
-  mid-loop). `trim-note` survives as a **backstop**, not the intended path. The discipline
-  is prompt-enforced and therefore the fragile part — **`cc_shape.max` is the detector: if
-  it does not fall on the next run, the rule is not being followed.**
-  **Treat every agent-supplied value written into run-state as hostile input** — it is
-  the only state that survives a session and a parse failure is unrecoverable. The
-  first cut wrote `summary` as a **plain** YAML scalar, so the single likeliest thing in
-  a finding about code (`": "`) corrupted the file the function existed to protect.
-  Summaries are now **single-quoted with `'` doubled**: single- and not double-quoted
-  because a single-quoted scalar does **no** escape processing (`'' → '` is the whole
-  rule, a backslash is already literal), and because one `sed` keeps `jq` out of it —
-  `add-finding` must keep working on stock Git Bash, the same constraint `guard.sh` is
-  built around. Interpolate via **`awk ENVIRON`, never `awk -v`**: `-v` expands `\n` in
-  the *value*, which re-opened the newline injection one line after the `tr` collapse
-  closed it. The duplicate-id check is scoped to the findings **block** and matched
-  **literally** — a whole-file regex scan collided with schema-3 `packets:` ids (same
-  `  - id: <x>` shape, and naming a finding after its packet is natural) and `.` is
-  both a legal id char and a metachar, so `f.001` matched `f-001`. Same rule made
-  `trim-note` re-emit the note as a **literal block scalar**: the cut is a byte cut, and
-  only a block scalar is truncatable at any byte — cutting `note: "…"` severed the
-  closing quote. **`test-runstate.sh` asserts a real YAML *parse* after each mutating
-  subcommand; grep is what let all of this through** — and that assertion was itself
-  vacuous until 2026-08-11: the helper fell back to `return 0` when PyYAML was absent,
-  so on a stock host (python3 present, PyYAML is not stdlib) **21 cases passed while
-  checking nothing** and the sweep still reported 213/0 green. It now skips **loudly**,
-  counted and named in the summary line, and CI declares PyYAML rather than hoping the
-  runner ships it.
-- **A probe that does not reproduce the phenomenon cannot eliminate a cause.** The
-  `trim-note` flake (~1 run in 20) was chased for two sessions with SIGPIPE-under-
-  `pipefail` recorded as **ruled out**, on the strength of running the exact piped
-  shape 120 times in isolation with zero failures. But isolation never reproduced the
-  flake *at all* — 0 in 3,000 sequential calls, 0 in 12,000 at concurrency, both
-  separately established. Zero failures there was evidence about the setup, not about
-  the hypothesis, and the false elimination was propagated into two task briefs as "do
-  not re-derive it". **SIGPIPE was the cause**: `grep -q` exits on its first match and
-  closes the pipe, and a producer still mid-write takes rc 141, which `pipefail` then
-  reports instead of grep's success — a correct answer read as a failed assertion. It
-  only surfaces under cumulative subprocess load in a long-lived shell, which is why
-  it needed the *real* sweep preamble to reproduce. Same family as the retracted
-  cost-measurement claim above: state what a negative result actually licenses.
-- **`runstate.sh` quotes EVERY value it writes and strips symmetrically on read**
-  (ADR 0027 / `runstate-write-integrity`). `cmd_set` and `cmd_add_finding` share one
-  encoder, so hardening one cannot leave the other behind — the split that created the
-  original bug. **There is deliberately no plain-scalar allowlist**, and reintroducing
-  one as a cosmetic optimisation is a regression: it was built and deleted the same day
-  after producing two classes of silent wrongness, values ending in `:` writing an
-  unparseable file with `rc=0`, and `no`/`00`/`0755` parsing cleanly but returning
-  `False`/`0`/`493`. Neither was reachable from any caller of the day, and that is the
-  point — an allowlist is a claim about every *future* value, and it was wrong twice in
-  one afternoon. Compatibility now lives in the **reader**, which is why `cmd_get`'s
-  strip is load-bearing rather than tidy-up: without it a crashed run reads as
-  `status: 'running'` and `hooks/session-start.sh`'s `case` falls through to
-  `paused|*`, telling the human it "was paused cleanly". **`cmd_write` validates
-  structurally** (empty, whitespace-only, no `schema:`, malformed column-0 line) and
-  keeps `.agents/run-state-prev.yaml` as the last known good — because the checks
-  cannot see a transform that dies *between* lines, and `schema: 3` + `status: running`
-  is exactly the 26 bytes the live truncation left. A shrinkage guard was designed and
-  rejected: the findings triage legitimately shrinks run-state 61%. The backup **must**
-  stay gitignored in both files — an untracked one is swept by the pause stash and
-  discarded by `reconcile` as scratch, destroyed by the recovery path it serves.
-  Bodies are **gitignored** (both `.gitignore`s), with run-state. Not just for symmetry:
-  untracked ≠ ignored here — `git stash --include-untracked` (the pause path) sweeps an
-  untracked finding and `reconcile` reads it in `git status --porcelain` as scratch on
-  the green checkpoint and discards it, so the ADR's headline use case destroyed its own
-  output. Cost: same-machine, like run-state. And because `runstate.sh write` **replaces**
-  while `add-finding` **appends**, every whole-file write must carry `findings:` through
-  and findings are recorded **after** it — a dropped index line does not delete a finding,
-  it unlinks a body still on disk. **A dispatched Chief Engineer with no run-state
-  of its own never calls `add-finding`** (self-contained worktree work, not a loop
-  packet — this described a parallel lane specifically before that mode was
-  retired, ADR 0016, but the rule is general: no run-state in its worktree means
-  it is not the writer): it returns `Findings:` lines in its check-in and
-  whoever dispatched it records them. That is the same rule `record-outcome`
-  obeys from the other side — it is callable from such a context *because* it
-  writes append-only outside run-state.
-  **Two follow-on decisions (`runstate-write-integrity-gaps`, 2026-09-19) are
-  durable and should not be re-derived.** (1) **`set` REFUSES a key it cannot
-  address at column 0, and writes nothing when it refuses.** It addresses exactly
-  one shape — a flat scalar on a column-0 `key:` line — and two other shapes were
-  previously written anyway: a key present **only inside a nested block** (`cursor`
-  under `backlog:` — the old `^key:` grep found nothing, fell through to append,
-  and created a second column-0 `cursor:` that `cmd_cursor` never read: exit 0, two
-  sources of truth), and a column-0 key that **heads a nested mapping or list**
-  (`backlog:`, `findings:`), where replacing the header strands its children —
-  unlike T10's block-scalar case there is no body boundary to consume, because a
-  block header's remainder says where the body ends and a mapping header's
-  remainder is empty. Both now exit non-zero, name the key, point at `write`, and
-  leave the file byte-identical: the shape is decided **before** the temp file
-  exists (`_set_target_shape`, literal `index()` matching so a metacharacter in a
-  key cannot widen its own match). **Absent is deliberately NOT refused** —
-  `claim-driver` creates its four `driver_*` keys and `begin-run` mints `run_id`
-  by appending at column 0 against a fresh run-state; absence and nesting are
-  different answers. **Refusal, not YAML path addressing, and that stays so:**
-  addressing in POSIX shell — no `jq`, no parser — against the loop's only
-  unrecoverable state is a large new correctness surface bought to remove a trap
-  that a loud non-zero exit closes just as well, and the precedent sits one
-  function up: the plain-scalar allowlist made a claim about every *future* value
-  and was wrong twice in one afternoon; a refusal makes a claim about none. The
-  six live keys (`status`, `note`, `updated_at`, `last_green_commit`, `branch`,
-  `driver_*`) are untouched. (2) **One decode rule now serves every read path in
-  the file.** It is `_yaml_decode_value` in shell and `rs_decode` in
-  `_YAML_AWK_DECODE` — the same three branches (`'…'` un-doubled, legacy `"…"`
-  stripped **verbatim** with no escape processing, bare passed through unchanged,
-  so every existing on-disk run-state keeps reading with no flag day). Two
-  expressions rather than one on purpose: the findings/records parsers and
-  `trim-note` run inside a single awk pass, and a shell-out per record would put
-  a fork on every line of the state file on every read; the shared decoder
-  fixture table in `test-runstate.sh` drives both over the same values and is the
-  anti-drift mechanism, not the comment. The **pause reason** goes through the
-  same `_yaml_encode_value` on write (`request-pause`) and the same rule on both
-  reads — `pause-status`, and `hooks/pause-check.sh`, which carries a deliberate
-  third copy rather than sourcing a 4k-line script per tool call. A reason-less
-  sentinel now reads at rc=0. Every case above also passes with `jq` and
-  `python3` absent from `PATH`, byte-identical to a full-tools run.
-- **The gspec checkbox is the completion record, findings EXPIRE, and ✅ counts this
-  session outside the stop report** (ADR 0024 + ADR 0025). Three rules that land together because they are one
-  correction: run-state was storing what other things already knew.
-  **`backlog.done` is deleted with nothing in its place** — no counter, no bounded tail.
-  It stored exactly what the PRD capability checkboxes derive, and because
-  `runstate.sh write` replaces the whole file, an agent re-emitted the entire list from
-  memory every packet (measured: 95 entries, 16% of a 27,400-byte run-state, no checksum,
-  nothing that would notice a dropped line). `pending` survives and is explicitly NOT the
-  next thing removed by the same reasoning — it carries the *chosen order*, a decision,
-  not derivable state. The checkbox now flips **inside the packet commit** so the work and
-  the record that it happened land atomically. (Parallel mode had a second variant —
-  the scheduler flipped it at green-lane merge instead, because the task file sits
-  outside every packet's `allowed_files` and two lanes sharing a feature would
-  contend on it — retired along with `--parallel`.) It is `gspec-backlog.sh check-task` —
-  one character on one line — and a caller must
-  distinguish its exit codes: `CHECKED=none` at exit 0 is *skipped, not failed* (gspec is
-  optional), while **exit 4 is genuine drift that must be reported and must NOT halt** the
-  loop. **`check-task` is no longer the plugin's only write into `gspec/`**
-  (`capability-auto-complete`, ADR 0025 revision 2026-09-17): the second, separately
-  named write is **`gspec-backlog.sh complete-capabilities <slug>`**, which changes only
-  the checkbox characters of capability lines — a capability flips only when at least one
-  task covers it and every covering task is checked, a feature with an unchecked task whose
-  `covers:` is unmatched flips nothing, and it **never unflips**. The loop runs it inside the
-  packet commit at land, on the resume adopt path, and to reconcile judgeable capability
-  drift at preflight and at end of run (the drift detector itself stays read-only).
-  Unjudgeable rows — unmatched `covers:`, uncovered or unrecognized capabilities — are
-  still **reported to the operator and never flipped**. This reverses
-  `completion-record-drift`'s "never flip a capability automatically"; that reasoning is
-  kept, dated and marked reversed, in ADR 0025 and the parent PRD.
-  **A finding is scoped to packets and expires**; `--packets` is mandatory with no
-  run-wide escape hatch, because an entry that can never expire is precisely what was
-  being removed. Expiry demands **positive evidence** — the checkbox, or an
-  `[orch packet:<id>]` trailer — and absence from `pending` is *unknown*, never finished,
-  with unknown blocking expiry. **This is the part that was got wrong once and is easy to
-  get wrong again:** the first implementation *asserted* the closing packet was finished
-  instead of *reading* the checkbox the step above had just flipped, which made the flip
-  non-load-bearing (delete it, behaviour identical) and would have expired **zero of
-  fifteen** live entries while appearing to work. Capture precedes drop, always: filing a
-  backlog task IS the capture; a spent sign-off is not.
-  **The tally's ✅ counts what THIS session landed**, from status lines already read rather than
-  anything re-read from disk — except in the stop report, where §B of `templates/report-templates.md`
-  defines the tally as every green packet of the run, not only this session's. The "buckets account for the whole backlog" rule applies to the
-  **forward** buckets only (⚠️/🔀/⬚) — a growing backlog is not a fixed set to partition,
-  and *2 landed, 25 to go* has to read honestly.
-- **A finding discovered after a plan is complete routes by scope in two arms tried in
-  order, and the completed record is never edited** (ADR 0026). **Arm 1** applies when
-  **some feature in the backlog** is **incomplete**, has a plan file with ≥1 **unchecked**
-  task line, and an **unchecked capability in its PRD covers the finding** — both tests
-  separate; no plan file means no anchor, regardless of scope match. Append a new unchecked
-  task line to `gspec/features/<slug>/tasks.md` as an `Edit` anchored on an unchecked line, carrying
-  truthful `covers:` naming that capability. **Arm 2** (everything else, including fully checked
-  parent plans) **proposes** a **new feature**: a PRD via `/gspec-feature`, a
-  `.agents/roadmap.yaml` entry (`depends_on:` the parent, `order` after it), and **no plan
-  file** until the work comes up. **Arm 2 ALWAYS terminates at a question for the operator
-  and no agent ever files the feature** (ADR 0026 revision 2026-09-17): not the architect
-  that routed it, and **not the session driving the loop even though it is the main context
-  and holds `Skill`** — the withdrawn clause let a completed feature file its successor with
-  no operator in the path, and five of 28 roadmap entries name arm 2 as their origin. The
-  hand-off rides the `normal`-severity question block (`templates/check-in.md` for a
-  dispatched Chief Engineer, the stop report's 🔀 question under driver mode); the operator
-  runs `/gspec-feature`. Reachability (`Skill` in a dispatched context) was never the real
-  reason — the **operator gate** was, and reachability was only what enforced it, which is
-  why the rule is now stated directly and does not move when the harness does. **Arm 1 is
-  unaffected**: an already-approved unchecked capability still takes an appended task in-run.
-  **The recorded diagnosis was WRONG, and that is the part to keep**: the immutability
-  hook asks only that every checked task's **block** (its line through the next task
-  line) survives byte-identically, so additive appends already pass mechanically;
-  policy forbids it because a derived-done feature must not carry unshipped work
-  (ADR 0020 D2) — the appended task would emit no packet node and never be scheduled.
-  A hook rejection is a **signal** the edit disturbed a checked block or arm 1 was
-  wrong, never a cue to bypass with shell or patch the vendored hook (it is re-stamped
-  at install). `/gspec-plan` regeneration is unreachable from a dispatched context and
-  would require reopening the feature. Arm 1 widens the plugin's write into `gspec/`
-  past ADR 0025's `[ ]` → `[x]` flip, bounded to: append only,
-  never modify existing lines, never touch capability checkboxes, always carry truthful
-  `covers:`. The arm-1 scope test is prompt-enforced — nothing mechanically checks fit; the
-  detector is a task whose `covers:` does not match, and the boundary is the packet's PR
-  review. `-gaps` does not stack; arm-1-first keeps feature count aligned with scope.
-- **The session running the loop is in DRIVER MODE: it passes paths, reads one status
-  line, and is refused its own main-thread edits** (ADR 0028 + ADR 0020 D2 amendment).
-  The reason is cost, and it is the only reason: a long run's most expensive context is
-  the session *driving* it, not the agents it dispatches, so every byte the driver reads
-  is re-cached on every later turn for the rest of the run. **Driver mode is a file** —
-  `.agents/driver-mode/<session-id>`, written and removed only by `runstate.sh
-  driver-mode <enter|exit|status>`, **content irrelevant, existence is the whole signal**
-  — and `hooks/guard.sh` refuses `Edit`/`Write`/`MultiEdit`/`NotebookEdit` and the shell
-  write forms it recognises when **all three** hold: that session has a mark, the payload
-  has **no `agent_id`**, and the target is outside `.agents/`. Everything else runs
-  untouched — its **subagents**, `git` (so the loop's own checkpoint commits, merges and
-  pushes on `orch/*`/`develop` are unaffected), gaffer's own scripts,
-  and any command with no recognised write form. **Never branch on `agent_type`** — ADR 0028's probe found a `claude --agent` MAIN thread carries
-  `agent_type` with no `agent_id`, so `agent_type` is not a main-thread test, and the
-  same trap is live in `metrics-log.sh`'s role attribution. Four more things are
-  load-bearing and each was got right for a reason: the session id is **validated before
-  it is used as a path component** (anything outside `[A-Za-z0-9._-]` reads as no mark
-  and the call is judged as it is today — the guard never stats an arbitrary path); the
-  check sits **after the secret floor and before the ask tier** and denies via `deny()`,
-  so **`bypass-ask-tier: true` does not skip it** and a secret path is still refused *as
-  a secret*; an **unjudgeable** shell target (an unexpanded `$VAR`, a path it cannot
-  resolve) is **refused**, because wrong-and-refused costs a pause and wrong-and-allowed
-  is the leak the feature exists to stop; and the refusal **names driver mode and
-  `/gaffer:pause`**, since a hard deny with no stated exit is how an agent starts
-  improvising around the guard. A mark from a crashed session is **inert** (keyed to an
-  id nothing will reuse; `session-start.sh` clears it on `startup|resume`), compaction
-  keeps it (`driver-mode-compact.sh` fires on `compact` only and re-points the session at
-  `agents/loop-driver.md`), and it **never blocks another session**. Around that sit eight
-  mechanisms worth knowing before you touch any of them:
-  **(a) Run directories.** `begin-run` mints `run_id` into run-state **only when absent**
-  — so a resume keeps it and a run spans sessions — creates `.agents/loop/<run_id>/`, and
-  prunes to the current run plus the **single newest other**, deleting only directories
-  matching the minted shape (anything else there is operator scratch it does not own).
-  **Both `.gitignore` files must ignore `.agents/loop/` and `.agents/driver-mode/`** —
-  untracked is not enough, it is the `run-state-prev.yaml` trap again: the pause path's
-  `git stash --include-untracked` sweeps them and `reconcile` discards them as scratch on
-  the green checkpoint, so the run destroys its own records.
-  **(b) Two NEW logs, and they are new on purpose.** Driver-mode enter/exit records go to
-  `.agents/metrics/driver-mode/<session>.jsonl` and routing records to
-  `.agents/loop/<run_id>/routing.jsonl`, **not** the outcomes log, because
-  `_rs_open_packets` reads any record carrying `kind` as a packet **start** and would
-  reopen packets that never existed. `record-start`/`record-outcome` keep their shapes: a
-  fresh implementer attempt records no start, routing to the decider records nothing,
-  `discard-advance` records `rolled-back`, a stop records `blocked`.
-  **(c) Routing is mechanical, and the retry limit is enforced by the ROUTER.** `route`
-  maps `pass`→`land`; `fix`→`attempt` while attempts remain, else `decider`;
-  `retry`→`attempt` while attempts remain, and **past the limit it is refused as `stop`
-  with a blocking question naming the over-limit retry, never looped**;
-  `escalate`→`decider`; `reorder`/`append-task`/`hand-off-feature`→`discard-advance`;
-  `ask-operator`→`stop`. Attempts count `fix` **and** `retry` since the packet's latest
-  `start` — a *continuation* deliberately does not reset — against `packet_attempts`
-  (1 when missing, invalid or 0). Records are written even for `stop`/`decider`, which is
-  what lets `run-digest` see every decision and lets `handoff` refuse a packet already
-  routed `hand-off-feature`.
-  **(d) Result files are written THROUGH A SCRIPT, which is how read-only agents stayed
-  read-only.** `write-result` refuses any path outside the current run directory
-  (lexically, before touching disk) and writes the status line as the file's **first**
-  line — so the reviewer, researcher and chief-engineer gained **no** `Edit` or `Write`
-  tool, and the driver can assemble a report from first lines without opening a body.
-  The one-line contract itself is `templates/status-line.md`; its **shape** is refused
-  mechanically by `runstate.sh check-status` (mechanism (f) below — this replaced the
-  earlier state where nothing refused a multi-line reply), while whether the line is
-  **true** is still the **reviewer's** gate, caught as a `fix`.
-  **(e) Every handoff ends with a verification contract, and its text has ONE home:
-  `templates/handoff-required.md`** (ADR 0029, `handoff-verification-contract`). The
-  block is appended by `runstate.sh handoff` itself — read from that file, resolved
-  against the **script's** location rather than the caller's cwd, on every handoff from
-  every body source — **not** carried in `templates/task-packet.yaml`, because the
-  packet template is what the driver reads and the agents read only the handoff (ADR
-  0023: naming a path is not delivering a file). It goes **after** the piped body, so
-  the driver's two conditional lines from `run-loop` §3.3 stay ahead of it, neither
-  moved nor repeated, and a driver that forgets §3.3 entirely still hands over all six
-  lines — that is the property, since the lines were previously written per packet
-  from the driver's own context and vanished at the next compaction or session. A
-  missing, unreadable or whitespace-only template **refuses the handoff** — non-zero,
-  naming the path, no `handoff.md` and no temp file — never a handoff without the
-  block, because an agent cannot tell a contract-less handoff from one whose contract
-  did not apply; `ORCH_HANDOFF_REQUIRED` redirects where the block is read from for
-  fixtures and is an override, never an omission path. `.agents/handoff-extra` in
-  **every** discovered config root adds `REQUIRED: <line>` lines after the six —
-  ADR 0011's bounded walk and restrictive union, reimplemented in `runstate.sh` because
-  `guard.sh` is a hook body with no callable form — so a nested or foreign root can only
-  add; absent everywhere is byte-identical to the mechanism not existing, and
-  present-but-unreadable is refused like the template. **Nothing else restates the six
-  lines**: `templates/task-packet.yaml`, `run-loop` §3.3, `agents/reviewer.md` and
-  `agents/implementer.md` all refer to the block by its heading, and a copy of a line
-  anywhere but the template is drift to remove — the check is a search for each line's
-  distinctive phrase under `templates/`, `agents/` and `skills/`. The reviewer holds a
-  result file to each line that **applies** as an acceptance criterion (a `fix` naming
-  the line, never a pass with a note), judging applicability and never whether to
-  check; the contract is prompt-enforced there, so the detector for a reviewer that
-  stops checking is the next run's retry rate, not a sweep.
-  **(f) Every status line is checked for GRAMMAR before the driver acts on it, and the
-  check is a subcommand, not a prompt rule** (`loop-driver-run-gaps` T1–T3, 2026-09-20).
-  `runstate.sh check-status --status '<line>'` is the ONE mechanical reading of
-  `templates/status-line.md`: it accepts a line exactly when it is one line (a CR counts
-  as a break) containing no backtick and no `$`, its first field (everything before the
-  first ` · `) is one word, the field between its second-to-last and last ` · ` is
-  literally `result: needs-reading` or `result: no`, and its last field (everything after
-  the last ` · `) is a non-empty, whitespace-free path. Otherwise it exits non-zero with
-  ONE reason naming the rule that failed — never a generic "malformed status line",
-  because the driver's only move on a refusal is to hand that reason back. Boundaries
-  come from the FIRST and LAST separator, never a field count: the two middle fields are
-  free text and may carry their own ` · `, so a four-way split would refuse a line the
-  template explicitly permits. `route --status` and `write-result --status` run the same
-  check **FIRST, before either touches disk** — before the routing record is appended,
-  before the run directory is created, before the result file is written — so a refused
-  line leaves `routing.jsonl` byte-unchanged and creates no result file, and all three
-  refuse with the byte-identical reason (one `die` path, no per-caller prefix). The
-  driver's rule, stated on both surfaces (`run-loop` §3 step 4 and the Routing section of
-  `agents/loop-driver.md`): run the check on **every** returned line, including one
-  nothing routes on; on a refusal re-dispatch the same agent **once**, passing the printed
-  reason and nothing else; on a second refusal, a line the driver does not route on
-  proceeds to the reviewer dispatch as before, and a line the driver would have routed on
-  (the reviewer's verdict, the decider's token) is escalated as a blocking question
-  naming the agent and the reason. **The driver never substitutes a line of its own** —
-  a line it wrote reports on work it did not do. The check reads shape, never truth: a
-  well-formed line that is wrong is still the reviewer's `fix`, and that content gate is
-  unchanged.
-  **(g) A packet-close `write` REPLACES the whole run-state, so the close must carry every
-  key it does not itself produce** (`loop-driver-run-gaps` T4). `run-loop` §3.6 enumerates
-  the carry set: `schema`, `run_id`, `branch`, every `driver_*` key the file already
-  carries (`driver_host`, `driver_since`, `driver_heartbeat`, and `driver_pid` when the
-  claim recorded one), `status: running`, `pending_questions`, and the whole `findings:`
-  block — each copied line-for-line from the on-disk `.agents/run-state.yaml` being
-  replaced, the same source rule the fresh-run write uses (`runstate.sh findings` is not
-  a source for the index, since its projection strips the quoting — ADR 0027).
-  `updated_at` is the writer's own stamp; `last_green_commit`, `backlog` and `note` are
-  the close's own output. A key left out is not omitted, it is gone, and `run_id` is the
-  expensive one because nothing fails at the write itself: `run-digest` then refuses
-  (*run-state has no run_id*) for the rest of the run, and the next `begin-run` — this
-  session's or a resuming one's — sees no id, mints a second one and a second run
-  directory, orphaning the run's handoff files, result files and routing log. A dropped
-  `driver_*` key is not re-made either (`claim-driver` runs once, at §2), so
-  `driver-status` reads the run as never claimed from that point on. Pinned twice:
-  `test-report-conventions.sh` asserts each named key appears in the clause's span, and
-  `test-runstate.sh` pins the consequence against a control write that drops `run_id`.
-  **(h) An end-of-run arm-2 proposal is a COUNTED decision, recorded under a fixed id
-  that is not a packet** (`loop-driver-run-gaps` T5; amends ADR 0026's arm 2 and the
-  routing-log shape in ADR 0028, both dated 2026-09-20). When the §4 architect's status
-  line reports an arm-2 proposal in its free-text clause — the driver judges that from
-  the line it already relays, and **no new status token** is introduced — the driver
-  calls `runstate.sh route <run-state> end-of-run-review hand-off-feature --status
-  '<that line>'`. `end-of-run-review` names this run's termination review, never a
-  packet: it satisfies the packet-id charset, reads as a title where the stop report
-  renders it, and cannot collide with a packet because every gspec-sourced id is
-  `<slug>-t<n>`. The call prints `ACTION=discard-advance`, and **that `ACTION` is not
-  acted on** — there is no packet to discard and no cursor to advance at termination;
-  the routing record is the whole purpose of the call. **No outcome is ever recorded for
-  the id**: it has no handoff file and no start record, `record-outcome` is never called
-  for it, and it earns no `packet` line in the digest. The record must land **before the
-  stop report reads `run-tally`**, which is what counts it — recorded after that read,
-  the report prints `DECISIONS=0` beside a rendered decision block, the exact defect T5
-  closed. It goes to `routing.jsonl` and **may never go to the outcomes log**: every
-  record in that log is packet lifecycle — `_rs_open_packets`, `sweep-open` and the
-  digest's `packet` lines read it as nothing else — and `end-of-run-review` is not a
-  packet, so a record for it there would be read as one that never existed; (b) is the
-  same rule from the other side. `run-digest` then emits one
-  `handoff-feature` line for the id carrying the architect's status line, and `run-tally`
-  counts it once (the existing dedup of a handed-off packet's own decision line is
-  unchanged). An architect that routed everything to arm 1, or found nothing to route,
-  records nothing and changes no figure. The operator gate is untouched — the record
-  counts the proposal; nobody in the run files it.
-  **The escalation decider is `chief-engineer` in its loop role, and its contract is
-  the two sections `agents/chief-engineer.md` §Escalation decider and §Periodic review**
-  (`escalation-decider` T1–T12 and T14, landed 2026-09-20/21; ADR 0028 keeps the history
-  of what preceded it). The driver dispatches it on `ACTION=decider` with the handoff path, the review path and the
-  `ATTEMPTS=`/`LIMIT=` that `route` printed, and nothing else; it reads that packet's
-  files, the findings naming the packet, and what its triggers test
-  (`escalate_to_human_on`, the backlog's PRDs and plans, `.agents/roadmap.yaml`) — never
-  another packet's handoff or result file. **Precedence is fixed:** the five triggers are
-  each a test that excludes the others, and when more than one fits the first of
-  `ask-operator` → `hand-off-feature` → `append-task` → `reorder` → `retry` wins. The one
-  judgment call is `ask-operator`'s catch-all — it also fires on a matched
-  `escalate_to_human_on` entry, or when the packet escalates again while a
-  `decider-<packet-id>` finding is still in the index — and the two arm decisions fit
-  only a gspec backlog (no PRD to cover, no plan to append to, otherwise). **Authority is
-  a closed list of calls, because it holds no `Edit`/`Write`:** `reorder` →
-  `runstate.sh reorder-pending` with the whole new order (`REMOVED=` must come back
-  empty), plus a dispatched `architect` editing `.agents/roadmap.yaml` when the order
-  crosses features; `append-task` → that same dispatch appending one unchecked task with
-  a truthful `covers:`, then `reorder-pending` placing it ahead of the packet;
-  `retry` → `runstate.sh amend-handoff`, one marked block spliced into the packet's
-  `handoff.md` and its only write to a handoff, and only while an attempt remains
-  (`route` refuses one past the limit rather than trusting the decider). Each of those
-  three is followed by `add-finding --packets <packet-id>` and `record-decision`, all
-  landed before the status line returns, and a roadmap or plan edit is **committed on
-  that path alone with an `[orch decider:<packet-id>]` trailer** so the
-  `discard-advance` that follows keeps it. `ask-operator` and `hand-off-feature` get a
-  `record-decision` and nothing else: the first stops the loop with its status line as
-  the blocking question; the second does not stop it, records the question naming what
-  `/gspec-feature` should be run with, and `/gspec-feature` is run by nobody in the run
-  (ADR 0026 revision 2026-09-17). It **never** edits a checked task or a capability
-  checkbox, never calls `record-outcome` (the driver's own `rolled-back` follows a
-  `reorder`/`append-task`), never makes a packet abandoned, and never writes run-state, a
-  handoff, `gspec/` or `.agents/` by any other path. A decision exists only once its
-  status line is returned — a result file left by a crash is not one, and a change it
-  already put on disk is recorded as a finding at the packet's next escalation, not
-  repeated — and a pause never splits one: the loop pauses before the dispatch or after
-  the decision is recorded, never between. **The decision log is a THIRD log, beside
-  (b)'s two, and it is new for the same reason plus one.** `record-decision` and
-  `record-review` append to `.agents/metrics/decisions/<session>.jsonl` — not
-  `.agents/loop/<run_id>/`, which `begin-run` prunes to the current run plus the single
-  newest other, so an audit record there stops being readable two runs later, which is
-  exactly when the audit question gets asked; and not the outcomes log, where
-  `_rs_open_packets` classifies by **field shape** (any line carrying `packet` and a
-  non-empty `kind` is a packet boundary), so a record carrying `kind: decision` there
-  would reopen a packet whose green outcome was already recorded and `sweep-open` would
-  then close it as `interrupted`. Both record kinds DO carry `kind`, which is safe only
-  because of where they are written — the placement is the mechanism. Every record is
-  stamped with `run_id`, because the log is session-keyed and a session outlives a run.
-  `run-digest` reads it for the `review` line and the per-routing `decision` lines and
-  reports a packet decision **once** — the driver's own `route` record is the one it
-  counts, and the decider's record is the audit copy. **The periodic review is the same
-  agent between packets, never while one is open**: `runstate.sh review-due` prints
-  `DUE=yes` at 2 non-green endings or 10 beginnings since the last `record-review`
-  (`review_after_non_green_endings` / `review_after_beginnings` in
-  `project-overrides.yaml`; a count that could not be read is `unmeasured`, never `0`,
-  and `unmeasured` still runs the review). It merges duplicates only through
-  `merge-findings` (lossless — the ADR 0024 amendment of 2026-09-21 is what admits it),
-  routes findings that propose work through the two arms and drops them as ADR 0024's
-  capture, drops anything else only on `findings --stale --finished` evidence, and ends
-  with `record-review` as its last write — that record is what resets the count, so a
-  review cut short leaves none and runs again at the next boundary.
-  **Driver-mode context is measured only where `autoCompactWindow` is set, and a plugin
-  cannot supply it** (`driver-context-window-default`; ADR 0028's 2026-09-21 amendment).
-  The success metric — the driver's peak context against the compaction threshold in
-  effect — needs a threshold with a named source, and `runstate.sh compact-threshold`
-  reads only a repository or operator `autoCompactWindow`; with neither set it prints
-  `THRESHOLD=unknown` / `SOURCE=unknown`, which is the default state everywhere. The
-  deferred question — can a plugin supply a default without overriding a value a
-  repository or operator set — was probed by the operator and the answer is **no**, on
-  harness 2.1.278 on Opus 5 only: a `settings.json` at the plugin root is **inert**
-  (the plugin-enabled arm read the same window as the plugin-disabled control, because
-  that version reads a root `settings.json` neither as project settings nor as plugin
-  settings, having no plugin settings scope). A `SessionStart` hook writing the key was
-  **not tried, by the operator's choice** — the ADR already classes a yes that way as
-  writing the operator's own file, a separate feature — and is recorded as not tried,
-  never as failed. Also observed: `/context` printed **no source label** on any line,
-  so the ADR's prediction of one does not hold on that version. **A negative answer is
-  the answer**, so no value, no carrier and no `SOURCE` branch entered the reader, and
-  none may be added on the strength of it: a threshold is reportable only with a
-  `SOURCE=` naming its provenance, and inventing one reproduces the model-conditional
-  default the parents removed. What changed is what the reader who meets the absence
-  is told: `metrics.sh show` renders the unmeasured line with its cause and the key
-  `autoCompactWindow` (the key only — no scope, no precedence, never a value),
-  `skills/metrics` relays that remedy clause unparaphrased, and both loop entry points'
-  kickoffs state that no compaction threshold is in effect and name the same key,
-  rather than staying silent in a way that reads as a measured run. Setting the key in
-  this repo is a one-line settings edit left to the operator, not a feature. **Still
-  open, as result 3 left them:** precedence when both the environment variable and a
-  settings key are set, the user and committed-project scopes, and whether a session
-  can read the value in effect other than by reading settings files — the reader's
-  header comment still marks its operator-over-repo order as documented and unverified.
-  This evidence stays here and in the ADR; no agent or skill prompt carries it.
-  **Reflexivity, because this repo self-hosts:** `runstate.sh` and hook bodies take
-  effect mid-run, but a **mark** is only written by a loop that already entered driver
-  mode, so a run that lands a driver-mode change is itself running the old contract —
-  the first run under a change is the next `/gaffer:run-loop`.
-- **There are THREE report files, and the split is by reader and by need** (ADR 0023).
-  `templates/check-in.md` **is no longer what the loop returns** (ADR 0028): every
-  loop-dispatched agent returns one **status line** (`templates/status-line.md`) and
-  writes its detail to a result file the driver never opens, and the human-facing loop
-  reports are assembled from `runstate.sh run-digest`. What check-in.md is still the
-  **wire** format for is a Chief Engineer dispatched for **self-contained work outside a
-  loop packet** — it has no run-state of its own, so it cannot record findings itself and
-  states them in `Findings:` lines instead; its keys stay stable and machine-shaped
-  because whoever dispatched it *parses* them.
-  `templates/report-conventions.md` holds the **conventions**
-  every human-facing report owes (glyph vocabulary, indentation contract, decision
-  block, header tally, the four rules). `templates/report-templates.md` holds only the
-  loop's three **shapes** and assumes the conventions file. Skills with no shape of
-  their own (`review-change`, `metrics`, `migrate`, `new-project`) read the
-  conventions and **not** the shapes — that split is the whole point of splitting.
-  `templates/report-conventions-card.md` is a fourth thing and not a fourth contract:
-  a ~2.9k-char distillation that is the always-on layer, and the ONE source both L2
-  (consumer `CLAUDE.md`) and L3 (the hook) copy from.
-  **The contract must be DELIVERED, not referenced** — this is the fix ADR 0023
-  exists for, and it is the failure mode to watch for anywhere else in this plugin.
-  Every skill named `report-templates.md` **by path** and none said `Read`, so an agent
-  rendered from the one-line paraphrase in the SKILL.md and had never seen the
-  contract; free prose in consumer repos was the rules never arriving, not an agent
-  ignoring them. Naming a path is not delivering a file. Scope the `Read` two ways or
-  it gets expensive: **by role** (only whoever writes to the *human* — a
-  dispatched Chief Engineer returns the wire format, and reading the shapes
-  would cost ~5k/packet for something it never emits) and **by need** (conventions vs
-  shapes). The three delivery layers are deliberately redundant and **L2 suppresses
-  L3** via the `gaffer:report-conventions` marker, so a session never pays twice:
-  L1 the skills' `Read`; L2 `migrate.sh apply` stamping the card into the consumer's
-  `CLAUDE.md` byte-verbatim (strongest — a repo's own `CLAUDE.md` is the *human's
-  standing instruction*, obeyed as such); L3 `hooks/report-conventions.sh` injecting
-  it at SessionStart (weakest — injected context is untrusted *data*, ADR 0017's
-  probe had subagents read an injected "stop" and decline it — but it is the only
-  layer that upgrades with the plugin). Never describe L3 as enforcing the format.
-  A `Stop`-hook validator was **rejected, not overlooked**: most turns are not
-  reports, and "is this a report?" is exactly the judgment a regex cannot make.
-  It is a **separate `hooks.json` SessionStart entry** from `session-start.sh` because
-  the matchers must differ — the card re-fires on `clear|compact` (context is lost
-  there), while `session-start.sh` must not, since it reads `status: running` as "the
-  previous session died" and would announce a crash that never happened mid-run.
-  Regression sweep: `scripts/test-report-conventions.sh` (JSON validity of the
-  hand-escaped envelope — the card is full of quotes, backticks, `→` and emoji, and a
-  malformed envelope is dropped *silently*; L2-suppresses-L3; fail-open in four
-  directions; and a byte-comparison against the overlay copy, since three copies of
-  one contract is this design's standing risk). `scripts/test-migrate.sh` covers the
-  stamp. **Scope is REPORTS, not responses** — a glyph tally on a two-line answer is
-  decoration, and decoration is what teaches a reader to stop trusting the glyphs.
-  What the human reads:
-  one shared **decision block** plus three shapes — **C** kickoff (before the first
-  packet, and on resume), **A** packet line (a packet ended), **B** stop
-  report (the loop stopped, for any reason). **Under driver mode (ADR 0028) the driver
-  assembles all three from `runstate.sh run-digest` plus the status lines it already
-  read, and nothing else** — it never opens a result file to enrich one. That is the
-  same rule in a cheaper form: ADR 0012 step 3 (now historical; ADR 0012 is superseded)
-  was amended from "relay verbatim" to "render" because the rule it was protecting is
-  *don't go back to disk*, not *don't reword*, and `run-digest` is now the one bounded
-  read that satisfies it. A bounded text transform costs a few hundred tokens once per
-  packet and does not grow with the backlog; re-opening the repo to enrich a check-in is
-  what refills the driver's context.
-  Two conventions are the whole point and the first thing to drift: **no bare ids**
-  (`wbr-t14` and "ADR 0017" mean nothing to a reader who is not holding the numbering
-  — every id gets a plain-English title on first appearance), and **every ask goes
-  through the decision block** (two real options, what *follows from* each — the
-  consequence, not the argument — plus a lean and the default if the human says
-  nothing). Empty sections are omitted, never written as "none".
-  **Two formatting contracts carry the scannability, and both are fixed.** The **glyph
-  vocabulary** — ✅ landed · ⛔ failed · ⚠️ blocked/alert/risk · 🔀 a decision for you ·
-  ⬚ queued · 🔁 retried · ⏸️ paused · ▶ next — is one glyph, one meaning, never two on
-  a line. ⚠️ and 🔀 are **not** interchangeable and the split is load-bearing: waiting
-  on another packet is ⚠️, waiting on the *human* is 🔀, which is why a tally can
-  honestly read `⚠️ 2 blocked · 🔀 3 decisions`. **Section headings reuse the tally's
-  glyphs in the tally's order**, so the header line works as a table of contents — add
-  a decorative section marker (📦, 🎯) and that correspondence silently breaks. The
-  **indentation contract** exists because markdown here renders proportional and
-  **plain leading spaces indent nothing** (≤3 stripped, 4+ becomes a code block): so
-  sections sit flush left, facts go inside a `>` quote bar (which also draws the
-  section's vertical rule — hence no horizontal rules anywhere), bullets appear
-  **only** for choices, and consequences hang unbulleted under their choice. Never pad
-  into columns; alignment survives only inside a fence, and a fence costs every bold in
-  it. The header **tally replaced a progress bar** on purpose: a bar collapses "waiting
-  on you" and "not started" into one grey tail, which are precisely the two states the
-  human needs to tell apart. Tables are banned outright — they read worst on a phone,
-  which is where these land.
-  **Conventions are not the same as shapes, and reports without a shape still owe
-  them**: `review-change`'s verdict, `metrics show`/`analyze`, `new-project`, and
-  `migrate` all carry the vocabulary, the indentation, and the decision block. But
-  do **not** bolt a
-  header tally onto a report with nothing to count — on a metrics summary it is
-  decoration, and decoration is what teaches a reader to stop trusting the glyphs.
-  **The decision block is a shared primitive, not stop-report furniture** — it is
-  also the Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s
-  Risks section, and an inline ask under a blocked packet in a check-in whose run is
-  still going. That is why it is factored out: four near-identical shapes would drift
-  apart, and the un-actionable form ("things a human should weigh") is exactly what
-  they drift *into*. **The kickoff is the cheapest correction point in a run** — a
-  wrong assumption costs a sentence there and several packets at the stop report,
-  which is why shape C carries an explicit `Assuming:` line and why `run-loop` emits
-  it *after* preflight and backlog resolution, when it states facts rather than
-  intentions. Deliberately NOT built, so they do not get invented later: a
-  welcome-back shape (identical content to B — reuse it), a metrics shape (numbers-
-  dense and pulled on demand, not pushed), anything for guard ASK-tier prompts (Claude
-  Code renders those natively and a template cannot reach them), and a mid-packet
-  progress heartbeat (a subagent returns nothing until it finishes — ADR 0012; that
-  is a transport limit, and a shape that implied liveness would be lying).
-- **Two harness facts that are easy to break by accident** (ADR 0012, findings
-  2–4): a dispatched agent has **no `Skill` tool**, so a brief must give the
-  SKILL.md **path** to `Read` — naming the slash command silently yields an
-  improvised loop; and `Task` in agent frontmatter is what **grants** delegation
-  (it maps to a tool named `Agent`) — **do not rename it**, or the Chief Engineer
-  silently loses the ability to spawn anyone. Agents that do not declare `Task`
-  genuinely cannot delegate: the `reviewer` holds only `Read`+`Bash`, which is why
-  read-only means read-only.
-- **Guardrail** (`hooks/guard.sh`): all default policy lives in the clearly-labeled
-  pattern arrays at the top. A `Bash` command is judged in three tiers (ADR 0008):
-  a **read-only fast-path** (`READ_ONLY_CMDS`/`READ_ONLY_GIT`) allows unambiguous
-  searches/inspection immediately, so grepping *for* a risky string isn't mistaken
-  for running it; **`ASK_BASH_PATTERNS`** (deps, migrations, deploys) returns a
-  PreToolUse `permissionDecision:"ask"` for a one-click native prompt; and
-  **`DENY_BASH_PATTERNS`** + `BASH_WRITE_PATTERNS` hard-deny (exit 2, matched rule
-  on stderr) the irreversible bash surface, always. Extend coverage
-  in those arrays; the code below them is mechanism. **It fails CLOSED when it
-  cannot READ its input (ADR 0021)** — the hook only ever runs for the five
-  mutating tools, and every one of those calls carries a command or a path, so an
-  empty extraction is a parse failure, never a legitimate absence; the one
-  remaining allow-on-ignorance is an entirely empty stdin. That inverts the old
-  `[ -z "$CMD" ] && exit 0` behavior, under which any parsing failure silently
-  disabled **every** path rule while the guard still blocked simple ASCII bash and
-  so looked healthy. Four things keep it readable, and each is load-bearing:
-  parsers are probed by **execution, not `command -v`** (Windows `python3` is
-  usually the Microsoft Store alias — on PATH, exits 49); the regex fallback
-  **decodes JSON escapes** or refuses (an *encoded* `C:\\Users\\…` cannot match a
-  pattern written for one separator — and hand-built single-backslash payloads are
-  invalid JSON that the broken fallback matched *correctly*, so manual probing
-  said "healthy"; build probe payloads with `jq -n`); path matching is
-  **separator-normalized** (`(^|/)\.env(\.|$)` had no `/` to bite on in
-  `C:\repo\.env`, so the top SECRET rule was inert on Windows *with* a working
-  `jq`); and no helper returns non-zero for an absent value, since under
-  `set -euo pipefail` that exits 1, which Claude Code reads as a non-blocking
-  error — the same fail-open by another road. `hooks/guard.sh --selftest` answers
-  "is this guard actually enforcing?" without a live tool call. `jq` is strongly
-  recommended but NOT required: stock Git Bash ships neither it nor a real
-  `python3`, so a decoding fallback beats bricking the plugin there.
-  **Path writes are their own two tiers (ADR 0014):** `SECRET_PATH_PATTERNS`
-  (`.env`, key material, secret/credential stores) **hard-deny** — exposure is
-  irreversible; `REVIEW_PATH_PATTERNS` (auth *code*, CI/deploy/infra config,
-  appsettings) **ask** — reversible and PR-reviewed, so they get a one-click prompt,
-  not a dead-end. The auth *directory* rule is constrained to source-code extensions
-  so docs under an `auth/` folder don't trip it. Both tiers are enforced for
-  `Edit`/`Write` and for shell writes (`cat >`, `sed -i`, `cp`, `tee`, …). A consumer
-  repo adds per-project regexes without editing the plugin: `.agents/guard-extra-bash`
-  → hard-deny bash tier; `.agents/guard-extra-paths` → **SECRET** hard floor (this is
-  how money/PHI risk declared in `.agents/domain-rules.md` becomes an enforced
-  hard-deny); `.agents/guard-extra-review` → **REVIEW** ask tier. All are loaded at
-  runtime from the discovered config roots. **`bypass-ask-tier: true` in
-  `.agents/project-overrides.yaml` (ADR 0015)** makes the guard skip the ASK tier
-  entirely — both `ASK_BASH_PATTERNS` and REVIEW-path writes run without a prompt —
-  while every hard-deny floor and the git soft gates still enforce. Default false;
-  resolved restrictively (every discovered config root must opt in, the same
-  restrictive merge that unions `guard-extra-*`), so a nested/foreign `.agents/` can
-  only keep the prompts on.
-  **Driver mode (ADR 0028) adds a THIRD write tier, between those two**: it is checked
-  after the secret floor and before the ask tier, and it is a `deny()`, so
-  `bypass-ask-tier` does **not** skip it. It is the only tier keyed to *who is calling*
-  rather than *what is being touched*. The full rule, and the reason each half of it is
-  shaped the way it is, are in the driver-mode bullet above.
-- **There is ONE guard rule set and no autonomy level** (`retire-autonomy-levels`,
-  2026-09-20; supersedes in part ADR 0004 and ADR 0006). The four levels —
-  `interactive` / `supervised` / `autonomous` / `full-autonomy` — and everything that
-  selected among them (`ORCH_AUTONOMY`, `.agents/autonomy`, the `autonomy_ceiling`
-  clamp, `/gaffer:set-autonomy`, the per-level cases in `test-guard.sh`, the level
-  branches in the loop skills and the `chief-engineer`/`architect`/`implementer`
-  prompts) are gone. `hooks/guard.sh` now allows in every repository exactly what
-  `full-autonomy` allowed: `git commit` on a branch other than `main`/`master` with
-  no secret path staged, and `git merge` into, `git rebase` of, or `git push` to such
-  a branch. **Unchanged:** every hard-deny floor (secrets and key material, history
-  rewrite, recursive deletes), the ASK tier and `bypass-ask-tier`, and the git gates
-  on `main`/`master` — a commit there, a merge into it, a rebase of it, a push to it,
-  `--amend`, a forced or interactive rewrite, and a commit that stages a secret path
-  all still deny. The reason is that the dial was never turned: all ten repositories
-  on the operator's machine sat at `full-autonomy`, none set a ceiling, and no
-  transcript shows `/gaffer:set-autonomy` typed — a setting held at one value
-  everywhere is not a choice, but it still cost a policy branch in the guard,
-  per-level sweep cases, and a level branch in every loop and agent prompt that each
-  later loop-cost change would have had to carry too. **A stricter mode is not
-  coming back as a restored ladder**: if a repository ever needs one, it is specced
-  fresh against that need, not by reinstating the four levels (the PRD's deferred
-  decision). Two consequences to hold in mind: a repository that relied on the old
-  `interactive` default to gate commits has lost that gate, and an ad hoc session in
-  any repo with the plugin installed can now commit, merge, rebase and push onto
-  non-`main` branches without the guard stopping it — releases and PRs stay the
-  human's by convention and remote branch protection, not by the guard.
-  `/gaffer:migrate` deletes a consumer repo's `.agents/autonomy` and strips
-  `autonomy_ceiling` from `project-overrides.yaml`, and only *reports* a level named
-  in the repo's own `CLAUDE.md` or `spec-setup.md` or an `ORCH_AUTONOMY` entry in
-  its `.claude/settings.json`, because those belong to the human. Metrics keep the
-  field so runs stay comparable: a run collected after the install records
-  `full-autonomy`; re-collecting an older run records `unknown`.
+- **Two harness facts that are easy to break** (ADR 0012, findings 2–4): a dispatched
+  agent has **no `Skill` tool**, so a brief gives the SKILL.md **path** to `Read`, never
+  the slash command; and `Task` in agent frontmatter is what **grants** delegation (it
+  maps to a tool named `Agent`) — **do not rename it**. Agents without `Task` cannot
+  delegate; the `reviewer` holds only `Read`+`Bash`.
+- **The "structured tools, not the shell" block is a preference**; only its write half
+  (`sed -i`, `cat >`) is a real control. Add no cost claim without a cost measurement —
+  a frequency count is not one (ADR 0019 v3.3 §2).
+- **All seven agents carry a "do not re-read what you already have" block — the rule
+  only, never the evidence** (evidence: ADR 0019, "Relocated from CLAUDE.md").
+- **This plugin ships no general engineering-method skills** (ADR 0020 D7). The
+  evidence-before-claims rule survives inline in `run-loop` §3.3 and `implementer` —
+  keep it there.
 
-- **gspec is a pinned, optional dependency behind ONE adapter** (ADR 0020). The seam:
-  **gspec owns *what to build and in what order*; this plugin owns *how a unit of work
-  is safely executed*** — guardrail, checkpointing, isolation, measurement.
-  Every gspec read goes through `scripts/gspec-backlog.sh`; **never parse `gspec/`
-  anywhere else**, or a format change breaks seven files again (it did — gspec 2.x
-  moved `features/<slug>.plan.md` to `tasks/<slug>.md` and nothing checked). The
-  consumed contract is exactly: the feature's **plan** (task lines + `deps:`), its
-  **PRD** (capability checkboxes **and, since the D2 amendment, a capability's indented
-  acceptance-criteria sub-bullets**), **the `arch.md` sections and `design.html` blocks
-  a task's anchors name** (inlined into the handoff by `gspec-backlog.sh handoff`,
-  `handoff-spec-inlining`, 2026-09-22), `.agents/roadmap.yaml`, and — fail-soft, outside
-  the pinned contract — `.gspec/build/status.json` for the two-drivers interlock.
-  **The sub-bullets were added for exactly one reader, `gspec-backlog.sh handoff`**
-  (ADR 0028's handoff file has to say what "done" means for the task, and at a
-  capability-level PRD that lives one level below the checkbox). **Completion is still
-  derived from the checkbox alone** — never from a criterion's text or count — and the
-  `covers:` quote is matched **verbatim**, with an unmatched one reported as
-  `UNMATCHED=` rather than guessed, which is what stops the widened contract from
-  becoming a second, softer place completion could be inferred from. `runstate.sh`
-  still never reads `gspec/` at all: the handoff file is this adapter's *output*, piped
-  in by the loop.
-  **Where those two files LIVE is layout-dependent and resolved in exactly one place
-  each** (`_resolve_plan_path` / `_resolve_prd_path`, enumerated by `_plan_paths` /
-  `_prd_paths`), because gspec has now moved them twice:
+### Retired features (one line each; the reasoning is in the ADRs)
 
-  > **3.x** (`spec-version: v2`) — PRD `gspec/features/<slug>/prd.md`,
-  > plan `gspec/features/<slug>/tasks.md`
-  > **2.x** (`v1`) — PRD `gspec/features/<slug>.md`, plan `gspec/tasks/<slug>.md`
-  > **pre-2.0** — PRD `gspec/features/<slug>.md`, plan `gspec/features/<slug>.plan.md`
+- **Relay mode** — retired (ADR 0012, `retire-unused-loop-modes` T4, 2026-09-15);
+  `--relay`/`--inline` still accepted as a no-op.
+- **Parallel mode** — retired (ADR 0016, `retire-unused-loop-modes` T2, 2026-09-15);
+  `--parallel` still accepted as a no-op. Still live: schema-3 `lanes:`/`mode:
+  parallel` run-state is **read-only compatibility** (`runstate.sh lanes` projects it
+  for `resume`); nothing may write it again. Concurrency is loop-driver guidance
+  (`agents/chief-engineer.md` Concurrency); never use a worktree for a loop packet.
+- **Rate-limit auto-pause** — retired (ADR 0018, `retire-unused-loop-modes` T2,
+  2026-09-15). `/gaffer:migrate` cleans up a leftover `rate_limit_pause:` block or stale
+  `statusLine` entry only with operator confirmation, never touching a foreign
+  `statusLine`.
+- **Autonomy levels** — retired (`retire-autonomy-levels`, 2026-09-20; ADR 0004/0006
+  in part). One guard rule set; a stricter mode is specced fresh, never by restoring
+  the ladder. `/gaffer:migrate` removes `.agents/autonomy`/`autonomy_ceiling` and only
+  *reports* level mentions in a consumer's own files.
 
-  All three are READ, and the newer shadows the older for a given slug (a slug in
-  two layouts is a half-finished `/gspec-migrate`, and the destination is the
-  truth). The 3.x folder is also where `arch.md` and `design.html` live, and
-  **their anchored sections are now inside the consumed contract**
-  (`handoff-spec-inlining`): both are resolved through `_resolve_arch_path` /
-  `_resolve_design_path`, and `handoff` inlines the `arch.md` section each
-  `- arch:` anchor names — plus, for a `### Screen:` section, its `design.html`
-  element — so no ARCH/DESIGN path line surfaces in a handoff. A path appears
-  only on the `SPEC=read by heading` line, for a section past the word budget or
-  unmatched. The rest of either file stays gspec's half of the seam, and `next`
-  still only reports their paths. The trap the folder layout sets, and the one to check first if
-  anything here breaks: the slug lives in the **directory** name, so `basename
-  <path> .md` — what every call site did before the seam — yields the literal
-  `"prd"`/`"tasks"` for every feature at once, and N features read as one.
+### Pause (ADR 0017)
 
-  The pin has **two axes** because the artifact format and the tool version move independently (gspec does stamp `gspecVersion` into `.gspec/config.json` since 3.1.1, and `migrate.sh detect` now reports it against the pin, but that stamp says which tool was last installed, not which format the specs on disk carry): so there is the
-  TOOL pin (`GSPEC_PINNED_VERSION`, currently **3.2.0**) and the
-  ARTIFACT pin (`spec-version`, asserted by `gspec-backlog.sh check`, which fails
-  LOUD). The artifact pin deliberately accepts **`v1 v2`, not `v2` alone** —
-  narrowing it would make `check` return rc=3 and stop the loop on a repo whose
-  backlog the adapter reads perfectly well. **The pin catches a format this code
-  CANNOT parse; it is not a lever for nagging a repo into migrating** — that nudge
-  belongs in `/gaffer:migrate`, which reports the layout and names
-  `/gspec-migrate`. Raising either axis is deliberate: bump, extend the supported
-  set, re-run the sweeps, amend ADR 0020. **gspec is optional** — four and a half
-  of the five pillars have no spec dependency, so a backlog may equally come from
-  run-state or an explicit argument.
-- **The human-facing migration sequence is `docs/gspec-3.2.0-migration.md`**, and
-  it is a SECOND document on purpose: `skills/migrate/SKILL.md` §2b is what an
-  agent runs mid-task, the runbook is what a person follows across sessions and
-  repos. They share exactly one hard fact — the pinned version — and
-  `test-migrate.sh` asserts it in both (including the filename, which carries the
-  version), so a pin bump that forgets the runbook fails the sweep instead of
-  leaving a document that still tells someone to `npx gspec@3.1.1` after the pin has moved on. Everything
-  else in the runbook is prose no test can judge, which is exactly why the one
-  checkable fact is checked.
-- **The gspec 3.x relocation is `/gspec-migrate`'s move, and `/gaffer:migrate`
-  deliberately does NOT do it** (ADR 0020, decided 2026-08-23). It detects the
-  layout, sequences the upgrade, and verifies packets still come out the other end
-  — the half gspec cannot do — while the move itself stays gspec's for three
-  reasons that are each sufficient: it must repair the relative links the
-  relocation breaks in *both* directions (inbound links from specs that did not
-  move are the ones that get missed), it must reformat each file to the v2 body
-  through gspec's own `spec-migrator`, and it edits files gspec's
-  `task-immutability` floor is watching — a shell `mv` racing that floor loses
-  intermittently. **The ordering is load-bearing**: install the pinned gspec *before*
-  running `/gspec-migrate`, because a repo on old gspec has the OLD
-  `/gspec-migrate` in `.claude/commands/`, which migrates *toward* `gspec/tasks/`
-  — the exact layout you are leaving — and reports success doing it.
-- **A plan whose tasks are all checked yields zero packets, and that is COMPLETE,
-  not broken.** `migrate.sh verify`'s old test was `plans > 0 && packets == 0`,
-  which cannot separate "nothing can parse this" from "everything here is done" —
-  so it raised *"this is the failure the migration exists to catch"* on the repos
-  that had done the most work, and it did exactly that on this one (5 plans, 66
-  checked task lines). The discriminator is how many task lines the adapter can
-  READ (`gspec-backlog.sh plans` columns 4–5), counted with the **same pattern
-  `_nodes_for` uses** — a count from a different pattern would lie about precisely
-  what it is asked to certify. `seen == 0` is the real failure; `seen > 0` with no
-  unchecked work is a finished backlog.
-- **Feature completion is DERIVED and must never be stored** (ADR 0020 D2). It
-  comes from the PRD's capability checkboxes, never a stored flag.
-  `.agents/roadmap.yaml` carries planning preference only —
-  `slug`/`order`/`why` (+ an interim `depends_on` until upstream `U5` lands). It
-  lives in `.agents/`, **not** `gspec/`, because gspec's `spec-integrity` floor
-  governs every `.md` under `gspec/` and would flag a file gspec does not own.
-  gspec's `[P]` marker is **advisory** and always was — a model's guess with no
-  isolation behind it. D2 originally paired this with a second derived
-  quantity, concurrency, computed by `scripts/packet-graph.sh` from that
-  marker; that script and the parallel-mode scheduler it served are retired
-  (`retire-unused-loop-modes` T2), so concurrency is no longer computed at
-  all — file-disjoint editing is loop-driver guidance now (see the parallel
-  mode bullet above).
-- **File scope comes from `.agents/task-files.yaml`, and every entry is
-  fingerprint-guarded** (ADR 0020 `U1-local`). gspec task lines carry no file scope,
-  so this sidecar is where `allowed_files` comes from; precedence is plan-authored
-  `files:` > fingerprint-matched sidecar > empty. The guard is not ceremony: gspec
-  preserves task IDs on regenerate but **re-decomposes unchecked work**, so `T5` can
-  keep its id while its text becomes different work — and a stale entry would hand
-  a packet a scope for work that no longer matches its own task text. Mismatched or
-  unfingerprinted entries are IGNORED (empty scope — no sidecar-derived narrowing)
-  and reported by `gspec-backlog.sh files-status`. Wrong-wide loses the point of
-  scoping the packet narrowly; wrong-narrow costs correctness.
-- **The driver claim is a HEARTBEAT, not a pid** (ADR 0020 D5). `status: running`
-  alone cannot tell a crashed session from a second session driving right now.
-  gspec's pid check does not transfer — its driver is one long-lived node process;
-  ours is a Claude session issuing discrete tool calls, so `runstate.sh`'s own `$$`
-  is dead the moment the command returns. The loop `claim-driver`s at start and
-  `heartbeat`s at each packet boundary; a claim staler than
-  `ORCH_DRIVER_STALE_SECS` (900) reads as crashed. `foreign` (another host) is
-  never guessed dead. `runstate.sh outcome` is the separate terminal-state answer
-  (0 complete · 1 blocked · 2 paused · 3 crashed · 4 running).
-- **This plugin ships no general engineering-method skills** (ADR 0020 D7). TDD,
-  systematic debugging, and verification-before-completion were removed: testing
-  method belongs to the project (`gspec/practices.md`), and the rest is not
-  orchestration mechanism. The evidence-before-claims rule survives inline in
-  `run-loop` §3.3 and `implementer` — keep it there.
+- The request is the sentinel `.agents/pause` (main checkout, found via `git rev-parse
+  --git-common-dir`), never run-state; run-state records only `status: paused`.
+- The **prompt-poll (`pause-status`) is the only guaranteed stop**, at safe boundaries.
+  `hooks/pause-check.sh` is best-effort advisory — **never describe pause as automatic
+  via the hook**.
 
-- **Migration reads REAL legacy shapes, and never rewrites them** (`/gaffer:migrate`,
-  `scripts/migrate.sh`). Pre-2.0 consumer repos carry plan files this plugin's own
-  architect authored, not `/gspec-plan` output, and they use non-canonical task and
-  capability lines — `**T000 Description.**`, `**ser-t1** **P0** …`, `**P0 — Text**`.
-  The adapter recognizes all of them, because that is what makes migration a safe
-  **move**: rewriting task lines would edit **checked** tasks, which gspec's
-  immutability floor blocks and which destroys the record of what was built.
-  Regeneration via `/gspec-plan` is the supported path, feature by feature, when the
-  work next comes up. **A migration is not done when the files have moved — it is
-  done when packets come out the other end**, which is why `migrate.sh apply` always
-  ends in `verify` and reports a packet count. Measured: a pure rename yielded 0
-  packets from 31 real plan files, and an unrecognized *capability* line is worse
-  still — the feature can never read as done, so everything depending on it stays
-  blocked forever and the backlog quietly reports nothing to do.
+### Run-metrics (ADR 0019 — read its revision sections before touching the collector)
+
+- Hooks (`metrics-log.sh`, `metrics-skill.sh`) **print nothing and always exit 0**;
+  they cannot emit a `permissionDecision`.
+- **No full command text or file path is ever logged** — Bash is reduced to a
+  `cmd_class` head, files to a 12-char hash; the packet must stay safe to paste.
+- **`jq -r` output consumed by `read` goes through `tr -d '\r'`**; scalar captures use
+  `jqr` (only MSYS bash strips the CR). Keep the CRLF-shim byte-identical test, shim in
+  `awk`, not `sed`.
+- **Dedupe transcript tokens by `message.id`** (earliest row); keep rows without one.
+- **`null` means unmeasured, never 0** — `show` must not render it as 0.
+- Trailers: **own-line only**, **author date**, scan **bounded at both ends** (knob
+  `ORCH_METRICS_TRAILER_GRACE`).
+- **`outcome` is attested or `null`**, via `record-start`/`record-outcome`
+  (append-only outcomes log, never run-state). **`interrupted` has one writer,
+  `sweep-open`.**
+- Dispatch passes `routing.sh resolve <agent>`'s output as `model` (empty = omit).
+- Machine-wide spend lives in `scripts/spend.sh`. `.agents/metrics/` is gitignored in
+  both `.gitignore`s.
+
+### Run-state and findings (ADR 0022, 0024, 0025; `runstate-write-integrity*` PRDs)
+
+- **Every agent-supplied value in run-state is hostile input**; mutate it only through
+  `runstate.sh`, never by hand.
+- **Quote every value written; no plain-scalar allowlist** (re-adding one is a
+  regression). The reader strips symmetrically — `cmd_get`'s strip is load-bearing.
+  **One decode rule** serves every read path (`_yaml_decode_value`, awk `rs_decode`,
+  the deliberate copy in `hooks/pause-check.sh`); the shared fixture table in
+  `test-runstate.sh` is the anti-drift mechanism. Everything works with `jq`/`python3`
+  absent.
+- **`write` validates structurally and keeps `.agents/run-state-prev.yaml`** (no
+  shrinkage guard). **`set` refuses a key it cannot address at column 0** and writes
+  nothing; absent keys append. Refusal, not YAML path addressing — keep it so.
+- Summaries are **single-quoted with `'` doubled**; interpolate with **`awk ENVIRON`,
+  never `awk -v`**; id checks are block-scoped and literal. `trim-note` (literal block
+  scalar) is a backstop only. Parse assertions in `test-runstate.sh` must skip
+  **loudly** without PyYAML.
+- **Findings: index hot, body cold** (`.agents/findings/<id>.md` + one index line).
+  "Should be built/fixed" → gspec, never a finding; gotcha/decision/resolved question →
+  finding; "where we stopped" → `note:`. Every whole-file `write` carries `findings:`
+  through. A Chief Engineer with no run-state of its own returns `Findings:` lines
+  instead of calling `add-finding`.
+- **Findings expire on positive evidence only** (`--packets` mandatory; checkbox or
+  trailer, actually read); absence from `pending` blocks expiry. Capture precedes drop.
+- **The gspec checkbox is the completion record** (`backlog.done` is gone; `pending`
+  stays — it is a decision). `check-task` flips it inside the packet commit
+  (`CHECKED=none` = skipped; exit 4 = drift, report, do not halt).
+  `complete-capabilities` flips only fully-covered capabilities and never unflips.
+- The tally's ✅ counts this session, except the stop report (§B: the whole run).
+- **A probe that does not reproduce the phenomenon cannot eliminate a cause** (the
+  `trim-note` SIGPIPE flake, `runstate-write-integrity` tasks).
+
+### Post-completion findings (ADR 0026)
+
+- **Arm 1:** an incomplete feature with an unchecked task and an unchecked capability
+  covering the finding → append one unchecked task (truthful `covers:`); never modify
+  existing lines or capability checkboxes.
+- **Arm 2** (everything else) **always ends at a question for the operator; no agent
+  ever files the feature.**
+- A task-immutability rejection means the edit was wrong — never bypass it or patch
+  the vendored hook. `-gaps` features do not stack.
+
+### Driver mode (ADR 0028, ADR 0029)
+
+- **Refusal rule:** `guard.sh` refuses main-thread edits and recognised shell writes
+  when **all three** hold: the session has a mark (`.agents/driver-mode/<session-id>`,
+  only via `runstate.sh driver-mode`), the payload has **no `agent_id`**, and the
+  target is outside `.agents/`. **Never branch on `agent_type`** — a `claude --agent`
+  main thread carries it (same trap in `metrics-log.sh`).
+- Validate the session id before using it as a path. The check sits **after the secret
+  floor, before the ask tier**, is a `deny()` (`bypass-ask-tier` does not skip it),
+  **refuses unjudgeable targets**, and names driver mode and `/gaffer:pause`.
+- **Both `.gitignore`s ignore** `.agents/loop/`, `.agents/driver-mode/`,
+  `.agents/run-state-prev.yaml` and findings bodies — untracked is not enough.
+- **Routing, driver-mode and decision records have their own logs, never the outcomes
+  log** — `_rs_open_packets` reads any `packet`+`kind` record there as a boundary.
+- `route` enforces the retry limit (`packet_attempts`), not the decider.
+  **`write-result` is how read-only agents stay read-only** — never grant them
+  `Edit`/`Write`.
+- **`templates/handoff-required.md` is the one home of the verification contract**
+  (appended by `runstate.sh handoff`); nothing else restates its lines.
+- **`check-status` runs before any write**; the driver never substitutes a status line.
+- **A packet-close `write` must carry** `schema`, `run_id`, `branch`, every `driver_*`
+  key, `status`, `pending_questions` and `findings:` from the on-disk file (`run-loop`
+  §3.6).
+- **`end-of-run-review` is a fixed non-packet id**, recorded before `run-tally` is read;
+  never record an outcome for it.
+- The decider's authority is a closed list (`agents/chief-engineer.md` §Escalation
+  decider, §Periodic review).
+- **A plugin cannot supply `autoCompactWindow`**; add no `SOURCE` branch without a named
+  provenance.
+- A run that edits driver mode runs the old contract; the change lands next run.
+
+### Reports (ADR 0023)
+
+- Split by reader: `status-line.md` (loop agents), `check-in.md` (Chief Engineer
+  outside a packet), `report-conventions.md` (every human report), `report-templates.md`
+  (the loop's shapes), `report-conventions-card.md` (the source L2 and L3 copy).
+- **Deliver the contract (`Read` it), never just name a path**; scope by role and need.
+- **L2 suppresses L3**; **never describe L3 (the hook) as enforcing the format.**
+- Driver-mode reports come from `run-digest` plus status lines already read.
+- **Scope is reports, not responses.** Glyphs and ⚠️ (blocked) vs 🔀 (waiting on you)
+  are fixed; no decorative section markers, no tables, no bare ids.
+
+### gspec adapter and migration (ADR 0020)
+
+- **Every gspec read goes through `scripts/gspec-backlog.sh`; never parse `gspec/`
+  anywhere else.** `runstate.sh` never reads `gspec/`.
+- Consumed contract: plan task lines + `deps:`; PRD capability checkboxes and their
+  criteria sub-bullets (for `handoff` only); the `arch.md`/`design.html` sections a
+  task's anchors name; `.agents/roadmap.yaml`; fail-soft `.gspec/build/status.json`.
+- **Completion is derived from the checkbox alone**, never stored; `covers:` matches
+  verbatim (unmatched → `UNMATCHED=`).
+- Paths resolve in one place each (`_resolve_*_path`); all three layouts (3.x folder,
+  2.x, pre-2.0) are read, newer shadows older. **Trap:** in 3.x the slug is the
+  *directory* — `basename <path> .md` yields `prd`/`tasks` for every feature.
+- **Two pin axes:** tool pin `GSPEC_PINNED_VERSION` (`gspec-backlog.sh pin`) and
+  artifact pin `spec-version` (`check`, fails loud; accepts `v1` and `v2` — do not
+  narrow). The pin catches unparseable formats; it is not a migration nudge.
+- **Runbook: `docs/gspec-migration.md`** (agent path: `skills/migrate/SKILL.md` §2b);
+  neither restates the pinned version, and `test-migrate.sh` asserts that.
+- **The 3.x relocation is `/gspec-migrate`'s move, never `/gaffer:migrate`'s**; install
+  the pinned gspec first.
+- **Migration never rewrites legacy task/capability shapes**; it is done when packets
+  come out (`apply` ends in `verify`). Zero packets from an all-checked plan is
+  complete; the failure is zero *readable* task lines (counted as `_nodes_for` counts).
+- `.agents/roadmap.yaml` (planning preference only) lives in `.agents/`, not `gspec/`.
+  `[P]` is advisory.
+- **File scope: `.agents/task-files.yaml`, fingerprint-guarded** (plan `files:` >
+  matched sidecar > empty; mismatches ignored, reported by `files-status`).
+- **The driver claim is a heartbeat, not a pid** (D5; knob `ORCH_DRIVER_STALE_SECS`);
+  `foreign` is never guessed dead.
+
+### Guardrail (`hooks/guard.sh`; ADR 0008, 0014, 0015, 0021)
+
+- All default policy lives in the labelled pattern arrays at the top; extend coverage
+  there. Bash tiers: read-only fast-path → `ASK_BASH_PATTERNS` (ask) →
+  `DENY_BASH_PATTERNS` + `BASH_WRITE_PATTERNS` (hard deny, exit 2).
+- **It fails closed on unreadable input** (ADR 0021): probe parsers by execution, not
+  `command -v`; the fallback decodes JSON escapes or refuses; paths are
+  separator-normalized; no helper returns non-zero for an absent value. Build probe
+  payloads with `jq -n`; `guard.sh --selftest` answers "is it enforcing?".
+- Path writes: `SECRET_PATH_PATTERNS` deny, `REVIEW_PATH_PATTERNS` ask (auth-directory
+  rule limited to source extensions), for `Edit`/`Write` and shell writes alike.
+  Per-repo: `.agents/guard-extra-bash` (deny), `-paths` (secret floor), `-review` (ask).
+- **`bypass-ask-tier`** (ADR 0015) skips only the ask tier and resolves restrictively
+  (every config root must opt in).
+- **Git:** commit/merge/rebase/push allowed off `main`/`master`; touching
+  `main`/`master`, `--amend`, forced/interactive rewrites and commits staging a secret
+  path are denied. Releases and PRs are the human's by convention and branch protection.
 
 ## How to test the plugin
 
@@ -1308,41 +282,36 @@ claude --plugin-dir .
 scripts/test-guard.sh          # guardrail allow/deny, closed bypasses, guard-extra
 scripts/test-runstate.sh       # pause/resume + crash reconcile (sequential; a legacy
                                 # mode: parallel run-state still parses read-only)
-scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a generic worktree,
-                                # not a parallel lane -- that mode is retired)
+scripts/test-pause.sh          # ADR 0017 pause sentinel + hook (from a generic worktree)
 scripts/test-metrics.sh        # ADR 0019 run-metrics: event log -> trailer/token join -> packet, fail-soft
 scripts/test-spend.sh          # ADR 0019 v3.5 spend: machine-wide transcript dedup, pricing, timestamp handling
 scripts/test-gspec-backlog.sh  # ADR 0020 gspec adapter: version pin, derived completion, nodes, interlock
-scripts/test-migrate.sh        # v2.0.0 consumer-repo retrofit: moves, conversion, the retired-mode
-                                # cleanup (retire-unused-loop-modes T5), the packet-count check, and
-                                # the CLAUDE.md conventions stamp
+scripts/test-migrate.sh        # consumer-repo retrofit: moves, conversion, retired-mode cleanup,
+                                # the packet-count check, and the CLAUDE.md conventions stamp
 scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies
 scripts/test-routing.sh        # per-agent-model-routing lookup: resolve/validate/table, every fallback and report reason, VALID_MODELS pin
 ```
 
 When adding a new risky pattern to `guard.sh`, add a matching allow/deny pair to
-`scripts/test-guard.sh` so regressions are caught. Same rule for the other eight
+`scripts/test-guard.sh` so regressions are caught. Same rule for the other
 scripts: a behavior worth having is a behavior worth a test in its sweep.
 
 ## Ground rules for changes here
 
 - **Commit, push, and merge onto `orch/*` and `develop` are ALLOWED** — that is the
-  loop's own checkpoint mechanism (`run-loop` §3.4), and a
-  resume has nothing to adopt without per-packet green commits (ADR 0005). Every
-  packet commit carries its `[orch packet:<id>]` trailer, which is what makes the
-  work recoverable and measurable. **`main`/`master`, releases, PRs and deploys
-  stay the human's hard gate** — `hooks/guard.sh` enforces
-  that floor and `test-guard.sh` pins it; the earlier claim here that the guardrail
-  blocked *all* commits was simply wrong, since it returns exit 0 for a commit on a
-  non-`main` branch. Note this file is read by the harness's auto-mode classifier,
-  so a prohibition written here is obeyed as a standing instruction — which is why
-  the previous wording blocked the loop's own commits and no permission rule was
-  the cause or the fix.
+  loop's own checkpoint mechanism (`run-loop` §3.4); a resume has nothing to adopt
+  without per-packet green commits (ADR 0005). Every packet commit carries its
+  `[orch packet:<id>]` trailer. **`main`/`master`, releases, PRs and deploys stay the
+  human's hard gate** — `hooks/guard.sh` enforces that floor and `test-guard.sh` pins it.
+  This file is read by the harness's auto-mode classifier, so a prohibition written
+  here is obeyed as a standing instruction — word rules here accordingly.
 - Keep the plugin generic and reusable across any application domain. The
   guardrail's default patterns must stay generic (auth, secrets, migrations,
   deps, deploys, git history) — do NOT add domain-specific patterns (money,
   Plaid, PHI, …) to `hooks/guard.sh`. Those belong in the consumer repo's
   `.agents/guard-extra-bash` / `.agents/guard-extra-paths`.
+- **Config state lives only in its config file.** Name a setting's key, never its
+  current value or a code default, anywhere in prose.
 
 <!-- gspec:preamble -->
 ## gspec — Living Specification Sync
@@ -1416,42 +385,29 @@ installer, not by this repo**, and it is re-stamped on every `npx gspec@<pin>
 --target claude`. Never edit inside it — corrections go here, outside the markers,
 or they are silently lost on the next install.
 
-It is correct about specs and **wrong about execution in this repo**, because it
-is written for a generic consumer that does not have this plugin. ADR 0020 draws
-the seam: **gspec owns _what to build and in what order_; this plugin owns _how a
-unit of work is safely executed_** — guardrail, checkpointing,
-worktree isolation, measurement. The preamble's routing advice claims that second
-half for gspec. In this repo:
+It is correct about specs and **wrong about execution in this repo**: ADR 0020's seam
+gives gspec *what to build and in what order*, and this plugin *how a unit of work is
+safely executed*. In this repo:
 
 - **`gspec-implement` and `gspec-build` are NOT the execution path.** Execution is
   `/gaffer:run-loop` (and `/gaffer:resume`), which runs packets through the guard,
-  its fixed git gates, and run-state checkpointing. `gspec-build` in particular
-  drives profile → … → implementation unattended, which would bypass every one of
-  those. The adapter's `interlock` subcommand exists precisely because two drivers
-  must not run at once.
-- **`gspec-plan` and `gspec-feature` ARE the right tools**, and are how the four
-  deferred features get decomposed when their time comes.
-- **`gspec-plan` must not be run against `gspec/features/run-metrics/tasks.md`.** It is a
-  retro-spec of shipped work with every task checked; regeneration re-decomposes
-  unchecked work and would destroy the record it exists to hold.
-- **Ignore the preamble's "read the specs first" list where it names files this
-  repo does not have.** `gspec/profile.md`, `stack.md`, `practices.md` and
-  `style.md` are not present — this repo's equivalents are this file, the ADRs,
-  and the regression sweeps. Do not generate them to satisfy the preamble.
+  its fixed git gates, and run-state checkpointing. `gspec-build` would bypass all of
+  those; the adapter's `interlock` exists because two drivers must not run at once.
+- **`gspec-plan` and `gspec-feature` ARE the right tools** for decomposing and
+  specifying features.
+- **`gspec-plan` must not be run against `gspec/features/run-metrics/tasks.md`** — a
+  retro-spec with every task checked; regeneration would destroy the record.
+- **Ignore the preamble's "read the specs first" list where it names files this repo
+  does not have** (`profile.md`, `stack.md`, `practices.md`, `style.md`). This repo's
+  equivalents are this file, the ADRs, and the sweeps. Do not generate them.
 
-The gspec hooks now installed under `.claude/hooks/` (spec-integrity, task-
-immutability, practices-enforce, …) are registered in `.claude/settings.json` and
-compose with — they do not replace — the plugin's own `hooks/guard.sh`. Both fire;
-the guard's hard-deny floor is unaffected. Note that `task-immutability` will
-refuse edits to the checked tasks in `gspec/features/run-metrics/tasks.md`, which
+The gspec hooks under `.claude/hooks/` (spec-integrity, task-immutability,
+practices-enforce, …) are registered in `.claude/settings.json` and compose with —
+not replace — `hooks/guard.sh`. `task-immutability` refusing edits to checked tasks
 is the behaviour we want.
 
-One consequence of the 3.x relocation worth knowing before you "tidy" anything:
-**three path references under `gspec/` still name the pre-3.x locations, and they
-are correct as they stand.** Each sits inside a CHECKED block — a checked task
-line in `self-host-hardening-gaps/tasks.md`, and acceptance criteria under checked
-capabilities in `runstate-write-integrity` and `self-host-hardening-gaps`. The
-immutability floor blocks edits there and is right to: those lines are the record
-of what was built, and a path inside one describes where a file *was* when the
-work happened. Only two links were repaired in the move — both in free prose
-outside any task block.
+**Three path references under `gspec/` still name pre-3.x locations, and they are
+correct as they stand** — each sits inside a CHECKED block (a checked task in
+`self-host-hardening-gaps/tasks.md`, and acceptance criteria under checked capabilities
+in `runstate-write-integrity` and `self-host-hardening-gaps`). They record where a file
+*was* when the work happened; do not "tidy" them.

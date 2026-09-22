@@ -68,6 +68,12 @@ the block first would mean the script splitting or re-ordering its own input,
 which it does not do. The block's heading is therefore also the marker where
 the task text ends.
 
+> **Amended 2026-09-22 (`implementer-continuation`), not rewritten.** Two further
+> lines now reach a handoff, both **above** the piped body and so above this
+> block: the implementer's budget line and the spliced partial-work block. This
+> paragraph's placement rule is unchanged; the additions and why they sit where
+> they do are recorded in the 2026-09-22 amendment at the end of this ADR.
+
 A driver that forgets §3.3 entirely still produces a handoff carrying all six
 lines. That is the property the feature exists for: the contract reaches the
 next packet with nothing for the driver to remember.
@@ -220,3 +226,51 @@ verdict are unchanged.
   wherever a test changed, zero retries for the unmeasured-as-measured class —
   are for this repository's next driver-mode run of five or more reviewed
   packets.
+
+## Amendment (2026-09-22) — two new lines sit above the body, and the `REQUIRED` block did not move
+
+`implementer-continuation` T1 (`55942e1`) and T5 (`7a969a4`) add two things to a
+handoff file, and both had to be placed against the order decision 1 fixed. This
+section records where they sit and why; decisions 1 and 2 are amended by nothing
+here — the block still goes after the piped body, every handoff still carries all
+six lines, and a missing template still refuses the handoff.
+
+### Both additions go after the header and before the piped body
+
+The implementer's **budget line** is written by `handoff` itself, for `--agent
+implementer` and for no other agent, directly after the header. The **partial-work
+block** — one marked `## Partial work on disk` block — is spliced in by
+`runstate.sh refresh-handoff` directly after that budget line, before a
+continuation and before every `fix`/`retry` re-dispatch. So a continuation's
+handoff reads: header, budget line, partial-work block, task body (with the
+driver's two conditional `REQUIRED` lines where §3.3 put them), then the block
+this ADR is about.
+
+The alternative — appending either after the body — is what the placement rules
+out, and the reason is decision 1's own. The block goes after the body, and the
+driver's two conditional lines arrive at the body's end; a line inserted after
+the body would land **between those conditional lines and the six**, splitting
+the contract into two halves with unrelated text in the middle. Above the body,
+nothing is inserted between any of the contract's lines, the body stays adjacent
+to the block, and "the block's position and content are untouched" needs no
+argument beyond reading the file.
+
+### The contract is never rewritten, because the handoff is spliced
+
+`refresh-handoff` replaces, inserts or removes exactly one marked block and
+leaves every other byte alone — the `REQUIRED` block and any `amend-handoff`
+block included. It refuses rather than guesses where a block ends when the
+markers are unpaired or duplicated, or when a block sits at or above the end of
+the header, for the same fail-closed reason decision 2 gives for a missing
+template: a handoff whose contract was swallowed is indistinguishable, to the
+agent reading it, from one whose contract did not apply. With an empty set the
+block is removed together with its trailing blank line, leaving the file
+byte-identical to one written without the mechanism; the budget line survives
+every splice, so a continuation carries it without a second code path.
+
+`scripts/test-runstate.sh` pins both halves directly: with the budget line
+removed, the body and the `REQUIRED` block are byte-identical to a handoff
+written without it; and around a spliced partial-work block, the `REQUIRED`
+block from its heading to the end of file compares equal to the first dispatch's,
+with the driver's conditional line still immediately after the body. Each case
+records the wrong implementation it turns red on.

@@ -1,4 +1,4 @@
-# Migrating a consumer repo to gspec 3.2.0
+# Migrating a consumer repo to the pinned gspec version
 
 The ordered sequence for moving a repo onto gspec 3.x's feature-folder layout
 without breaking the guided loop.
@@ -14,10 +14,11 @@ more than one session. The agent-facing version of the same sequence lives in
 
 Where they overlap they must change together. This file states the sequence and
 the hazards; it does not restate the skill's internal behaviour, so that the
-skill stays the single source of truth for the plugin's own mechanics. The one
-fact both must agree on — the pinned version — is asserted mechanically by
-`scripts/test-migrate.sh`, so a pin bump that forgets this file fails the sweep
-rather than rotting quietly.
+skill stays the single source of truth for the plugin's own mechanics. Neither
+document states the pinned gspec version: it lives only in
+`GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh`, and both tell you to read
+it with `scripts/gspec-backlog.sh pin` (`scripts/test-migrate.sh` checks that
+neither carries a copy of the value).
 
 ---
 
@@ -65,7 +66,7 @@ Never on `main`. `migrate.sh apply` refuses a dirty tree on purpose: a migration
 you cannot read as one `git diff` is not one you can review or revert.
 
 ```bash
-git switch -c chore/gspec-311
+git switch -c chore/gspec-migrate
 git status --porcelain   # must be empty
 ```
 
@@ -84,10 +85,14 @@ ADR 0020 exists to prevent. Measured on two real repos before the adapter learne
 their legacy task shapes: **0 packets from 31 plan files**. Step 8 is where this
 baseline pays off.
 
-### 3. Install gspec 3.2.0 — *before* touching any spec
+### 3. Install the pinned gspec — *before* touching any spec
+
+Read the pinned version from the plugin, then install exactly that version:
 
 ```bash
-npx --yes gspec@3.2.0 --target claude
+scripts/gspec-backlog.sh pin
+# GSPEC_PINNED_VERSION=<pinned version>
+npx --yes gspec@<pinned version> --target claude
 ```
 
 > **Do not reorder this.** A repo still on old gspec has the **old**
@@ -96,11 +101,12 @@ npx --yes gspec@3.2.0 --target claude
 > while doing it. You would then migrate twice, the second pass over files the
 > first already rewrote.
 
-Confirm the plugin agrees on the pin:
+Confirm the install matches the pin — `GSPEC_PINNED_VERSION` is the version you
+just installed, and the supported artifact set is:
 
 ```bash
 scripts/gspec-backlog.sh pin
-# GSPEC_PINNED_VERSION=3.2.0
+# GSPEC_PINNED_VERSION=<pinned version>
 # GSPEC_SPEC_VERSIONS=v1 v2
 ```
 

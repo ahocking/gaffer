@@ -82,8 +82,18 @@ mk_plan_v2() { # mk_plan_v2 <root> <slug> <<<body
 # =============================================================================
 printf '\n== pin ==\n'
 out="$("$ADAPTER" pin)"
-check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=3.2.0' "$out"
-check 'pin reports the install command'      'npx gspec@3.2.0' "$out"
+# Shape only: the value itself lives in GSPEC_PINNED_VERSION in gspec-backlog.sh
+# and nowhere else, so this sweep must not carry a second copy of it.
+if printf '%s\n' "$out" | grep -Eq '^GSPEC_PINNED_VERSION=[0-9]+\.[0-9]+\.[0-9]+$'; then
+  ok 'pin reports an x.y.z gspec version'
+else
+  bad 'pin reports an x.y.z gspec version' "got: $out"
+fi
+pinv="$(printf '%s\n' "$out" | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+check 'pin reports the install command for that version' "INSTALL=npx gspec@$pinv --target claude" "$out"
+out9="$(ORCH_GSPEC_PINNED_VERSION=9.9.9 "$ADAPTER" pin)"
+check 'ORCH_GSPEC_PINNED_VERSION overrides the pin'   'GSPEC_PINNED_VERSION=9.9.9' "$out9"
+check 'and the override reaches the install command'  'npx gspec@9.9.9' "$out9"
 # BOTH artifact versions, deliberately: v2 is what gspec 3.x writes, v1 is what
 # every unmigrated consumer repo still has on disk, and the adapter reads both.
 check 'pin supports both artifact versions'  'GSPEC_SPEC_VERSIONS=v1 v2' "$out"

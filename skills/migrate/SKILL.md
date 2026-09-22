@@ -1,6 +1,6 @@
 ---
 name: migrate
-description: Retrofit a consumer repo from an older orchestration-plugin layout to the current one, and onto pinned gspec 3.2.0 — sequence the gspec upgrade and /gspec-migrate's move into gspec/features/<slug>/, convert gspec/roadmap.md into the plugin-owned .agents/roadmap.yaml, stamp missing spec frontmatter, refresh .agents/project-overrides.yaml and CLAUDE.md, then VERIFY the backlog actually parses. Use when a repo was set up under an earlier version of this plugin or an older gspec, when /gaffer:run-loop reports no backlog, or after upgrading either.
+description: Retrofit a consumer repo from an older orchestration-plugin layout to the current one, and onto the pinned gspec version — sequence the gspec upgrade and /gspec-migrate's move into gspec/features/<slug>/, convert gspec/roadmap.md into the plugin-owned .agents/roadmap.yaml, stamp missing spec frontmatter, refresh .agents/project-overrides.yaml and CLAUDE.md, then VERIFY the backlog actually parses. Use when a repo was set up under an earlier version of this plugin or an older gspec, when /gaffer:run-loop reports no backlog, or after upgrading either.
 argument-hint: (optional — a repo path; defaults to the current repo)
 ---
 
@@ -24,10 +24,13 @@ why the packet count is the number you lead the report with.
 **Two migrations may be in play, and they are not the same job.** The plugin's own
 retrofit (`gspec/features/<slug>.plan.md` → `gspec/tasks/<slug>.md`, the roadmap
 conversion, the run-state cleanups) is `migrate.sh`'s. The **gspec** upgrade to the
-pinned **3.2.0** — everything about a feature moving into `gspec/features/<slug>/`
+pinned version (read it with `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh pin`;
+never assume it) — everything about a feature moving into `gspec/features/<slug>/`
 — is **`/gspec-migrate`'s**, and this skill deliberately does not do it (§2b). Doing
 both in the wrong order is the one way to make this worse rather than better, so
-read §2b before running anything.
+read §2b before running anything. The human-facing version of the same sequence,
+for a person driving it across sessions, is the runbook
+[`docs/gspec-migration.md`](../../docs/gspec-migration.md).
 
 **Before the closing summary and approval request, `Read`
 `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
@@ -108,10 +111,12 @@ floor is a fight this plugin would lose loudly and intermittently.
 
 **Run these in order. The order is the whole point:**
 
-1. **Upgrade gspec first.**
+1. **Upgrade gspec first**, to exactly the version the plugin pins. Read it from
+   the `GSPEC_PINNED_VERSION=` line of
+   `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh pin`, then:
 
    ```bash
-   npx --yes gspec@3.2.0 --target claude
+   npx --yes gspec@<pinned version> --target claude
    ```
 
    **Do not skip this and go straight to `/gspec-migrate`.** A repo on old gspec has
@@ -119,7 +124,7 @@ floor is a fight this plugin would lose loudly and intermittently.
    migrates **toward `gspec/tasks/`** — the exact layout you are trying to leave. It
    will report success. You would then have to migrate twice, the second time over
    files the first pass had already rewritten. Reinstalling first re-stamps the
-   command, the agents, the skills and the hook floors to 3.2.0 so `/gspec-migrate`
+   command, the agents, the skills and the hook floors to the pinned version so `/gspec-migrate`
    means the right thing when you call it.
 
    Confirm the pin matches before and after:
@@ -168,7 +173,7 @@ floor is a fight this plugin would lose loudly and intermittently.
    tree, and you want the spec relocation readable as its own diff regardless.
 
 Then continue with §3 for the plugin-owned half. By that point `apply` will usually
-find the plan-move step already satisfied — `/gspec-migrate` at 3.2.0 handles a
+find the plan-move step already satisfied — `/gspec-migrate` at the pinned version handles a
 pre-2.0 `features/<slug>.plan.md` in one hop, straight to the feature folder, rather
 than via the intermediate `gspec/tasks/` this plugin's own retrofit used.
 

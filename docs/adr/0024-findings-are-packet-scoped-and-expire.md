@@ -431,3 +431,12 @@ recorded figure per review rather than something to reconstruct. A review that r
 `dropped` far above `routed` with no `STALE=yes` rows to show for it is the shape to look
 for; a byte figure the `findings` call could not produce is recorded as the literal
 `unmeasured`, never `0`.
+
+## Relocated from CLAUDE.md (2026-09-22) — the expiry defect the first implementation shipped
+
+Carried until now only in the repo-root `CLAUDE.md`. The first implementation of expiry
+*asserted* that the closing packet was finished instead of *reading* the task checkbox the
+preceding step had just flipped. That made the flip non-load-bearing — delete it and the
+behaviour was identical — and it would have expired **zero of fifteen** live entries while
+appearing to work. Expiry must read the positive evidence (the checkbox, or an
+`[orch packet:<id>]` trailer), never assume it.

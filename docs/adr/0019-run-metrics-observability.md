@@ -930,3 +930,26 @@ the v3.3 dedup test and the timestamp-handling sweep cases.
 - **Emit metrics as a domain-extensible schema from day one.** Rejected: violates the
   domain-agnostic ground rule and over-builds. Consumers extend via their own config, as with
   guard rules.
+
+## Relocated from CLAUDE.md (2026-09-22) — the evidence behind "do not re-read what you already have"
+
+All seven `agents/*.md` carry a "do not re-read what you already have" block. The block
+states the rule only; this section is the evidence for it, which previously lived in the
+repo-root `CLAUDE.md`.
+
+- **Measured across one production week:** of **5,243 `Read` calls, 1,366 (26%) re-read a
+  file already read in that same context** (~2.4M tokens). That is not a 2.4M problem:
+  content in context is re-read on every later turn, so a token read twice is paid for twice
+  on every subsequent turn for the rest of the session. At the measured ~16 effective tokens
+  per source token, it is ~**11% of that repo's weekly spend**.
+- **Part of the mechanism is confirmed:** **63 occurrences of `Read` immediately after
+  `Edit`/`Write` of the SAME file in just 25 subagent contexts** — verify-after-edit, which
+  is unnecessary because those tools error on failure, so a successful result already is the
+  confirmation.
+- **It has to target the implementer above all:** the implementer is **47.9% of all turns**
+  at 128k average context and does nearly all the reading, whereas the coordinator — which
+  the run-state and read-list work reached — is only **9.5% of turns**.
+- **Keep the evidence out of the prompts.** The first cut shipped a three-line "Measured:"
+  paragraph into all seven agents — **61 tokens each, 427 total**, re-read on every dispatch
+  to justify a rule the agent follows without it. Small, but it was bloat added by the very
+  block telling agents not to waste context. Rule in the prompt, evidence here.

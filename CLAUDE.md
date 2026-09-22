@@ -1160,7 +1160,9 @@ passing sweeps.
   moved `features/<slug>.plan.md` to `tasks/<slug>.md` and nothing checked). The
   consumed contract is exactly: the feature's **plan** (task lines + `deps:`), its
   **PRD** (capability checkboxes **and, since the D2 amendment, a capability's indented
-  acceptance-criteria sub-bullets**), `.agents/roadmap.yaml`, and — fail-soft, outside
+  acceptance-criteria sub-bullets**), **the `arch.md` sections and `design.html` blocks
+  a task's anchors name** (inlined into the handoff by `gspec-backlog.sh handoff`,
+  `handoff-spec-inlining`, 2026-09-22), `.agents/roadmap.yaml`, and — fail-soft, outside
   the pinned contract — `.gspec/build/status.json` for the two-drivers interlock.
   **The sub-bullets were added for exactly one reader, `gspec-backlog.sh handoff`**
   (ADR 0028's handoff file has to say what "done" means for the task, and at a

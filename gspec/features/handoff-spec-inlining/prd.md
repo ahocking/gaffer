@@ -116,7 +116,7 @@ files twice, and a fourth silent reader is the trap.
   - a bundle's handoff carries each distinct anchor's text once, at its first
     member's marker, however many members name it
 
-- [ ] **P1**: The design block a screen section names rides with it
+- [x] **P1**: The design block a screen section names rides with it
   - when an inlined section is a `### Screen: <Name>` block and the feature's
     `design.html` holds `<section id="screen-<kebab>">` for the slugified
     name, the handoff prints `DESIGN-SECTION=screen-<kebab>` (working name)

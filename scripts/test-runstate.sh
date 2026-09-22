@@ -3820,6 +3820,218 @@ assert_true "  and leaves no leftover .amend-handoff.* temp file behind" \
 assert_true "  and left the handoff byte-identical (mv never succeeded)" "ah_unchanged"
 
 echo
+echo "== refresh-handoff: ONE marked partial-work block spliced after the header and"
+echo "   budget line, removed when the set is empty (implementer-continuation T5) =="
+# Run once on a full PATH and once with jq/python3 scrubbed from runstate.sh's
+# PATH (the plan's standing rule); each run gets its own repo. Every case names
+# the wrong implementation it rules out; the mutation counts are in the
+# implementer's result file.
+rh_cases() {
+  local sfx="$1" scrub="$2" d run_id rdir f sc orig amended out green
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  git -C "$d" config user.email t@t; git -C "$d" config user.name t
+  mkdir -p "$d/.agents" "$d/src" "$d/lib/x"
+  # A consumer ignores its loop machinery; so does this fixture.
+  printf '.agents/\n' > "$d/.gitignore"
+  for p in src/rh-a.ts src/rh-b.ts src/rh-out.ts lib/x/rh-g.ts; do printf 'v1\n' > "$d/$p"; done
+  git -C "$d" add -A; git -C "$d" commit -qm base
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  rh_rs() {
+    if [ -n "$scrub" ]; then (cd "$d" && PATH="$scrub:$PATH" "$RUNSTATE" "$@")
+    else (cd "$d" && "$RUNSTATE" "$@"); fi
+  }
+  run_id="$(rh_rs begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  rdir="$d/.agents/loop/$run_id"
+  f="$rdir/rh/handoff.md"
+  # The sweep's own copies live under the ignored .agents/, so they are never
+  # dirty paths of the fixture's working tree.
+  sc="$d/.agents/rh-scratch"; mkdir -p "$sc"
+  rh_markers() { printf '%s %s' "$(grep -cxF '<!-- orch:partial-work -->' "$1")" "$(grep -cxF '<!-- /orch:partial-work -->' "$1")"; }
+  # The file with the block (and the one blank line after it) cut out.
+  rh_strip() {
+    awk '$0 == "<!-- orch:partial-work -->" { inb = 1; next }
+         inb && $0 == "<!-- /orch:partial-work -->" { inb = 0; skip = 1; next }
+         inb { next }
+         skip { skip = 0; if ($0 == "") next }
+         { print }' "$1"
+  }
+
+  echo "-- ${sfx}: a first-dispatch handoff on a dirty scoped tree carries no block --"
+  # RULES OUT `handoff` computing the set itself: the first dispatch has no
+  # partial work of its own, whatever the tree holds.
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  printf 'PACKET=rh\nTEXT=RH partial work\nFILES=src/rh-a.ts|src/rh-b.ts|lib/**\nREQUIRED: the regression sweep covering runstate.sh passes\n' \
+    | rh_rs handoff .agents/run-state.yaml rh --tier integration --agent implementer >/dev/null
+  assert_true "(${sfx}) first dispatch on a dirty scoped tree: no marker, no heading" \
+    "[ \"\$(rh_markers '$f')\" = '0 0' ] && ! grep -q '^## Partial work on disk' '$f'"
+  orig="$sc/rh-orig.md"; cp "$f" "$orig"
+
+  echo "-- ${sfx}: a dirty path outside the scope leaves the block absent --"
+  # RULES OUT listing every dirty path in the checkout: rh-out.ts is dirty but
+  # names no path the packet's FILES= declares.
+  git -C "$d" checkout -q -- src/rh-a.ts
+  printf 'v2\n' > "$d/src/rh-out.ts"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh)"
+  assert_true "(${sfx}) only an out-of-scope path dirty: PARTIAL_WORK=none, PATHS=0" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=none' && printf '%s\n' \"\$out\" | grep -qx 'PATHS=0'"
+  assert_true "(${sfx})   and the handoff is byte-identical to the first dispatch's" "cmp -s '$f' '$orig'"
+
+  echo "-- ${sfx}: a dirty scoped path is listed, existing, in ONE block --"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh)"
+  assert_true "(${sfx}) a dirty scoped path: PARTIAL_WORK=inserted, PATHS=1" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=inserted' && printf '%s\n' \"\$out\" | grep -qx 'PATHS=1'"
+  assert_true "(${sfx})   the block lists it as existing" "grep -qxF -- '- src/rh-a.ts (existing)' '$f'"
+  assert_true "(${sfx})   the out-of-scope dirty path is not listed" "! grep -q 'rh-out.ts' '$f'"
+  assert_true "(${sfx})   one opening and one closing marker, one heading" \
+    "[ \"\$(rh_markers '$f')\" = '1 1' ] && [ \"\$(grep -cx '## Partial work on disk' '$f')\" = 1 ]"
+  assert_true "(${sfx})   the block states read, verify, continue — do not recreate" \
+    "grep -q 'Read these files as they now stand, verify them, and continue from them — do not recreate them\\.' '$f'"
+  # Placement: header is lines 1-8, the budget line 9, its blank 10, so the
+  # opening marker is line 11 and the body resumes after the block's blank.
+  # RULES OUT inserting above the budget line, or after the body (between the
+  # driver's conditional REQUIRED line and the six).
+  assert_true "(${sfx})   the block sits directly after the budget line, before the body" \
+    "sed -n 9p '$f' | grep -q '^BUDGET: ' && [ \"\$(sed -n 11p '$f')\" = '<!-- orch:partial-work -->' ] && [ \"\$(sed -n 12p '$f')\" = '## Partial work on disk' ]"
+  # RULES OUT any splice that touches a byte outside the block: with the block
+  # cut out the file is the first dispatch's, REQUIRED block and all.
+  assert_true "(${sfx})   with the block cut out, every other byte is the first dispatch's" \
+    "rh_strip '$f' > '$sc/rh-stripped.md' && cmp -s '$sc/rh-stripped.md' '$orig'"
+  assert_true "(${sfx})   the REQUIRED block, heading to end, is unchanged around the block" \
+    "sed -n '/^## REQUIRED — the verification contract\$/,\$p' '$f' > '$sc/rh-req.now' && sed -n '/^## REQUIRED — the verification contract\$/,\$p' '$orig' > '$sc/rh-req.orig' && [ -s '$sc/rh-req.orig' ] && cmp -s '$sc/rh-req.now' '$sc/rh-req.orig'"
+  assert_true "(${sfx})   and the driver's conditional line still sits right after the body" \
+    "grep -B1 -x 'REQUIRED: the regression sweep covering runstate.sh passes' '$f' | head -1 | grep -qx 'FILES=src/rh-a.ts|src/rh-b.ts|lib/\\*\\*'"
+
+  echo "-- ${sfx}: a deleted scoped path is listed as deleted; the block is REPLACED --"
+  # RULES OUT marking by status code alone (a deletion read as existing) and a
+  # second block stacked on the first.
+  rm "$d/src/rh-b.ts"
+  printf 'v2\n' > "$d/lib/x/rh-g.ts"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh)"
+  assert_true "(${sfx}) a deleted scoped path: PARTIAL_WORK=replaced, PATHS=3" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=replaced' && printf '%s\n' \"\$out\" | grep -qx 'PATHS=3'"
+  assert_true "(${sfx})   the deleted path is marked deleted" "grep -qxF -- '- src/rh-b.ts (deleted)' '$f'"
+  assert_true "(${sfx})   a path under a glob scope entry (lib/**) is listed" "grep -qxF -- '- lib/x/rh-g.ts (existing)' '$f'"
+  assert_true "(${sfx})   still one block after the replacement" "[ \"\$(rh_markers '$f')\" = '1 1' ]"
+  assert_true "(${sfx})   and every other byte is still the first dispatch's" \
+    "rh_strip '$f' > '$sc/rh-stripped.md' && cmp -s '$sc/rh-stripped.md' '$orig'"
+
+  echo "-- ${sfx}: no listed path reaches a routing, outcomes or metrics record --"
+  # RULES OUT recording the set anywhere but the handoff. The records are
+  # written first so the search below reads files that exist.
+  rh_rs record-start rh S1 >/dev/null
+  rh_rs route .agents/run-state.yaml rh continue \
+    --status 'continue · stopped at the turn budget · result: needs-reading · /tmp/run/rh/implementer.md' >/dev/null
+  rh_rs refresh-handoff .agents/run-state.yaml rh >/dev/null
+  assert_true "(${sfx}) the routing and outcomes records exist (so the search is not vacuous)" \
+    "[ -s '$rdir/routing.jsonl' ] && ls '$d/.agents/metrics/outcomes/'*.jsonl >/dev/null 2>&1"
+  assert_true "(${sfx})   and none of them, nor anything under .agents/metrics, names a listed path" \
+    "! grep -rqE 'rh-a\\.ts|rh-b\\.ts|rh-g\\.ts' '$rdir/routing.jsonl' '$d/.agents/metrics'"
+
+  echo "-- ${sfx}: a clean tree removes the block, leaving the file byte-identical --"
+  # RULES OUT an empty heading (or an empty block) left behind for an empty set.
+  git -C "$d" checkout -q -- .
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh)"
+  assert_true "(${sfx}) a clean tree: PARTIAL_WORK=removed, PATHS=0" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=removed' && printf '%s\n' \"\$out\" | grep -qx 'PATHS=0'"
+  assert_true "(${sfx})   and the handoff is byte-identical to the first dispatch's (no heading, no markers)" \
+    "cmp -s '$f' '$orig'"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh)"
+  assert_true "(${sfx})   a second refresh on a clean tree is a no-op (PARTIAL_WORK=none, still identical)" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=none' && cmp -s '$f' '$orig'"
+
+  echo "-- ${sfx}: an amend-handoff block and the budget line survive every refresh --"
+  # RULES OUT regenerating the file through `handoff`, which drops the
+  # decider's retry instruction appended at the tail.
+  printf 'PACKET=rh2\nTEXT=RH amended\nFILES=src/rh-a.ts\nREQUIRED: the regression sweep covering runstate.sh passes\n' \
+    | rh_rs handoff .agents/run-state.yaml rh2 --tier integration --agent implementer >/dev/null
+  printf 'Retry with the narrower scope.\n' | rh_rs amend-handoff .agents/run-state.yaml rh2 >/dev/null
+  amended="$sc/rh2-amended.md"; cp "$rdir/rh2/handoff.md" "$amended"
+  printf 'v3\n' > "$d/src/rh-a.ts"
+  rh_rs refresh-handoff .agents/run-state.yaml rh2 >/dev/null
+  assert_true "(${sfx}) after an insert, the amendment's text is still in the file" \
+    "grep -qx 'Retry with the narrower scope.' '$rdir/rh2/handoff.md' && [ \"\$(grep -cxF '<!-- orch:decider-amendment -->' '$rdir/rh2/handoff.md')\" = 1 ]"
+  assert_true "(${sfx})   and so is exactly one budget line" \
+    "[ \"\$(grep -c '^BUDGET: ' '$rdir/rh2/handoff.md')\" = 1 ]"
+  assert_true "(${sfx})   and the block is listed" "grep -qxF -- '- src/rh-a.ts (existing)' '$rdir/rh2/handoff.md'"
+  git -C "$d" checkout -q -- .
+  rh_rs refresh-handoff .agents/run-state.yaml rh2 >/dev/null
+  assert_true "(${sfx})   after the removal the file is byte-identical to the amended handoff" \
+    "cmp -s '$rdir/rh2/handoff.md' '$amended'"
+
+  echo "-- ${sfx}: a bundle's BUNDLE_FILES= is part of the scope --"
+  printf 'BUNDLE=rhb\nBUNDLE_FILES=src/rh-out.ts\nPACKET=rhb\nTEXT=RH bundle\nFILES=\n' \
+    | rh_rs handoff .agents/run-state.yaml rhb --tier integration --agent implementer >/dev/null
+  printf 'v2\n' > "$d/src/rh-out.ts"
+  rh_rs refresh-handoff .agents/run-state.yaml rhb >/dev/null
+  assert_true "(${sfx}) a path named only by BUNDLE_FILES= is listed" \
+    "grep -qxF -- '- src/rh-out.ts (existing)' '$rdir/rhb/handoff.md'"
+  git -C "$d" checkout -q -- .
+
+  echo "-- ${sfx}: a no-scope handoff is bounded by last_green_commit --"
+  # RULES OUT the whole checkout: with no scope, a path dirty BEFORE the green
+  # commit (old mtime) is pre-existing dirt, not this packet's partial work, and
+  # with no last_green_commit there is no bound at all, so nothing is listed.
+  printf 'PACKET=rhn\nTEXT=RH no scope\nFILES=\n' \
+    | rh_rs handoff .agents/run-state.yaml rhn --tier integration --agent implementer >/dev/null
+  cp "$rdir/rhn/handoff.md" "$sc/rhn-orig.md"
+  printf 'stale\n' > "$d/src/rh-a.ts"; touch -t 200001010000 "$d/src/rh-a.ts"
+  printf 'new\n' > "$d/rh-new.txt"
+  rm "$d/src/rh-b.ts"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rhn)"
+  assert_true "(${sfx}) no scope and no last_green_commit: nothing listed, file byte-identical" \
+    "printf '%s\n' \"\$out\" | grep -qx 'PARTIAL_WORK=none' && cmp -s '$rdir/rhn/handoff.md' '$sc/rhn-orig.md'"
+  green="$(git -C "$d" rev-parse HEAD)"
+  rh_rs set .agents/run-state.yaml last_green_commit "$green" >/dev/null
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rhn)"
+  assert_true "(${sfx}) no scope: a path written since last_green_commit is listed" \
+    "grep -qxF -- '- rh-new.txt (existing)' '$rdir/rhn/handoff.md'"
+  assert_true "(${sfx})   a path deleted since last_green_commit is listed as deleted" \
+    "grep -qxF -- '- src/rh-b.ts (deleted)' '$rdir/rhn/handoff.md'"
+  assert_true "(${sfx})   a path dirty with an mtime before last_green_commit is NOT listed" \
+    "! grep -q 'rh-a.ts' '$rdir/rhn/handoff.md' && printf '%s\n' \"\$out\" | grep -qx 'PATHS=2'"
+  assert_true "(${sfx})   and the loop's own .agents/ files are never listed" \
+    "! grep -q -- '- \\.agents/' '$rdir/rhn/handoff.md'"
+  git -C "$d" checkout -q -- .; rm -f "$d/rh-new.txt"
+
+  echo "-- ${sfx}: refusals leave the handoff byte-identical --"
+  printf '%s\n' '<!-- /orch:partial-work -->' >> "$f"; cp "$f" "$sc/rh-snap.md"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  assert_true "(${sfx}) a malformed block (a closing marker with no opening one) is refused" \
+    "! rh_rs refresh-handoff .agents/run-state.yaml rh"
+  assert_true "(${sfx})   and the handoff is byte-identical afterwards" "cmp -s '$f' '$sc/rh-snap.md'"
+  git -C "$d" checkout -q -- .
+  assert_true "(${sfx}) a packet with no handoff in this run is refused" \
+    "! rh_rs refresh-handoff .agents/run-state.yaml rh-never && [ ! -e '$rdir/rh-never/handoff.md' ]"
+  assert_true "(${sfx}) a traversal packet id is refused" \
+    "! rh_rs refresh-handoff .agents/run-state.yaml 'rh/../escape'"
+  local outside; outside="$(cd "$(mktemp -d)" && pwd -P)"
+  mkdir -p "$outside/rh-sym"; cp "$orig" "$outside/rh-sym/handoff.md"
+  ln -s "$outside/rh-sym" "$rdir/rh-sym"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  assert_true "(${sfx}) a packet directory symlinked outside the run directory is refused" \
+    "! rh_rs refresh-handoff .agents/run-state.yaml rh-sym && cmp -s '$outside/rh-sym/handoff.md' '$orig'"
+  # RULES OUT re-inserting the new block at `sml - 1` with no lower bound on
+  # `sml`: no record number is 0, so a block starting at line 1 would be deleted
+  # by the splice, nothing written back, and PARTIAL_WORK=replaced reported for
+  # a handoff that afterwards carries no block at all.
+  { printf '%s\n' '<!-- orch:partial-work -->' '## Partial work on disk' '' \
+      '- src/rh-stale.ts (existing)' '<!-- /orch:partial-work -->' ''; cat "$orig"; } > "$f"
+  cp "$f" "$sc/rh-line1.md"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  out="$(rh_rs refresh-handoff .agents/run-state.yaml rh 2>&1 || true)"
+  assert_true "(${sfx}) a partial-work block above the header is refused, never spliced over" \
+    "! rh_rs refresh-handoff .agents/run-state.yaml rh >/dev/null 2>&1"
+  assert_true "(${sfx})   and nothing is reported as replaced" \
+    "! printf '%s\n' \"\$out\" | grep -q 'PARTIAL_WORK='"
+  assert_true "(${sfx})   and the handoff keeps its block, byte-identical" \
+    "cmp -s '$f' '$sc/rh-line1.md' && [ \"\$(rh_markers '$f')\" = '1 1' ]"
+  git -C "$d" checkout -q -- .
+}
+rh_cases full ""
+rh_cases no-tools "$NOTOOLS"
+
+echo
 echo "== route: verdict -> action mapping, attempt pool, packet_attempts limit (thin-loop-driver T9) =="
 RT="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$RT" init -q
 git -C "$RT" config user.email t@t; git -C "$RT" config user.name t

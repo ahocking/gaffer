@@ -320,8 +320,15 @@
 #                                    appends a routing record to
 #                                    .agents/loop/<run_id>/routing.jsonl (never
 #                                    the outcomes log) and prints one
-#                                    ACTION=land|attempt|decider|discard-advance|stop
-#                                    with ATTEMPTS=/LIMIT=. `fix` and `retry`
+#                                    ACTION=land|attempt|decider|discard-advance|continue|stop
+#                                    with ATTEMPTS=/LIMIT=. `continue` (the
+#                                    implementer's own token, stopped at its
+#                                    turn budget) maps to ACTION=continue and
+#                                    prints ATTEMPTS= as the packet's live
+#                                    attempt count, never incremented: a
+#                                    continuation spends no attempt, and its
+#                                    record never enters the fix/retry pool
+#                                    (implementer-continuation T2). `fix` and `retry`
 #                                    share ONE attempt pool, counted since the
 #                                    packet's latest kind=start record (a
 #                                    kind=continue record does NOT reset it);
@@ -4316,8 +4323,8 @@ cmd_route() {
   need_file "$f"
   _rs_check_pkt_id "$pkt"
   case "$token" in
-    pass|fix|retry|escalate|reorder|append-task|hand-off-feature|ask-operator) ;;
-    *) die "route: token must be one of: pass fix retry escalate reorder append-task hand-off-feature ask-operator" ;;
+    pass|fix|retry|escalate|reorder|append-task|hand-off-feature|ask-operator|continue) ;;
+    *) die "route: token must be one of: pass fix retry escalate reorder append-task hand-off-feature ask-operator continue" ;;
   esac
 
   local run_id
@@ -4332,7 +4339,7 @@ cmd_route() {
 
   local attempts_before=0
   case "$token" in
-    fix|retry) attempts_before="$(_rs_route_attempts "$pkt" "$main_root" "$routing_file")" ;;
+    fix|retry|continue) attempts_before="$(_rs_route_attempts "$pkt" "$main_root" "$routing_file")" ;;
   esac
 
   local action attempts=$attempts_before
@@ -4349,6 +4356,12 @@ cmd_route() {
     escalate) action=decider ;;
     reorder|append-task|hand-off-feature) action=discard-advance ;;
     ask-operator) action=stop ;;
+    # implementer-continuation T2: a continuation spends no attempt. ATTEMPTS=
+    # is the LIVE count read above, printed as-is and never incremented, and
+    # _rs_route_attempts counts only fix/retry tokens, so this record never
+    # enters the shared attempt pool either -- otherwise three stops at the
+    # turn budget would exhaust the packet's attempts without any review.
+    continue) action=continue ;;
   esac
 
   mkdir -p "$(dirname "$routing_file")" 2>/dev/null || true

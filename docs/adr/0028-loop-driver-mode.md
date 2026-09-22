@@ -23,6 +23,12 @@
   tried, by the operator's decision (`driver-context-window-default` T5). See
   [Amendment (2026-09-21)](#amendment-2026-09-21--the-plugin-default-probe-answered-no)
   at the end; nothing above it, the open-probe section included, is revised.
+- Amended (2026-09-22): **the one routing record per run that is not a verdict is
+  retired** — `run-loop` §4 no longer dispatches an architect at termination and writes
+  no `end-of-run-review` record, so the 2026-09-20 amendment's "`route` appends one
+  record per verdict" section is marked retired in place. `scripts/runstate.sh` is
+  unchanged; the reasoning is
+  [ADR 0026](0026-post-completion-findings-route-by-scope.md)'s 2026-09-22 amendment.
 - Deciders: user (tech lead), orchestration plugin
 - Relates to: `gspec/features/thin-loop-driver/prd.md` and its plan T1;
   [ADR 0017](0017-graceful-cooperative-pause.md) (the earlier payload probe that established
@@ -367,6 +373,16 @@ reviewer's `fix`, and that content gate is unchanged.
 > amendment at the end of this ADR.
 
 ### "`route` appends one record per verdict" is now one per verdict plus at most one per run that is not
+
+> **Retired 2026-09-22 (`chore/retire-adr0026-routing`), not rewritten.** The end-of-run
+> architect dispatch this section's record exists for is deleted, so `run-loop` §4 writes
+> **no** `end-of-run-review` record and the routing log is back to one record per verdict,
+> each keyed to a packet id (plus the `continue` records the 2026-09-22
+> `implementer-continuation` amendment adds). `scripts/runstate.sh` is unchanged — the id
+> was never special-cased there — and the driver instead records one finding per note the
+> whole-branch review's status line reports. See
+> [ADR 0026](0026-post-completion-findings-route-by-scope.md)'s 2026-09-22 amendment. The
+> text below stands as the record of what shipped on 2026-09-20.
 
 The same section fixes the routing log's shape as "one record per verdict", each keyed
 to a packet id. That is still every record the packet loop writes. **At termination,

@@ -44,10 +44,10 @@ signal you are drifting out of role: dispatch an agent instead, or pause.
   **reviewer**, the **escalation decider**, or the **operator** to open — not
   you. Opening it yourself defeats the design this role exists for: keeping
   your own context small over a run that may last 10–20 hours. The
-  whole-branch review at termination (run-loop §4) looks like it needs you to
-  read a review file to route its findings — it does not: you dispatch the
-  `architect` with that review file's path, and it does the routing and
-  reports back its own one-line summary, so the rule stays absolute.
+  whole-branch review at termination (run-loop §4) is no exception either:
+  you relay the reviewer's own status line and name its review file's path
+  for the operator, and record one finding per note that line reports —
+  never a summary of a file you have not opened.
 - **Never poll while an agent works.** A dispatch is synchronous — you wait
   for it to return, once. Run no repeated check, no "are you done yet", while
   it is working.

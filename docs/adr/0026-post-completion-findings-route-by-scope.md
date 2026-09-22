@@ -11,6 +11,13 @@
   is counted in the stop report's tally; the operator gate is unchanged.** See
   [Revision — 2026-09-20](#revision--2026-09-20--an-end-of-run-arm-2-proposal-leaves-a-routing-record-and-is-counted)
   below; nothing above it is rewritten.
+- Amendment (2026-09-22): **the end-of-run routing step is retired.** `run-loop` §4 no
+  longer dispatches an architect to route the whole-branch review's findings by these
+  arms, and writes no `end-of-run-review` routing record; the review itself is unchanged
+  and each note it reports becomes a finding. Both arms survive where they are still
+  reachable — the escalation decider's `append-task`/`hand-off-feature` and the periodic
+  review. See [Amendment — 2026-09-22](#amendment--2026-09-22--the-end-of-run-routing-step-is-retired)
+  at the end; the 2026-09-17 and 2026-09-20 revisions above are not rewritten.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) (its routing table is unchanged;
   this supplies the destination that made the "backlog, not a finding" rule un-followable
@@ -430,3 +437,90 @@ carries the matching amendment on the routing log's shape.
   file, and still lands as a stop-report question. The routing record carries that same
   status line; it is a second reader of the line, not a second line.
 - **Arm 1, the arm ordering, the arm-1 scope test, D3 and D4.**
+
+> **Retired 2026-09-22 — the end-of-run routing step this revision extends no longer
+> exists.** The architect dispatch it records a routing record for is gone, and with it
+> the `end-of-run-review` id and that record. See the amendment below; the text above
+> stands as the record of what shipped on 2026-09-20.
+
+## Amendment — 2026-09-22 — the end-of-run routing step is retired
+
+**Operator decision, this date.** `run-loop` §4 dispatched the `architect` over the
+whole-branch review's file to route each Critical/Important finding by D1 and D2, and
+(since the 2026-09-20 revision) recorded an arm-2 proposal through `route` under the
+fixed id `end-of-run-review`. **That whole step is deleted.** The whole-branch review
+itself is untouched — the bounded diff, the reviewer dispatch, its `write-result` and
+its one status line all stay exactly as they are.
+
+### Why: arm 1 is structurally unreachable at §4, so the step could only ever propose
+
+Arm 1 requires an **incomplete** feature with an unchecked task line to anchor on and an
+unchecked capability covering the finding. By the time §4 runs, §3.6 has flipped every
+task checkbox of the feature just finished at each land, and `complete-capabilities` has
+flipped its capabilities — so for the feature the run was about, arm 1 fails its anchor
+test on every run, by construction. Arm 2 is therefore the only arm the end-of-run
+architect can reach, and since the 2026-09-17 revision arm 2 terminates at a question
+for the operator to decline or accept. The step's entire reachable output was one
+proposal per run.
+
+The cost was measured on the run that prompted this retirement: the architect dispatch
+cost **70,695 tokens** (operator's measurement) and produced **one proposal, declined**.
+The prose removed from `skills/run-loop/SKILL.md` is **649 words**, and the replacement
+below is 312, so §4 falls from 2,905 words to 2,553 and the skill from 12,493 to 12,156
+(measured with `wc -w` against the pre-change file). The dispatch, not the prose, was
+the expensive half. This is a deliberate subtraction for token cost, not a redesign —
+nothing replaces the step with a mechanism of similar size.
+
+### What replaces it: one durable record, and nothing else
+
+Where §4 relays the review's status line, the driver now records **one finding per note
+that line reports**, through `runstate.sh add-finding`. The reason is durability, not
+routing: the findings index is the only thing §2's fresh-run write carries into the next
+run, and `begin-run` prunes the run directory holding the review file after two runs, so
+a note left only in that file is gone within two runs. Nothing new is built for this —
+`add-finding` already exists and `scripts/runstate.sh` is unchanged by this retirement.
+
+- The summary is **what the status line says**. The driver still never opens a result
+  file (ADR 0028), so it can only record what it has read; inventing a finding about a
+  file it has not read is the failure this constraint forbids.
+- **`--packets` is mandatory**, so each finding names the packet or packets the note is
+  about. At termination those are **landed** packets — that is truthful, and it is
+  stated rather than worked around. **Expiry is unchanged**: the positive-evidence rule
+  (ADR 0024, ADR 0025) governs these findings exactly as it governs every other one, and
+  this amendment adds no expiry behaviour, no knob and no exemption.
+- **A review reporting no notes records nothing.** No call, no finding, no figure moves.
+- The driver relays the reviewer's own status line in the stop report and names the
+  review file's path beside it, so the operator can open what the driver did not.
+
+### What is unchanged
+
+- **D1 and D2 themselves, the arm ordering, the arm-1 scope test and its write bounds,
+  D3 and D4.** The arms are retired only at `run-loop` §4. They remain live where they
+  are still reachable: the escalation decider's `append-task` (arm 1) and
+  `hand-off-feature` (arm 2) triggers mid-run, and the Chief Engineer's periodic review
+  of the findings index — both operate while a feature is still incomplete, which is
+  exactly the condition §4 cannot satisfy.
+- **The operator gate.** No agent files a feature, here or anywhere; the 2026-09-17
+  revision's rule survives its own carrier.
+- **A rejection from the immutability hook is still a signal, and the shell append is
+  still forbidden.**
+
+### Consequences
+
+- **A `handoff-feature` line in the stop report now comes only from the decider or the
+  periodic review.** `run-tally`'s `DECISIONS` no longer has a termination proposal to
+  count, and `end-of-run-review` is written by nothing. `scripts/runstate.sh` never
+  special-cased the id — it is an ordinary packet id to the core — so no code changed.
+- **The end-of-run review's output is now durable rather than routed.** A note that
+  really is "this should be built/fixed" reaches the operator as a finding and a relayed
+  status line, and the operator decides whether it becomes backlog. That is slower than
+  an in-run proposal and is accepted: the proposal was declined at the operator gate
+  anyway, so the gate was always where the decision happened.
+- **Sites that had to agree:** `skills/run-loop/SKILL.md` §4 (and §3.6's cross-reference
+  to the arms), `agents/architect.md` (its termination duty), `agents/loop-driver.md`
+  (the never-open-a-result-file rule, which is now absolute with no exception to
+  explain), this repo's `CLAUDE.md` (the ADR 0026 section and the `end-of-run-review`
+  bullet, replaced by one line under Retired features),
+  `scripts/test-report-conventions.sh` (the two sections pinning the deleted clause,
+  replaced by one pinning the review, the relay and the per-note finding), and
+  [ADR 0028](0028-loop-driver-mode.md)'s matching amendment on the routing log's shape.

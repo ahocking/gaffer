@@ -3321,10 +3321,24 @@ assert_true "default: with no project-overrides.yaml, the implementer budget lin
   "hb_has_budget pkt-bdef 120"
 assert_true "the implementer handoff carries exactly ONE budget line" \
   "[ \"\$(hb_budget_count pkt-bdef)\" = 1 ]"
-# Placement: line 9 -- directly after the header's blank line (header is
-# lines 1-8: title, blank, tier, agent, run-state, result, review, blank).
+# Placement: lines 9-12 -- directly after the header's blank line (header is
+# lines 1-8: title, blank, tier, agent, run-state, result, review, blank), as
+# a MARKED block: opening marker, the line, closing marker, blank, then body.
 assert_true "the budget line sits directly after the header, before the body" \
-  "[ \"\$(sed -n 8p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 9p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -q '^BUDGET: ' && [ \"\$(sed -n 10p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 11p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -qx 'TEXT=Budget case'"
+  "[ \"\$(sed -n 8p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 10p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -q '^BUDGET: ' && [ \"\$(sed -n 12p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '' ] && sed -n 13p \"$HW_RUN_DIR/pkt-bdef/handoff.md\" | grep -qx 'TEXT=Budget case'"
+
+# --- the budget line is MARKER-DELIMITED, and refresh-handoff matches on the
+# --- marker, not on the prose (review-notes remediation 2) --------------------
+# The header-end scan used to locate its insertion point by matching a line
+# beginning `BUDGET: ` followed by a blank -- a shape a body's own first line
+# can have. The line now carries the same whole-line HTML-comment markers the
+# partial-work block uses, and the scan matches those. Here: the wrapping
+# itself; the prose-lookalike body that turns the old scan red is below, with
+# the refresh-handoff cases.
+assert_true "the budget line is wrapped in a whole-line marker pair" \
+  "[ \"\$(sed -n 9p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '<!-- orch:budget -->' ] && [ \"\$(sed -n 11p \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = '<!-- /orch:budget -->' ]"
+assert_true "exactly one opening and one closing budget marker" \
+  "[ \"\$(grep -cxF '<!-- orch:budget -->' \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = 1 ] && [ \"\$(grep -cxF '<!-- /orch:budget -->' \"$HW_RUN_DIR/pkt-bdef/handoff.md\")\" = 1 ]"
 
 printf 'schema: 1\nimplementer_turn_budget: 150\n' > "$HW/.agents/project-overrides.yaml"
 hb_handoff pkt-bov implementer
@@ -3350,11 +3364,16 @@ rm -f "$HW/.agents/project-overrides.yaml"
 hb_handoff pkt-bdoc doc-writer
 assert_true "a doc-writer handoff carries no budget line" \
   "[ \"\$(hb_budget_count pkt-bdoc)\" = 0 ]"
+# And no marker either -- the whole mechanism is invisible to every other
+# agent. `-s` first, so an absent file cannot pass this vacuously.
+assert_true "a doc-writer handoff carries no budget marker either" \
+  "[ -s \"$HW_RUN_DIR/pkt-bdoc/handoff.md\" ] && ! grep -q 'orch:budget' \"$HW_RUN_DIR/pkt-bdoc/handoff.md\""
 # Byte identity: everything below the header (and, for the implementer, below
-# the budget line and its blank) is identical to the doc-writer handoff built
-# from the same body -- body, driver's conditional line, and the REQUIRED block.
+# the marked budget block and its blank) is identical to the doc-writer handoff
+# built from the same body -- body, driver's conditional line, and the REQUIRED
+# block.
 tail -n +9  "$HW_RUN_DIR/pkt-bdoc/handoff.md"  > "$HW/hb-doc.tail"
-tail -n +11 "$HW_RUN_DIR/pkt-bdef/handoff.md" > "$HW/hb-impl.tail"
+tail -n +13 "$HW_RUN_DIR/pkt-bdef/handoff.md" > "$HW/hb-impl.tail"
 assert_true "with the budget line removed, the body and REQUIRED block are byte-identical to a handoff written without it" \
   "[ -s \"$HW/hb-doc.tail\" ] && cmp -s \"$HW/hb-doc.tail\" \"$HW/hb-impl.tail\""
 
@@ -3887,12 +3906,12 @@ rh_cases() {
     "[ \"\$(rh_markers '$f')\" = '1 1' ] && [ \"\$(grep -cx '## Partial work on disk' '$f')\" = 1 ]"
   assert_true "(${sfx})   the block states read, verify, continue — do not recreate" \
     "grep -q 'Read these files as they now stand, verify them, and continue from them — do not recreate them\\.' '$f'"
-  # Placement: header is lines 1-8, the budget line 9, its blank 10, so the
-  # opening marker is line 11 and the body resumes after the block's blank.
-  # RULES OUT inserting above the budget line, or after the body (between the
-  # driver's conditional REQUIRED line and the six).
+  # Placement: header is lines 1-8, the marked budget block 9-11, its blank 12,
+  # so the opening marker is line 13 and the body resumes after the block's
+  # blank. RULES OUT inserting above the budget block, or after the body
+  # (between the driver's conditional REQUIRED line and the six).
   assert_true "(${sfx})   the block sits directly after the budget line, before the body" \
-    "sed -n 9p '$f' | grep -q '^BUDGET: ' && [ \"\$(sed -n 11p '$f')\" = '<!-- orch:partial-work -->' ] && [ \"\$(sed -n 12p '$f')\" = '## Partial work on disk' ]"
+    "sed -n 10p '$f' | grep -q '^BUDGET: ' && [ \"\$(sed -n 11p '$f')\" = '<!-- /orch:budget -->' ] && [ \"\$(sed -n 13p '$f')\" = '<!-- orch:partial-work -->' ] && [ \"\$(sed -n 14p '$f')\" = '## Partial work on disk' ]"
   # RULES OUT any splice that touches a byte outside the block: with the block
   # cut out the file is the first dispatch's, REQUIRED block and all.
   assert_true "(${sfx})   with the block cut out, every other byte is the first dispatch's" \
@@ -3958,6 +3977,59 @@ rh_cases() {
   rh_rs refresh-handoff .agents/run-state.yaml rh2 >/dev/null
   assert_true "(${sfx})   after the removal the file is byte-identical to the amended handoff" \
     "cmp -s '$rdir/rh2/handoff.md' '$amended'"
+
+  echo "-- ${sfx}: a body line that LOOKS like the budget line is body, not header --"
+  # THE CASE THE MARKERS EXIST FOR (review-notes remediation 2). The header-end
+  # scan used to find its insertion point by matching a line beginning
+  # `BUDGET: ` followed by a blank -- prose, and a shape a body's own first line
+  # can have. A handoff written for an agent that gets NO budget line (here a
+  # doc-writer) whose body opens with exactly that shape is the reproducing
+  # case: the old scan read those two body lines as the header's budget line and
+  # its blank, and spliced the partial-work block BELOW them, cutting the body's
+  # first line off from the rest of the body it belongs to.
+  #
+  # RED AGAINST THE UNFIXED SCAN: with the prose match restored, the block lands
+  # at line 11 and the first assertion below fails.
+  printf 'BUDGET: this line is the body talking about budgets, not the header.\n\nPACKET=rhlk\nTEXT=RH lookalike\nFILES=src/rh-a.ts\nREQUIRED: the regression sweep covering runstate.sh passes\n' \
+    | rh_rs handoff .agents/run-state.yaml rhlk --tier integration --agent doc-writer >/dev/null
+  cp "$rdir/rhlk/handoff.md" "$sc/rhlk-orig.md"
+  assert_true "(${sfx}) the fixture really has no budget block (so the case is not vacuous)" \
+    "! grep -q 'orch:budget' '$rdir/rhlk/handoff.md' && [ \"\$(sed -n 9p '$rdir/rhlk/handoff.md')\" = 'BUDGET: this line is the body talking about budgets, not the header.' ]"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  rh_rs refresh-handoff .agents/run-state.yaml rhlk >/dev/null
+  assert_true "(${sfx}) the block is spliced ABOVE the lookalike line, at the header's real end" \
+    "[ \"\$(sed -n 9p '$rdir/rhlk/handoff.md')\" = '<!-- orch:partial-work -->' ] && [ \"\$(sed -n 10p '$rdir/rhlk/handoff.md')\" = '## Partial work on disk' ]"
+  assert_true "(${sfx})   and the body's first line still sits with the rest of its body" \
+    "grep -A2 -xF 'BUDGET: this line is the body talking about budgets, not the header.' '$rdir/rhlk/handoff.md' | grep -qx 'PACKET=rhlk'"
+  git -C "$d" checkout -q -- .
+  rh_rs refresh-handoff .agents/run-state.yaml rhlk >/dev/null
+  assert_true "(${sfx})   and the removal puts every byte back" \
+    "cmp -s '$rdir/rhlk/handoff.md' '$sc/rhlk-orig.md'"
+
+  echo "-- ${sfx}: the budget block is found by its MARKER, not by its prose --"
+  # The other half of the same fix, on a real implementer handoff: rename the
+  # budget line's PROSE and the block must still be found (the scan matches the
+  # markers), so the partial-work block still lands below it.
+  # RED AGAINST THE UNFIXED SCAN: the prose match fails on the renamed line, the
+  # insertion point falls back to line 8, and the block lands at 9 -- above the
+  # budget block rather than below it.
+  printf 'PACKET=rhmk\nTEXT=RH marker\nFILES=src/rh-a.ts\nREQUIRED: the regression sweep covering runstate.sh passes\n' \
+    | rh_rs handoff .agents/run-state.yaml rhmk --tier integration --agent implementer >/dev/null
+  awk 'NR == 10 { print "ALLOWANCE: the budget line, reworded."; next } { print }' \
+    "$rdir/rhmk/handoff.md" > "$sc/rhmk-reworded.md"
+  cp "$sc/rhmk-reworded.md" "$rdir/rhmk/handoff.md"
+  assert_true "(${sfx}) the reworded fixture keeps its markers and carries no BUDGET prose" \
+    "[ \"\$(sed -n 9p '$rdir/rhmk/handoff.md')\" = '<!-- orch:budget -->' ] && [ \"\$(sed -n 11p '$rdir/rhmk/handoff.md')\" = '<!-- /orch:budget -->' ] && ! grep -q '^BUDGET: ' '$rdir/rhmk/handoff.md'"
+  printf 'v2\n' > "$d/src/rh-a.ts"
+  rh_rs refresh-handoff .agents/run-state.yaml rhmk >/dev/null
+  assert_true "(${sfx}) the block still lands below the marked budget block" \
+    "[ \"\$(sed -n 13p '$rdir/rhmk/handoff.md')\" = '<!-- orch:partial-work -->' ] && [ \"\$(sed -n 14p '$rdir/rhmk/handoff.md')\" = '## Partial work on disk' ]"
+  assert_true "(${sfx})   and the budget block is still whole, above it" \
+    "[ \"\$(sed -n 10p '$rdir/rhmk/handoff.md')\" = 'ALLOWANCE: the budget line, reworded.' ] && [ \"\$(sed -n 11p '$rdir/rhmk/handoff.md')\" = '<!-- /orch:budget -->' ]"
+  git -C "$d" checkout -q -- .
+  rh_rs refresh-handoff .agents/run-state.yaml rhmk >/dev/null
+  assert_true "(${sfx})   and the removal puts every byte back" \
+    "cmp -s '$rdir/rhmk/handoff.md' '$sc/rhmk-reworded.md'"
 
   echo "-- ${sfx}: a bundle's BUNDLE_FILES= is part of the scope --"
   printf 'BUNDLE=rhb\nBUNDLE_FILES=src/rh-out.ts\nPACKET=rhb\nTEXT=RH bundle\nFILES=\n' \
@@ -4122,6 +4194,30 @@ printf '{"ts":"2026-01-01T00:00:05.500Z","packet":"rt-ord","token":"fix","action
 ORD_OUT="$(rt_route rt-ord fix)"
 assert_true "a sub-second routing record in the same wall-clock second as a whole-second start IS counted (parsed time, not string compare)" \
   "printf '%s\n' \"\$ORD_OUT\" | grep -qx 'ATTEMPTS=2'"
+
+echo "-- ONE shared field extractor: a packet id that is a PREFIX of another's is separate --"
+# Both route counters read their JSON fields through the single
+# `_RS_ROUTE_FIELD_AWK`; the attempt counter's byte-identical private copy was
+# retired in the review-notes remediation. This is the BEHAVIOURAL net under
+# that change (it is green before and after it -- the two copies were
+# identical): the extractor compares the WHOLE field value, so records for
+# `rt-sub-x` must count for `rt-sub-x` alone, on both the attempt and the
+# continuation axis. The source-level single-copy assertion that turns red
+# against the unfixed file is at the end of this sweep.
+RT_SUB_STATUS='continue · stopped at the turn budget · result: needs-reading · /tmp/run/rt-sub/implementer.md'
+printf '' > "$RT/.agents/project-overrides.yaml"
+(cd "$RT" && "$RUNSTATE" record-start rt-sub S1 >/dev/null)
+(cd "$RT" && "$RUNSTATE" record-start rt-sub-x S1 >/dev/null)
+assert_true "the longer id spends its own first attempt" \
+  "rt_route rt-sub-x fix | grep -qx 'ATTEMPTS=1'"
+assert_true "the prefix id does NOT inherit it: its own first fix is still attempt 1" \
+  "rt_route rt-sub fix | grep -qx 'ATTEMPTS=1'"
+# Continuations (default cap 3): drive the longer id to its cap, then the
+# prefix id must still have its full allowance.
+assert_true "the longer id reaches its continuation cap on the fourth continue" \
+  "rt_route rt-sub-x continue --status \"\$RT_SUB_STATUS\" | grep -qx 'ACTION=continue' && rt_route rt-sub-x continue --status \"\$RT_SUB_STATUS\" | grep -qx 'ACTION=continue' && rt_route rt-sub-x continue --status \"\$RT_SUB_STATUS\" | grep -qx 'ACTION=continue' && rt_route rt-sub-x continue --status \"\$RT_SUB_STATUS\" | grep -qx 'ACTION=stop'"
+assert_true "  and the prefix id's continuation allowance is untouched by them" \
+  "rt_route rt-sub continue --status \"\$RT_SUB_STATUS\" | grep -qx 'ACTION=continue'"
 
 echo "-- the outcomes log is byte-unchanged by route calls (review fix 8) --"
 RT_OUTCOMES_CKSUM_BEFORE="$(cksum "$RT/.agents/metrics/outcomes"/*.jsonl 2>/dev/null | sort)"
@@ -6795,6 +6891,68 @@ assert_true "the end-of-file injection is the last line of the file" \
 # The injected copy is left in its own `mktemp -d`, like every other scratch
 # dir in this sweep bar $REPO: a recursive delete in a test file is a line the
 # guardrail is right to stop, and the OS reaps the temp dir.
+
+echo
+echo "== one copy of the routing-record field extractor, and one only =="
+# The review-notes remediation retired a byte-identical private copy of the
+# awk `field()` extractor that lived inside `_rs_route_attempts` -- the counter
+# that enforces the retry limit. Byte-identical copies are invisible to any
+# behavioural test (that is exactly why the duplicate survived), so the
+# anti-drift mechanism has to be a source-level scan, in the same shape as the
+# pipe-fed `grep -q` guard above: count the definitions, then prove the count
+# turns red when a second one is planted.
+#
+# RED AGAINST THE UNFIXED FILE: with the private copy restored the count is 2.
+#
+# Scoped to the three ROUTE counters, not to the whole file: other readers
+# (the digest and tally scans over the metrics logs) carry their own `field()`
+# for their own records, and folding those together is a different question
+# from this one. What this pins is that no route counter carries a private
+# copy of the extractor the other route counters share.
+RF_FNS='_rs_(latest_start_key|route_continuations|route_attempts)'
+rf_priv_defs() {  # <file> -- field() definitions INSIDE the three route counters
+  awk '
+    /^_rs_(latest_start_key|route_continuations|route_attempts)\(\)/ { inf = 1; next }
+    inf && /^\}/ { inf = 0; next }
+    inf && /function field\(line, name,/ { n++ }
+    END { print n + 0 }
+  ' "$1"
+}
+RF_COUNT="$(rf_priv_defs "$RUNSTATE")"
+if [ "$RF_COUNT" != 0 ]; then
+  printf '     %s private copy/copies of the awk field() extractor inside %s —\n' "$RF_COUNT" "$RF_FNS"
+  printf '     every route counter must share $_RS_ROUTE_FIELD_AWK, so that a fix to the\n'
+  printf '     parser cannot leave the attempt counter (which enforces the retry limit)\n'
+  printf '     reading a stale copy:\n'
+  grep -n 'function field(line, name,' "$RUNSTATE"
+fi
+assert_true "no route counter in scripts/runstate.sh carries a private copy of the field extractor" \
+  "[ \"\$RF_COUNT\" = 0 ]"
+# And every counter that needs it reaches for the shared one by name. Three
+# call sites: the latest-start key, the continuation count, the attempt count.
+assert_true "all three route counters expand \$_RS_ROUTE_FIELD_AWK rather than a private copy" \
+  "[ \"\$(grep -c 'awk -v pkt=\"\$pkt\" \"\$_RS_ROUTE_FIELD_AWK\"' \"$RUNSTATE\")\" = 3 ]"
+# Named, so a rename that orphaned the constant could not pass the count above
+# by deleting every user of it.
+assert_true "the attempt counter is one of them (it enforces the retry limit)" \
+  "awk '/^_rs_route_attempts\\(\\) \\{/ { inf = 1 } inf && /_RS_ROUTE_FIELD_AWK/ { found = 1 } inf && /^\\}/ { inf = 0 } END { exit found ? 0 : 1 }' \"$RUNSTATE\""
+
+# Self-proof: the scan really does catch the copy this remediation retired.
+# Planted back into `_rs_route_attempts` — exactly where it lived — in its own
+# mktemp -d, as the grep -q self-proof plants its injections.
+RF_DIR="$(mktemp -d)"
+RF_INJECTED="$RF_DIR/injected-runstate.sh"
+RF_INJ_LINE='  local extract='"'"'
+    function field(line, name,    pat, pos, rest, q) { return "" }'"'"
+export RF_INJ_LINE
+awk '
+  { print }
+  /^_rs_route_attempts\(\)/ { print ENVIRON["RF_INJ_LINE"] }
+' "$RUNSTATE" > "$RF_INJECTED"
+assert_true "the injection really landed inside the attempt counter (so the proof is not vacuous)" \
+  "[ \"\$(grep -c 'function field(line, name,' '$RF_INJECTED')\" = \"\$(( \$(grep -c 'function field(line, name,' \"$RUNSTATE\") + 1 ))\" ]"
+assert_true "the same scan counts the private copy when one is planted back" \
+  "[ \"\$(rf_priv_defs '$RF_INJECTED')\" = 1 ]"
 
 echo
 echo "-----------------------------------------"

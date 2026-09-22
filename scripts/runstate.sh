@@ -3682,6 +3682,19 @@ _rs_implementer_turn_budget() {
   case "$v" in ''|0|*[!0-9]*) echo 120 ;; *) echo "$v" ;; esac
 }
 
+# --- the budget line's own whole-line markers --------------------------------
+# Same device, and for the same reason, as the partial-work block's markers
+# below: `refresh-handoff` has to find where the header ends before it can
+# splice, and the budget line's PROSE is not a reliable answer to that — a body
+# whose first line happened to begin `BUDGET: ` would be read as the header's
+# budget line and spliced over. HTML comments render invisibly in markdown, so
+# the implementer sees exactly the line it saw before, and they are matched as
+# WHOLE lines, never as a substring. Emitted only when there is a budget line
+# (i.e. only for `--agent implementer`), so a handoff written without one is
+# byte-identical to one written before this existed.
+_RS_BUDGET_BEGIN='<!-- orch:budget -->'
+_RS_BUDGET_END='<!-- /orch:budget -->'
+
 cmd_handoff() {
   local f="" pkt="" tier="" agent="" pos=0
   while [ $# -gt 0 ]; do
@@ -3785,6 +3798,10 @@ cmd_handoff() {
   # driver's own conditional REQUIRED lines and the six, separating the two.
   # With it removed, the rest of the file is byte-identical to a handoff
   # written without it (test-runstate.sh pins that).
+  #
+  # It is wrapped in the marker pair above, which is how `refresh-handoff`
+  # finds the end of the header — it matches the CLOSING marker, never the
+  # line's prose.
   local budget_line=""
   if [ "$agent" = "implementer" ]; then
     local budget_root budget
@@ -3809,7 +3826,9 @@ cmd_handoff() {
     printf 'run-state: %s\n' "$abs_f"
     printf 'result: %s\n' "${abs_pktdir}/${agent}.md"
     printf 'review: %s\n\n' "${abs_pktdir}/review.md"
-    if [ -n "$budget_line" ]; then printf '%s\n\n' "$budget_line"; fi
+    if [ -n "$budget_line" ]; then
+      printf '%s\n%s\n%s\n\n' "$_RS_BUDGET_BEGIN" "$budget_line" "$_RS_BUDGET_END"
+    fi
     printf '%s\n' "$body"
     # Verbatim, and LAST: the body carries the driver's own conditional
     # REQUIRED lines, which stay ahead of the block exactly as the driver wrote
@@ -4101,8 +4120,9 @@ cmd_refresh_handoff() {
   # entry per line.
   local scan sm_count em_count sm_line em_line ins_line
   scan="$(awk -v sm="$_RS_PARTIAL_BEGIN" -v em="$_RS_PARTIAL_END" \
-               -v am="$_RS_AMEND_BEGIN" -v ae="$_RS_AMEND_END" '
-    { line[FNR] = $0 }
+               -v am="$_RS_AMEND_BEGIN" -v ae="$_RS_AMEND_END" \
+               -v bm="$_RS_BUDGET_BEGIN" -v be="$_RS_BUDGET_END" '
+    { line[FNR] = $0; nl = FNR }
     $0 == sm { smc++; if (!sml) sml = FNR; inb = 1 }
     $0 == em { emc++; if (!eml) eml = FNR; inb = 0; next }
     $0 == am { ina = 1 }
@@ -4118,7 +4138,15 @@ cmd_refresh_handoff() {
       if (review) {
         ins = review
         if (line[ins + 1] == "") ins++
-        if (line[ins + 1] ~ /^BUDGET: / && line[ins + 2] == "") ins += 2
+        # The budget block, when there is one, is found by its MARKER PAIR --
+        # never by the prose of the budget line, which the first line of a body
+        # could carry just as well. Both markers, in order, and the blank line
+        # after the closing marker, or the header ends at the blank above.
+        # (No apostrophes in this program: it is a single-quoted shell string.)
+        if (line[ins + 1] == bm) {
+          for (j = ins + 2; j <= nl; j++) if (line[j] == be) break
+          if (j <= nl && line[j + 1] == "") ins = j + 1
+        }
       }
       printf "%d %d %d %d %d\n", smc + 0, emc + 0, sml + 0, eml + 0, ins
       printf "%s", scope
@@ -4552,7 +4580,12 @@ EOF
   printf '%s' "$best"
 }
 
-# One JSON string-field extractor shared by the route counters below.
+# One JSON string-field extractor, shared by EVERY route counter -- the start
+# key above, the continuation count and the attempt count below. It is
+# deliberately the only copy: the attempt count is what enforces the retry
+# limit, so a parser this file fixed in one place and not another would leave
+# the limit reading a stale extractor. test-runstate.sh pins the single-copy
+# rule by scanning this file for a second `function field(` definition.
 _RS_ROUTE_FIELD_AWK='
     function field(line, name,    pat, pos, rest, q) {
       pat = "\"" name "\":\""
@@ -4628,16 +4661,6 @@ EOF
 # from either route.
 _rs_route_attempts() {
   local pkt="$1" main_root="$2" routing_file="$3"
-  local extract='
-    function field(line, name,    pat, pos, rest, q) {
-      pat = "\"" name "\":\""
-      pos = index(line, pat)
-      if (pos == 0) return ""
-      rest = substr(line, pos + length(pat))
-      q = index(rest, "\"")
-      if (q == 0) return ""
-      return substr(rest, 1, q - 1)
-    }'
 
   local latest_key
   latest_key="$(_rs_latest_start_key "$pkt" "$main_root")"
@@ -4650,7 +4673,7 @@ _rs_route_attempts() {
       key="$(_rs_ts_key "$ts")"
       [ "$key" -ge "$latest_key" ] && count=$((count + 1))
     done <<EOF
-$(awk -v pkt="$pkt" "$extract"'
+$(awk -v pkt="$pkt" "$_RS_ROUTE_FIELD_AWK"'
       { p = field($0, "packet"); if (p != pkt) next
         t = field($0, "token");  if (t != "fix" && t != "retry") next
         ts = field($0, "ts");    if (ts != "") print ts }

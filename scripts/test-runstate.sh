@@ -3986,6 +3986,79 @@ ct_cases() {
 ct_cases "" ""
 ct_cases " (no-tools host)" "$NOTOOLS"
 
+echo "-- route continue: capped per attempt by packet_continuations (implementer-continuation T3) --"
+# Same two-host shape as ct_cases above, each in its own repo.
+cc_cases() {
+  local sfx="$1" scrub="$2" d run_id routing out i
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  git -C "$d" config user.email t@t; git -C "$d" config user.name t
+  mkdir -p "$d/.agents"
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  cc_rs() {
+    if [ -n "$scrub" ]; then (cd "$d" && PATH="$scrub:$PATH" "$RUNSTATE" "$@")
+    else (cd "$d" && "$RUNSTATE" "$@"); fi
+  }
+  cc_cont() { cc_rs route .agents/run-state.yaml "$1" continue --status "$CT_STATUS"; }
+  run_id="$(cc_rs begin-run .agents/run-state.yaml | sed -n 's/^RUN_ID=//p')"
+  routing="$d/.agents/loop/$run_id/routing.jsonl"
+
+  # Default cap (no overrides file): three continuations, each followed by the
+  # driver's own `record-start --continue` bookkeeping, then a fourth refused.
+  # Windowing on ANY outcomes record would let each of those continuation
+  # records reset the count and the fourth would route as continue again.
+  cc_rs record-start cc-def S1 >/dev/null
+  for i in 1 2 3; do
+    out="$(cc_cont cc-def)"
+    assert_true "route continue cap$sfx: continuation $i of 3 under the default cap routes ACTION=continue" \
+      "printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+    cc_rs record-start cc-def --continue S1 >/dev/null
+  done
+  out="$(cc_cont cc-def)"
+  assert_true "route continue cap$sfx: the fourth continuation, past the default cap of 3, prints ACTION=stop (record-start --continue restored nothing)" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=stop' && ! printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+  assert_true "route continue cap$sfx: the refusal prints a question: line naming the packet and the cap" \
+    "printf '%s\n' \"\$out\" | grep -q '^question: .*packet cc-def .*continuation cap (3 per attempt)'"
+  assert_true "route continue cap$sfx: the refused continue still writes its record, with action stop and exactly the five keys" \
+    "tail -1 \"$routing\" | jq -e --arg s \"\$CT_STATUS\" '(keys == [\"action\",\"packet\",\"status\",\"token\",\"ts\"]) and .packet == \"cc-def\" and .token == \"continue\" and .action == \"stop\" and .status == \$s and (.ts | length > 0)' >/dev/null"
+  assert_true "route continue cap$sfx: every continue for the packet left one record (three continue + one stop)" \
+    "[ \"\$(jq -r -s '[.[] | select(.packet == \"cc-def\" and .token == \"continue\") | .action] | join(\",\")' \"$routing\")\" = continue,continue,continue,stop ]"
+
+  # An `attempt` routing (here a fix, under the default attempt limit of 1)
+  # opens a fresh attempt with the full allowance again. Windowing on the
+  # start record alone would cap per packet and refuse the very next continue.
+  out="$(cc_rs route .agents/run-state.yaml cc-def fix)"
+  assert_true "route continue cap$sfx: the fix after the refusal routes ACTION=attempt" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=attempt'"
+  for i in 1 2 3; do
+    out="$(cc_cont cc-def)"
+    assert_true "route continue cap$sfx: after an attempt routing, continuation $i of 3 routes ACTION=continue again (full allowance restored)" \
+      "printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+  done
+  out="$(cc_cont cc-def)"
+  assert_true "route continue cap$sfx: and the fourth in the new attempt is refused as ACTION=stop" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=stop'"
+
+  # Override: a quoted, comment-trailed value is honoured.
+  printf "packet_continuations: '1'  # tighter than the default\n" > "$d/.agents/project-overrides.yaml"
+  cc_rs record-start cc-ovr S1 >/dev/null
+  out="$(cc_cont cc-ovr)"
+  assert_true "route continue cap$sfx: under packet_continuations: '1' the first continuation routes ACTION=continue" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=continue'"
+  out="$(cc_cont cc-ovr)"
+  assert_true "route continue cap$sfx: under packet_continuations: '1' the second is refused as ACTION=stop naming cap 1" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=stop' && printf '%s\n' \"\$out\" | grep -q '^question: .*packet cc-ovr .*continuation cap (1 per attempt)'"
+
+  # Zero is not a positive integer and reads as the default of 3.
+  printf 'packet_continuations: 0\n' > "$d/.agents/project-overrides.yaml"
+  cc_rs record-start cc-zero S1 >/dev/null
+  for i in 1 2 3; do cc_cont cc-zero >/dev/null; done
+  out="$(cc_cont cc-zero)"
+  assert_true "route continue cap$sfx: packet_continuations: 0 reads as the default 3 (fourth refused, naming cap 3)" \
+    "printf '%s\n' \"\$out\" | grep -qx 'ACTION=stop' && printf '%s\n' \"\$out\" | grep -q 'continuation cap (3 per attempt)'"
+}
+cc_cases "" ""
+cc_cases " (no-tools host)" "$NOTOOLS"
+
 echo "-- a hand-off-feature record in a PREVIOUS run does not refuse the SAME packet id in a NEW run (review fix 5/8) --"
 # A genuinely fresh run-state (no run_id yet) mints a DIFFERENT run_id, so
 # its own routing.jsonl starts empty -- the refusal must be scoped to the

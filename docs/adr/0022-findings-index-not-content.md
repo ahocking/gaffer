@@ -219,3 +219,24 @@ unrecoverable, to save relaying one line through a check-in the scheduler alread
   outside `gspec/` — ADR 0020 D2).
 - **Add a schema'd `resolved_questions:` list.** Reproduces the original problem with
   a nicer name: still unbounded, still in the file every packet reads.
+
+## Relocated from CLAUDE.md (2026-09-22) — run-state write-integrity notes with no other home
+
+There is no ADR 0027 file; the write-integrity rationale lives mostly in the
+`runstate-write-integrity`, `runstate-write-integrity-gaps` and
+`runstate-set-shape-detection` PRDs. These points, previously carried only in the
+repo-root `CLAUDE.md`, are recorded here because they were not in any of those.
+
+- **The reader's strip is load-bearing, not tidy-up.** Once `runstate.sh` quotes every
+  value it writes, `cmd_get` must strip the quoting symmetrically on read. Without it a
+  crashed run reads as `status: 'running'`, and `hooks/session-start.sh`'s `case` falls
+  through to its `paused|*` arm, telling the human the run "was paused cleanly".
+- **The YAML-parse assertions in `test-runstate.sh` were vacuous until 2026-08-11.** The
+  helper fell back to `return 0` when PyYAML was absent, so on a stock host (python3
+  present, PyYAML not in the standard library) **21 cases passed while checking nothing**
+  and the sweep still reported 213/0 green. They now skip loudly, counted and named in the
+  summary line, and CI declares PyYAML rather than hoping the runner ships it.
+- **`hooks/pause-check.sh` carries a deliberate third copy of the decode rule** rather
+  than sourcing the several-thousand-line `runstate.sh` on every tool call. The shell
+  `_yaml_decode_value` and the awk `rs_decode` (in `_YAML_AWK_DECODE`) are the other two;
+  the shared decoder fixture table in `test-runstate.sh` is the anti-drift mechanism.

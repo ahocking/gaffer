@@ -448,6 +448,12 @@ repo already on the 3.x folder layout is otherwise indistinguishable from an
 up-to-date one, and every gain 3.2.0 puts into its agents and skills is absent
 there until someone re-emits.
 
+*(Amended 2026-09-22: the runbook no longer carries a version in its name or its
+text. It is `docs/gspec-migration.md`, and it and `skills/migrate/SKILL.md` send
+the reader to `scripts/gspec-backlog.sh pin` for the value, whose only home is
+`GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh`. A pin bump therefore no
+longer includes a runbook rename or a migrate-skill string change.)*
+
 **What 3.2.0 changes for a gaffer consumer, and what it does not.** Nearly all
 of its measured saving (−27% cost, −54% implementer input per run, upstream
 figures) lives in the `gspec build` driver — a 120-turn implementer cap with

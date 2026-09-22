@@ -479,9 +479,8 @@ die() { printf 'gspec-backlog.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
 # sweeps, amend ADR 0020. Env overrides exist for testing and for a consumer repo
 # that has deliberately moved ahead of the plugin.
 GSPEC_PINNED_VERSION="${ORCH_GSPEC_PINNED_VERSION:-3.2.0}"
-# BOTH artifact versions are supported, and that is the deliberate half of the
-# 3.1.1 bump (kept unchanged at 3.2.0, which moves neither layout nor spec-version): v2 is what gspec writes now, v1 is what every unmigrated consumer
-# repo still has on disk. Narrowing this to `v2` would make `check` fail — rc=3,
+# BOTH artifact versions are supported, and that is deliberate: v2 is what gspec
+# writes now, v1 is what every unmigrated consumer repo still has on disk. Narrowing this to `v2` would make `check` fail — rc=3,
 # the loop stops — on a repo whose backlog this adapter can read perfectly well.
 # The version pin exists to catch a format this code CANNOT parse; it is not a
 # lever for nagging a repo into migrating. `/gaffer:migrate` reports the layout

@@ -175,3 +175,32 @@ about format enforcement. `scripts/test-report-conventions.sh` asserts the contr
 *present and consistent* (the shapes name the digest, the wire format says it is not the
 loop's, this amendment is an appended section rather than a rewrite); the reviewer is
 what catches a report that ignored it.
+
+## Relocated from CLAUDE.md (2026-09-22) — design notes with no other home
+
+Nothing above is changed by this section. These points were carried only in the repo-root
+`CLAUDE.md` and are recorded here so that file can hold the rules without the reasoning.
+
+- **The card is small on purpose.** `templates/report-conventions-card.md` is a ~2.9k-char
+  distillation, the always-on layer, and the one source both L2 (the consumer `CLAUDE.md`
+  stamp) and L3 (the hook) copy from. It is a fourth file, not a fourth contract.
+- **The decision block is a shared primitive, not stop-report furniture.** It is also the
+  Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s Risks
+  section, and an inline ask under a blocked packet in a report whose run is still going.
+  It is factored out because four near-identical shapes would drift apart, and the
+  un-actionable form ("things a human should weigh") is what they drift into.
+- **The kickoff is the cheapest correction point in a run.** A wrong assumption costs a
+  sentence there and several packets at the stop report, which is why shape C carries an
+  explicit `Assuming:` line and why `run-loop` emits it after preflight and backlog
+  resolution, when it states facts rather than intentions.
+- **Deliberately not built, so they are not invented later:** a welcome-back shape
+  (identical content to B — reuse it); a metrics shape (numbers-dense and pulled on
+  demand, not pushed); anything for guard ASK-tier prompts (Claude Code renders those
+  natively and a template cannot reach them); and a mid-packet progress heartbeat (a
+  subagent returns nothing until it finishes, a transport limit — a shape that implied
+  liveness would be lying).
+- **No header tally on a report with nothing to count.** Reports without a shape
+  (`review-change`, `metrics show`/`analyze`, `new-project`, `migrate`) still owe the
+  glyph vocabulary, the indentation contract and the decision block, but a tally on a
+  metrics summary is decoration, and decoration is what teaches a reader to stop trusting
+  the glyphs.

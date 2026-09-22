@@ -218,7 +218,7 @@ printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/drive
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
 has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
-# The installed-gspec report (pin bump to 3.2.0, 2026-09-20). Informational, so it
+# The installed-gspec report (added with the 2026-09-20 pin bump). Informational, so it
 # must never turn a clean repo into FINDINGS>0 -- a stale install parses fine; it
 # only runs the old briefs. Three states: no stamp, matches the pin, differs.
 PIN_NOW="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
@@ -1430,44 +1430,53 @@ hasnt 'and never removed either, even with the flag'   'REMOVED=statusLine' "$ou
 has 'the foreign entry survives byte-for-byte' 'some-other-tool --flag' "$(cat "$HOME4/.claude/settings.json")"
 
 # =============================================================================
-printf '\n== the runbook must not drift from the pin ==\n'
-# docs/gspec-<version>-migration.md is the HUMAN sequence; skills/migrate/SKILL.md
-# is what the agent runs. Two documents by design -- different readers, different
-# jobs -- but they share exactly one hard fact, the pinned gspec version, and a
-# runbook naming a stale version is worse than no runbook: it gets followed.
-#
-# This is the only mechanical tie between them, and deliberately so. The rest of
-# the runbook is prose no test can judge; the version is a literal, so a pin bump
-# that forgets this file fails here instead of rotting until someone runs an old
-# `npx gspec@...` from it.
-RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null | head -1)"
+printf '\n== the runbook and skill never restate the pin ==\n'
+# docs/gspec-migration.md is the HUMAN sequence; skills/migrate/SKILL.md is what
+# the agent runs. Two documents by design -- different readers, different jobs.
+# The pinned gspec version is a configurable value, and its current state lives
+# ONLY in GSPEC_PINNED_VERSION in gspec-backlog.sh. A copy anywhere else is a
+# second source of truth that a pin bump leaves stale -- and a runbook naming a
+# stale version gets followed. So both documents must send the reader to
+# `gspec-backlog.sh pin` and must carry no literal copy of what it prints.
+RB="$HERE/../docs/gspec-migration.md"
+SKILL_MD="$HERE/../skills/migrate/SKILL.md"
 PINNED="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
 SPECVERS="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p')"
-if [ -n "$RB" ] && [ -f "$RB" ]; then
-  ok 'the migration runbook exists'
+SKILL_TXT="$(cat "$SKILL_MD")"
+case "$SKILL_TXT" in *'docs/gspec-migration.md'*) ok 'the skill names the runbook path' ;;
+  *) bad 'the skill names the runbook path' "no docs/gspec-migration.md in $SKILL_MD" ;; esac
+# Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
+# on failure, and the got value here is a 200-line document.
+case "$SKILL_TXT" in *"$PINNED"*) bad 'the skill carries no literal pinned version' "found $PINNED in $SKILL_MD" ;;
+  *) ok 'the skill carries no literal pinned version' ;; esac
+case "$SKILL_TXT" in *'gspec-backlog.sh pin'*) ok 'the skill reads the version from gspec-backlog.sh pin' ;;
+  *) bad 'the skill reads the version from gspec-backlog.sh pin' "no 'gspec-backlog.sh pin' in $SKILL_MD" ;; esac
+if [ -f "$RB" ]; then
+  ok 'the migration runbook exists at docs/gspec-migration.md'
   RB_TXT="$(cat "$RB")"
-  # Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
-  # on failure, and the got value here is a 200-line document. Three of those in
-  # a CI log buries the one line that says what is wrong.
   rb_has() { # rb_has <name> <literal>
     case "$RB_TXT" in *"$2"*) ok "$1" ;;
       *) bad "$1" "runbook does not contain: $2   ($RB)" ;; esac
   }
-  rb_has 'it names the pinned gspec version'       "gspec@$PINNED"
-  rb_has 'and quotes that pin in the check output' "GSPEC_PINNED_VERSION=$PINNED"
-  rb_has 'and the supported spec-version set'      "GSPEC_SPEC_VERSIONS=$SPECVERS"
-  # Its filename carries the version, so a bump must rename it -- otherwise a
-  # file called ...-3.1.1-... describes 3.2 and every link to it lies.
-  case "$RB" in *"$PINNED"*) ok 'the runbook filename matches the pin' ;;
-    *) bad 'the runbook filename matches the pin' "no $PINNED in: $RB" ;; esac
+  case "$RB_TXT" in *"$PINNED"*) bad 'the runbook carries no literal pinned version' "found $PINNED in $RB" ;;
+    *) ok 'the runbook carries no literal pinned version' ;; esac
+  rb_has 'it reads the version from gspec-backlog.sh pin' 'gspec-backlog.sh pin'
+  rb_has 'and installs by that placeholder, not a literal' 'gspec@<pinned version>'
+  case "$RB_TXT" in *"GSPEC_SPEC_VERSIONS=$SPECVERS"*) bad 'the runbook carries no literal spec-version set' "found $SPECVERS in $RB" ;;
+    *) ok 'the runbook carries no literal spec-version set' ;; esac
+  # No versioned runbook left behind beside it: a docs/gspec-<version>-migration.md
+  # is exactly the second copy of the value this section exists to forbid.
+  STALE_RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null || true)"
+  if [ -z "$STALE_RB" ]; then ok 'no version-named runbook remains'
+  else bad 'no version-named runbook remains' "$STALE_RB"; fi
   # The install-before-migrate order is the one instruction whose loss silently
-  # costs a second migration, so pin it by CONTENT, not just by version string.
+  # costs a second migration, so pin it by CONTENT.
   rb_has 'it keeps the install-before-migrate hazard' 'the exact layout you are leaving'
   # And the check that separates a broken migration from a finished backlog --
   # the defect this plugin actually shipped once.
   rb_has 'it tells the reader to read the task-line count' 'task line(s) read'
 else
-  bad 'the migration runbook exists' "no docs/gspec-*-migration.md found"
+  bad 'the migration runbook exists at docs/gspec-migration.md' "missing: $RB"
 fi
 
 printf '\n----------------------------------------\n'

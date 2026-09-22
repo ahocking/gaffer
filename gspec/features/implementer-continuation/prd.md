@@ -89,7 +89,7 @@ and every continuation or re-attempt is briefed with what is already on disk.
 
 ## Capabilities
 
-- [ ] **P0**: Every implementer handoff states its budget and the stop rule
+- [x] **P0**: Every implementer handoff states its budget and the stop rule
   - the handoff for an `implementer` dispatch carries one line stating the
     budget in tool calls: `implementer_turn_budget` from
     `.agents/project-overrides.yaml` when it is a positive integer, else 120;
@@ -106,7 +106,7 @@ and every continuation or re-attempt is briefed with what is already on disk.
     override, one for a missing/invalid/zero override reading as 120, and one
     asserting a `doc-writer` handoff carries no budget line
 
-- [ ] **P0**: The driver routes `continue` to a continuation without a review or an attempt
+- [x] **P0**: The driver routes `continue` to a continuation without a review or an attempt
   - `scripts/runstate.sh route` accepts `continue` as a ninth token, and
     both driver surfaces — `skills/run-loop/SKILL.md` §3.4 and the
     `## Routing` section of `agents/loop-driver.md` — read the implementer's
@@ -136,7 +136,7 @@ and every continuation or re-attempt is briefed with what is already on disk.
     unchanged `ATTEMPTS=` across it, and a `fix` after a continuation
     counting one attempt
 
-- [ ] **P0**: Continuations are capped per attempt and every one leaves a record
+- [x] **P0**: Continuations are capped per attempt and every one leaves a record
   - one counted unit is a `continue` routing record for the packet since the
     later of its latest `start` record and its latest routing record whose
     action was `attempt`, against `packet_continuations` from
@@ -154,7 +154,7 @@ and every continuation or re-attempt is briefed with what is already on disk.
     override and its default, the record's presence and shape, and
     `DECISIONS` before and after an in-cap and an over-cap `continue`
 
-- [ ] **P0**: A continuation or re-attempt is briefed with the partial work on disk
+- [x] **P0**: A continuation or re-attempt is briefed with the partial work on disk
   - the partial-work set is the paths `git status --porcelain` on the main
     checkout reports that fall within the packet's scope — the union of its
     members' `allowed_files` — each marked existing or deleted; when the

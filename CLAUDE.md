@@ -198,6 +198,35 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 - `route` enforces the retry limit (`packet_attempts`), not the decider.
   **`write-result` is how read-only agents stay read-only** — never grant them
   `Edit`/`Write`.
+- **`route` takes nine tokens**; the ninth, `continue`, is the implementer's own,
+  returned when it stopped at its turn budget. It maps to `ACTION=continue`, spends
+  **no attempt** (`ATTEMPTS=` is the live count, printed and never incremented), and
+  gets **no reviewer dispatch and no recorded verdict**. **Two windows, kept apart:**
+  attempts count `fix`/`retry` since the packet's latest `start` record (a `kind:
+  continue` record never moves that boundary); continuations count `continue` routing
+  records since the later of that `start` and the latest routing record whose action
+  was `attempt`, capped by `packet_continuations`. Past the cap `continue` routes as
+  `stop` with a `question:` line, exactly as an over-limit `retry` does.
+- Every `continue` writes a **routing record** carrying token, action and status line
+  — no path. An in-cap one moves no `run-digest` or `run-tally` figure; the refused
+  over-cap one is counted by `DECISIONS` on the same still-awaiting rule as a retry
+  past its limit.
+- **A handoff is spliced, never regenerated** — `refresh-handoff` replaces, inserts or
+  removes one marked `## Partial work on disk` block and leaves every other byte alone;
+  regenerating through `handoff` would drop the decider's `amend-handoff` block. The
+  driver runs it before a continuation and before **every** `fix`/`retry` re-dispatch,
+  never on a first dispatch. Scope comes from that packet's own handoff
+  `FILES=`/`BUNDLE_FILES=` lines (never `gspec/`); with no scope the set is bounded to
+  paths dirty since `last_green_commit`. An empty set leaves the file byte-identical to
+  one written without the mechanism.
+- **`handoff` writes the budget line for `--agent implementer` and no other agent**
+  (`implementer_turn_budget`), directly after the header and before the body — after
+  the body it would separate the driver's conditional `REQUIRED` lines from the six.
+- **The twice-refused rule covers the implementer's line too**: a twice-refused line
+  the driver would have routed on — the reviewer's verdict, the decider's token, **and
+  the implementer's**, whose first token decides between a continuation and the
+  reviewer — is escalated as a blocking question naming the agent and the printed
+  reason, **never passed to the reviewer**.
 - **`templates/handoff-required.md` is the one home of the verification contract**
   (appended by `runstate.sh handoff`); nothing else restates its lines.
 - **`check-status` runs before any write**; the driver never substitutes a status line.

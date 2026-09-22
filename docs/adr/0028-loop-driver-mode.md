@@ -228,6 +228,11 @@ Attempts count `fix` and `retry` since the packet's latest `start` record — a
 written even for `stop` and `decider`, which is what lets `run-digest` see every decision
 and lets `handoff` refuse a packet already routed `hand-off-feature` in this run.
 
+> **Amended 2026-09-22 (`implementer-continuation`), not rewritten.** The tokens this
+> paragraph enumerates are no longer the whole set: `route` takes a ninth, `continue`,
+> the implementer's own, which routes to a continuation of the same packet. See the
+> 2026-09-22 amendment at the end of this ADR.
+
 `runstate.sh write-result` is **the one write a read-only-tooled agent gets**. It refuses
 any path resolving outside the current run directory (lexically, before touching disk)
 and writes the status line as the file's first line, followed by stdin. That is what let
@@ -354,6 +359,12 @@ have routed on (the reviewer's verdict, the decider's token) is escalated as a b
 question naming the agent and the reason. The driver never substitutes a line of its
 own. The check reads shape, never truth — a well-formed line that is wrong is still the
 reviewer's `fix`, and that content gate is unchanged.
+
+> **Amended 2026-09-22 (`implementer-continuation`), not rewritten.** "A line the driver
+> does not route on proceeds to the reviewer dispatch as before" no longer covers the
+> implementer's own line: the driver now routes on its first token, so a twice-refused
+> implementer line is escalated rather than passed to the reviewer. See the 2026-09-22
+> amendment at the end of this ADR.
 
 ### "`route` appends one record per verdict" is now one per verdict plus at most one per run that is not
 
@@ -632,3 +643,101 @@ label should not be read as contradicting these readings.
   sessions. The carrier-1 result agrees with the binary's own scope list, so the answer
   does not rest on activation alone, but a re-take that wants to rule this out should
   record that check.
+
+## Amendment (2026-09-22) — `route` has a ninth token, and the implementer's line is read before the reviewer
+
+`implementer-continuation` T1–T7 landed (`55942e1`, `961d834`, `8e60268`, `120e348`,
+`7a969a4`, `397b2cd`, `fd75a10`). Two statements in the amendments above are now
+incomplete: the 2026-09-16 section's enumeration of the tokens `route` maps, and the
+2026-09-20 section's rule for a line `check-status` refuses twice. This section amends
+both — each is marked in place above — and rewrites neither; that text stands as the
+record of what shipped on those dates.
+
+### The ninth token is `continue`, and it spends no attempt and reaches no reviewer
+
+Nothing bounded how long an implementer dispatch ran. The cap is cooperative, in the
+shape [ADR 0017](0017-graceful-cooperative-pause.md) gave the pause: the authoritative
+stop is something the agent does at a safe boundary because its handoff told it to.
+`runstate.sh handoff` therefore writes one budget line for `--agent implementer` and for
+no other agent, stating the budget in tool calls (`implementer_turn_budget` in
+`.agents/project-overrides.yaml`) and the rule at it — stop at a safe boundary and never
+mid-edit, leave the partial work uncommitted, write what is done and what remains to the
+result file, and return a status line whose first token is `continue`.
+
+`route` accepts `continue` as its ninth token and maps it to `ACTION=continue`. Two
+properties of that arm are load-bearing:
+
+- **A continuation spends no attempt.** `ATTEMPTS=` prints the packet's live attempt
+  count and is never incremented, and the attempt pool counts `fix`/`retry` tokens only,
+  so a `continue` record never enters it. Otherwise three stops at the turn budget would
+  exhaust a packet's attempts without a single review having happened.
+- **No reviewer is dispatched and no verdict is recorded for it.** A continuation is the
+  same dispatch carried on, not an attempt that ended; there is nothing yet to judge, and
+  the tree it would be judged on is deliberately red.
+
+Continuations are capped **per attempt**: the count is the packet's `continue` routing
+records since the later of its latest `start` record and its latest routing record whose
+action was `attempt`, against `packet_continuations` in `.agents/project-overrides.yaml`.
+So each fresh attempt gets a fresh allowance, and the two windows stay apart — a
+`kind: continue` record never moves the attempt boundary, and an `attempt` resets only
+the continuation count. Past the cap, `continue` refuses as `ACTION=stop` with a
+`question:` line naming the packet and the cap, its record carrying action `stop`; it is
+never routed as `attempt` and never looped, for the reason an over-limit `retry` is not.
+Every `continue` record carries the same fields as any other routing record — timestamp,
+packet, token, action and status line — and no path.
+
+### The driver reads the implementer's line before any reviewer dispatch
+
+The 2026-09-16 arrangement had the driver dispatch the reviewer on every implementer
+return. Both driver surfaces (`skills/run-loop/SKILL.md` §3 steps 4–5 and the `Routing`
+section of `agents/loop-driver.md`) now read and `check-status` the implementer's line
+**first** and branch on its first token: `continue` goes straight to `route` with that
+line as `--status`, and any other first token proceeds to the reviewer exactly as before.
+
+On `ACTION=continue` the driver does three things, in this order: `record-start
+"$MEMBERS" --continue`, then `refresh-handoff` for the packet, then dispatch a fresh
+`implementer` with that same handoff path and **no review path**. `route`'s own record is
+already on disk — it was written when the call printed `ACTION=continue` — and it is what
+distinguishes a continuation from a resume for a reader joining the two logs. The order
+of those three is the point: dispatching before `refresh-handoff` briefs the
+continuation without the partial work the refresh exists to carry on from.
+
+### The twice-refused rule now names the implementer's line
+
+Because the driver routes on that line, it is a line the driver *would have routed on* in
+the 2026-09-20 rule's sense. The enumeration there — the reviewer's verdict, the
+decider's token — widens on both surfaces to include the implementer's own line: a line
+`check-status` refuses twice is escalated as a blocking question naming the agent and the
+printed reason, and is **never passed to the reviewer**. The single re-dispatch on the
+first refusal, and the rule that the driver never substitutes a line of its own, are
+unchanged.
+
+### What counts the refusal, and what counts nothing
+
+An in-cap `continue` moves no reported figure: it changes neither `run-digest`'s
+`decision`/`handoff-feature` lines nor `run-tally`'s `DECISIONS`. A `continue` refused
+past its cap is a question still awaiting an operator, so `run-tally` counts it in
+`DECISIONS` on the same still-live rule as a `retry` past its attempt limit — which is
+what keeps the header figure equal to the number of 🔀 blocks in the report.
+
+### The handoff is rewritten in place, by splicing
+
+`runstate.sh refresh-handoff <run-state> <packet-id>` replaces, inserts or removes **one**
+marked `## Partial work on disk` block in that packet's `handoff.md` and leaves every
+other byte alone. It is run by the driver before a continuation and before **every**
+`fix`/`retry` re-dispatch, and never by `handoff` itself, so a packet's first dispatch
+never carries the block however dirty the tree is.
+
+It splices rather than regenerates for the reason `amend-handoff` does, plus one this
+feature adds: a continuation can follow a decider `retry`, and rebuilding the file
+through `handoff` would silently drop that `amend-handoff` block — the retry instruction
+the re-dispatch exists to carry. The set is the paths `git status --porcelain` on the
+main checkout reports that fall within the packet's scope, read from the `FILES=`/
+`BUNDLE_FILES=` lines of its own `handoff.md` — this script's own output, never `gspec/`
+— each marked existing or deleted. With no scope the set is bounded to the paths dirty
+since run-state's `last_green_commit`, never the whole checkout. An empty set leaves the
+file byte-identical to one written without the mechanism, and the listed paths are
+written into the handoff only: no routing, outcomes or metrics record names them.
+Where the block and the budget line sit relative to the `REQUIRED` block, and why, is
+recorded in [ADR 0029](0029-handoff-verification-contract.md)'s amendment of the same
+date.

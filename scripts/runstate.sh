@@ -837,7 +837,15 @@
 #                                                      STILL AWAITING an
 #                                                      answer, never hand-off-
 #                                                      excluded (a distinct
-#                                                      question).
+#                                                      question), plus one
+#                                                      per record whose
+#                                                      token is continue and
+#                                                      whose action is stop
+#                                                      (past its continuation
+#                                                      cap) on the same still-
+#                                                      awaiting rule. An in-
+#                                                      cap continue moves no
+#                                                      figure.
 #                                                      Awaiting: no record
 #                                                      for the same packet
 #                                                      in any session's
@@ -5221,7 +5229,7 @@ cmd_run_tally() {
   awk -F'\t' '
     $1 == "live" {
       if ($2 == "ask-operator") alive[$3]++
-      else if ($2 == "retry") retry_live++
+      else if ($2 == "retry" || $2 == "continue") retry_live++
       next
     }
     $1 == "packet" {
@@ -5252,10 +5260,11 @@ cmd_run_tally() {
         n = (p in alive) ? alive[p] : 0
         decisions += (n < ask[p]) ? n : ask[p]
       }
-      # One per still-live retry-past-limit stop, counted directly -- it is a
-      # distinct question from any ask-operator/hand-off-feature line for the
-      # same packet, so it is never hand-off-excluded or capped against a
-      # digest count the way the ask-operator tally above is.
+      # One per still-live retry-past-limit or continue-past-cap stop,
+      # counted directly -- each is a distinct question from any
+      # ask-operator/hand-off-feature line for the same packet, so it is never
+      # hand-off-excluded or capped against a digest count the way the
+      # ask-operator tally above is.
       decisions += retry_live
       printf "SHIPPED=%d\nFAILED=%d\nUNFINISHED=%d\nDECISIONS=%d\n", shipped, failed, unfinished, decisions
     }
@@ -5333,8 +5342,11 @@ EOF
 # --- T1) ---------------------------------------------------------------------
 # Feeds `_rs_unanswered_questions` from `routing.jsonl`: every `ask-operator`
 # record, tagged `ask-operator`, plus every `retry` record routed `stop` (past
-# its attempt limit), tagged `retry` -- the record's own token, so a caller
-# splits the two counts apart by tag. Prints `live\t<tag>\t<packet>` for each
+# its attempt limit), tagged `retry`, plus every `continue` record routed
+# `stop` (past its continuation cap, implementer-continuation T4), tagged
+# `continue` -- the record's own token, so a caller splits the counts apart by
+# tag. An in-cap `continue` (action `continue`) is no question and yields no
+# line. Prints `live\t<tag>\t<packet>` for each
 # still-unanswered one; see `_rs_unanswered_questions` for the answer rule.
 _rs_tally_live_questions() {
   local routing_file="$1" outcomes_dir="$2"
@@ -5359,6 +5371,7 @@ _rs_tally_live_questions() {
     { t = field_esc($0, "token"); a = field_esc($0, "action")
       if (t == "ask-operator") tag = "ask-operator"
       else if (t == "retry" && a == "stop") tag = "retry"
+      else if (t == "continue" && a == "stop") tag = "continue"
       else next
       p = field_esc($0, "packet"); ts = field_esc($0, "ts")
       if (p != "" && ts != "") print p "\t" ts "\t" tag }

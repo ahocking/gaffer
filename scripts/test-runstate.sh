@@ -5352,6 +5352,75 @@ assert_true "run-tally liveness: a retry routed attempt (still within its limit)
 assert_true "run-tally liveness: one packet with a live ask-operator question AND a live retry-past-limit stop is TWO separate decisions, not one -- DECISIONS=2" \
   "[ \"\$(lv_decisions \"\${LV_Q}\${LV_RETRY_STOP}\" '')\" = 2 ]"
 
+echo "-- run-tally counts a refused over-cap continue on the retry-past-limit rule; an in-cap continue moves no figure (implementer-continuation T4) --"
+# The mutations these cases rule out: counting every `continue` routing record
+# as a decision (a 🔀 block for every stop at the turn budget), and not counting
+# the refused one at all (header figure below the number of 🔀 blocks).
+LV_CONT_STOP='{"ts":"2026-03-03T00:00:10Z","packet":"lv","token":"continue","action":"stop","status":""}
+'
+LV_CONT_OK='{"ts":"2026-03-03T00:00:05Z","packet":"lv","token":"continue","action":"continue","status":""}
+'
+assert_true "run-tally liveness: an unanswered continue routed stop (past its continuation cap) counts -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_CONT_STOP\" '')\" = 1 ]"
+assert_true "run-tally liveness: the same continue-past-cap stop answered by a later start yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_CONT_STOP\" '{\"ts\":\"2026-03-03T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: the same continue-past-cap stop answered by a later continuation record yields DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_CONT_STOP\" '{\"ts\":\"2026-03-03T00:01:00Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"continue\"}
+')\" = 0 ]"
+assert_true "run-tally liveness: an EARLIER start does not answer the continue-past-cap stop -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\$LV_CONT_STOP\" '{\"ts\":\"2026-03-03T00:00:01Z\",\"packet\":\"lv\",\"session\":\"LV\",\"kind\":\"start\"}
+')\" = 1 ]"
+assert_true "run-tally liveness: a continue routed continue (within its cap) counts toward no figure -- DECISIONS=0" \
+  "[ \"\$(lv_decisions \"\$LV_CONT_OK\" '')\" = 0 ]"
+assert_true "run-tally liveness: in-cap continues then a refused one on one packet is ONE decision -- DECISIONS=1" \
+  "[ \"\$(lv_decisions \"\${LV_CONT_OK}\${LV_CONT_OK}\${LV_CONT_STOP}\" '')\" = 1 ]"
+
+# End to end through the real `route`: each DECISIONS/digest reading is taken
+# against the same run just before the record is written, so the delta is the
+# record's own. packet_continuations: 1 makes the second continue the refused one.
+cd_cases() {
+  local sfx="$1" scrub="$2" d base0 dig0 base1 dig1 after2 after3
+  d="$(cd "$(mktemp -d)" && pwd -P)"; git -C "$d" init -q
+  mkdir -p "$d/.agents"
+  printf 'schema: 3\nstatus: running\n' > "$d/.agents/run-state.yaml"
+  printf 'packet_continuations: 1\n' > "$d/.agents/project-overrides.yaml"
+  cd_rs() {
+    if [ -n "$scrub" ]; then (cd "$d" && PATH="$scrub:$PATH" "$RUNSTATE" "$@")
+    else (cd "$d" && "$RUNSTATE" "$@"); fi
+  }
+  cd_dec() { cd_rs run-tally .agents/run-state.yaml | sed -n 's/^DECISIONS=//p'; }
+  cd_dig() { cd_rs run-digest .agents/run-state.yaml | grep -E '^(decision|handoff-feature)'"$(printf '\t')" || true; }
+  cd_rs begin-run .agents/run-state.yaml >/dev/null
+  cd_rs record-start cd-p S1 >/dev/null
+
+  base0="$(cd_dec)"; dig0="$(cd_dig)"
+  cd_rs route .agents/run-state.yaml cd-p continue --status "$CT_STATUS" >/dev/null
+  base1="$(cd_dec)"; dig1="$(cd_dig)"
+  assert_true "continue tally$sfx: the run without any continue record prints a numeric DECISIONS (the baseline)" \
+    "case \"\$base0\" in ''|*[!0-9]*) false ;; *) true ;; esac"
+  assert_true "continue tally$sfx: an in-cap continue leaves DECISIONS unchanged against the same run without the record" \
+    "[ \"\$base1\" = \"\$base0\" ]"
+  assert_true "continue tally$sfx: an in-cap continue adds no run-digest decision or handoff-feature line" \
+    "[ \"\$dig1\" = \"\$dig0\" ]"
+
+  cd_rs route .agents/run-state.yaml cd-p continue --status "$CT_STATUS" >/dev/null
+  after2="$(cd_dec)"
+  assert_true "continue tally$sfx: the refused over-cap continue raises DECISIONS by exactly one against the same run without the record" \
+    "[ \"\$after2\" = \"\$((base1 + 1))\" ]"
+
+  # The driver's own answer: a later start for the packet. A second-resolution
+  # timestamp could tie the refusal's (a tie never answers), so wait it out.
+  sleep 1
+  cd_rs record-start cd-p S1 >/dev/null
+  after3="$(cd_dec)"
+  assert_true "continue tally$sfx: a later start for that packet answers the question -- DECISIONS back to the baseline" \
+    "[ \"\$after3\" = \"\$base1\" ]"
+  rm -rf "$d"
+}
+cd_cases "" ""
+cd_cases " (no-tools host)" "$NOTOOLS"
+
 echo
 echo "== run-digest: a periodic review's own line and its routings as decisions, with every"
 echo "   packet decision still reported exactly ONCE (escalation-decider T7) =="

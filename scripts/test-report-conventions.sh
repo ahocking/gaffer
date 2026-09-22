@@ -540,9 +540,133 @@ the re-dispatch is limited to once|the same agent **once**
 and carries the printed reason and nothing else|passing the printed reason and nothing else
 second refusal, unrouted line: on to the reviewer dispatch as today|proceeds to the reviewer dispatch
 second refusal, routed line: escalated to the operator|escalated as a blocking question
+the routed set includes the implementer's own line (implementer-continuation T7)|and the implementer's own line,
+and that line is never handed on to the reviewer instead|never passed to the reviewer,
 the driver never substitutes a line of its own|never substitutes a line of its own
 and the reviewer stays the content gate|reviewer's content gate is unchanged
 REFUSAL_NEEDLES
+
+printf '\n== the continuation contract reads the same on both driver surfaces (implementer-continuation T7) ==\n'
+# `route` grew a ninth token, `continue`, but a token the driver is never told to
+# produce is a token nothing ever routes on. Two surfaces have to state it -- the skill
+# the operator invokes (`skills/run-loop/SKILL.md` §3 steps 4-5) and the agent file the
+# driver is dispatched with (`agents/loop-driver.md` §Routing) -- and, as with the
+# refusal clause above, stating it on one and paraphrasing it on the other is the
+# failure this section exists to catch.
+#
+# Four clauses in it are each the whole point, and each is a needle below:
+#
+#   - the implementer's line is read and `check-status`ed BEFORE any reviewer dispatch.
+#     Read after the reviewer has already been dispatched, a `continue` arrives with a
+#     verdict beside it on work that was never finished.
+#   - the three-step order on `ACTION=continue`: `record-start --continue`, then
+#     `refresh-handoff`, then the dispatch. `refresh-handoff` is what puts the partial
+#     work into the handoff, so a driver that dispatches first briefs the continuation
+#     with the handoff the FIRST dispatch got -- no partial-work block -- and the fresh
+#     implementer starts the packet over, which is the one failure the whole feature
+#     exists to prevent. Asserted twice over: the clause states the order, and the three
+#     calls physically appear in that order within the span.
+#   - no review path, no reviewer, no verdict. A continuation is not an attempt and has
+#     no review to answer; dispatching the reviewer on one records a verdict against
+#     half-finished work.
+#   - `refresh-handoff` runs before EVERY `attempt` re-dispatch too, not only before a
+#     continuation -- a fix/retry re-dispatch is briefed from the same partial work.
+#
+# The widened twice-refused rule (the implementer's line joins the routed set) is pinned
+# in the refusal-clause needles above, where that rule is written, rather than restated
+# here.
+#
+# Extracted by content anchors and guarded non-empty before anything is scanned over it,
+# as the extractions above are: a range matching nothing yields an empty span that
+# satisfies every scan, and deleting the clause is exactly what empties this range.
+# Both anchors of both ranges sit on ONE wrapped line in BOTH files; an end anchor
+# spanning a line wrap matches nothing and the range runs on to swallow the rest of the
+# file. That is the vacuous pass the non-empty guard cannot catch: it only sees that the
+# span is non-empty, and an overrun span is the least empty thing there is. The ceiling
+# is what catches it, and the margin is measured, not assumed: the live spans are 7 and
+# 26 lines in the skill and 6 and 26 in the agent, while the same ranges with one
+# character changed on the end anchor run to 730/706 lines in the skill and 206/189 in
+# the agent.
+#
+# The needles are asserted over the two spans CONCATENATED, per file: the branch sits in
+# the dispatch step and the `continue` arm in the routing step, with unrelated prose
+# between them, so two tight ranges beat one wide one that the ceiling could not police.
+_extract_cont_branch() { # file -> the "read the implementer's line first" branch
+  sed -n '/before any reviewer dispatch/,/reviewer exactly as today/p' "$1"
+}
+_extract_cont_arm() { # file -> the attempt-refresh + ACTION=continue arms
+  sed -n '/refresh the handoff first, then re-dispatch/,/no verdict is recorded for it/p' "$1"
+}
+cont_branch_skill="$(_extract_cont_branch "$ROOT/skills/run-loop/SKILL.md")"
+cont_arm_skill="$(_extract_cont_arm "$ROOT/skills/run-loop/SKILL.md")"
+cont_branch_agent="$(_extract_cont_branch "$ROOT/agents/loop-driver.md")"
+cont_arm_agent="$(_extract_cont_arm "$ROOT/agents/loop-driver.md")"
+
+[ -n "$cont_branch_skill" ] && ok 'run-loop §3.4 continuation branch extracted (anchor holds)' \
+  || bad 'run-loop §3.4 continuation branch extracted (anchor holds)' \
+      'empty -- anchor moved, or the implementer-line branch is gone from the dispatch step'
+[ -n "$cont_arm_skill" ] && ok 'run-loop §3.5 continue arm extracted (anchor holds)' \
+  || bad 'run-loop §3.5 continue arm extracted (anchor holds)' \
+      'empty -- anchor moved, or the continue arm is gone from the routing step'
+[ -n "$cont_branch_agent" ] && ok 'loop-driver Routing continuation branch extracted (anchor holds)' \
+  || bad 'loop-driver Routing continuation branch extracted (anchor holds)' \
+      'empty -- anchor moved, or the implementer-line branch is gone from the Routing section'
+[ -n "$cont_arm_agent" ] && ok 'loop-driver ACTION=continue arm extracted (anchor holds)' \
+  || bad 'loop-driver ACTION=continue arm extracted (anchor holds)' \
+      'empty -- anchor moved, or the ACTION=continue arm is gone from the Routing section'
+
+under_ceiling 'the run-loop §3.4 continuation-branch span stays inside its ceiling' "$cont_branch_skill"
+under_ceiling 'the run-loop §3.5 continue-arm span stays inside its ceiling'        "$cont_arm_skill"
+under_ceiling 'the loop-driver continuation-branch span stays inside its ceiling'   "$cont_branch_agent"
+under_ceiling 'the loop-driver ACTION=continue span stays inside its ceiling'       "$cont_arm_agent"
+
+cont_skill="$cont_branch_skill
+$cont_arm_skill"
+cont_agent="$cont_branch_agent
+$cont_arm_agent"
+
+# Needles stay short enough to sit on ONE wrapped line in BOTH files: `has` is a plain
+# substring match over the multi-line span, so a phrase broken by a wrap matches nothing
+# and fails a clause that is present. No pipe into the loop -- a `while read` on the
+# right of one runs in a subshell and every ok/bad it counted would be discarded.
+while IFS='|' read -r ct_label ct_needle; do
+  [ -n "$ct_label" ] || continue
+  has "run-loop §3 steps 4-5: $ct_label"   "$ct_needle" "$cont_skill"
+  has "loop-driver Routing: $ct_label"     "$ct_needle" "$cont_agent"
+done <<'CONTINUE_NEEDLES'
+the implementer's line is read before any reviewer is dispatched|before any reviewer dispatch
+and the branch is on that line's first token|branch on its first token
+a continue goes to route with the line itself as --status|with that same line as `--status`
+any other first token proceeds to the reviewer unchanged|reviewer exactly as today
+step 1: a continuation record per member|record-start "$MEMBERS" --continue
+step 2: the handoff is refreshed in place|`runstate.sh refresh-handoff <run-state-from-handoff-header>
+step 3: a fresh implementer is dispatched|resolve implementer
+with no review path, because there is no review to answer|and no review path
+the order rules out dispatching before the handoff is refreshed|dispatching before `refresh-handoff` runs
+a fix/retry re-dispatch is refreshed too|before **every** `attempt`
+no reviewer is dispatched and no verdict recorded|no verdict is recorded for it
+CONTINUE_NEEDLES
+
+# The stated order above is prose; this is the same rule read off the span's own
+# structure, so a clause that says "in this order" while listing the dispatch above
+# `refresh-handoff` fails here even with every needle green. Line numbers are taken
+# WITHIN the span -- `record-start "$MEMBERS" --continue` also appears in §3.2's resume
+# prose, far above, and a whole-file grep would read that one.
+_cont_order() { # label, span
+  local sp="$2" l_rec l_ref l_disp
+  l_rec="$(printf '%s\n' "$sp"  | grep -n 'record-start "\$MEMBERS" --continue' | head -1 | cut -d: -f1)"
+  l_ref="$(printf '%s\n' "$sp"  | grep -n '`runstate.sh refresh-handoff <run-state-from-handoff-header>' | head -1 | cut -d: -f1)"
+  l_disp="$(printf '%s\n' "$sp" | grep -n 'resolve implementer' | head -1 | cut -d: -f1)"
+  if [ -n "$l_rec" ] && [ -n "$l_ref" ] && [ -n "$l_disp" ] \
+     && [ "$l_rec" -lt "$l_ref" ] && [ "$l_ref" -lt "$l_disp" ]; then
+    ok "$1"
+  else
+    bad "$1" \
+      "record-start=${l_rec:-none}, refresh-handoff=${l_ref:-none}, dispatch=${l_disp:-none} -- expected that order; a dispatch above refresh-handoff briefs the continuation without the partial work"
+  fi
+}
+_cont_order 'run-loop §3.5: record-start, then refresh-handoff, then the dispatch' "$cont_arm_skill"
+_cont_order 'loop-driver: record-start, then refresh-handoff, then the dispatch'   "$cont_arm_agent"
 
 printf '\n== the end-of-run arm-2 proposal is recorded through the core (loop-driver-run-gaps T5) ==\n'
 # ADR 0026 arm 2 ends at a question for the operator, and until now that question

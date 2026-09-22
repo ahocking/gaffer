@@ -26,8 +26,13 @@ exact order:
    `hand-off-feature`, `ask-operator` (its decision) when it decides an
    escalated packet, and the word `reviewed` when it returns from a periodic
    review — `reviewed` is not a sixth decision and nothing routes on it; the
-   review's routings reach the report through `run-digest`, not this word. Any
-   other dispatched agent — a fresh implementer attempt, the architect or
+   review's routings reach the report through `run-digest`, not this word. For
+   the `implementer` this is `continue` when it stopped at its turn budget with
+   work left to do — the one implementer status the driver routes on, passed
+   straight to `runstate.sh route` in place of the reviewer dispatch that any
+   other first token leads to. Any
+   other dispatched agent — an implementer that finished its packet, the
+   architect or
    UX designer implementing a design-heavy packet, the doc-writer, the
    researcher answering an operator question — reports its own outcome in
    plain language (`done`, `blocked`), since nothing routes on it directly.

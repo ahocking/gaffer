@@ -159,7 +159,9 @@ files twice, and a fourth silent reader is the trap.
     spec file to open for it; a task with no anchors carries no such line
   - when one or more sections were named rather than inlined, or one or more
     anchors were reported unmatched, the line instead names the file's path
-    once — the only place a path appears — and says the named sections are to
+    once — the only place a spec-file path (`arch.md`, `design.html`, the PRD
+    body) appears; the `PRD=` bookkeeping line the loop's recovery steps read
+    is not a spec-file path and stays — and says the named sections are to
     be read there by heading, not the whole file
   - `agents/implementer.md` states the same contract from its side: the
     inlined sections are the specification for the packet; a spec file the

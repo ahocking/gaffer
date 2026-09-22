@@ -2142,9 +2142,15 @@ cmd_complete_capabilities() {
 #   ARCH-SEEN=<anchor> packet=<packet id>    (bundle only: in place of
 #                                              ARCH-SECTION= for a section an
 #                                              earlier member already inlined)
-#   BUDGET-REACHED=<budget> words            (once, last, only when some
+#   BUDGET-REACHED=<budget> words            (once, only when some
 #                                              section was named by heading;
 #                                              in a bundle, printed by
+#                                              `_handoff_bundle` instead)
+#   SPEC=<statement>                         (once, last, only when the task
+#                                              has anchors: the fixed "inlined"
+#                                              line, or the spec file paths to
+#                                              read named sections from by
+#                                              heading; in a bundle, printed by
 #                                              `_handoff_bundle` instead)
 _handoff_one() {
   local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
@@ -2239,9 +2245,12 @@ EOF
 
   # The arch.md path is resolved (never a literal), used to READ sections and
   # never printed: no `ARCH=` line of any form is part of this output.
-  local archabs=""
+  local archabs="" archrel=""
   local archpp; archpp="$(_resolve_arch_path "$slug" "$root")"
-  [ -n "$archpp" ] && archabs="$(printf '%s' "$archpp" | cut -f1)"
+  if [ -n "$archpp" ]; then
+    archabs="$(printf '%s' "$archpp" | cut -f1)"
+    archrel="$(printf '%s' "$archpp" | cut -f2)"
+  fi
 
   printf 'PACKET=%s-%s\n' "$slug" "$idlc"
   printf 'FEATURE=%s\n' "$slug"
@@ -2312,9 +2321,11 @@ EOF
   local budget; budget="$(_handoff_word_budget "$root")"
   if [ "$_HB_BUNDLE" != "1" ]; then
     _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
+    _HB_INLINED=0; _HB_NAMED=0; _HB_FILES=""
   fi
   while IFS= read -r anchor; do
     [ -n "$anchor" ] || continue
+    [ -n "$archrel" ] && _handoff_note_file "$archrel"
     secout="$(_arch_section "$archabs" "$anchor")"
     if [ "${secout%%$'\n'*}" = "MATCH" ]; then
       block="$(printf '%s\n' "$secout" | tail -n +2)"
@@ -2325,6 +2336,7 @@ EOF
           END { print p }
         ')"
         if [ -n "$firstpkt" ]; then
+          _HB_INLINED=$((_HB_INLINED + 1))
           printf 'ARCH-SEEN=%s packet=%s\n' "$anchor" "$firstpkt"
           continue
         fi
@@ -2335,22 +2347,70 @@ EOF
       fi
       if [ "$_HB_REACHED" = "0" ]; then
         _HB_USED=$((_HB_USED + nwords))
+        _HB_INLINED=$((_HB_INLINED + 1))
         if [ "$_HB_BUNDLE" = "1" ]; then
           _HB_SEEN="${_HB_SEEN}${heading}"$'\t'"${slug}-${idlc}"$'\n'
         fi
         printf 'ARCH-SECTION=%s\n' "$anchor"
         printf '%s\n' "$block" | sed 's/^/  /'
       else
+        _HB_NAMED=$((_HB_NAMED + 1))
         nlines="$(printf '%s\n' "$block" | awk 'END { print NR + 0 }')"
         printf 'ARCH-HEADING=%s lines=%s\n' "$anchor" "$nlines"
         printf '%s\n' "$block" | head -n 1 | sed 's/^/  /'
       fi
     else
+      _HB_NAMED=$((_HB_NAMED + 1))
       printf 'UNMATCHED-ARCH=%s\n' "$anchor"
     fi
   done < <(_split_covers "$archv")
-  if [ "$_HB_BUNDLE" != "1" ] && [ "$_HB_REACHED" = "1" ]; then
-    printf 'BUDGET-REACHED=%s words\n' "$budget"
+  if [ "$_HB_BUNDLE" != "1" ]; then
+    if [ "$_HB_REACHED" = "1" ]; then
+      printf 'BUDGET-REACHED=%s words\n' "$budget"
+    fi
+    _handoff_spec_line
+  fi
+}
+
+# _handoff_note_file <relpath> — add a spec file the handoff drew sections
+# from to `_HB_FILES`, once (handoff-spec-inlining-t5). Literal line match, so
+# a metacharacter in a path cannot widen it.
+_handoff_note_file() {
+  local f="$1" l
+  while IFS= read -r l; do
+    [ "$l" = "$f" ] && return 0
+  done <<EOF
+$_HB_FILES
+EOF
+  _HB_FILES="${_HB_FILES}${f}"$'\n'
+}
+
+# _handoff_spec_line — the statement line (handoff-spec-inlining-t5), printed
+# once per handoff after the last section marker (and after BUDGET-REACHED=):
+# by `_handoff_one` on the single-id path, by `_handoff_bundle` after its last
+# member. No anchor at all: no line. Every section inlined (an ARCH-SEEN=
+# counts — its text is in this handoff, at an earlier member) and none named
+# by heading or reported unmatched: the fixed line, which carries no path.
+# Otherwise the line names each spec file the handoff drew sections from,
+# once each, and says to read the named sections there by heading — the only
+# place a section marker's source file path surfaces in `handoff` output.
+_handoff_spec_line() {
+  if [ "$_HB_NAMED" = "0" ]; then
+    [ "$_HB_INLINED" = "0" ] && return 0
+    printf 'SPEC=inlined: the specification text this task needs is inlined under the section markers above; there is no spec file to open for it\n'
+    return 0
+  fi
+  local list="" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -z "$list" ]; then list="$f"; else list="${list}, ${f}"; fi
+  done <<EOF
+$_HB_FILES
+EOF
+  if [ -n "$list" ]; then
+    printf 'SPEC=read by heading: %s -- read each section named above by ARCH-HEADING= or UNMATCHED-ARCH= there by its heading, not the whole file\n' "$list"
+  else
+    printf 'SPEC=not inlined: no spec file resolves for this feature, so the anchors reported unmatched above have nothing to be read from\n'
   fi
 }
 
@@ -2363,6 +2423,12 @@ _HB_BUNDLE=0
 _HB_USED=0
 _HB_REACHED=0
 _HB_SEEN=""
+# Statement-line state (handoff-spec-inlining-t5), reset and carried exactly
+# as the three above: sections inlined, sections named by heading or reported
+# unmatched, and the spec files drawn from (one relpath per line).
+_HB_INLINED=0
+_HB_NAMED=0
+_HB_FILES=""
 
 # _handoff_word_budget <root> — the most words of spec-section text one
 # handoff inlines (handoff-spec-inlining-t3), from `handoff_inline_word_budget`
@@ -2813,6 +2879,7 @@ _handoff_bundle() {
   # (handoff-spec-inlining-t4): reset once here, advanced by each member, and
   # the single `BUDGET-REACHED=` line printed after the last one.
   _HB_BUNDLE=1; _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
+  _HB_INLINED=0; _HB_NAMED=0; _HB_FILES=""
   for oi in "${order_idx[@]}"; do
     _handoff_one "${raw_ids[$oi]}" "$root"
   done
@@ -2820,6 +2887,7 @@ _handoff_bundle() {
   if [ "$_HB_REACHED" = "1" ]; then
     printf 'BUDGET-REACHED=%s words\n' "$(_handoff_word_budget "$root")"
   fi
+  _handoff_spec_line
 }
 
 # cmd_handoff <packet-id[,packet-id...]> [root] — the real dispatcher; see the

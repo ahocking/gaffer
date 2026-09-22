@@ -95,11 +95,11 @@ Every regression sweep must pass green after every task.
   - covers: A handoff inlines the `arch.md` section each `- arch:` anchor names · A word budget bounds what one handoff inlines
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T5** **P0** Add the statement line to `handoff` output in `scripts/gspec-backlog.sh`, printed once per handoff after the last section marker (for a bundle, after the last member).
+- [x] **T5** **P0** Add the statement line to `handoff` output in `scripts/gspec-backlog.sh`, printed once per handoff after the last section marker (for a bundle, after the last member).
   (a) When at least one section was inlined and none was named by heading or reported unmatched, print one fixed `SPEC=` line. It states that the specification text this task needs is inlined under the section markers above and there is no spec file to open for it.
-  (b) When any section was named by heading, or any `UNMATCHED-ARCH=` was printed, the `SPEC=` line instead names, once each, the path of every file the handoff drew sections from. It says the named sections are to be read there by heading, not the whole file. This is the only place a path appears in `handoff` output.
+  (b) When any section was named by heading, or any `UNMATCHED-ARCH=` was printed, the `SPEC=` line instead names, once each, the path of every file the handoff drew sections from. It says the named sections are to be read there by heading, not the whole file. This is the only place a spec-file path (`arch.md`, `design.html`, the PRD body) appears in `handoff` output; the `PRD=` bookkeeping line the loop's recovery steps read is not a spec-file path and stays.
   (c) A task with no anchors carries no `SPEC=` line.
-  Add `scripts/test-gspec-backlog.sh` cases for: a fully inlined handoff (fixed line, no `gspec/features/` path anywhere in the output); a budget-reached handoff naming `arch.md` once; an unmatched arch anchor naming `arch.md`; a no-anchor task with no `SPEC=` line; and a bundle printing exactly one `SPEC=` line. Confirm by mutation that printing the fixed line despite an unmatched anchor turns a case red.
+  Add `scripts/test-gspec-backlog.sh` cases for: a fully inlined handoff (fixed line, no `gspec/features/` path anywhere in the output outside the `PRD=` line); a budget-reached handoff naming `arch.md` once; an unmatched arch anchor naming `arch.md`; a no-anchor task with no `SPEC=` line; and a bundle printing exactly one `SPEC=` line. Confirm by mutation that printing the fixed line despite an unmatched anchor turns a case red.
   - deps: T4
   - covers: The handoff says the spec it needs is in it
   - arch: —

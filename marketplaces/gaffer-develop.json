@@ -1,0 +1,21 @@
+{
+  "name": "gaffer-develop",
+  "owner": {
+    "name": "ahocking",
+    "url": "https://github.com/ahocking"
+  },
+  "metadata": {
+    "description": "Development channel for gaffer: installs the plugin from the develop branch of ahocking/gaffer, so the gaffer repo can run gaffer without --plugin-dir. Add it with: claude plugin marketplace add https://raw.githubusercontent.com/ahocking/gaffer/develop/marketplaces/gaffer-develop.json. Consumer repos stay on gaffer@gaffer-marketplace."
+  },
+  "plugins": [
+    {
+      "name": "gaffer",
+      "source": {
+        "source": "github",
+        "repo": "ahocking/gaffer",
+        "ref": "develop"
+      },
+      "description": "gaffer, tracking the develop branch."
+    }
+  ]
+}

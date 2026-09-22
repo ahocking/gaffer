@@ -328,7 +328,17 @@
 #                                    attempt count, never incremented: a
 #                                    continuation spends no attempt, and its
 #                                    record never enters the fix/retry pool
-#                                    (implementer-continuation T2). `fix` and `retry`
+#                                    (implementer-continuation T2). Continuations
+#                                    are capped PER ATTEMPT (T3): `continue`
+#                                    records since the later of the latest
+#                                    kind=start record and the latest routing
+#                                    record with action `attempt`, against
+#                                    `packet_continuations` in
+#                                    .agents/project-overrides.yaml (3 when
+#                                    missing/invalid/0); past it `continue`
+#                                    refuses as ACTION=stop with a `question:`
+#                                    line, its record carrying action `stop`.
+#                                    `fix` and `retry`
 #                                    share ONE attempt pool, counted since the
 #                                    packet's latest kind=start record (a
 #                                    kind=continue record does NOT reset it);
@@ -4229,6 +4239,100 @@ cmd_bundle_cap() {
   printf 'CAP=%s\n' "$(_rs_bundle_max_tasks "$main_root")"
 }
 
+# --- the parsed-time key of $pkt's latest kind=start outcomes record --------
+# Prints 0 when there is none, so every routing record counts. A kind=continue
+# record is NOT a start and never moves this boundary: the driver's own
+# continuation bookkeeping (`record-start --continue`) must reset neither the
+# attempt count nor the continuation count it is subject to.
+_rs_latest_start_key() {
+  local pkt="$1" main_root="$2"
+  local outcomes_dir="${main_root}/.agents/metrics/outcomes"
+  local ts key best=0
+  if [ -d "$outcomes_dir" ]; then
+    while IFS= read -r ts; do
+      [ -n "$ts" ] || continue
+      key="$(_rs_ts_key "$ts")"
+      if [ "$key" -gt "$best" ]; then best="$key"; fi
+    done <<EOF
+$(awk -v pkt="$pkt" "$_RS_ROUTE_FIELD_AWK"'
+      { p = field($0, "packet"); if (p != pkt) next
+        k = field($0, "kind");   if (k != "start") next
+        ts = field($0, "ts");    if (ts != "") print ts }
+    ' "$outcomes_dir"/*.jsonl 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$best"
+}
+
+# One JSON string-field extractor shared by the route counters below.
+_RS_ROUTE_FIELD_AWK='
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }'
+
+# --- packet_continuations: the continuation cap per attempt -----------------
+# implementer-continuation T3. Same token-scanning shape as
+# _rs_implementer_turn_budget (T1): skip anything that is not purely digits,
+# strip one matching pair of quotes from EACH token, and strip leading zeros so
+# `00` reads as zero. Missing, invalid and zero all read as 3.
+_rs_packet_continuations_limit() {
+  local main_root="$1" ov v
+  ov="${main_root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^packet_continuations:[[:space:]]*/ {
+        line = $0
+        sub(/^packet_continuations:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { sub(/^0+/, "", tok); print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo 3 ;; *) echo "$v" ;; esac
+}
+
+# --- continuations already routed for $pkt in its CURRENT attempt -----------
+# Counts `continue` routing records for $pkt since the LATER of its latest
+# kind=start outcomes record and its latest routing record whose action was
+# `attempt`. Walking routing.jsonl in append order, a record before the start
+# (parsed time, _rs_ts_key) is ignored and an `attempt` record resets the
+# count, so each fresh attempt gets the full allowance. Windowing on the start
+# alone would cap continuations per packet, not per attempt; windowing on any
+# outcomes record would let `record-start --continue` reset the cap.
+_rs_route_continuations() {
+  local pkt="$1" main_root="$2" routing_file="$3"
+  local start_key count=0 ts token action key
+  start_key="$(_rs_latest_start_key "$pkt" "$main_root")"
+  if [ -f "$routing_file" ]; then
+    while IFS='|' read -r ts token action; do
+      [ -n "$ts" ] || continue
+      key="$(_rs_ts_key "$ts")"
+      [ "$key" -ge "$start_key" ] || continue
+      if [ "$action" = attempt ]; then count=0
+      elif [ "$token" = continue ]; then count=$((count + 1)); fi
+    done <<EOF
+$(awk -v pkt="$pkt" "$_RS_ROUTE_FIELD_AWK"'
+      { p = field($0, "packet"); if (p != pkt) next
+        ts = field($0, "ts");    if (ts == "") next
+        print ts "|" field($0, "token") "|" field($0, "action") }
+    ' "$routing_file" 2>/dev/null)
+EOF
+  fi
+  printf '%s' "$count"
+}
+
 # --- attempts already spent on $pkt since its latest kind=start record -----
 # A kind=continue record deliberately does NOT move this boundary (the plan's
 # own rule: "a continuation does not reset the count") — only a genuine new
@@ -4236,7 +4340,6 @@ cmd_bundle_cap() {
 # from either route.
 _rs_route_attempts() {
   local pkt="$1" main_root="$2" routing_file="$3"
-  local outcomes_dir="${main_root}/.agents/metrics/outcomes"
   local extract='
     function field(line, name,    pat, pos, rest, q) {
       pat = "\"" name "\":\""
@@ -4248,22 +4351,8 @@ _rs_route_attempts() {
       return substr(rest, 1, q - 1)
     }'
 
-  local latest_start_ts="" latest_key=0
-  if [ -d "$outcomes_dir" ]; then
-    local ts key best=-1
-    while IFS= read -r ts; do
-      [ -n "$ts" ] || continue
-      key="$(_rs_ts_key "$ts")"
-      if [ "$key" -gt "$best" ]; then best="$key"; latest_start_ts="$ts"; fi
-    done <<EOF
-$(awk -v pkt="$pkt" "$extract"'
-      { p = field($0, "packet"); if (p != pkt) next
-        k = field($0, "kind");   if (k != "start") next
-        ts = field($0, "ts");    if (ts != "") print ts }
-    ' "$outcomes_dir"/*.jsonl 2>/dev/null)
-EOF
-  fi
-  [ -n "$latest_start_ts" ] && latest_key="$(_rs_ts_key "$latest_start_ts")"
+  local latest_key
+  latest_key="$(_rs_latest_start_key "$pkt" "$main_root")"
 
   local count=0
   if [ -f "$routing_file" ]; then
@@ -4342,6 +4431,14 @@ cmd_route() {
     fix|retry|continue) attempts_before="$(_rs_route_attempts "$pkt" "$main_root" "$routing_file")" ;;
   esac
 
+  # implementer-continuation T3: continuations are capped PER ATTEMPT, counted
+  # before this call's own record is appended.
+  local cont_cap="" conts_before=0
+  if [ "$token" = continue ]; then
+    cont_cap="$(_rs_packet_continuations_limit "$main_root")"
+    conts_before="$(_rs_route_continuations "$pkt" "$main_root" "$routing_file")"
+  fi
+
   local action attempts=$attempts_before
   case "$token" in
     pass) action=land ;;
@@ -4361,7 +4458,11 @@ cmd_route() {
     # _rs_route_attempts counts only fix/retry tokens, so this record never
     # enters the shared attempt pool either -- otherwise three stops at the
     # turn budget would exhaust the packet's attempts without any review.
-    continue) action=continue ;;
+    # T3: past the per-attempt cap it refuses as `stop` -- never `attempt`,
+    # never looped -- and the record below still carries action `stop`.
+    continue)
+      if [ $((conts_before + 1)) -le "$cont_cap" ]; then action=continue; else action=stop; fi
+      ;;
   esac
 
   mkdir -p "$(dirname "$routing_file")" 2>/dev/null || true
@@ -4373,6 +4474,11 @@ cmd_route() {
   if [ "$token" = retry ] && [ "$action" = stop ]; then
     printf 'ACTION=stop\nATTEMPTS=%s\nLIMIT=%s\nquestion: retry was returned for packet %s past its attempt limit (%s) -- refusing to loop; a human must decide how to proceed\n' \
       "$attempts" "$limit" "$pkt" "$limit"
+    return 0
+  fi
+  if [ "$token" = continue ] && [ "$action" = stop ]; then
+    printf 'ACTION=stop\nATTEMPTS=%s\nLIMIT=%s\nquestion: continue was returned for packet %s past its continuation cap (%s per attempt) -- refusing to loop; a human must decide how to proceed\n' \
+      "$attempts" "$limit" "$pkt" "$cont_cap"
     return 0
   fi
   printf 'ACTION=%s\nATTEMPTS=%s\nLIMIT=%s\n' "$action" "$attempts" "$limit"

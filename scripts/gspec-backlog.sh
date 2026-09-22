@@ -195,6 +195,14 @@
 #                            last member, and a section already inlined by
 #                            an earlier member prints `ARCH-SEEN=<anchor>
 #                            packet=<that member's packet id>` instead (t4).
+#                            An inlined `### Screen: <Name>` section is
+#                            followed by its design.html element
+#                            `<section id="screen-<kebab>">` under
+#                            `DESIGN-SECTION=screen-<kebab>`, or
+#                            `UNMATCHED-DESIGN=screen-<kebab>`; same budget,
+#                            `ARCH-HEADING=` past it, `DESIGN-SEEN=` in a
+#                            bundle; no screen or no design.html, the file is
+#                            never named (t6).
 #                            A `covers:` quote matching no PRD
 #                            capability prints `UNMATCHED=<quote>`, never
 #                            guessed. `<packet-id>` accepts the same two forms
@@ -1685,6 +1693,94 @@ _arch_section() {
   ' "$arch"
 }
 
+# _screen_kebab <heading line> — `screen-<kebab>` for an `arch.md` block whose
+# heading is `### Screen: <Name>` (handoff-spec-inlining-t6), or nothing for
+# any other heading (a Component, an Entity, ...). The name is slugified by
+# splitting CamelCase (a hyphen before an uppercase letter that follows a
+# lowercase letter or digit, and before the last capital of an acronym run
+# that a lowercase letter follows: `HTMLPage` -> `html-page`), lowercasing,
+# and turning each run of non-alphanumerics into one hyphen, with none at
+# either end. LC_ALL=C keeps the classes to ASCII.
+_screen_kebab() {
+  LC_ALL=C H="$1" awk '
+    BEGIN {
+      h = ENVIRON["H"]
+      if (h !~ /^###[ \t]*Screen:[ \t]/) exit
+      sub(/^###[ \t]*Screen:[ \t]*/, "", h)
+      sub(/[ \t]+$/, "", h)
+      out = ""; n = length(h)
+      for (i = 1; i <= n; i++) {
+        c = substr(h, i, 1); p = (i > 1) ? substr(h, i - 1, 1) : ""
+        q = (i < n) ? substr(h, i + 1, 1) : ""
+        if (c ~ /[A-Z]/ && ((p ~ /[a-z0-9]/) || (p ~ /[A-Z]/ && q ~ /[a-z]/))) out = out "-"
+        out = out c
+      }
+      out = tolower(out)
+      gsub(/[^a-z0-9]+/, "-", out)
+      gsub(/^-+|-+$/, "", out)
+      if (out != "") print "screen-" out
+    }
+  '
+}
+
+# _design_section <design> <id> — the `design.html` element
+# `<section id="<id>">` (handoff-spec-inlining-t6). Prints "MATCH" followed
+# by the element's markup from the `<` of its opening tag through the `>` of
+# its MATCHING `</section>` — nested `<section` opens and closes are counted,
+# so an inner section's close never ends it — or "NOMATCH" alone: no such
+# element, an element never closed, or a missing <design>. The id is matched
+# exactly, in either quote style; tag names match case-insensitively (the
+# scan runs over a lowercased copy of the same length, the markup printed is
+# the original). The file is read whole, since an element's bounds need not
+# fall on line boundaries.
+_design_section() {
+  local design="$1" want="$2"
+  if [ ! -f "$design" ]; then printf 'NOMATCH\n'; return 0; fi
+  LC_ALL=C WANT="$want" awk '
+    { text = (NR > 1) ? text "\n" $0 : $0 }
+    # position (in low, from <from>) of the next "<section" / "</section" that
+    # is a whole tag name — followed by whitespace, ">" or "/" — or 0
+    function next_tag(pfx, from,    rest, p, c, off) {
+      off = from - 1
+      while (1) {
+        rest = substr(low, off + 1)
+        p = index(rest, pfx)
+        if (p == 0) return 0
+        c = substr(rest, p + length(pfx), 1)
+        if (c == "" || c ~ /[ \t\n\r>\/]/) return off + p
+        off = off + p
+      }
+    }
+    END {
+      want = ENVIRON["WANT"]
+      low = tolower(text)
+      start = 0; from = 1
+      while ((s = next_tag("<section", from)) > 0) {
+        e = index(substr(low, s), ">")
+        if (e == 0) break
+        tag = substr(text, s, e)
+        if (tag ~ ("[ \t\n\r][iI][dD][ \t\n\r]*=[ \t\n\r]*(\"" want "\"|'"'"'" want "'"'"')")) { start = s; break }
+        from = s + 1
+      }
+      if (!start) { print "NOMATCH"; exit }
+      depth = 0; cur = start; stop = 0
+      while (1) {
+        o = next_tag("<section", cur); c = next_tag("</section", cur)
+        if (c == 0) break
+        if (o > 0 && o < c) { depth++; cur = o + 1; continue }
+        depth--
+        e = index(substr(low, c), ">")
+        if (e == 0) break
+        if (depth == 0) { stop = c + e - 1; break }
+        cur = c + 1
+      }
+      if (!stop) { print "NOMATCH"; exit }
+      print "MATCH"
+      print substr(text, start, stop - start + 1)
+    }
+  ' "$design"
+}
+
 # --- capability-drift: has a finished plan outrun its own PRD checkbox? -----
 # (completion-record-drift-t1.) Read-only. A capability is DRIFT when every
 # plan task covering it is checked while the capability's own box is not --
@@ -2142,6 +2238,14 @@ cmd_complete_capabilities() {
 #   ARCH-SEEN=<anchor> packet=<packet id>    (bundle only: in place of
 #                                              ARCH-SECTION= for a section an
 #                                              earlier member already inlined)
+#   DESIGN-SECTION=screen-<kebab>            (after an inlined `### Screen:`
+#     <design.html element markup, indented>   block's ARCH-SECTION=, when
+#                                              design.html holds its element;
+#                                              see `_handoff_design`)
+#   UNMATCHED-DESIGN=screen-<kebab>          (in its place: design.html
+#                                              present, no such element)
+#   ARCH-HEADING=screen-<kebab> lines=<n>    (in its place: past the budget)
+#   DESIGN-SEEN=screen-<kebab> packet=<id>   (bundle only: already inlined)
 #   BUDGET-REACHED=<budget> words            (once, only when some
 #                                              section was named by heading;
 #                                              in a bundle, printed by
@@ -2251,6 +2355,15 @@ EOF
     archabs="$(printf '%s' "$archpp" | cut -f1)"
     archrel="$(printf '%s' "$archpp" | cut -f2)"
   fi
+  # design.html likewise (handoff-spec-inlining-t6): read only for the screen
+  # sections an inlined `### Screen:` block names, never printed as a path
+  # line, and named in the SPEC= line only once a screen consulted it.
+  local designabs="" designrel=""
+  local designpp; designpp="$(_resolve_design_path "$slug" "$root")"
+  if [ -n "$designpp" ]; then
+    designabs="$(printf '%s' "$designpp" | cut -f1)"
+    designrel="$(printf '%s' "$designpp" | cut -f2)"
+  fi
 
   printf 'PACKET=%s-%s\n' "$slug" "$idlc"
   printf 'FEATURE=%s\n' "$slug"
@@ -2338,6 +2451,7 @@ EOF
         if [ -n "$firstpkt" ]; then
           _HB_INLINED=$((_HB_INLINED + 1))
           printf 'ARCH-SEEN=%s packet=%s\n' "$anchor" "$firstpkt"
+          _handoff_design_seen "$heading"
           continue
         fi
       fi
@@ -2353,6 +2467,7 @@ EOF
         fi
         printf 'ARCH-SECTION=%s\n' "$anchor"
         printf '%s\n' "$block" | sed 's/^/  /'
+        _handoff_design "$heading" "$designabs" "$designrel" "$budget" "${slug}-${idlc}"
       else
         _HB_NAMED=$((_HB_NAMED + 1))
         nlines="$(printf '%s\n' "$block" | awk 'END { print NR + 0 }')"
@@ -2370,6 +2485,71 @@ EOF
     fi
     _handoff_spec_line
   fi
+}
+
+# _handoff_design <heading line> <design abs> <design rel> <budget> <packet id>
+# — the design block an INLINED `### Screen:` arch section names
+# (handoff-spec-inlining-t6), printed right after that section's
+# ARCH-SECTION= block. Not a screen, or no design.html: nothing at all — the
+# file is not noted, so the SPEC= line never names it. Otherwise design.html
+# is noted and the element `<section id="screen-<kebab>">` is either inlined
+# under `DESIGN-SECTION=screen-<kebab>` (indented two spaces, counted against
+# the same budget, and — in a bundle — added to the seen set under a key no
+# arch heading line can equal), named past the budget as
+# `ARCH-HEADING=screen-<kebab> lines=<n>` with its first line, exactly as an
+# arch section is, or reported `UNMATCHED-DESIGN=screen-<kebab>` with
+# nothing inlined. Called directly (never in a subshell) so the `_HB_*`
+# updates survive.
+_handoff_design() {
+  local heading="$1" dabs="$2" drel="$3" budget="$4" pkt="$5" did dout dblock dwords dlines
+  did="$(_screen_kebab "$heading")"
+  [ -n "$did" ] || return 0
+  [ -n "$drel" ] || return 0
+  _handoff_note_file "$drel"
+  dout="$(_design_section "$dabs" "$did")"
+  if [ "${dout%%$'\n'*}" != "MATCH" ]; then
+    _HB_NAMED=$((_HB_NAMED + 1))
+    printf 'UNMATCHED-DESIGN=%s\n' "$did"
+    return 0
+  fi
+  dblock="$(printf '%s\n' "$dout" | tail -n +2)"
+  dwords="$(printf '%s\n' "$dblock" | awk '{ n += NF } END { print n + 0 }')"
+  if [ "$_HB_REACHED" = "0" ] && [ $((_HB_USED + dwords)) -gt "$budget" ]; then
+    _HB_REACHED=1
+  fi
+  if [ "$_HB_REACHED" = "0" ]; then
+    _HB_USED=$((_HB_USED + dwords))
+    _HB_INLINED=$((_HB_INLINED + 1))
+    if [ "$_HB_BUNDLE" = "1" ]; then
+      _HB_SEEN="${_HB_SEEN}design:${did}"$'\t'"${pkt}"$'\n'
+    fi
+    printf 'DESIGN-SECTION=%s\n' "$did"
+    printf '%s\n' "$dblock" | sed 's/^/  /'
+  else
+    _HB_NAMED=$((_HB_NAMED + 1))
+    dlines="$(printf '%s\n' "$dblock" | awk 'END { print NR + 0 }')"
+    printf 'ARCH-HEADING=%s lines=%s\n' "$did" "$dlines"
+    printf '%s\n' "$dblock" | head -n 1 | sed 's/^/  /'
+  fi
+}
+
+# _handoff_design_seen <heading line> — bundle only: when an arch screen
+# section prints ARCH-SEEN=, its design block, if an earlier member inlined
+# it, prints `DESIGN-SEEN=screen-<kebab> packet=<that member>` and counts as
+# inlined, as ARCH-SEEN= does. A design block the earlier member named by
+# heading or reported unmatched is already reported in this handoff, so
+# nothing is printed again.
+_handoff_design_seen() {
+  local did firstpkt
+  did="$(_screen_kebab "$1")"
+  [ -n "$did" ] || return 0
+  firstpkt="$(printf '%s\n' "$_HB_SEEN" | WANT="design:${did}" awk -F'\t' '
+    $1 == ENVIRON["WANT"] && !got { p = $2; got = 1 }
+    END { print p }
+  ')"
+  [ -n "$firstpkt" ] || return 0
+  _HB_INLINED=$((_HB_INLINED + 1))
+  printf 'DESIGN-SEEN=%s packet=%s\n' "$did" "$firstpkt"
 }
 
 # _handoff_note_file <relpath> — add a spec file the handoff drew sections
@@ -2408,7 +2588,7 @@ _handoff_spec_line() {
 $_HB_FILES
 EOF
   if [ -n "$list" ]; then
-    printf 'SPEC=read by heading: %s -- read each section named above by ARCH-HEADING= or UNMATCHED-ARCH= there by its heading, not the whole file\n' "$list"
+    printf 'SPEC=read by heading: %s -- read each section named above by ARCH-HEADING=, UNMATCHED-ARCH= or UNMATCHED-DESIGN= there by its heading, not the whole file (a screen-<name> is found by its section id)\n' "$list"
   else
     printf 'SPEC=not inlined: no spec file resolves for this feature, so the anchors reported unmatched above have nothing to be read from\n'
   fi

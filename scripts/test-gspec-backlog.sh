@@ -2346,6 +2346,150 @@ case "$(printf '%s\n' "$out" | tail -n 1)" in
   *) bad 'bundle, budget reached: the last line names arch.md' "last: $(printf '%s\n' "$out" | tail -n 1)" ;;
 esac
 
+printf '\n== handoff: the design block an inlined screen section names rides with it (handoff-spec-inlining-t6) ==\n'
+# Screen: OrderList slugifies to screen-order-list (CamelCase split) and its
+# element holds a NESTED <section> whose close comes first: a reader closing at
+# the first </section> drops `after-inner` and the real close. Screen: HTMLPage
+# slugifies to screen-html-page, which design.html does not hold. Word counts:
+# the OrderList arch block is 5 words (`### Screen: OrderList` + `Shows
+# orders.`); its design element is 9 words over 7 lines.
+mkdir -p "$RW/gspec/features/scr" "$RW/gspec/features/scrn"
+cp "$RW/gspec/features/big/prd.md" "$RW/gspec/features/scr/prd.md"
+cat > "$RW/gspec/features/scr/arch.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Architecture: scr
+
+## UI
+
+### Screen: OrderList
+Shows orders.
+
+### Screen: HTMLPage
+No design element for this one.
+
+### Component: Badge
+badge text
+
+## Data
+
+### Entity: Gamma
+g1 g2 g3 g4 g5 g6 g7 g8 g9 g10
+EOF
+cat > "$RW/gspec/features/scr/design.html" <<'EOF'
+<!-- spec-version: v2 -->
+<html><body>
+<section id="screen-order-list">
+  <h2>Orders</h2>
+  <section class="filters">
+    <p>inner</p>
+  </section>
+  <p>after-inner</p>
+</section>
+<section id="screen-other">
+  <p>other-screen</p>
+</section>
+</body></html>
+EOF
+mk_plan_v2 "$RW" scr <<'EOF'
+- [ ] **T1** **P0** one screen
+  - deps: —
+  - covers: Big capability
+  - arch: Screen: OrderList
+- [ ] **T2** **P0** no screen at all
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · Component: Badge
+- [ ] **T3** **P0** a screen the design file does not hold
+  - deps: —
+  - covers: Big capability
+  - arch: Screen: HTMLPage
+- [ ] **T4** **P0** the same screen again, another form
+  - deps: —
+  - covers: Big capability
+  - arch: #screen-orderlist
+EOF
+# scrn: the same arch.md and plan, and no design.html at all.
+cp "$RW/gspec/features/scr/prd.md" "$RW/gspec/features/scrn/prd.md"
+cp "$RW/gspec/features/scr/arch.md" "$RW/gspec/features/scrn/arch.md"
+awk 'f; /^## Plan$/ { f = 1 }' "$RW/gspec/features/scr/tasks.md" | mk_plan_v2 "$RW" scrn
+
+design_expected='ARCH-SECTION=Screen: OrderList
+  ### Screen: OrderList
+  Shows orders.
+DESIGN-SECTION=screen-order-list
+  <section id="screen-order-list">
+    <h2>Orders</h2>
+    <section class="filters">
+      <p>inner</p>
+    </section>
+    <p>after-inner</p>
+  </section>
+SPEC=inlined:'
+out="$("$ADAPTER" handoff scr-t1 "$RW")"
+check  'screen: its design element is inlined after its ARCH-SECTION= block, through the MATCHING close' "$design_expected" "$out"
+refute 'screen: another screen'"'"'s element is not inlined' 'other-screen' "$out"
+refute 'screen: fully inlined, design.html is not named' 'design.html' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'screen: fully inlined, the last line is the fixed statement line' \
+  || bad 'screen: fully inlined, the last line is the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
+out="$("$ADAPTER" handoff scr-t2 "$RW")"
+check  'no screen inlined: the non-screen sections still inline' 'ARCH-SECTION=Component: Badge' "$out"
+refute 'no screen inlined: no DESIGN marker of any form' 'DESIGN' "$out"
+refute 'no screen inlined: design.html is not named' 'design.html' "$out"
+refute 'no screen inlined: no screen- marker' 'screen-' "$out"
+
+out="$("$ADAPTER" handoff scrn-t1 "$RW")"
+check  'no design.html: the screen section still inlines' 'ARCH-SECTION=Screen: OrderList' "$out"
+refute 'no design.html: no DESIGN marker of any form' 'DESIGN' "$out"
+refute 'no design.html: design.html is not named' 'design.html' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'no design.html: the fixed statement line, no empty marker' \
+  || bad 'no design.html: the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
+out="$("$ADAPTER" handoff scr-t3 "$RW")"
+check  'unmatched design: reported after the screen section, nothing inlined' 'ARCH-SECTION=Screen: HTMLPage
+  ### Screen: HTMLPage
+  No design element for this one.
+UNMATCHED-DESIGN=screen-html-page
+SPEC=' "$out"
+refute 'unmatched design: no DESIGN-SECTION=' 'DESIGN-SECTION=' "$out"
+refute 'unmatched design: not the fixed line' "$SPEC_INLINED" "$out"
+check  'unmatched design: the SPEC= line names arch.md and design.html' 'SPEC=read by heading: gspec/features/scr/arch.md, gspec/features/scr/design.html --' "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'unmatched design: exactly one SPEC= line' \
+  || bad 'unmatched design: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | grep -o 'design\.html' | wc -l | tr -d ' ')" = "1" ] \
+  && ok 'unmatched design: design.html is named exactly once' \
+  || bad 'unmatched design: design.html is named exactly once' "count: $(printf '%s\n' "$out" | grep -o 'design\.html' | wc -l)"
+
+# A design block tipping the budget: the 5-word screen fits a 6-word budget,
+# its 12-word design element does not, so it is named by heading instead.
+mkdir -p "$RW/.agents"
+printf 'handoff_inline_word_budget: 6\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff scr-t1 "$RW")"
+check  'design over budget: the screen section still inlines' 'ARCH-SECTION=Screen: OrderList' "$out"
+check  'design over budget: named by heading and line count' 'ARCH-HEADING=screen-order-list lines=7
+  <section id="screen-order-list">
+BUDGET-REACHED=6 words
+SPEC=read by heading: gspec/features/scr/arch.md, gspec/features/scr/design.html --' "$out"
+refute 'design over budget: its markup is not inlined' '<h2>Orders</h2>' "$out"
+refute 'design over budget: no DESIGN-SECTION=' 'DESIGN-SECTION=' "$out"
+rm -f "$RW/.agents/project-overrides.yaml"
+
+# Bundle: a later member naming the same screen points back at both blocks.
+out="$("$ADAPTER" handoff scr-t1,scr-t4 "$RW")"
+[ "$(printf '%s\n' "$out" | grep -c '<h2>Orders</h2>')" = "1" ] \
+  && ok 'bundle: a design block two members reach is inlined exactly once' \
+  || bad 'bundle: a design block is inlined exactly once' "count: $(printf '%s\n' "$out" | grep -c '<h2>Orders</h2>')"
+check  'bundle: the later member prints ARCH-SEEN= then DESIGN-SEEN=' 'ARCH-SEEN=#screen-orderlist packet=scr-t1
+DESIGN-SEEN=screen-order-list packet=scr-t1' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'bundle: DESIGN-SEEN= counts as inlined for the statement line' \
+  || bad 'bundle: DESIGN-SEEN= counts as inlined' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
 printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
 # The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
 # wrapped continuation line, a blank separator and a trailing paragraph, with

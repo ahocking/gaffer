@@ -104,7 +104,7 @@ Every regression sweep must pass green after every task.
   - covers: The handoff says the spec it needs is in it
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T6** **P1** Inline the design block a screen section names, in `scripts/gspec-backlog.sh`.
+- [x] **T6** **P1** Inline the design block a screen section names, in `scripts/gspec-backlog.sh`.
   (a) When an inlined section is a `### Screen: <Name>` block and `_resolve_design_path` finds a `design.html` holding `<section id="screen-<kebab>">` for the slugified name (CamelCase split, lowercased, non-alphanumeric runs to one hyphen), print `DESIGN-SECTION=screen-<kebab>`, then that element's markup from its opening tag through its matching close. Matching counts nested `<section` opens and closes; the markup is indented and placed after its screen's `ARCH-SECTION=` block.
   (b) A present `design.html` with no matching element prints `UNMATCHED-DESIGN=screen-<kebab>` and inlines nothing.
   (c) When no inlined section is a screen, or the feature has no `design.html`, the file is not named at all: no `DESIGN=` line and no empty marker.

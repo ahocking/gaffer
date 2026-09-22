@@ -1862,6 +1862,8 @@ printf '\n== handoff: each arch: anchor inlines the arch.md section it names (ha
 # The newline prefix makes the refute line-anchored: `UNMATCHED-ARCH=` also
 # contains the bytes `ARCH=`, and a bare substring refute would read it as one.
 no_arch_line() { refute "$1" $'\nARCH=' $'\n'"$2"; }
+# The fixed statement line a fully inlined handoff ends with (t5).
+SPEC_INLINED='SPEC=inlined: the specification text this task needs is inlined under the section markers above; there is no spec file to open for it'
 RA="$TMPROOT/handoff-arch"; mkdir -p "$RA/gspec/features/shop"
 cat > "$RA/gspec/features/shop/prd.md" <<'EOF'
 ---
@@ -1988,7 +1990,7 @@ for pair in 't1|#entity-order' 't2|### Entity: Order'; do
   check "anchor form '$a' inlines the whole H3 block, indented, H4 included" \
     "ARCH-SECTION=$a
 $order_block" "$out"
-  [ "${out##*$order_block}" = "" ] && ok "anchor form '$a': trailing blank lines are dropped, the block ends the output" \
+  [ "${out##*$order_block}" = $'\n'"$SPEC_INLINED" ] && ok "anchor form '$a': trailing blank lines are dropped, only the statement line follows the block" \
     || bad "anchor form '$a' block end" "got: $out"
   refute "anchor form '$a' stops before the next H3" 'OrderLine body line.' "$out"
   no_arch_line "anchor form '$a' prints no ARCH= line" "$out"
@@ -2104,10 +2106,14 @@ default_shape() { # default_shape <label> <out> — Alpha inlined, Beta+Gamma by
 BUDGET-REACHED=6000 words' "$2"
   refute "$1: Gamma's text is not inlined" 'g1 g2' "$2"
   [ "$(printf '%s\n' "$2" | grep -c '^BUDGET-REACHED=')" = "1" ] \
-    && ok "$1: exactly one BUDGET-REACHED= line, and it is the last line" \
+    && ok "$1: exactly one BUDGET-REACHED= line, and only the SPEC= line follows it" \
     || bad "$1: exactly one BUDGET-REACHED= line" "got: $(printf '%s\n' "$2" | grep '^BUDGET-REACHED=')"
-  [ "$(printf '%s\n' "$2" | tail -n 1)" = "BUDGET-REACHED=6000 words" ] \
-    || bad "$1: BUDGET-REACHED= is the last line" "last: $(printf '%s\n' "$2" | tail -n 1)"
+  [ "$(printf '%s\n' "$2" | tail -n 2 | head -n 1)" = "BUDGET-REACHED=6000 words" ] \
+    || bad "$1: BUDGET-REACHED= is the line before the SPEC= line" "tail: $(printf '%s\n' "$2" | tail -n 2)"
+  case "$(printf '%s\n' "$2" | tail -n 1)" in
+    SPEC=*) ;;
+    *) bad "$1: the SPEC= statement line is the last line" "last: $(printf '%s\n' "$2" | tail -n 1)" ;;
+  esac
   [ "$(printf '%s\n' "$2" | grep -c '^  w1 w2')" = "50" ] \
     && ok "$1: only Alpha's 50 body lines are inlined" \
     || bad "$1: only Alpha's 50 body lines are inlined" "count: $(printf '%s\n' "$2" | grep -c '^  w1 w2')"
@@ -2246,14 +2252,14 @@ refute 'bundle budget: Gamma text is not inlined' 'g1 g2' "$out"
 [ "$(printf '%s\n' "$out" | grep -c '^BUDGET-REACHED=')" = "1" ] \
   && ok 'bundle budget: exactly one BUDGET-REACHED= line' \
   || bad 'bundle budget: exactly one BUDGET-REACHED= line' "got: $(printf '%s\n' "$out" | grep '^BUDGET-REACHED=')"
-[ "$(printf '%s\n' "$out" | tail -n 1)" = "BUDGET-REACHED=6000 words" ] \
-  && ok 'bundle budget: the statement line is the last line of the bundle' \
-  || bad 'bundle budget: the statement line is the last line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+[ "$(printf '%s\n' "$out" | tail -n 2 | head -n 1)" = "BUDGET-REACHED=6000 words" ] \
+  && ok 'bundle budget: BUDGET-REACHED= follows the last member, only SPEC= after it' \
+  || bad 'bundle budget: BUDGET-REACHED= follows the last member' "tail: $(printf '%s\n' "$out" | tail -n 2)"
 no_arch_line 'bundle (budget case): no ARCH= line in any member' "$out"
 
 # A single id is unchanged: the seen set is not consulted (one task naming a
 # section twice inlines it twice, as before t4), and state never leaks in.
-expected="$(printf 'PACKET=bnd-t7\nFEATURE=bnd\nID=T7\nCHECKED=0\nTEXT=one task naming gamma twice\nFILES=\nCOVERS=Big capability\n    - %s\nPRD=gspec/features/bnd/prd.md\nARCH-SECTION=Entity: Gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\nARCH-SECTION=#entity-gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10' "$crit500")"
+expected="$(printf 'PACKET=bnd-t7\nFEATURE=bnd\nID=T7\nCHECKED=0\nTEXT=one task naming gamma twice\nFILES=\nCOVERS=Big capability\n    - %s\nPRD=gspec/features/bnd/prd.md\nARCH-SECTION=Entity: Gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\nARCH-SECTION=#entity-gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\n%s' "$crit500" "$SPEC_INLINED")"
 out="$("$ADAPTER" handoff bnd-t7 "$RW")"
 [ "$out" = "$expected" ] && ok 'single id: output byte-identical to the pre-bundle-state shape' \
   || bad 'single id: output changed' "expected:
@@ -2262,6 +2268,83 @@ got:
 $out"
 refute 'single id: no ARCH-SEEN= marker' 'ARCH-SEEN=' "$out"
 default_shape 'single id after t4 (default 6000)' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf '\n== handoff: the statement line says whether the spec is in it (handoff-spec-inlining-t5) ==\n'
+# spec_count <out> — how many SPEC= lines the output carries.
+spec_count() { printf '%s\n' "$1" | grep -c '^SPEC=' || true; }
+# not_prd_lines <out> — every output line except PRD=, the one path line the
+# handoff carried before t5 and still carries (resume/run-loop restore from it).
+not_prd_lines() { printf '%s\n' "$1" | grep -v '^PRD=' || true; }
+
+# Fully inlined (big-t2: Gamma alone, well under the default): the fixed line,
+# once, last, and no gspec/features/ path on any line but PRD=.
+out="$("$ADAPTER" handoff big-t2 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'fully inlined: exactly one SPEC= line' \
+  || bad 'fully inlined: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'fully inlined: the last line is the fixed statement line' \
+  || bad 'fully inlined: the last line is the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+refute 'fully inlined: no gspec/features/ path outside the PRD= line' 'gspec/features/' "$(not_prd_lines "$out")"
+refute 'fully inlined: arch.md is not named at all' 'arch.md' "$out"
+
+# Budget reached (big-t1 under the default): the line names arch.md, once.
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+spec_line="$(printf '%s\n' "$out" | grep '^SPEC=' || true)"
+check  'budget reached: the SPEC= line names the arch.md path' 'SPEC=read by heading: gspec/features/big/arch.md --' "$spec_line"
+check  'budget reached: and says to read the named sections by heading, not whole' 'by its heading, not the whole file' "$spec_line"
+[ "$(printf '%s\n' "$out" | grep -o 'arch\.md' | wc -l | tr -d ' ')" = "1" ] \
+  && ok 'budget reached: arch.md is named exactly once in the whole output' \
+  || bad 'budget reached: arch.md is named exactly once' "count: $(printf '%s\n' "$out" | grep -o 'arch\.md' | wc -l)"
+refute 'budget reached: not the fixed line' "$SPEC_INLINED" "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'budget reached: exactly one SPEC= line' \
+  || bad 'budget reached: exactly one SPEC= line' "count: $(spec_count "$out")"
+
+# Unmatched: one anchor inlines, one matches no heading. Nothing named by
+# heading, so only the unmatched report can keep the fixed line away.
+mkdir -p "$RW/gspec/features/spc"
+cp "$RW/gspec/features/big/prd.md"  "$RW/gspec/features/spc/prd.md"
+cp "$RW/gspec/features/big/arch.md" "$RW/gspec/features/spc/arch.md"
+mk_plan_v2 "$RW" spc <<'EOF'
+- [ ] **T1** **P0** one inlined, one unmatched
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · Entity: Nowhere
+- [ ] **T2** **P0** no anchors
+  - deps: —
+  - covers: Big capability
+  - arch: —
+- [ ] **T3** **P0** no arch line at all
+  - deps: —
+  - covers: Big capability
+EOF
+out="$("$ADAPTER" handoff spc-t1 "$RW")"
+check  'unmatched: the matched anchor is still inlined' 'ARCH-SECTION=Entity: Gamma' "$out"
+check  'unmatched: the other is reported' 'UNMATCHED-ARCH=Entity: Nowhere' "$out"
+refute 'unmatched: the fixed line is NOT printed despite an inlined section' "$SPEC_INLINED" "$out"
+check  'unmatched: the SPEC= line names arch.md instead' 'SPEC=read by heading: gspec/features/spc/arch.md --' "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'unmatched: exactly one SPEC= line' \
+  || bad 'unmatched: exactly one SPEC= line' "count: $(spec_count "$out")"
+
+# No anchors ('—', or no arch: line at all): no SPEC= line.
+for t in t2 t3; do
+  out="$("$ADAPTER" handoff "spc-$t" "$RW")"
+  refute "no anchors (spc-$t): no SPEC= line" 'SPEC=' "$out"
+done
+
+# Bundles: exactly one SPEC= line, after the last member, whatever the shape.
+out="$("$ADAPTER" handoff bnd-t3,bnd-t2,bnd-t1 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'bundle, fully inlined (ARCH-SEEN= included): exactly one SPEC= line' \
+  || bad 'bundle, fully inlined: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'bundle, fully inlined: the fixed line is the last line, after the last member' \
+  || bad 'bundle, fully inlined: the fixed line is the last line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+out="$("$ADAPTER" handoff bnd-t4,bnd-t5,bnd-t6 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'bundle, budget reached: exactly one SPEC= line' \
+  || bad 'bundle, budget reached: exactly one SPEC= line' "count: $(spec_count "$out")"
+case "$(printf '%s\n' "$out" | tail -n 1)" in
+  'SPEC=read by heading: gspec/features/bnd/arch.md --'*) ok 'bundle, budget reached: the last line names arch.md once, after BUDGET-REACHED=' ;;
+  *) bad 'bundle, budget reached: the last line names arch.md' "last: $(printf '%s\n' "$out" | tail -n 1)" ;;
+esac
 
 printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
 # The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a

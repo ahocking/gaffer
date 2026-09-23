@@ -15,7 +15,7 @@ feature: dispatch-progress-metrics
 
 ## Plan
 
-- [ ] **T1** **P0** Add a pin to `test-metrics.sh` that captures the current fixture's `collect` output with `generated_at` removed, then asserts that later output with every `dispatch-progress-metrics` field deleted (an explicit jq `del` list, initially empty) is byte-identical to it; add three mutation cases proving the pin goes red when `packets[].edits`, `dispatched[]` or `audit.review_dispatches` is altered
+- [x] **T1** **P0** Add a pin to `test-metrics.sh` that captures the current fixture's `collect` output with `generated_at` removed, then asserts that later output with every `dispatch-progress-metrics` field deleted (an explicit jq `del` list, initially empty) is byte-identical to it; add three mutation cases proving the pin goes red when `packets[].edits`, `dispatched[]` or `audit.review_dispatches` is altered
   - deps: —
   - covers: Existing outputs keep their meaning and the sweep pins the new fields
   - arch: —

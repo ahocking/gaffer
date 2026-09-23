@@ -71,7 +71,7 @@ derived-done `run-metrics`; no existing field changes meaning.
 
 ## Capabilities
 
-- [ ] **P0**: Every implementer dispatch in a packet is one row with a kind
+- [x] **P0**: Every implementer dispatch in a packet is one row with a kind
   - one counted dispatch is one `Agent` event in the packet's window whose
     `subagent_type` names the implementer role. The `Agent` event is logged
     when the dispatch returns, so the dispatch's start is that event's

@@ -2200,7 +2200,8 @@ JSON
 DPOUT="$ROOT/dp-run.json"
 "$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
   || bad "DPM T2: collect exits 0" "collect returned nonzero"
-dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]' "$DPOUT"; }
+# `kind` (T3) is checked in its own section below; these cases pin T2's cost fields.
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind)' "$DPOUT"; }
 check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
   "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
 check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
@@ -2216,6 +2217,139 @@ check "DPM T2: two qualifying agent_ids -- the earliest first event wins" \
 check "DPM T2: packet-level dispatched[] still counts the reviewer too (meaning unchanged)" \
   '{"gaffer:implementer":5,"gaffer:reviewer":1}' \
   "$(jq -c '.packets[]|select(.id=="dp-001")|.dispatched' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T3: dispatches[].kind from start + routing records =="
+# kind = the latest start or routing record for the packet strictly before the
+# dispatch Agent event: start (with or without --continue) -> initial, a `continue`
+# routing record -> continuation, fix/retry -> that verdict; a routing record wins
+# over a start written at the same boundary (no Agent event between them). Records
+# are read from the outcomes log and EVERY .agents/loop/*/routing.jsonl — never via
+# a run_id: the decoy run-state below names a run directory that holds none of them.
+#   k-001  start :01.1 -> d1 (Agent :04)                          -> initial
+#          fix (RUN-OLD) :07.2 -> d2 (Agent :09)                   -> fix
+#          continue (RUN-NEW) :10.1 + start --continue :10.6 -> d3 -> continuation
+#   k-002  d4 (Agent :53) with no k-002 record before it           -> null
+#          fix :56, decider Agent :58, resume start --continue :60.5 -> d5 -> initial
+#   k-003  start :91.1 -> d6 (Agent :94)                          -> initial
+#          fix :100.2, then resume start --continue :101.5 with NO Agent event of
+#          any role between them -> d7 (Agent :104)               -> initial
+#          (only a `continue` routing record pairs with a following start; a
+#          fix/retry arm records no start, so that start is a resume's)
+KDREPO="$ROOT/kd-repo"
+mkdir -p "$KDREPO/.agents/metrics/events" "$KDREPO/.agents/metrics/outcomes" \
+         "$KDREPO/.agents/loop/RUN-OLD" "$KDREPO/.agents/loop/RUN-NEW" "$KDREPO/.agents/loop/RUN-DECOY"
+git -C "$KDREPO" init -q; git -C "$KDREPO" config user.email t@t; git -C "$KDREPO" config user.name t
+echo a > "$KDREPO/a.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$KDREPO" commit -q -m "k1
+
+[orch packet:k-001]"
+echo b > "$KDREPO/b.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:01:30Z" GIT_COMMITTER_DATE="2026-07-21T10:01:30Z" \
+  git -C "$KDREPO" commit -q -m "k2
+
+[orch packet:k-002]"
+echo c > "$KDREPO/c.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:02:30Z" GIT_COMMITTER_DATE="2026-07-21T10:02:30Z" \
+  git -C "$KDREPO" commit -q -m "k3
+
+[orch packet:k-003]"
+printf 'schema: "4"\nrun_id: "RUN-DECOY"\nstatus: "running"\n' > "$KDREPO/.agents/run-state.yaml"
+cat > "$KDREPO/.agents/metrics/events/KD.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"KD","agent_id":"k1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:05Z","session_id":"KD","agent_id":"kr","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:06Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:08Z","session_id":"KD","agent_id":"k2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:11Z","session_id":"KD","agent_id":"k3","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:12Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:52Z","session_id":"KD","agent_id":"k4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:53Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:57Z","session_id":"KD","agent_id":"kc","agent_type":"gaffer:chief-engineer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:58Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:chief-engineer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:02Z","session_id":"KD","agent_id":"k5","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:03Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:33Z","session_id":"KD","agent_id":"k6","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:34Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:36Z","session_id":"KD","agent_id":"kr3","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:01:37Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:43Z","session_id":"KD","agent_id":"k7","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:44Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$KDREPO/.agents/metrics/outcomes/KD.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"k-001","session":"KD","kind":"start"}
+{"ts":"2026-07-21T10:00:10.600Z","packet":"k-001","session":"KD","kind":"continue"}
+{"ts":"2026-07-21T10:01:00.500Z","packet":"k-002","session":"KD","kind":"continue"}
+{"ts":"2026-07-21T10:01:31.100Z","packet":"k-003","session":"KD","kind":"start"}
+{"ts":"2026-07-21T10:01:41.500Z","packet":"k-003","session":"KD","kind":"continue"}
+JSON
+cat > "$KDREPO/.agents/loop/RUN-OLD/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"k-001","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+{"ts":"2026-07-21T10:00:56.000Z","packet":"k-002","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+{"ts":"2026-07-21T10:01:40.200Z","packet":"k-003","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+cat > "$KDREPO/.agents/loop/RUN-NEW/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:10.100Z","packet":"k-001","token":"continue","action":"continue","status":"continue · budget reached · result: needs-reading · /i.md"}
+JSON
+KDOUT="$ROOT/kd-run.json"
+"$METRICS" collect --main-root "$KDREPO" --projects-dir "$ROOT/none" --out "$KDOUT" >/dev/null 2>&1 \
+  || bad "DPM T3: collect exits 0" "collect returned nonzero"
+kd_kinds() { jq -c --arg id "$1" '[.packets[]|select(.id==$id)|.dispatches[].kind]' "$KDOUT"; }
+check "DPM T3: initial -> fix -> continuation (routing continue wins over the start at one boundary)" \
+  '["initial","fix","continuation"]' "$(kd_kinds k-001)"
+check "DPM T3: no prior record -> null; a resume --continue start reads initial, not the earlier fix" \
+  '[null,"initial"]' "$(kd_kinds k-002)"
+check "DPM T3: a fix route then a resume start with no Agent event between reads initial (only continue pairs with a start)" \
+  '["initial","initial"]' "$(kd_kinds k-003)"
+check "DPM T3: a measured run carries no routing-unmeasured note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind: routing-unmeasured"))]|length' "$KDOUT")"
+
+# Pruned routing log: start records survive, no routing.jsonl holds a record for any
+# of the run packets (only a foreign packet in the current run directory), so the
+# fix dispatch reads null — never the `initial` the start record alone would give.
+PRREPO="$ROOT/pr-repo"
+mkdir -p "$PRREPO/.agents/metrics/events" "$PRREPO/.agents/metrics/outcomes" "$PRREPO/.agents/loop/RUN-CUR"
+git -C "$PRREPO" init -q; git -C "$PRREPO" config user.email t@t; git -C "$PRREPO" config user.name t
+echo a > "$PRREPO/a.txt"; git -C "$PRREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$PRREPO" commit -q -m "p1
+
+[orch packet:p-001]"
+cat > "$PRREPO/.agents/metrics/events/PR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"PR","agent_id":"p1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:08Z","session_id":"PR","agent_id":"p2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$PRREPO/.agents/metrics/outcomes/PR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"p-001","session":"PR","kind":"start"}
+JSON
+cat > "$PRREPO/.agents/loop/RUN-CUR/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"zz-999","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+PROUT="$ROOT/pr-run.json"
+"$METRICS" collect --main-root "$PRREPO" --projects-dir "$ROOT/none" --out "$PROUT" >/dev/null 2>&1 \
+  || bad "DPM T3: pruned-routing collect exits 0" "collect returned nonzero"
+check "DPM T3: pruned routing log -> every kind null (the fix dispatch is not read as initial)" \
+  '[null,null]' "$(jq -c '[.packets[]|select(.id=="p-001")|.dispatches[].kind]' "$PROUT")"
+check "DPM T3: pruned routing log names the reason in notes[]" "1" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind: routing-unmeasured — 1 start record(s)"))]|length' "$PROUT")"
+
+# Legacy run (the T2 fixture: no start record, no routing log): every kind null, no
+# routing-unmeasured note, and re-collecting it yields identical output.
+check "DPM T3: legacy run -> every kind null" '[null,null,null,null,null]' \
+  "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].kind]' "$DPOUT")"
+check "DPM T3: legacy run carries no routing-unmeasured note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind:"))]|length' "$DPOUT")"
+DPOUT2="$ROOT/dp-run-2.json"
+"$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT2" >/dev/null 2>&1 \
+  || bad "DPM T3: legacy re-collect exits 0" "collect returned nonzero"
+if [ "$(jq -S -c 'del(.generated_at)' "$DPOUT")" = "$(jq -S -c 'del(.generated_at)' "$DPOUT2")" ]; then
+  ok "DPM T3: legacy run re-collects identically"
+else bad "DPM T3: legacy run re-collects identically" "second collect differs from the first"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then

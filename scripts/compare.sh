@@ -87,10 +87,57 @@
 #                     never filled from the other class. EXCLUDED and DROPPED
 #                     packets from `candidates` are named in the selection.
 #
-# Exit status: 0 printed settings / candidates / a selection; 1 refused, no
-# experiment id could be computed, the source repository is not a git
-# repository, or the selection could not be written; 2 usage error, or
-# routing.sh / gspec-backlog.sh missing beside this script.
+#   estimate <experiment> [--remaining]
+#                     state the spend of the experiment's stored selection
+#                     (`select` first) and issue the approval token for it.
+#                     The replay set is every selected packet × every model,
+#                     in stored order (packet, then model); under --remaining,
+#                     only the replays with no stored record. A record counts
+#                     for a replay when a line of <store>/records.jsonl has
+#                     top-level `experiment`, `packet` and `model` fields equal
+#                     to it (any outcome, `invalid` included). Output, in order:
+#                       EXPERIMENT= SCOPE=<all|remaining> MODELS= PACKETS=
+#                       RECORDED=<replays already recorded> REPLAYS=<count>
+#                       REPLAY packet=<id> model=<m>        one per replay
+#                       PRICE_TABLE_DATE=<the table's table_date>
+#                       EXCLUDED packet=<id> reason=<why>   unmeasured cost
+#                       UNPRICED model=<m> reason=<why>
+#                       ESTIMATE model=<m|total> replays= estimated= tokens=
+#                         input= output= cache_creation= cache_read=
+#                         dollars_min= dollars_max= [price=<basis>]
+#                       NOTE ...
+#                       APPROVAL=<token>   (`none` when no replay is in the set)
+#                     THE ESTIMATE RULE (the plan's decision 3): tokens are
+#                     held constant and priced per model. A packet's forecast
+#                     is its original recorded `packets[].tokens` from the
+#                     source repository's `.agents/metrics/*/run-metrics.json`
+#                     (the newest `generated_at` row whose four token fields
+#                     are numbers, whose file's token_source is a transcript
+#                     one, and whose sum is not 0), identical for every model;
+#                     fix rounds are not modelled. A packet with no such row is
+#                     EXCLUDED and named: its cost is unmeasured, never 0.
+#                     `estimated` counts the replays the figures cover. Prices
+#                     come from ${ORCH_COMPARE_PRICES:-spend-prices.json beside
+#                     this script}: the entry keyed by the model itself, else
+#                     the `claude-<model>-*` entries when all of them carry the
+#                     same five rates (`price=family:<ids>`); otherwise the
+#                     model is UNPRICED and its dollars read `unmeasured`, as
+#                     does the total's. Packet tokens do not split cache writes
+#                     by lifetime, so dollars_min prices them all at the
+#                     5-minute rate and dollars_max at the 1-hour rate.
+#                     The token is single-use and bound to exactly the printed
+#                     set: one line appended to <store>/<experiment>/approvals.jsonl
+#                       {"token", "state": "pending", "scope", "issued_at",
+#                        "set": <digest of the REPLAY lines>, "replays": [...]}
+#                     before it is printed. Append-only: the newest pending
+#                     line supersedes every earlier one; `run` consumes it.
+#
+# Exit status: 0 printed settings / candidates / a selection / an estimate; 1
+# refused, no experiment id could be computed, the source repository is not a
+# git repository, the selection could not be written, or (estimate) no stored
+# selection, an unreadable selection, records file or price table, or the
+# token could not be stored; 2 usage error, or routing.sh / gspec-backlog.sh
+# missing beside this script.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -126,7 +173,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining]\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -872,12 +919,330 @@ EOF
   printf 'compare.sh: selection written: %s\n' "$sel" >&2
 }
 
+# --- estimate ----------------------------------------------------------------------
+
+# json_flat <file>: one `<doc>\t<path>\t<type>\t<value>` row per scalar leaf of
+# the JSON in <file>, where <doc> numbers the top-level values (1 for a plain
+# JSON file, one per line of a JSONL file), <path> is jq-style (`.a.b[0].c`),
+# <type> is `s` for a string and `n` for any other literal (number, true,
+# false, null), and <value> is the string unescaped (a tab or newline in it
+# becomes a space). An empty container emits nothing. Exit 1 on a token it
+# cannot read, so a damaged file is refused rather than half-read.
+json_flat() {
+  awk '
+    function here(   p) {
+      if (d == 0) { doc++; return "" }
+      if (ty[d] == "o") return pre[d] "." ky[d]
+      return pre[d] "[" ix[d] "]"
+    }
+    function emit(t, v) { if (d == 0) { bad = 1; exit } p = here(); print doc "\t" p "\t" t "\t" v }
+    function open(kind,   p) { p = here(); d++; ty[d] = kind; pre[d] = p; ix[d] = 0; wk[d] = (kind == "o"); ky[d] = "" }
+    function unesc(s) {
+      gsub(/\\\\/, "\001", s); gsub(/\\"/, "\"", s); gsub(/\\\//, "/", s)
+      gsub(/\\[tnr]/, " ", s); gsub(/\t/, " ", s); gsub(/\001/, "\\", s)
+      return s
+    }
+    BEGIN { d = 0; doc = 0; bad = 0 }
+    { sub(/\r$/, "") }
+    {
+      line = $0
+      while (length(line) > 0) {
+        if (match(line, /^[ \t]+/)) { line = substr(line, RLENGTH + 1); continue }
+        c = substr(line, 1, 1)
+        if (c == "\"") {
+          if (!match(line, /^"([^"\\]|\\.)*"/)) { bad = 1; exit }
+          tok = unesc(substr(line, 2, RLENGTH - 2)); line = substr(line, RLENGTH + 1)
+          if (d > 0 && ty[d] == "o" && wk[d]) { ky[d] = tok; wk[d] = 0 } else emit("s", tok)
+          continue
+        }
+        if (c == "{") { open("o"); line = substr(line, 2); continue }
+        if (c == "[") { open("a"); line = substr(line, 2); continue }
+        if (c == "}" || c == "]") {
+          if (d == 0 || (c == "}") != (ty[d] == "o")) { bad = 1; exit }
+          d--; line = substr(line, 2); continue
+        }
+        if (c == ",") {
+          if (d == 0) { bad = 1; exit }
+          if (ty[d] == "a") ix[d]++; else wk[d] = 1
+          line = substr(line, 2); continue
+        }
+        if (c == ":") { if (d == 0 || ty[d] != "o") { bad = 1; exit } line = substr(line, 2); continue }
+        if (match(line, /^[-+.0-9A-Za-z]+/)) {
+          tok = substr(line, 1, RLENGTH); line = substr(line, RLENGTH + 1)
+          # A bare word must be a JSON literal, and only inside a container:
+          # every file read here is an object (or one object per line).
+          if (d == 0 || tok !~ /^(true|false|null|-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)$/) { bad = 1; exit }
+          emit("n", tok); continue
+        }
+        bad = 1; exit
+      }
+    }
+    END { if (bad || d != 0) exit 1 }
+  ' "$1"
+}
+
+# cost_rows <run-metrics.json>: one `<packet>\t<generated_at>\t<run_id>\t<state>\t
+# <input>\t<output>\t<cache_creation>\t<cache_read>` row per packets[] entry.
+# <state> is `measured`, `null` (a token field is null, absent or not a
+# number), `zero` (all four are 0: the packet window caught no usage, and a
+# landed packet cost something), or `source` (the file's token_source is not a
+# transcript one, so its token figures were never read from a transcript).
+cost_rows() {
+  local flat
+  flat="$(json_flat "$1")" || return 1
+  printf '%s\n' "$flat" | awk -F'\t' '
+    $2 == ".generated_at" { gen = $4; next }
+    $2 == ".token_source" { ts = $4; next }
+    $2 == ".run_id"       { rid = $4; next }
+    $2 ~ /^\.packets\[[0-9]+\]\./ {
+      i = $2; sub(/^\.packets\[/, "", i); sub(/\].*$/, "", i); i += 0; if (i + 1 > n) n = i + 1
+      rest = substr($2, index($2, "].") + 2)
+      if (rest == "id" && $3 == "s") id[i] = $4
+      else if (rest ~ /^tokens\.(input|output|cache_creation|cache_read)$/ && $3 == "n" && $4 ~ /^[0-9]+$/)
+        tok[i, substr(rest, 8)] = $4
+    }
+    END {
+      for (i = 0; i < n; i++) {
+        if (!(i in id)) continue
+        st = "measured"; sum = 0
+        split("input output cache_creation cache_read", f, " ")
+        for (k = 1; k <= 4; k++) { if (!((i, f[k]) in tok)) st = "null"; else sum += tok[i, f[k]] }
+        if (ts !~ /^transcript/) st = "source"
+        else if (st == "measured" && sum == 0) st = "zero"
+        printf "%s\t%s\t%s\t%s", id[i], gen, rid, st
+        for (k = 1; k <= 4; k++) printf "\t%s", ((i, f[k]) in tok) ? tok[i, f[k]] : ""
+        printf "\n"
+      }
+    }'
+}
+
+# new_token: 32 hex of /dev/urandom, else a digest of the time, pid and $RANDOM.
+new_token() {
+  local t
+  t="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  case "$t" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+    *) t="$( { date -u +%Y%m%dT%H%M%S; printf '%s %s %s %s\n' "$$" "$RANDOM" "$RANDOM" "$RANDOM"; } | digest)$( printf '%s %s\n' "$RANDOM" "$$" | digest)" ;;
+  esac
+  printf '%s' "$t"
+}
+
+cmd_estimate() {
+  local exp="" remaining=0 a
+  for a in "$@"; do
+    case "$a" in
+      --remaining) remaining=1 ;;
+      -*) usage ;;
+      *) [ -z "$exp" ] || usage; exp="$a" ;;
+    esac
+  done
+  [ -n "$exp" ] || usage
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "estimate: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  local store dir sel prices
+  store="$(store_root)"
+  dir="$store/$exp"
+  sel="$dir/selection.json"
+  prices="${ORCH_COMPARE_PRICES:-$HERE/spend-prices.json}"
+  [ -f "$sel" ] || die "estimate: no stored selection for experiment $exp (run \`compare.sh select\` first): $sel"
+
+  local tmp
+  tmp="$(mktemp -d 2>/dev/null)" || die "estimate: cannot create a temp root"
+  # shellcheck disable=SC2064  # expand $tmp now: it is local to this function
+  trap "rm -rf '$tmp'" EXIT
+
+  # --- the stored selection: its experiment, models, source and packets -------
+  json_flat "$sel" > "$tmp/sel" || die "estimate: the stored selection is not readable JSON: $sel"
+  local sexp src
+  sexp="$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")"
+  [ "$sexp" = "$exp" ] || die "estimate: the stored selection names experiment [$sexp], not $exp: $sel"
+  src="$(awk -F'\t' '$2 == ".settings.source_repo" { print $4; exit }' "$tmp/sel")"
+  awk -F'\t' '$2 ~ /^\.settings\.models\[[0-9]+\]$/ { print $4 }' "$tmp/sel" > "$tmp/models"
+  awk -F'\t' '$2 ~ /^\.selected\[[0-9]+\]\.packet$/ { print $4 }' "$tmp/sel" > "$tmp/packets"
+  # Every id goes into output lines and the approvals JSON: only safe tokens.
+  if LC_ALL=C grep -q '[^A-Za-z0-9._-]' "$tmp/models" "$tmp/packets" 2>/dev/null \
+     || [ ! -s "$tmp/models" ]; then
+    die "estimate: the stored selection's models or packets are malformed: $sel"
+  fi
+
+  # --- the replay set: packet x model, stored order; recorded ones set apart ---
+  : > "$tmp/recorded"
+  if [ "$remaining" -eq 1 ] && [ -f "$store/records.jsonl" ]; then
+    json_flat "$store/records.jsonl" > "$tmp/records.flat" \
+      || die "estimate: the records file is not readable JSONL, so the remaining replays cannot be counted: $store/records.jsonl"
+    EXP="$exp" awk -F'\t' '
+      $2 == ".experiment" && $3 == "s" { e[$1] = $4 }
+      $2 == ".packet"     && $3 == "s" { p[$1] = $4 }
+      $2 == ".model"      && $3 == "s" { m[$1] = $4 }
+      END { for (d in e) if (e[d] == ENVIRON["EXP"] && (d in p) && (d in m)) print p[d] "\t" m[d] }
+    ' "$tmp/records.flat" | LC_ALL=C sort -u > "$tmp/recorded"
+  fi
+  local p m nrec=0
+  : > "$tmp/set"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      if [ "$remaining" -eq 1 ] && P="$p" M="$m" awk -F'\t' '$1 == ENVIRON["P"] && $2 == ENVIRON["M"] { f = 1 } END { exit !f }' "$tmp/recorded"; then
+        nrec=$((nrec + 1)); continue
+      fi
+      printf '%s\t%s\n' "$p" "$m" >> "$tmp/set"
+    done < "$tmp/models"
+  done < "$tmp/packets"
+
+  # --- each packet's original cost from the source's stored run-metrics --------
+  local f nbad=0
+  : > "$tmp/costs"
+  if [ -n "$src" ] && [ -d "$src/.agents/metrics" ]; then
+    set +f
+    for f in "$src"/.agents/metrics/*/run-metrics.json; do
+      [ -f "$f" ] || continue
+      cost_rows "$f" >> "$tmp/costs" 2>/dev/null || nbad=$((nbad + 1))
+    done
+    set -f
+  fi
+
+  # --- the price table ------------------------------------------------------
+  [ -f "$prices" ] || die "estimate: no price table: $prices"
+  json_flat "$prices" > "$tmp/prices" || die "estimate: the price table is not readable JSON: $prices"
+  local tdate
+  tdate="$(awk -F'\t' '$2 == ".table_date" && $3 == "s" { print $4; exit }' "$tmp/prices")"
+  [ -n "$tdate" ] || die "estimate: the price table has no table_date: $prices"
+
+  # --- the estimate ------------------------------------------------------------
+  local scope=all; [ "$remaining" -eq 1 ] && scope=remaining
+  SET="$tmp/set" COSTS="$tmp/costs" PRICES="$tmp/prices" MODELS="$tmp/models" \
+  EXP="$exp" SCOPE="$scope" NREC="$nrec" TDATE="$tdate" NBAD="$nbad" \
+  NPACK="$(grep -c . "$tmp/packets")" awk -F'\t' '
+    function money(x) { return sprintf("%.2f", x) }
+    function int0(x)  { return sprintf("%.0f", x) }
+    FILENAME == ENVIRON["MODELS"] { if ($0 != "") { nm++; mod[nm] = $0 }; next }
+    FILENAME == ENVIRON["SET"]    { ns++; sp[ns] = $1; sm[ns] = $2; if (!($1 in inset)) { inset[$1] = 1; np++; pord[np] = $1 }; next }
+    FILENAME == ENVIRON["PRICES"] {
+      if ($2 ~ /^\.prices\.[^.]+\.(input|output|cache_read|cache_write_5m|cache_write_1h)$/ && $3 == "n" && $4 ~ /^[0-9.]+$/) {
+        k = substr($2, 9); fld = k; sub(/\.[^.]*$/, "", k); sub(/^.*\./, "", fld)
+        rate[k, fld] = $4 + 0; if (!(k in pid)) { pid[k] = 1; npid++; pids[npid] = k }
+      }
+      next
+    }
+    FILENAME == ENVIRON["COSTS"] {
+      if (!($1 in inset)) next
+      rows[$1]++; st[$1, $4]++
+      if ($4 == "measured" && (!($1 in bgen) || $2 >= bgen[$1])) {
+        bgen[$1] = $2; brun[$1] = $3; ti[$1] = $5; to[$1] = $6; tc[$1] = $7; tr[$1] = $8
+      }
+      next
+    }
+    function complete(k) {
+      return ((k, "input") in rate) && ((k, "output") in rate) && ((k, "cache_read") in rate) && \
+             ((k, "cache_write_5m") in rate) && ((k, "cache_write_1h") in rate)
+    }
+    function same(a, b) {
+      return rate[a, "input"] == rate[b, "input"] && rate[a, "output"] == rate[b, "output"] && \
+             rate[a, "cache_read"] == rate[b, "cache_read"] && rate[a, "cache_write_5m"] == rate[b, "cache_write_5m"] && \
+             rate[a, "cache_write_1h"] == rate[b, "cache_write_1h"]
+    }
+    # resolve(m): sets use[m] to the price key and basis[m], or why[m].
+    function resolve(m,   pre, j, k, ids, first, diff) {
+      if ((m in pid) && complete(m)) { use[m] = m; basis[m] = m; return }
+      if (m in pid) { why[m] = "the price-table entry " m " lacks one of input, output, cache_read, cache_write_5m, cache_write_1h"; return }
+      pre = "claude-" m "-"; ids = ""; first = ""; diff = 0
+      for (j = 1; j <= npid; j++) {
+        k = pids[j]
+        if (index(k, pre) != 1) continue
+        ids = ids (ids == "" ? "" : ",") k
+        if (!complete(k)) { diff = 2; continue }
+        if (first == "") first = k; else if (!same(first, k)) diff = (diff ? diff : 1)
+      }
+      if (ids == "") { why[m] = "no price-table entry is keyed " m " or starts " pre; return }
+      if (diff == 2) { why[m] = "a " pre "* entry lacks a rate (" ids ")"; return }
+      if (diff == 1) { why[m] = "the " pre "* entries carry different rates, and which one " m " resolves to is not recorded (" ids ")"; return }
+      use[m] = first; basis[m] = "family:" ids
+    }
+    function cost(p, k, cw) {
+      return (ti[p] * rate[k, "input"] + to[p] * rate[k, "output"] + tr[p] * rate[k, "cache_read"] + tc[p] * rate[k, cw]) / 1000000
+    }
+    function line(label, r, e, ok, a, b, c, dd, lo, hi, priced, extra) {
+      printf "ESTIMATE model=%s replays=%d estimated=%d", label, r, e
+      if (r > 0 && e == 0)
+        printf " tokens=unmeasured input=unmeasured output=unmeasured cache_creation=unmeasured cache_read=unmeasured"
+      else
+        printf " tokens=%s input=%s output=%s cache_creation=%s cache_read=%s", int0(a + b + c + dd), int0(a), int0(b), int0(c), int0(dd)
+      if (r == 0) printf " dollars_min=0.00 dollars_max=0.00"
+      else if (e == 0 || !priced) printf " dollars_min=unmeasured dollars_max=unmeasured"
+      else printf " dollars_min=%s dollars_max=%s", money(lo), money(hi)
+      printf "%s\n", extra
+    }
+    END {
+      printf "EXPERIMENT=%s\nSCOPE=%s\n", ENVIRON["EXP"], ENVIRON["SCOPE"]
+      ml = ""; for (i = 1; i <= nm; i++) ml = ml (i > 1 ? "," : "") mod[i]
+      printf "MODELS=%s\nPACKETS=%d\nRECORDED=%d\nREPLAYS=%d\n", ml, ENVIRON["NPACK"], ENVIRON["NREC"], ns
+      for (i = 1; i <= ns; i++) printf "REPLAY packet=%s model=%s\n", sp[i], sm[i]
+      printf "PRICE_TABLE_DATE=%s\n", ENVIRON["TDATE"]
+
+      # A packet counts only with a measured original cost; every other packet
+      # in the set is named and left out, never priced as 0.
+      for (j = 1; j <= np; j++) {
+        p = pord[j]
+        if (p in bgen) continue
+        if (!(p in rows)) r = "no run-metrics row for the packet in the source repository"
+        else r = "no measured row among " rows[p] " run-metrics row(s) (tokens null: " st[p, "null"] + 0 \
+                 ", all zero: " st[p, "zero"] + 0 ", no transcript token source: " st[p, "source"] + 0 ")"
+        printf "EXCLUDED packet=%s reason=original cost unmeasured, excluded from the estimate: %s\n", p, r
+      }
+      for (i = 1; i <= nm; i++) { resolve(mod[i]); if (mod[i] in why) printf "UNPRICED model=%s reason=%s\n", mod[i], why[mod[i]] }
+
+      allpriced = 1
+      for (i = 1; i <= nm; i++) {
+        m = mod[i]; R = 0; E = 0; A = 0; B = 0; C = 0; D = 0; LO = 0; HI = 0
+        for (s = 1; s <= ns; s++) {
+          if (sm[s] != m) continue
+          R++; p = sp[s]
+          if (!(p in bgen)) continue
+          E++; A += ti[p]; B += to[p]; C += tc[p]; D += tr[p]
+          if (m in use) { LO += cost(p, use[m], "cache_write_5m"); HI += cost(p, use[m], "cache_write_1h") }
+        }
+        if (R > 0 && !(m in use)) allpriced = 0
+        TR += R; TE += E; TA += A; TB += B; TC += C; TD += D; TLO += LO; THI += HI
+        line(m, R, E, (m in use), A, B, C, D, LO, HI, (m in use), " price=" ((m in use) ? basis[m] : "unpriced"))
+      }
+      line("total", TR, TE, allpriced, TA, TB, TC, TD, TLO, THI, allpriced, "")
+      if (ENVIRON["NBAD"] + 0 > 0)
+        printf "NOTE %d run-metrics file(s) in the source repository could not be read; a packet whose only row is in one reads unmeasured\n", ENVIRON["NBAD"]
+      printf "NOTE tokens are each packet'"'"'s original recorded tokens, held constant across models; fix rounds are not modelled\n"
+      printf "NOTE dollars_min prices every cache-write token at the 5-minute rate and dollars_max at the 1-hour rate: the recorded tokens do not split write lifetime\n"
+    }' "$tmp/models" "$tmp/set" "$tmp/prices" "$tmp/costs" > "$tmp/out" \
+    || die "estimate: the estimate could not be computed"
+
+  # --- the approval token: stored pending BEFORE it is printed ---------------
+  local tok="none"
+  if [ -s "$tmp/set" ]; then
+    local setd issued replays
+    setd="$(grep '^REPLAY ' "$tmp/out" | digest)" || exit 1
+    tok="$(new_token)"
+    [ -n "$tok" ] || die "estimate: no approval token could be generated"
+    if [ -f "$dir/approvals.jsonl" ] && T="\"token\":\"$tok\"" awk 'index($0, ENVIRON["T"]) { f = 1 } END { exit !f }' "$dir/approvals.jsonl"; then
+      die "estimate: the generated token already exists in $dir/approvals.jsonl; run estimate again"
+    fi
+    issued="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    replays="$(awk -F'\t' '{ printf "%s{\"packet\":\"%s\",\"model\":\"%s\"}", (NR > 1 ? "," : ""), $1, $2 }' "$tmp/set")"
+    printf '{"token":"%s","state":"pending","experiment":"%s","scope":"%s","issued_at":"%s","set":"%s","replays":[%s]}\n' \
+      "$tok" "$exp" "$scope" "$issued" "$setd" "$replays" >> "$dir/approvals.jsonl" \
+      || die "estimate: the approval token could not be stored: $dir/approvals.jsonl"
+  fi
+  cat "$tmp/out"
+  printf 'APPROVAL=%s\n' "$tok"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
   settings)   cmd_settings "$@" ;;
   candidates) cmd_candidates "$@" ;;
   select)     cmd_select "$@" ;;
+  estimate)   cmd_estimate "$@" ;;
   *) usage ;;
 esac
 exit 0

@@ -40,7 +40,7 @@ feature: dispatch-progress-metrics
   - covers: Each dispatch carries its own cost and its own progress
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T6** **P0** Add `totals.dispatch_waste` with `zero_progress` (count and token sum), `continuations`, `over_threshold` (count and share of all implementer-dispatch tokens) and `turn_threshold`, which stamps the value and its unit: `implementer_turn_budget` from `.agents/project-overrides.yaml` when it is a positive integer, read in tool calls, else 150. Each component is null under the PRD's rules, and a `notes[]` line names which component is unmeasured and why; cases cover a fully measured run, the override and the default, one null `progress` nulling only `zero_progress`, one null `kind` nulling only `continuations`, one null `tokens` nulling only the sums and share, and a legacy run and a run with no implementer dispatch reading all-null
+- [x] **T6** **P0** Add `totals.dispatch_waste` with `zero_progress` (count and token sum), `continuations`, `over_threshold` (count and share of all implementer-dispatch tokens) and `turn_threshold`, which stamps the value and its unit: `implementer_turn_budget` from `.agents/project-overrides.yaml` when it is a positive integer, read in tool calls, else 150. Each component is null under the PRD's rules, and a `notes[]` line names which component is unmeasured and why; cases cover a fully measured run, the override and the default, one null `progress` nulling only `zero_progress`, one null `kind` nulling only `continuations`, one null `tokens` nulling only the sums and share, and a legacy run and a run with no implementer dispatch reading all-null
   - deps: T5
   - covers: A run-level rollup names the waste
   - arch: —

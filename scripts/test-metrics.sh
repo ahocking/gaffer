@@ -104,7 +104,9 @@ check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
 # is left is byte-identical: packets[].edits, dispatched, by_agent_role, outcome and
 # audit.review_dispatches keep their meaning. Never re-capture DPM_GOLDEN to make it
 # pass — a difference here is a changed existing field, not a stale golden.
-DPM_NEW_FIELDS=('.packets[].dispatches')   # jq paths added by dispatch-progress-metrics (T2: dispatches)
+DPM_NEW_FIELDS=('.packets[].dispatches'   # jq paths added by dispatch-progress-metrics (T2: dispatches)
+                '.totals.dispatch_waste'  # T6: the rollup
+                '.notes[] | select(startswith("dispatch_waste"))')   # T6: its notes[] lines
 dpm_filter() {
   local f='del(.generated_at)' p
   for p in ${DPM_NEW_FIELDS[@]+"${DPM_NEW_FIELDS[@]}"}; do f="$f | del($p)"; done
@@ -2462,6 +2464,120 @@ check "DPM T5: routing-unmeasured run still measures progress (only kind is null
   '["advanced","landed"]' "$(jq -c '[.packets[]|select(.id=="p-001")|.dispatches[].progress]' "$PROUT")"
 check "DPM T5: legacy run -> every progress null (a commit and edits notwithstanding)" \
   '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].progress]' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T6: totals.dispatch_waste =="
+# One packet (wr-001, commit :50), two implementer dispatches:
+#   d1 agent w1: three Reads, zero edits -> initial, progress none, tool_calls 3,
+#      transcript total 1000 tokens
+#   routing `continue` at :05
+#   d2 agent w2: one Edit, last dispatch -> continuation, landed, tool_calls 1,
+#      transcript total 3000 tokens
+# Variants are copies of the base repo with one thing changed each:
+#   ovr   implementer_turn_budget: 2 -> d1 over threshold, share 1000/4000
+#   base  no override -> threshold 150 (default), nothing over
+#   notok w1 transcript absent -> d1 tokens null: only the sums and share null
+#   nokind  start record absent -> d1 kind null: only continuations null
+#   noprog  an extra unresolved dispatch d3 (no agent_id in its span) -> progress
+#           null on it: only zero_progress null (d3 left out of over_threshold)
+#   nodisp  start record, commit, no implementer Agent event -> all null
+# The legacy run is the T2 fixture ($DPOUT).
+WRREPO="$ROOT/wr-repo"
+mkdir -p "$WRREPO/.agents/metrics/events" "$WRREPO/.agents/metrics/outcomes" "$WRREPO/.agents/loop/RUN-WR"
+git -C "$WRREPO" init -q; git -C "$WRREPO" config user.email t@t; git -C "$WRREPO" config user.name t
+echo w > "$WRREPO/w.txt"; git -C "$WRREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$WRREPO" commit -q -m "wr1
+
+[orch packet:wr-001]"
+cat > "$WRREPO/.agents/metrics/events/WR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:01Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:03Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3500}
+{"ts":"2026-07-21T10:00:06Z","session_id":"WR","agent_id":"w2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:07Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:45Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+JSON
+cat > "$WRREPO/.agents/metrics/outcomes/WR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.200Z","packet":"wr-001","session":"WR","kind":"start"}
+JSON
+cat > "$WRREPO/.agents/loop/RUN-WR/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:05.000Z","packet":"wr-001","token":"continue","action":"continue","status":"continue · x"}
+JSON
+WRPROJ="$ROOT/wr-proj"; mkdir -p "$WRPROJ/proj/WR/subagents"
+cat > "$WRPROJ/proj/WR/subagents/agent-w1.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:01.500Z","message":{"id":"w1m","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":800,"cache_read_input_tokens":90}}}
+JSON
+cat > "$WRPROJ/proj/WR/subagents/agent-w2.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:06.500Z","message":{"id":"w2m","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":100,"cache_creation_input_tokens":800,"cache_read_input_tokens":2000}}}
+JSON
+WRPROJN="$ROOT/wr-proj-notok"; mkdir -p "$WRPROJN/proj/WR/subagents"
+cp "$WRPROJ/proj/WR/subagents/agent-w2.jsonl" "$WRPROJN/proj/WR/subagents/"
+wr_variant() { # wr_variant <name> -> prints a fresh copy of the base repo
+  rm -rf "$ROOT/wr-$1"; cp -R "$WRREPO" "$ROOT/wr-$1"; printf '%s' "$ROOT/wr-$1"
+}
+WROVR="$(wr_variant ovr)"; printf 'schema: 1\nimplementer_turn_budget: 2   # tool calls\n' > "$WROVR/.agents/project-overrides.yaml"
+WRNOKIND="$(wr_variant nokind)"; : > "$WRNOKIND/.agents/metrics/outcomes/WR.jsonl"
+WRNOPROG="$(wr_variant noprog)"
+printf '%s\n' '{"ts":"2026-07-21T10:00:20Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}' \
+  >> "$WRNOPROG/.agents/metrics/events/WR.jsonl"
+WRNODISP="$(wr_variant nodisp)"
+jq -c 'select(.agent_type == "main" and .tool != "Agent")' "$WRREPO/.agents/metrics/events/WR.jsonl" > "$ROOT/wr-nodisp.jsonl"
+mv "$ROOT/wr-nodisp.jsonl" "$WRNODISP/.agents/metrics/events/WR.jsonl"
+wr_collect() { # wr_collect <repo> <projects-dir> <out-name> -> prints the out path
+  local o="$ROOT/wr-$3.json"
+  "$METRICS" collect --main-root "$1" --projects-dir "$2" --out "$o" >/dev/null 2>&1 \
+    || bad "DPM T6: $3 collect exits 0" "collect returned nonzero"
+  printf '%s' "$o"
+}
+WROUT_OVR="$(wr_collect "$WROVR" "$WRPROJ" ovr-run)"
+WROUT_DEF="$(wr_collect "$WRREPO" "$WRPROJ" def-run)"
+WROUT_NOTOK="$(wr_collect "$WROVR" "$WRPROJN" notok-run)"
+WROUT_NOKIND="$(wr_collect "$WRNOKIND" "$WRPROJ" nokind-run)"
+WROUT_NOPROG="$(wr_collect "$WRNOPROG" "$WRPROJ" noprog-run)"
+WROUT_NODISP="$(wr_collect "$WRNODISP" "$WRPROJ" nodisp-run)"
+dw() { jq -c '.totals.dispatch_waste' "$1"; }
+dwn() { jq -c '[.notes[]|select(startswith("dispatch_waste"))|split(":")[0]]' "$1"; }
+check "DPM T6: fixture rows read as designed ([kind, progress, tool_calls])" \
+  '[["initial","none",3],["continuation","landed",1]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.kind,.progress,.tool_calls]]' "$WROUT_OVR")"
+check "DPM T6: fully measured run with the override (threshold 2 tool calls)" \
+  '{"zero_progress":{"count":1,"tokens":{"input":100,"output":10,"cache_creation":800,"cache_read":90}},"continuations":1,"over_threshold":{"count":1,"token_share":0.25},"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(dw "$WROUT_OVR")"
+check "DPM T6: a fully measured run carries no dispatch_waste note" '[]' "$(dwn "$WROUT_OVR")"
+check "DPM T6: no override -> the default 150 tool calls, nothing over it (a measured 0 and 0 share)" \
+  '{"count":0,"token_share":0}|{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(jq -c '.totals.dispatch_waste | "\(.over_threshold|tojson)|\(.turn_threshold|tojson)"' -r "$WROUT_DEF")"
+printf 'implementer_turn_budget: 0\n' > "$WRREPO/.agents/project-overrides.yaml"
+WROUT_ZERO="$(wr_collect "$WRREPO" "$WRPROJ" zero-run)"; rm -f "$WRREPO/.agents/project-overrides.yaml"
+check "DPM T6: implementer_turn_budget: 0 is not a positive integer -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' "$(jq -c '.totals.dispatch_waste.turn_threshold' "$WROUT_ZERO")"
+check "DPM T6: one null tokens nulls only the sums and share" \
+  '{"zero_progress":{"count":1,"tokens":null},"continuations":1,"over_threshold":{"count":1,"token_share":null},"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(dw "$WROUT_NOTOK")"
+check "DPM T6: null tokens names the token sum and the share in notes[]" \
+  '["dispatch_waste.zero_progress.tokens","dispatch_waste.over_threshold.token_share"]' "$(dwn "$WROUT_NOTOK")"
+check "DPM T6: one null kind nulls only continuations" \
+  '{"zero_progress":{"count":1,"tokens":{"input":100,"output":10,"cache_creation":800,"cache_read":90}},"continuations":null,"over_threshold":{"count":0,"token_share":0},"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
+  "$(dw "$WROUT_NOKIND")"
+check "DPM T6: null kind names continuations in notes[]" '["dispatch_waste.continuations"]' "$(dwn "$WROUT_NOKIND")"
+check "DPM T6: the no-progress fixture has one unresolved row" \
+  '[["initial","none"],["continuation","advanced"],["continuation",null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.kind,.progress]]' "$WROUT_NOPROG")"
+check "DPM T6: one null progress nulls only zero_progress" \
+  '{"zero_progress":null,"continuations":2,"over_threshold":{"count":0,"token_share":0},"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
+  "$(dw "$WROUT_NOPROG")"
+check "DPM T6: null progress names zero_progress, and the row left out of over_threshold, in notes[]" \
+  '["dispatch_waste.zero_progress","dispatch_waste.over_threshold"]' "$(dwn "$WROUT_NOPROG")"
+DW_ALLNULL='{"zero_progress":null,"continuations":null,"over_threshold":null,"turn_threshold":null}'
+check "DPM T6: a run with no implementer dispatch reads all-null" "$DW_ALLNULL" "$(dw "$WROUT_NODISP")"
+check "DPM T6: no implementer dispatch is named in notes[]" '["dispatch_waste"]' "$(dwn "$WROUT_NODISP")"
+check "DPM T6: the no-dispatch run is named as such, not as legacy (its start record is in the window)" \
+  '1' "$(jq -r '[.notes[]|select(startswith("dispatch_waste: unmeasured — this run has no implementer dispatch"))]|length' "$WROUT_NODISP")"
+check "DPM T6: a legacy run reads all-null" "$DW_ALLNULL" "$(dw "$DPOUT")"
+check "DPM T6: the legacy run names dispatch_waste as unmeasured (legacy) in notes[]" '1' \
+  "$(jq -r '[.notes[]|select(startswith("dispatch_waste: unmeasured — legacy run"))]|length' "$DPOUT")"
 
 echo
 if [ "$fail" -eq 0 ]; then

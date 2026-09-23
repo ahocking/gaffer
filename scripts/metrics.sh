@@ -219,6 +219,34 @@ resolve_idle_gap() {
   case "$v" in ''|*[!0-9]*) echo 300 ;; *) echo "$v" ;; esac
 }
 
+# --- dispatch_waste turn threshold (dispatch-progress-metrics T6) -------------
+# The repository's `implementer_turn_budget` (tool calls) when it is a positive
+# integer, else 150, the baseline's own cutoff. Prints "<value> <source>", where
+# source is `implementer_turn_budget` or `default`. Same token scan as
+# runstate.sh's _rs_implementer_turn_budget (a trailing comment and one matching
+# pair of quotes per token are tolerated; zero, `00` and non-digits are invalid),
+# but its fallback is this rollup's own 150, not the handoff budget default.
+resolve_turn_threshold() {
+  local main_root="$1" v=""
+  local ov="${main_root}/.agents/project-overrides.yaml"
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^implementer_turn_budget:[[:space:]]*/ {
+        line = $0
+        sub(/^implementer_turn_budget:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { sub(/^0+/, "", tok); print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo "150 default" ;; *) echo "$v implementer_turn_budget" ;; esac
+}
+
 # =============================================================================
 # collect
 # =============================================================================
@@ -1576,8 +1604,14 @@ cmd_collect() {
   local wall=0
   [ -n "$win_start" ] && [ -n "$win_end" ] && wall=$(( $(epoch "$win_end") - $(epoch "$win_start") ))
   [ "$wall" -ge 0 ] 2>/dev/null || wall=0
+  local turn_threshold turn_threshold_source
+  read -r turn_threshold turn_threshold_source <<EOF
+$(resolve_turn_threshold "$main_root")
+EOF
 
   jq -n \
+    --argjson turn_threshold "$turn_threshold" \
+    --arg turn_threshold_source "$turn_threshold_source" \
     --arg run_id "$run_id" \
     --arg generated "$generated" \
     --arg token_source "$token_source" \
@@ -1665,6 +1699,62 @@ cmd_collect() {
                        else (map({k:(.ts // "" | ts_ms), t:.routing_table}) | sort_by(.k) | last | .t) end),
         distinct_tables: (($sids[0] // []) | map(select(.tool=="Agent" and has("routing_table")) | .routing_table) | unique | length)
       } as $route
+    # DISPATCH WASTE (dispatch-progress-metrics T6). Rolled up over every
+    # packets[].dispatches[] row (a swept or sibling packet carries dispatches: null
+    # and contributes no row). Each component is null, never 0, when the rows cannot
+    # support it: zero_progress when any row has a null progress (its token sum when
+    # any progress-none row has null tokens), continuations when any row has a null
+    # kind, and everything on a legacy run or a run with no implementer dispatch.
+    # over_threshold counts rows whose tool_calls exceeds the threshold; a row with
+    # null tool_calls (an unresolved dispatch) is in neither side of the count nor of
+    # the token share, and a note says how many were left out; the share is null
+    # when any row it does count has null tokens. token_share = over-threshold
+    # tokens / all counted tokens, each dispatch total = input + output +
+    # cache_creation + cache_read. (No apostrophes in here: one single-quoted word.)
+    | (($kindj[0] // {}).legacy == true) as $dw_legacy
+    | (($packets[0] // []) | map(.dispatches // []) | add // []) as $drows
+    | def dw_tsum: {input:(map(.input)|add//0), output:(map(.output)|add//0),
+                    cache_creation:(map(.cache_creation)|add//0), cache_read:(map(.cache_read)|add//0)};
+      def dw_tot: (.input + .output + .cache_creation + .cache_read);
+      (if ($dw_legacy or ($drows|length) == 0) then
+         {zero_progress: null, continuations: null, over_threshold: null, turn_threshold: null}
+       else
+         ($drows | map(select(.progress == "none"))) as $zp
+         | ($drows | map(select((.tool_calls|type) == "number"))) as $tc
+         | ($tc | map(select(.tool_calls > $turn_threshold))) as $ot
+         | {zero_progress: (if ($drows | any(.progress == null)) then null
+                            else {count: ($zp|length),
+                                  tokens: (if ($zp | any(.tokens == null)) then null
+                                           else ($zp | map(.tokens) | dw_tsum) end)} end),
+            continuations: (if ($drows | any(.kind == null)) then null
+                            else ($drows | map(select(.kind == "continuation")) | length) end),
+            over_threshold: {count: ($ot|length),
+                             token_share: (if ($tc | any(.tokens == null)) then null
+                                           else (($tc | map(.tokens|dw_tot) | add // 0) as $all
+                                                 | if $all > 0 then ((($ot | map(.tokens|dw_tot) | add // 0) / $all)*1000|floor)/1000
+                                                   else null end) end)},
+            turn_threshold: {value: $turn_threshold, unit: "tool_calls", source: $turn_threshold_source}}
+       end) as $dw
+    | ([ if $dw_legacy then
+           "dispatch_waste: unmeasured — legacy run (no start or routing record for any of its packets falls in this window), so every dispatch kind and progress is null and zero_progress, continuations, over_threshold and turn_threshold are all null, never 0."
+         elif ($drows|length) == 0 then
+           "dispatch_waste: unmeasured — this run has no implementer dispatch row (none dispatched, or only on swept/sibling packets), so zero_progress, continuations, over_threshold and turn_threshold are all null, never 0."
+         else
+           (($drows | map(select(.progress == null)) | length) as $n
+            | if $n > 0 then "dispatch_waste.zero_progress: unmeasured — \($n) of \($drows|length) dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0." else empty end),
+           (($drows | map(select(.progress == "none"))) as $zp
+            | ($zp | map(select(.tokens == null)) | length) as $n
+            | if (($drows | any(.progress == null)) | not) and $n > 0 then "dispatch_waste.zero_progress.tokens: unmeasured — \($n) of \($zp|length) progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands." else empty end),
+           (($drows | map(select(.kind == null)) | length) as $n
+            | if $n > 0 then "dispatch_waste.continuations: unmeasured — \($n) of \($drows|length) dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0." else empty end),
+           (($drows | map(select((.tool_calls|type) != "number")) | length) as $n
+            | if $n > 0 then "dispatch_waste.over_threshold: \($n) of \($drows|length) dispatch row(s) carry null tool_calls (an unresolved dispatch) and are left out of both the count and the token share, which cover the other \(($drows|length) - $n) row(s) only." else empty end),
+           (($drows | map(select((.tool_calls|type) == "number"))) as $tc
+            | ($tc | map(select(.tokens == null)) | length) as $n
+            | if $n > 0 then "dispatch_waste.over_threshold.token_share: unmeasured — \($n) of \($tc|length) counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands."
+              elif (($dw.over_threshold.token_share == null) and (($tc|length) > 0)) then "dispatch_waste.over_threshold.token_share: unmeasured — the counted dispatch rows hold zero tokens in total, so no share can be taken."
+              else empty end)
+         end ]) as $dw_notes
     | {
       schema: 2,
       run_id: $run_id,
@@ -1762,7 +1852,8 @@ cmd_collect() {
         started_without_outcome: ($packets[0] // [] | map(select(.outcome == null)) | length),
         outcome_coverage: (if ($rj.has_start | not) then "unmeasured"
                             elif (($packets[0] // [] | map(select(.outcome == null)) | length) > 0) then "incomplete"
-                            else "complete" end)
+                            else "complete" end),
+        dispatch_waste: $dw
       },
       by_agent_role: $rt,
       audit: (($packets[0] // []) as $pk
@@ -1828,6 +1919,8 @@ cmd_collect() {
          | if ($kjn.routing_unmeasured == true) then
              "dispatch kind: routing-unmeasured — \($kjn.start_count) start record(s) fall in this window but no .agents/loop/*/routing.jsonl holds a routing record for any of its packets (the run directory was pruned by begin-run, or no packet reached a review), so every packets[].dispatches[].kind is null (unmeasured), never the `initial` the start records alone would give."
            else empty end),
+        # dispatch-progress-metrics T6: which dispatch_waste component is unmeasured, and why.
+        $dw_notes[],
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
         "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
         "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",

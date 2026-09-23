@@ -30,8 +30,36 @@
 #                     runs routing.sh against a temp root. Neither phase runs
 #                     git: every refusal happens before any git read.
 #
-# Exit status: 0 printed settings; 1 refused, or no experiment id could be
-# computed; 2 usage error, or routing.sh missing beside this script.
+#   candidates <file> read the settings exactly as `settings` does (the same
+#                     refusals, before any git read), then list every packet
+#                     with an `[orch packet:<id>]` trailer on its own line in
+#                     any commit of the source repository (`git log --all`).
+#                     One line per packet, oldest first (the order of each
+#                     packet's earliest trailer commit):
+#                       CANDIDATE packet=<id> class=<code|prose> handoff=<original|rebuilt> start=<sha> commits=<sha,...>
+#                       DROPPED packet=<id> class=neither
+#                       EXCLUDED packet=<id> reason=<why>
+#                     `commits` lists every trailer commit of the packet,
+#                     earliest first (--author-date-order: ancestry first,
+#                     then author date); `start`, the replay start, is the
+#                     earliest one's first parent. Class is decided from the
+#                     union of those commits' changed files, each commit's
+#                     `gspec/` files dropped when that commit changed only
+#                     checkbox characters in them: code when a file is in
+#                     CODE_FILES, prose when none is and one is in
+#                     PROSE_FILES, neither otherwise (not a candidate). A set
+#                     item ending in `/` matches by prefix; any other item
+#                     matches that file or anything beneath it. The handoff is
+#                     `original` when `.agents/loop/*/<id>/handoff.md` exists
+#                     in the source repository, else `rebuilt` when
+#                     gspec-backlog.sh (beside this script) resolves the task
+#                     against the start commit's `gspec/` tree; a packet with
+#                     neither is EXCLUDED with the reason. This script never
+#                     parses a gspec file: resolution is the adapter's.
+#
+# Exit status: 0 printed settings / candidates; 1 refused, no experiment id
+# could be computed, or the source repository is not a git repository; 2
+# usage error, or routing.sh / gspec-backlog.sh missing beside this script.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -41,6 +69,7 @@ set -f   # no globbing: list items are split on `,` and must never expand
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 ROUTING="$HERE/routing.sh"
+BACKLOG="$HERE/gspec-backlog.sh"
 AGENTS_DIR="${ORCH_ROUTING_AGENTS_DIR:-$HERE/../agents}"
 
 # --- REPLAYABLE_ROLES: the roles an experiment may vary ------------------------
@@ -66,7 +95,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh settings <file>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates} <file>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -405,10 +434,190 @@ PROSE_FILES=$(norm_list "$prose")"
   printf 'EXPERIMENT=%s\n' "$id"
 }
 
+# --- candidates ------------------------------------------------------------------
+
+# in_set <file> <comma-list>: is <file> in the set? An item ending in `/` is a
+# prefix; any other item is that file or a directory holding it.
+in_set() {
+  local item
+  for item in $(printf '%s' "$2" | tr ',' ' '); do
+    case "$item" in
+      */) case "$1" in "$item"*) return 0 ;; esac ;;
+      *)  [ "$1" = "$item" ] && return 0
+          case "$1" in "$item"/*) return 0 ;; esac ;;
+    esac
+  done
+  return 1
+}
+
+# trailer_rows <src>: one `<id>\t<commit>\t<first-parent>` row per own-line
+# `[orch packet:<id>]` trailer (the line shape metrics.sh counts), commits
+# earliest first. A root commit's parent column is empty.
+trailer_rows() {
+  git -C "$1" log --all --author-date-order --reverse \
+      --format='===ORCHCOMMIT===%x09%H%x09%P%n%B' 2>/dev/null | tr -d '\r' \
+    | awk -F'\t' '
+        /^===ORCHCOMMIT===\t/ { c = $2; p = $3; sub(/ .*/, "", p); next }
+        /^[[:space:]]*\[orch packet:[^]]+\][[:space:]]*$/ {
+          if (c != "" && match($0, /\[orch packet:[^]]+\]/)) {
+            v = substr($0, RSTART + 13, RLENGTH - 14)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            if (v != "" && !((c SUBSEP v) in seen)) { seen[c SUBSEP v] = 1; print v "\t" c "\t" p }
+          }
+        }'
+}
+
+# changed_files <src> <commit> <parent-or-empty>: the commit's changed paths.
+changed_files() {
+  if [ -n "$3" ]; then
+    git -C "$1" -c core.quotePath=false diff-tree -r --name-only --no-renames "$3" "$2" 2>/dev/null
+  else
+    git -C "$1" -c core.quotePath=false diff-tree -r --root --no-commit-id --name-only --no-renames "$2" 2>/dev/null
+  fi
+}
+
+# checkbox_only_files <src> <commit> <parent>: the `gspec/` files this commit
+# changed in nothing but checkbox characters. Judged hunk by hunk on the diff's
+# characters (a list item's leading `[ ]`/`[x]`/`[X]` is the only position
+# allowed to differ); no gspec file is parsed. A moved line, an added or
+# deleted file, a binary or mode-only change is never checkbox-only.
+checkbox_only_files() {
+  [ -n "$3" ] || return 0
+  git -C "$1" -c core.quotePath=false diff -U0 --no-renames --no-color --no-ext-diff \
+      --no-textconv --src-prefix=a/ --dst-prefix=b/ "$3" "$2" -- gspec/ 2>/dev/null \
+    | awk '
+        function norm(s) {
+          if (match(s, /^[[:space:]]*[-*+][[:space:]]+\[[ xX]\]/))
+            s = substr(s, 1, RLENGTH - 2) " " substr(s, RLENGTH)
+          return s
+        }
+        function endhunk(   i) {
+          if (nr != na) ok = 0
+          else for (i = 1; i <= nr; i++) if (norm(r[i]) != norm(a[i])) { ok = 0; break }
+          nr = 0; na = 0; last = ""
+        }
+        function endfile() {
+          if (inh) endhunk()
+          if (f != "" && ok && hunks > 0) print f
+          f = ""; ok = 1; hunks = 0; inh = 0; nr = 0; na = 0; last = ""
+        }
+        BEGIN { ok = 1 }
+        /^diff --git / { endfile(); next }
+        !inh && /^\+\+\+ / { n = substr($0, 5); if (n ~ /^b\//) f = substr(n, 3); else ok = 0; next }
+        !inh && /^--- / { if ($0 == "--- /dev/null") ok = 0; next }
+        !inh && /^Binary files / { ok = 0; next }
+        /^@@/ { if (inh) endhunk(); inh = 1; hunks++; next }
+        inh && /^-/ { r[++nr] = substr($0, 2); last = "r"; next }
+        inh && /^\+/ { a[++na] = substr($0, 2); last = "a"; next }
+        inh && /^\\/ { if (last == "r") r[nr] = r[nr] "\n\\"; else if (last == "a") a[na] = a[na] "\n\\"; next }
+        END { endfile() }
+      '
+}
+
+cmd_candidates() {
+  [ $# -eq 1 ] || usage
+  local sout
+  sout="$(cmd_settings "$1")" || exit $?
+  [ -x "$BACKLOG" ] || die "candidates: gspec-backlog.sh is missing or not executable: $BACKLOG" 2
+  local src code prose
+  src="$(printf '%s\n' "$sout" | sed -n 's/^SOURCE_REPO=//p')"
+  code="$(printf '%s\n' "$sout" | sed -n 's/^CODE_FILES=//p')"
+  prose="$(printf '%s\n' "$sout" | sed -n 's/^PROSE_FILES=//p')"
+  git -C "$src" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "candidates: the source repository is not a git repository: $src"
+
+  local tmp
+  tmp="$(mktemp -d 2>/dev/null)" || die "candidates: cannot create a temp root"
+  # shellcheck disable=SC2064  # expand $tmp now: it is local to this function
+  trap "rm -rf '$tmp'" EXIT
+  trailer_rows "$src" > "$tmp/rows"
+
+  local loop_dirs
+  set +f; loop_dirs=( "$src"/.agents/loop/*/ ); set -f
+
+  local id rows start commits c p f class d tree reason out rc
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!A-Za-z0-9._-]*)
+        printf 'EXCLUDED packet=%s reason=packet id outside [A-Za-z0-9._-]\n' "$(printf '%s' "$id" | tr -c 'A-Za-z0-9._-' '?')"
+        continue ;;
+    esac
+    rows="$(ID="$id" awk -F'\t' '$1 == ENVIRON["ID"]' "$tmp/rows")"
+    start="$(printf '%s\n' "$rows" | sed -n '1p' | cut -f3)"
+    commits="$(printf '%s\n' "$rows" | cut -f2 | paste -sd, -)"
+    if [ -z "$start" ]; then
+      printf 'EXCLUDED packet=%s reason=its earliest trailer commit is a root commit, so there is no replay start\n' "$id"
+      continue
+    fi
+
+    # Class: the union of every trailer commit's changed files, each commit's
+    # checkbox-only gspec/ files dropped.
+    : > "$tmp/files"
+    while IFS="$(printf '\t')" read -r _ c p; do
+      changed_files "$src" "$c" "$p" | LC_ALL=C sort -u > "$tmp/changed"
+      checkbox_only_files "$src" "$c" "$p" | LC_ALL=C sort -u > "$tmp/cbx"
+      LC_ALL=C comm -23 "$tmp/changed" "$tmp/cbx" >> "$tmp/files"
+    done <<EOF
+$rows
+EOF
+    class="neither"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if in_set "$f" "$code"; then class="code"; break; fi
+      if in_set "$f" "$prose"; then class="prose"; fi
+    done < "$tmp/files"
+    if [ "$class" = neither ]; then
+      printf 'DROPPED packet=%s class=neither\n' "$id"
+      continue
+    fi
+
+    # Handoff: the original file, else one the adapter rebuilds at the start.
+    reason=""
+    for d in "${loop_dirs[@]}"; do
+      if [ -f "${d}${id}/handoff.md" ]; then reason="original"; break; fi
+    done
+    if [ -z "$reason" ]; then
+      # `<rev>:gspec^{tree}` would read `^{tree}` as part of the path, so the
+      # object is resolved first and its type checked apart.
+      tree="$(git -C "$src" rev-parse --verify -q "${start}:gspec" 2>/dev/null)"
+      if [ -n "$tree" ] && [ "$(git -C "$src" cat-file -t "$tree" 2>/dev/null)" != tree ]; then tree=""; fi
+      if [ -z "$tree" ]; then
+        reason="no original handoff, and the start commit has no gspec/ tree to rebuild one from"
+      else
+        if [ ! -d "$tmp/g-$tree" ]; then
+          mkdir -p "$tmp/g-$tree/gspec"
+          git -C "$src" archive --format=tar "$tree" 2>/dev/null | tar -x -f - -C "$tmp/g-$tree/gspec" 2>/dev/null \
+            || rm -rf "$tmp/g-$tree"
+        fi
+        if [ ! -d "$tmp/g-$tree" ]; then
+          reason="no original handoff, and the start commit's gspec/ tree could not be extracted"
+        else
+          out="$("$BACKLOG" handoff "$id" "$tmp/g-$tree" 2>"$tmp/bl.err" </dev/null | tr -d '\r')"; rc=$?
+          case "$rc:$out" in
+            0:PACKET=*) reason="rebuilt" ;;
+            0:*) reason="no original handoff, and gspec-backlog.sh does not resolve the task at the start commit: $(printf '%s\n' "$out" | sed -n 's/^REASON=//p' | head -1)" ;;
+            *)   reason="no original handoff, and gspec-backlog.sh handoff failed at the start commit: $(head -1 "$tmp/bl.err")" ;;
+          esac
+        fi
+      fi
+    fi
+    case "$reason" in
+      original|rebuilt)
+        printf 'CANDIDATE packet=%s class=%s handoff=%s start=%s commits=%s\n' "$id" "$class" "$reason" "$start" "$commits" ;;
+      *)
+        printf 'EXCLUDED packet=%s reason=%s\n' "$id" "$(printf '%s' "$reason" | tr '\n\t' '  ')" ;;
+    esac
+  done <<EOF
+$(awk -F'\t' '!seen[$1]++ { print $1 }' "$tmp/rows")
+EOF
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
-  settings) cmd_settings "$@" ;;
+  settings)   cmd_settings "$@" ;;
+  candidates) cmd_candidates "$@" ;;
   *) usage ;;
 esac
 exit 0

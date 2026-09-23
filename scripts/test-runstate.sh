@@ -618,6 +618,43 @@ assert_true "summary survives a near-empty run-state" "\"\$RUNSTATE\" summary '$
 assert_true "summary defaults missing status" "\"\$RUNSTATE\" summary '$PARTIAL' | grep -q 'status=unknown'"
 assert_true "summary defaults missing cursor" "\"\$RUNSTATE\" summary '$PARTIAL' | grep -q 'cursor=none'"
 
+echo "== summary counts a blocking question by its DECODED severity (dispatch-progress-metrics T12) =="
+# One counted and one uncounted case per form (single-quoted, double-quoted,
+# bare), each checking the NUMBER, not merely that a count was printed. Each
+# fixture carries exactly one question, so the counted case must read 1 and the
+# uncounted case 0. The counted fixtures also carry a trailing CR and trailing
+# whitespace, which the rule strips before decoding. Every case runs twice:
+# full PATH and the no-tools PATH (`bare`, jq/python3/yq stubbed out).
+# MUTATION RULED OUT: the bare-value regex this replaced
+# (`grep -cE 'severity:[[:space:]]*blocking'`) -- it reads both quoted counted
+# cases as 0 and the bare `blockingish` case as 1 -- and a prefix match on the
+# DECODED value, which reads every uncounted case as 1.
+SEVD="$(mktemp -d)"
+_sev_fixture() {  # <name> <raw severity value, may carry CR/space>
+  printf 'status: paused\nbranch: orch/x\npending_questions:\n  - id: q-001\n    severity: %s\n    question: what now\nfindings:\n' "$2" \
+    > "$SEVD/$1.yaml"
+}
+_sev_count() {  # <runner> <name> -- the blocking count summary prints
+  "$1" summary "$SEVD/$2.yaml" | sed -nE 's/.*, ([0-9]+) blocking question\(s\).*/\1/p'
+}
+full() { "$RUNSTATE" "$@"; }
+_sev_fixture sq-yes   "'blocking'  "$'\r'
+_sev_fixture dq-yes   "\"blocking\" "$'\r'
+_sev_fixture bare-yes "blocking "$'\r'
+_sev_fixture sq-no    "'blocking-later'"
+_sev_fixture dq-no    "\"blocking soon\""
+_sev_fixture bare-no  "blockingish"
+for runner in full bare; do
+  for c in sq-yes dq-yes bare-yes; do
+    assert_true "summary ($runner PATH): $c counts exactly 1 blocking question" \
+      "[ \"\$(_sev_count $runner $c)\" = 1 ]"
+  done
+  for c in sq-no dq-no bare-no; do
+    assert_true "summary ($runner PATH): $c (only starts with blocking) counts 0" \
+      "[ \"\$(_sev_count $runner $c)\" = 0 ]"
+  done
+done
+
 echo "== SessionStart hook: valid JSON, tailored to status, silent when done/absent =="
 "$RUNSTATE" set "$RS" status running >/dev/null
 assert_true "hook emits valid JSON"            "run_hook | python3 -c 'import json,sys; json.load(sys.stdin)'"

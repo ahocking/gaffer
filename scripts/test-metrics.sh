@@ -107,10 +107,18 @@ check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
 DPM_NEW_FIELDS=('.packets[].dispatches'   # jq paths added by dispatch-progress-metrics (T2: dispatches)
                 '.totals.dispatch_waste'  # T6: the rollup
                 '.notes[] | select(startswith("dispatch_waste"))')   # T6: its notes[] lines
+# T7: the two per-packet dispatch flags are new entries in an EXISTING array, so they
+# are stripped rather than deleted, and flagged_packets is re-derived without them (an
+# entry whose only flags were these two drops out, exactly as the collector would list it).
+DPM_NEW_FLAG='(startswith("waste:zero-progress-dispatch(") or startswith("waste:over-budget-dispatch("))'
+DPM_FLAG_STRIP='(.packets[]?.audit.flags |= (if type == "array" then map(select('"$DPM_NEW_FLAG"' | not)) else . end))
+  | (.audit.flagged_packets |= (if type == "array"
+      then (map(.flags |= map(select('"$DPM_NEW_FLAG"' | not))) | map(select((.flags | length) > 0)))
+      else . end))'
 dpm_filter() {
   local f='del(.generated_at)' p
   for p in ${DPM_NEW_FIELDS[@]+"${DPM_NEW_FIELDS[@]}"}; do f="$f | del($p)"; done
-  printf '%s' "$f"
+  printf '%s | %s' "$f" "$DPM_FLAG_STRIP"
 }
 dpm_view() { jq -S -c "$(dpm_filter)" "$1"; }
 DPM_GOLDEN="$(cat <<'GOLDEN'
@@ -135,6 +143,18 @@ dpm_mutant() { # dpm_mutant <label> <jq mutation>
 dpm_mutant "packets[].edits"         '.packets[0].edits = 3'
 dpm_mutant "dispatched[]"            '.packets[1].dispatched = {"implementer": 1}'
 dpm_mutant "audit.review_dispatches" '.packets[0].audit.review_dispatches = 1'
+# T7: an existing flag class is still guarded (the strip is limited to the two new
+# dispatch flags, not the whole waste: class) ...
+dpm_mutant "an existing waste: flag" \
+  '.packets[0].audit.flags += ["waste:integration-tier-edited-inline-on-opus"]
+   | .audit.flagged_packets += [{id:"feat-001",tier:null,impl:null,flags:["waste:integration-tier-edited-inline-on-opus"]}]'
+# ... and the two new ones are stripped, with flagged_packets re-derived without them.
+DPM_M="$ROOT/dpm-t7.json"
+jq '.packets[0].audit.flags += ["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(2)"]
+    | .audit.flagged_packets += [{id:"feat-001",tier:null,impl:null,flags:["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(2)"]}]' \
+  "$OUT" > "$DPM_M"
+check "dpm pin: the two waste:*-dispatch flags are stripped and flagged_packets re-derived" \
+  "$DPM_GOLDEN" "$(dpm_view "$DPM_M")"
 
 # tokens: main(200/100/200/1200) + a1(300/150/100/1000) + a2(40/20/0/600)
 check "tokens.input"          "540"  "$(jq -r '.totals.tokens.input' "$OUT")"
@@ -2578,6 +2598,43 @@ check "DPM T6: the no-dispatch run is named as such, not as legacy (its start re
 check "DPM T6: a legacy run reads all-null" "$DW_ALLNULL" "$(dw "$DPOUT")"
 check "DPM T6: the legacy run names dispatch_waste as unmeasured (legacy) in notes[]" '1' \
   "$(jq -r '[.notes[]|select(startswith("dispatch_waste: unmeasured — legacy run"))]|length' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T7: per-packet waste:*-dispatch flags =="
+# Reuses the T6 wr-* fixtures: d1 is progress none with 3 tool calls, d2 landed with 1.
+#   ovr     threshold 2 -> d1 is both zero-progress and over budget
+#   base    threshold 150 (default) -> zero-progress only
+#   allnull the ovr repo with no subagent event: both dispatches unresolved, so
+#           progress and tool_calls are null on each -> no flag, never a (0)
+#   legacyovr the ovr repo with no start or routing record: a legacy run, where d1
+#           still measures 3 tool calls over the threshold of 2 -> no waste: flag
+wf() { jq -c '[.packets[]|select(.id=="wr-001")|.audit.flags[]|select(startswith("waste:"))]' "$1"; }
+check "DPM T7: zero-progress and over-budget flags, counted against the rollup threshold" \
+  '["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]' "$(wf "$WROUT_OVR")"
+check "DPM T7: under the default threshold only the zero-progress flag" \
+  '["waste:zero-progress-dispatch(1)"]' "$(wf "$WROUT_DEF")"
+check "DPM T7: totals.audit.flagged_packets lists the flagged packet as it lists any other" \
+  '[{"id":"wr-001","tier":null,"impl":null,"flags":["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]}]' \
+  "$(jq -c '.audit.flagged_packets' "$WROUT_OVR")"
+WRALLNULL="$(wr_variant allnull)"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRALLNULL/.agents/project-overrides.yaml"
+jq -c 'select(.agent_type == "main")' "$WRREPO/.agents/metrics/events/WR.jsonl" > "$ROOT/wr-allnull.jsonl"
+mv "$ROOT/wr-allnull.jsonl" "$WRALLNULL/.agents/metrics/events/WR.jsonl"
+WROUT_ALLNULL="$(wr_collect "$WRALLNULL" "$WRPROJ" allnull-run)"
+check "DPM T7: the all-null fixture has two unresolved rows ([progress, tool_calls])" \
+  '[[null,null],[null,null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]' "$WROUT_ALLNULL")"
+check "DPM T7: a packet of all-null dispatches carries no flag" '[]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.audit.flags[]]' "$WROUT_ALLNULL")"
+WRLEGACY="$(wr_variant legacyovr)"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRLEGACY/.agents/project-overrides.yaml"
+: > "$WRLEGACY/.agents/metrics/outcomes/WR.jsonl"; rm -rf "$WRLEGACY/.agents/loop/RUN-WR"
+WROUT_LEGACY="$(wr_collect "$WRLEGACY" "$WRPROJ" legacyovr-run)"
+check "DPM T7: the legacy fixture is legacy and still measures d1 over the threshold ([progress, tool_calls])" \
+  'true|[[null,3],[null,1]]' \
+  "$(jq -r --argjson n "$DW_ALLNULL" '"\(.totals.dispatch_waste == $n)|\([.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]|tojson)"' "$WROUT_LEGACY")"
+check "DPM T7: a legacy run carries no waste: flag" '[]' "$(wf "$WROUT_LEGACY")"
+check "DPM T7: the T2 legacy run carries no waste: flag on any packet" '[]' \
+  "$(jq -c '[.packets[].audit.flags[]|select(startswith("waste:"))]' "$DPOUT")"
 
 echo
 if [ "$fail" -eq 0 ]; then

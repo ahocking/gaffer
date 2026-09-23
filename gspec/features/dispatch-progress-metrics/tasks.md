@@ -45,7 +45,7 @@ feature: dispatch-progress-metrics
   - covers: A run-level rollup names the waste
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T7** **P1** Add `waste:zero-progress-dispatch(<n>)` and `waste:over-budget-dispatch(<n>)` to per-packet `audit.flags`, using the rollup's `turn_threshold` and unit. Suppress both on a legacy run the way `unlabelled:` is suppressed, never emit either on a swept or sibling row, and never count a dispatch with a null `progress` or `tool_calls` toward either, so `totals.audit.flagged_packets` picks up flagged packets unchanged; extend T1's pin filter to strip the two `waste:*-dispatch` entries from `audit.flags` and re-derive `flagged_packets` without them, so the pin still compares existing meaning byte-for-byte. Cases cover each flag, a packet of all-null dispatches carrying no flag, and the legacy run carrying no `waste:` flag
+- [x] **T7** **P1** Add `waste:zero-progress-dispatch(<n>)` and `waste:over-budget-dispatch(<n>)` to per-packet `audit.flags`, using the rollup's `turn_threshold` and unit. Suppress both on a legacy run the way `unlabelled:` is suppressed, never emit either on a swept or sibling row, and never count a dispatch with a null `progress` or `tool_calls` toward either, so `totals.audit.flagged_packets` picks up flagged packets unchanged; extend T1's pin filter to strip the two `waste:*-dispatch` entries from `audit.flags` and re-derive `flagged_packets` without them, so the pin still compares existing meaning byte-for-byte. Cases cover each flag, a packet of all-null dispatches carrying no flag, and the legacy run carrying no `waste:` flag
   - deps: T6
   - covers: Per-packet flags surface zero-progress and over-threshold dispatches
   - arch: —

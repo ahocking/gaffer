@@ -151,7 +151,7 @@ derived-done `run-metrics`; no existing field changes meaning.
     or a run with no implementer dispatch. A `notes[]` line names which
     component is unmeasured and why
 
-- [ ] **P1**: Per-packet flags surface zero-progress and over-threshold dispatches
+- [x] **P1**: Per-packet flags surface zero-progress and over-threshold dispatches
   - `audit.flags` gains `waste:zero-progress-dispatch(<n>)` when a packet has
     n ≥ 1 dispatches with `progress: none`, and `waste:over-budget-dispatch(<n>)`
     when n ≥ 1 dispatches have `tool_calls` above the same `turn_threshold`

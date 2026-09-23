@@ -55,7 +55,7 @@ feature: dispatch-progress-metrics
   - covers: `show` renders the rollup where it is read
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T9** [P] **P1** Add `dispatches[]` and `totals.dispatch_waste` to the rollup the `analyze` verb in `skills/metrics/SKILL.md` hands over, telling it that null is unmeasured, and add no ranking rules beyond that
+- [x] **T9** [P] **P1** Add `dispatches[]` and `totals.dispatch_waste` to the rollup the `analyze` verb in `skills/metrics/SKILL.md` hands over, telling it that null is unmeasured, and add no ranking rules beyond that
   - deps: T6
   - covers: `show` renders the rollup where it is read
   - arch: —

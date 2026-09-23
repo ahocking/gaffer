@@ -189,6 +189,20 @@ Look for, and cite the figures behind, at least:
   included). Where `edits` is present, `contended_files` (one file touched by more than
   one role) is the rework signal — it separates correction from division of labour,
   which per-role edit counts cannot.
+- **`packets[].dispatches[]` and `totals.dispatch_waste`** (dispatch-progress-metrics
+  T9) — one row per implementer dispatch of a packet, each with `kind` (`initial`,
+  `continuation`, `fix`, `retry`), `tool_calls`, `duration_ms`, `edits`, `tokens`
+  (the input/output/cache_creation/cache_read split) and `progress` (`landed`,
+  `advanced`, `none`); and the run-level rollup of those rows —
+  `zero_progress` (count and token sum of `progress: none` rows), `continuations`,
+  `over_threshold` (count and `token_share`) and the `turn_threshold` it was judged
+  against, with that threshold's unit and source. Use them to name the top
+  zero-progress dispatches by tokens. `null` anywhere here means **unmeasured, never
+  0**: a swept or sibling packet has `dispatches: null`, a row resolved to no
+  subagent has null cost fields and null `progress`, a legacy run has null `kind` and
+  `progress` on every row and a null rollup — and `notes[]` names which
+  `dispatch_waste` component is unmeasured and why. Say so in words, the same rule as
+  every other `null` in this packet, and never rank a null row as a zero.
 - **`self_host`** — a boolean indicating whether this run measured the plugin's own
   repository (dogfooding) rather than a consumer application. Self-host and consumer
   runs must NOT be averaged together, since this repo's loop feeds the measurement

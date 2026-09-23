@@ -808,6 +808,53 @@ cmd_collect() {
   ' "$tmp/pk_ends.json" "$tmp/recordjoin.json" > "$tmp/pk_ends_merged.json" 2>/dev/null \
     && mv "$tmp/pk_ends_merged.json" "$tmp/pk_ends.json" || true
 
+  # kindjoin.json (dispatch-progress-metrics T3): the records a dispatch row's `kind`
+  # is read from. Two sources, joined per packet and never through run-state's
+  # run_id (which names the CURRENT run, not the one being collected):
+  #   - start records: the outcomes log's boundary records with kind `start` or
+  #     `continue` (`record-start` with or without --continue — a resume's
+  #     continuation record is a start for this purpose), already scoped to this
+  #     run by session and parsed ts in attributed.json above;
+  #   - routing records: EVERY `.agents/loop/*/routing.jsonl` line (`route`'s shape:
+  #     ts/packet/token/action/status), scoped by parsed ts to [win_start, we_bound]
+  #     and to this run's packet ids. Routing records carry no session, so the window
+  #     and the packet id are the only scoping they admit.
+  # `legacy`: the window holds neither record type for this run's packets.
+  # `routing_unmeasured`: at least one start record but no routing record for ANY of
+  # this run's packets — `begin-run` prunes all but the current and newest other
+  # run directory, and every reviewed packet gets at least a `pass` record, so an
+  # absent routing log is a pruned (or never-reviewed) one, not a run without
+  # verdicts. Both read every kind as null in section 5; only the latter gets a note.
+  : > "$tmp/routing_raw.ndjson"
+  if [ -d "${agents}/loop" ]; then
+    local _rf
+    for _rf in "${agents}"/loop/*/routing.jsonl; do
+      [ -e "$_rf" ] || continue
+      jq -c 'select(type == "object")' "$_rf" 2>/dev/null >> "$tmp/routing_raw.ndjson" || true
+    done
+  fi
+  jq -n "${JQ_TS_MS}"'
+    ($att[0] // []) as $a
+    | (($pke[0] // []) | map(.id)) as $ids
+    | (if $ws == "" then null else ($ws|ts_ms) end) as $wsm
+    | (if $we == "" then null else ($we|ts_ms) end) as $wem
+    | ($a | map(select(.kind == "start" or .kind == "continue"))
+          | map({packet, _ms, src: "start", token: .kind})) as $starts
+    | ($rt | map(select((.packet|type) == "string" and (.ts|type) == "string" and (.token|type) == "string"))
+          | map(. + {_ms: (.ts|ts_ms)})
+          | map(select($wsm == null or ._ms >= $wsm))
+          | map(select($wem == null or ._ms <= $wem))
+          | map(select(.packet as $p | ($ids | index($p)) != null))
+          | map({packet, _ms, src: "route", token})) as $routes
+    | { recs: ($starts + $routes),
+        start_count: ($starts | length),
+        legacy: ((($starts | length) == 0) and (($routes | length) == 0)),
+        routing_unmeasured: ((($starts | length) > 0) and (($routes | length) == 0)) }
+  ' --slurpfile att "$tmp/attributed.json" --slurpfile rt "$tmp/routing_raw.ndjson" \
+    --slurpfile pke "$tmp/pk_ends.json" --arg ws "$win_start" --arg we "$we_bound" \
+    > "$tmp/kindjoin.json" 2>/dev/null \
+    || echo '{"recs":[],"start_count":0,"legacy":true,"routing_unmeasured":false}' > "$tmp/kindjoin.json"
+
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------
   # Emit ONE record per assistant turn: {role, ts, model, tok}. Per-turn `ts` lets us
   # bucket tokens into packet windows (per-packet split); `model` enables per-model
@@ -1134,6 +1181,7 @@ cmd_collect() {
      --slurpfile ev "$tmp/events.json" \
      --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
+     --slurpfile kj "$tmp/kindjoin.json" \
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
      --arg run_start "$win_start" \
@@ -1159,7 +1207,40 @@ cmd_collect() {
      # never be attributed to a dispatch.
      | ($events | map(select((.agent_id // "") != "" and .ts != null)) | group_by(.agent_id)
         | map({key: .[0].agent_id, value: {first_ms: (map(.ts|ts_ms)|min), evs: .}})) as $aid_ctx
-     | reduce range(0; length) as $i ([];
+     # DISPATCH KIND (dispatch-progress-metrics T3). The latest start or routing
+     # record for the packet strictly before the dispatch Agent event decides:
+     # a start (with or without --continue) -> initial, a `continue` routing record
+     # -> continuation, fix/retry -> that verdict. Only those three routing tokens
+     # are kind-bearing; pass/escalate/decider tokens never precede a re-dispatch of
+     # the same packet on their own. SAME BOUNDARY: when the latest record is a
+     # start and a `continue` routing record precedes it with NO Agent event of
+     # any role between the two (implementer-continuation writes `route continue`
+     # then `record-start --continue` back to back), the routing record decides.
+     # Only a `continue` routing record pairs with a following start: the run-loop
+     # fix/retry arm records no start, so a start after a fix/retry route with no
+     # Agent event between them is the `record-start --continue` of a resume, and the
+     # PRD reads a resume start as `initial` (latest-record rule).
+     # No prior record -> null; a legacy or routing-unmeasured run -> null on
+     # every row (kindjoin.json above), never a guessed `initial`.
+     | ($kj[0] // {recs: [], legacy: true, routing_unmeasured: false}) as $kjn
+     | ($events | map(select(.tool == "Agent" and .ts != null) | (.ts|ts_ms))) as $agent_ms
+     | ($kjn.recs | map(select(.src == "start" or .token == "continue" or .token == "fix" or .token == "retry"))) as $krecs
+     | def dkind($pid; $ams):
+         if ($kjn.legacy or $kjn.routing_unmeasured) then null
+         else ($krecs | map(select(.packet == $pid and ._ms < $ams)) | sort_by(._ms)) as $prior
+           | if ($prior | length) == 0 then null
+             else $prior[-1] as $L
+               | (if $L.src == "start" then
+                    ($prior | map(select(.src == "route" and .token == "continue" and (. as $r
+                        | ($agent_ms | any(. > $r._ms and . < $L._ms)) | not))) | last) as $R
+                    | (if $R != null then $R else $L end)
+                  else $L end) as $W
+               | if $W.src == "start" then "initial"
+                 elif $W.token == "continue" then "continuation"
+                 else $W.token end
+             end
+         end;
+     reduce range(0; length) as $i ([];
          . as $acc
          | $ends[$i] as $p
          | (if $i==0 then ($run_start // $p.end) else $ends[$i-1].end end) as $start
@@ -1206,8 +1287,9 @@ cmd_collect() {
                      | ($aid_ctx | map(select(.value.first_ms >= $lo and .value.first_ms <= $hi))
                         | sort_by(.value.first_ms, .key) | (.[0].value.evs // null))
                    else null end) as $devs
-                | if $devs == null then {tool_calls: null, duration_ms: null, edits: null}
-                  else {tool_calls: ($devs|length),
+                | dkind($p.id; ($a.ts|ts_ms)) as $kind
+                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null}
+                  else {kind: $kind, tool_calls: ($devs|length),
                         duration_ms: ($devs|map(.duration_ms//0)|add),
                         edits: ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length)}
                   end)) as $dispatches
@@ -1483,6 +1565,7 @@ cmd_collect() {
     --slurpfile sids "$tmp/events.json" \
     --slurpfile recj "$tmp/recordjoin.json" \
     --slurpfile dmctx "$tmp/dmctx.json" \
+    --slurpfile kindj "$tmp/kindjoin.json" \
     --arg unknown_note "$unknown_note" \
     "${JQ_TS_MS}"'
     ($roletokens[0] // {}) as $rt
@@ -1694,6 +1777,13 @@ cmd_collect() {
          | (if ($swept_ids|length) > 0 then
               "swept: true on \($swept_ids|length) packet(s) (\($swept_ids|join(", "))) — sweep-open closes an open packet by copying its own start ts as the close ts, so tool_calls/active_seconds/duration_ms/edits/by_agent/by_tool/by_command_class/failed_tool_calls/human_interactions/dispatched/tokens/audit counts read null there, not 0. The work happened; this collector cannot reconstruct its window from a verbatim-copied close (loop-measurement C1)."
             else empty end),
+        # dispatch-progress-metrics T3: a routing-unmeasured window is named, never
+        # left to read as a run of first attempts. A legacy run gets no note, so
+        # re-collecting an old run yields the same output it always did.
+        (($kindj[0] // {}) as $kjn
+         | if ($kjn.routing_unmeasured == true) then
+             "dispatch kind: routing-unmeasured — \($kjn.start_count) start record(s) fall in this window but no .agents/loop/*/routing.jsonl holds a routing record for any of its packets (the run directory was pruned by begin-run, or no packet reached a review), so every packets[].dispatches[].kind is null (unmeasured), never the `initial` the start records alone would give."
+           else empty end),
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
         "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
         "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",

@@ -1152,6 +1152,13 @@ cmd_collect() {
      # A run where SOME packets are labelled and others are not is the real
      # discipline gap, and those stragglers DO get flagged.
      | (. | any(.tier != null or .impl != null)) as $run_labelled
+     # PER-DISPATCH JOIN (dispatch-progress-metrics T2). Every subagent context,
+     # keyed by agent_id, with the parsed time of its FIRST event and all of its
+     # events. Keyed on agent_id PRESENCE, never on agent_type: a main thread run
+     # as an agent carries agent_type with an empty or absent agent_id, and must
+     # never be attributed to a dispatch.
+     | ($events | map(select((.agent_id // "") != "" and .ts != null)) | group_by(.agent_id)
+        | map({key: .[0].agent_id, value: {first_ms: (map(.ts|ts_ms)|min), evs: .}})) as $aid_ctx
      | reduce range(0; length) as $i ([];
          . as $acc
          | $ends[$i] as $p
@@ -1181,6 +1188,29 @@ cmd_collect() {
          | (($edits["main"]//0) + ($edits["gaffer:chief-engineer"]//0)) as $orch_edits
          | (($disp["gaffer:implementer"]//0) > 0) as $impl_dispatched
          | (($disp["gaffer:reviewer"]//0)) as $rev
+         # One row per implementer-role Agent event in this window. The Agent event
+         # is logged when the dispatch RETURNS (PostToolUse), after the subagent own
+         # events, so the dispatch span is back-dated: [ts - duration_ms, ts], each
+         # bound widened by 1 s and inclusive. The dispatch is the agent_id whose
+         # first event falls in that span, the earliest such when several qualify.
+         # No qualifying agent_id, or no duration_ms on the Agent event: the row
+         # still appears, resolved to nothing, and its cost fields are null (never
+         # 0, which would read as a measured dispatch that did nothing). edits
+         # counts the same four write tools as the packet-level audit above.
+         | ($win | map(select(.tool=="Agent" and .subagent_type=="gaffer:implementer"))
+            | sort_by(.ts|ts_ms)
+            | map(. as $a
+                | (if ($a.duration_ms|type) == "number" then
+                     (($a.ts|ts_ms) - $a.duration_ms - 1000) as $lo
+                     | (($a.ts|ts_ms) + 1000) as $hi
+                     | ($aid_ctx | map(select(.value.first_ms >= $lo and .value.first_ms <= $hi))
+                        | sort_by(.value.first_ms, .key) | (.[0].value.evs // null))
+                   else null end) as $devs
+                | if $devs == null then {tool_calls: null, duration_ms: null, edits: null}
+                  else {tool_calls: ($devs|length),
+                        duration_ms: ($devs|map(.duration_ms//0)|add),
+                        edits: ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length)}
+                  end)) as $dispatches
          | ([ (if ($orch_edits>0 and ($impl_dispatched|not)) then "leak:orchestrator-edited-on-opus-without-delegating(\($orch_edits))" else empty end),
               (if ($p.impl=="delegated" and ($impl_dispatched|not)) then "label-contradiction:impl=delegated-but-no-implementer-dispatch" else empty end),
               (if ($p.tier=="mechanical" and $orch_edits>0) then "waste:mechanical-tier-edited-inline-on-opus" else empty end),
@@ -1278,6 +1308,7 @@ cmd_collect() {
              human_interactions: ($win|map(select(.tool=="AskUserQuestion"))|length),
              impl_edits_by_role: $edits,
              dispatched: $disp,
+             dispatches: $dispatches,
              audit: { orchestrator_impl_edits: $orch_edits, implementer_dispatched: $impl_dispatched,
                       review_dispatches: $rev, flags: $flags },
              tokens: (if $ts_ok then ($wtok|map(.tok)|sumtok(.)) else null end)
@@ -1298,6 +1329,7 @@ cmd_collect() {
                  human_interactions: null,
                  impl_edits_by_role: null,
                  dispatched: null,
+                 dispatches: null,
                  tokens: null,
                  audit: ($obj.audit + {
                    orchestrator_impl_edits: null,
@@ -1326,6 +1358,7 @@ cmd_collect() {
                  human_interactions: null,
                  impl_edits_by_role: null,
                  dispatched: null,
+                 dispatches: null,
                  tokens: null,
                  audit: ($obj.audit + {
                    orchestrator_impl_edits: null,

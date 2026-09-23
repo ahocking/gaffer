@@ -104,7 +104,7 @@ check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
 # is left is byte-identical: packets[].edits, dispatched, by_agent_role, outcome and
 # audit.review_dispatches keep their meaning. Never re-capture DPM_GOLDEN to make it
 # pass — a difference here is a changed existing field, not a stale golden.
-DPM_NEW_FIELDS=()   # jq paths added by dispatch-progress-metrics; initially none
+DPM_NEW_FIELDS=('.packets[].dispatches')   # jq paths added by dispatch-progress-metrics (T2: dispatches)
 dpm_filter() {
   local f='del(.generated_at)' p
   for p in ${DPM_NEW_FIELDS[@]+"${DPM_NEW_FIELDS[@]}"}; do f="$f | del($p)"; done
@@ -1386,6 +1386,7 @@ check "C1: swept packet active_seconds is null, not 0" "null" "$(jq -r '.packets
 check "C1: swept packet edits is null"        "null" "$(jq -r '.packets[]|select(.id=="int-one")|.edits' "$SWOUT")"
 check "C1: swept packet dispatched is null"   "null" "$(jq -r '.packets[]|select(.id=="int-one")|.dispatched' "$SWOUT")"
 check "C1: swept packet tokens is null"       "null" "$(jq -r '.packets[]|select(.id=="int-one")|.tokens' "$SWOUT")"
+check "DPM T2: swept packet dispatches is null, not []" "null" "$(jq -c '.packets[]|select(.id=="int-one")|.dispatches' "$SWOUT")"
 check "C1: notes name the swept packet"       "1" \
   "$(jq -r '[.notes[]|select(test("swept") and test("int-one"))]|length' "$SWOUT")"
 SWSHOW="$("$METRICS" show "$SWOUT" 2>/dev/null)"
@@ -1493,6 +1494,8 @@ check "PB: sibling failed_tool_calls is null"     "null" "$(jq -r '.packets[1].f
 check "PB: sibling human_interactions is null"    "null" "$(jq -r '.packets[1].human_interactions' "$PBOUT")"
 check "PB: sibling dispatched is null"            "null" "$(jq -r '.packets[1].dispatched' "$PBOUT")"
 check "PB: sibling tokens is null"                "null" "$(jq -r '.packets[1].tokens' "$PBOUT")"
+check "DPM T2: sibling dispatches is null, not []" "null" "$(jq -c '.packets[1].dispatches' "$PBOUT")"
+check "DPM T2: first bundle row dispatches is an array" "array" "$(jq -r '.packets[0].dispatches|type' "$PBOUT")"
 check "PB: sibling audit.orchestrator_impl_edits is null too" "null" \
   "$(jq -r '.packets[1].audit.orchestrator_impl_edits' "$PBOUT")"
 check "PB: sibling carries the shared-boundary audit flag" "1" \
@@ -2152,6 +2155,67 @@ check "collect: threshold stated, no usage -- diagnostics show the window, zero 
 check "show: renders unmeasured for missing usage, names the stated threshold" \
   "main-session context (driver mode): unmeasured — no main-thread usage data in 1 window(s) (threshold 10000)" \
   "$("$METRICS" show "$DCXOUT" | grep -F 'main-session context')"
+
+echo "== dispatch-progress-metrics T2: packets[].dispatches[] -- one row per implementer dispatch =="
+# Events are in REAL PostToolUse order: a subagent own tool calls are logged as they
+# return, and the main thread Agent event is logged only when the dispatch itself
+# returns, so it comes AFTER every event of the subagent it dispatched. The dispatch
+# span is back-dated from the Agent event: [ts - duration_ms, ts], each bound widened
+# by 1 s, inclusive. One packet (dp-001) holds five implementer dispatches and one
+# reviewer dispatch (not a row):
+#   d1  i1 (:02-:04)      Agent :05 dur 4000 -> span [:00,:06]      -> 3 calls, 60 ms, 2 edits
+#   d2  i2 (:07-:08)      Agent :09 dur 2500 -> span [:05.5,:10]    -> 2 calls, 10 ms, 1 edit
+#   d3  none              Agent :20 dur 1000 -> span [:18,:21]      -> unresolved (null)
+#       ...though two main-thread events with agent_type and NO agent_id sit at :19/:20
+#   d4  i4 (:23)          Agent :24 NO duration_ms                  -> unresolved (null)
+#   d5  i5a (:31,:33) and i5b (:32) both first-seen in span [:28,:35] -> the earliest, i5a
+DPREPO="$ROOT/dp-repo"; mkdir -p "$DPREPO/.agents/metrics/events"
+git -C "$DPREPO" init -q; git -C "$DPREPO" config user.email t@t; git -C "$DPREPO" config user.name t
+echo dp > "$DPREPO/log.txt"; git -C "$DPREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$DPREPO" commit -q -m "work
+
+[orch packet:dp-001]"
+cat > "$DPREPO/.agents/metrics/events/DP.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":10}
+{"ts":"2026-07-21T10:00:03Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Write","duration_ms":20}
+{"ts":"2026-07-21T10:00:04Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Bash","duration_ms":30}
+{"ts":"2026-07-21T10:00:05Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":4000}
+{"ts":"2026-07-21T10:00:07Z","session_id":"DP","agent_id":"i2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5}
+{"ts":"2026-07-21T10:00:08Z","session_id":"DP","agent_id":"i2","agent_type":"gaffer:implementer","tool":"Read","duration_ms":5}
+{"ts":"2026-07-21T10:00:09Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":2500}
+{"ts":"2026-07-21T10:00:11Z","session_id":"DP","agent_id":"r1","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":9}
+{"ts":"2026-07-21T10:00:12Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":2000}
+{"ts":"2026-07-21T10:00:19Z","session_id":"DP","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":11}
+{"ts":"2026-07-21T10:00:20Z","session_id":"DP","agent_id":"","agent_type":"gaffer:loop-driver","tool":"Write","duration_ms":12}
+{"ts":"2026-07-21T10:00:20Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}
+{"ts":"2026-07-21T10:00:23Z","session_id":"DP","agent_id":"i4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":7}
+{"ts":"2026-07-21T10:00:24Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer"}
+{"ts":"2026-07-21T10:00:31Z","session_id":"DP","agent_id":"i5a","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":3}
+{"ts":"2026-07-21T10:00:32Z","session_id":"DP","agent_id":"i5b","agent_type":"gaffer:implementer","tool":"Write","duration_ms":100}
+{"ts":"2026-07-21T10:00:33Z","session_id":"DP","agent_id":"i5a","agent_type":"gaffer:implementer","tool":"Bash","duration_ms":4}
+{"ts":"2026-07-21T10:00:34Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":5000}
+JSON
+DPOUT="$ROOT/dp-run.json"
+"$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
+  || bad "DPM T2: collect exits 0" "collect returned nonzero"
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]' "$DPOUT"; }
+check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
+  "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
+check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
+  '{"tool_calls":3,"duration_ms":60,"edits":2}' "$(dp_row 0)"
+check "DPM T2: second sequential dispatch credits its own agent, not the first" \
+  '{"tool_calls":2,"duration_ms":10,"edits":1}' "$(dp_row 1)"
+check "DPM T2: a dispatch with no agent_id in its span is a row with null cost fields" \
+  '{"tool_calls":null,"duration_ms":null,"edits":null}' "$(dp_row 2)"
+check "DPM T2: an Agent event with no duration_ms is a row, unresolved" \
+  '{"tool_calls":null,"duration_ms":null,"edits":null}' "$(dp_row 3)"
+check "DPM T2: two qualifying agent_ids -- the earliest first event wins" \
+  '{"tool_calls":2,"duration_ms":7,"edits":1}' "$(dp_row 4)"
+check "DPM T2: packet-level dispatched[] still counts the reviewer too (meaning unchanged)" \
+  '{"gaffer:implementer":5,"gaffer:reviewer":1}' \
+  "$(jq -c '.packets[]|select(.id=="dp-001")|.dispatched' "$DPOUT")"
 
 echo
 if [ "$fail" -eq 0 ]; then

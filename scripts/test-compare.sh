@@ -9,6 +9,10 @@
 # under reordering, and that no refusal reads git. `candidates`: a fixture
 # source repository with a code, a prose, a checkbox-flip-only, a neither and a
 # multi-commit packet, original and rebuilt handoffs, and excluded packets.
+# `select`: the tier and fix-round mix chosen over newer packets, `unrecorded`
+# and `unmeasured` (a pruned routing log), count and missing-mix shortfalls
+# with no cross-class fill, the selection written once and read back
+# byte-identical, and the default store in the harness's main checkout.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -504,12 +508,185 @@ cand "$(mkset "source_repo: $SRC_ROUTED
 assert_eq "candidates, no git repository: exit 1, nothing on stdout" "1:" "$RC:$OUT"
 assert_has "candidates, no git repository: named" "not a git repository" "$ERR"
 
+printf '\n== select: a fixture source repository ==\n'
+# Five code and two prose packets, interleaved, every one with its original
+# handoff on disk (so no plan is needed). Oldest to newest:
+#   sel-c1 code integration  routing: fix, pass   -> fix rounds 1
+#   sel-c2 code mechanical   routing: pass        -> 0
+#   sel-p1 prose docs        no routing record    -> unmeasured
+#   sel-c3 code integration  routing: pass        -> 0
+#   sel-p2 prose (no tier)   routing in run2: fix, pass -> 1, until run2 is pruned
+#   sel-c4 code integration  routing: pass        -> 0
+#   sel-c5 code integration  routing: pass        -> 0
+# Newest-first alone would take c5, c4, c3 (one tier, no fix round); the mix
+# rule must take c1 (the fix round) and c2 (the second tier) over c4 and c3.
+FS="$WORK/selfix"
+mkdir -p "$FS/scripts" "$FS/agents" "$FS/.agents/loop/run1" "$FS/.agents/loop/run2"
+FS_N=0
+fs_commit() {  # fs_commit <file> <message> -> prints the new commit's sha
+  FS_N=$((FS_N + 1))
+  local d; d="2026-02-01T00:$(printf '%02d' "$FS_N"):00Z"
+  printf '%s\n' "$FS_N" >> "$FS/$1"
+  git -C "$FS" add -A >/dev/null
+  GIT_AUTHOR_DATE="$d" GIT_COMMITTER_DATE="$d" git -C "$FS" -c user.name=fixture -c user.email=fixture@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$2" >/dev/null
+  git -C "$FS" rev-parse HEAD
+}
+fs_packet() {  # fs_packet <id> <file> <tier-or-empty> -> a landed packet with its original handoff
+  local msg
+  if [ -n "$3" ]; then msg="$(printf 'land %s\n\n[orch packet:%s]\n[orch tier:%s]' "$1" "$1" "$3")"
+  else msg="$(printf 'land %s\n\n[orch packet:%s]' "$1" "$1")"; fi
+  mkdir -p "$FS/.agents/loop/run1/$1"
+  printf 'original handoff for %s\n' "$1" > "$FS/.agents/loop/run1/$1/handoff.md"
+  fs_commit "$2" "$msg" >/dev/null
+}
+fs_route() {  # fs_route <run> <packet> <token>
+  printf '{"ts":"2026-02-01T01:00:00.000Z","packet":"%s","token":"%s","action":"x","status":"s"}\n' "$2" "$3" \
+    >> "$FS/.agents/loop/$1/routing.jsonl"
+}
+git -C "$FS" init -q
+printf '.agents/loop/\n' > "$FS/.gitignore"
+fs_commit scripts/s.sh base >/dev/null
+fs_packet sel-c1 scripts/s.sh integration
+fs_packet sel-c2 scripts/s.sh mechanical
+fs_packet sel-p1 agents/a.md docs
+fs_packet sel-c3 scripts/s.sh integration
+fs_packet sel-p2 agents/a.md ''
+fs_packet sel-c4 scripts/s.sh integration
+fs_packet sel-c5 scripts/s.sh integration
+fs_route run1 sel-c1 fix; fs_route run1 sel-c1 pass
+for p in sel-c2 sel-c3 sel-c4 sel-c5; do fs_route run1 "$p" pass; done
+fs_route run2 sel-p2 fix; fs_route run2 sel-p2 pass
+
+SSET="$(mkset "source_repo: $FS
+reviewer_model: opus
+per_class: 3
+code_files: [scripts/]
+prose_files: [agents/]
+")"
+SEL_ID="$(cs "$SSET"; line EXPERIMENT)"
+sel() {  # sel <store> <settings-file>: OUT/ERR/RC
+  OUT="$(ORCH_COMPARE_STORE="$1" "$COMPARE" select "$2" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+# chosen <class>: the selected packets of a class, in listed order.
+chosen() {
+  printf '%s\n' "$OUT" | awk -v c="$1" '
+    /^    \{"packet": "[^"]*", "class": "/ {
+      split($0, q, "\""); if (q[8] == c) printf "%s%s", (n++ ? " " : ""), q[4] }
+    END { print "" }'
+}
+# row <packet>: that packet's selected line.
+row() { printf '%s\n' "$OUT" | awk -v p="    {\"packet\": \"$1\", \"class\": " 'index($0, p) == 1'; }
+# shortfall <class> <kind>: that shortfall's line, or nothing.
+# (a trailing comma, present on all but the list's last line, is dropped.)
+shortfall() { printf '%s\n' "$OUT" | awk -v p="    {\"class\": \"$1\", \"kind\": \"$2\"," 'index($0, p) == 1 { sub(/,$/, ""); print }'; }
+
+STORE1="$WORK/store1"
+sel "$STORE1" "$SSET"
+assert_eq "select: exit 0" "0" "$RC"
+assert_eq "select: the selection is written to <store>/<experiment>/selection.json" \
+  "compare.sh: selection written: $STORE1/$SEL_ID/selection.json" "$ERR"
+assert_eq "select: stdout is the stored selection" "$(cat "$STORE1/$SEL_ID/selection.json")" "$OUT"
+assert_has "select: the selection names its experiment" "\"experiment\": \"$SEL_ID\"" "$OUT"
+# The mix is preferred over newer packets: c1 (the only fix round) and c2 (the
+# only second tier) are chosen over the newer c4 and c3.
+assert_eq "select: the fix-round and tier mix beats newest-first (code)" "sel-c5 sel-c2 sel-c1" "$(chosen code)"
+assert_eq "select: a chosen packet lists title, class, tier and measured fix rounds" \
+  "    {\"packet\": \"sel-c1\", \"class\": \"code\", \"tier\": \"integration\", \"fix_rounds\": 1, \"title\": \"land sel-c1\", \"handoff\": \"original\"," \
+  "$(row sel-c1 | sed 's/ "start".*//')"
+assert_has "select: a pass-only routing record is a measured 0" '"packet": "sel-c5", "class": "code", "tier": "integration", "fix_rounds": 0,' "$(row sel-c5)"
+assert_has "select: no tier trailer reads unrecorded" '"packet": "sel-p2", "class": "prose", "tier": "unrecorded", "fix_rounds": 1,' "$(row sel-p2)"
+assert_has "select: no routing record reads unmeasured, never 0" '"packet": "sel-p1", "class": "prose", "tier": "docs", "fix_rounds": "unmeasured",' "$(row sel-p1)"
+assert_eq "select: code has its mix, so no code shortfall" "" "$(printf '%s\n' "$OUT" | awk 'index($0, "    {\"class\": \"code\", \"kind\": ") == 1')"
+# Count shortfall: prose asks for 3 and has 2. It is reported and NOT filled
+# from the code class, which has two unchosen candidates (c3, c4) to spare.
+assert_eq "select: a count shortfall is reported" \
+  '    {"class": "prose", "kind": "count", "wanted": 3, "found": 2, "available": 2}' "$(shortfall prose count)"
+assert_eq "select: the short class keeps only its own packets (no cross-class fill)" "sel-p2 sel-p1" "$(chosen prose)"
+assert_eq "select: the other class keeps exactly its count" "3" "$(chosen code | wc -w | tr -d ' ')"
+# Missing-mix shortfall: prose's only recorded tier is docs (unrecorded is an
+# absence, not a tier), so the tier mix is short; its fix round is present.
+assert_eq "select: a missing tier mix is reported" \
+  '    {"class": "prose", "kind": "tiers", "wanted": 2, "found": 1, "available": 1}' "$(shortfall prose tiers)"
+assert_eq "select: a satisfied fix-round mix is not reported" "" "$(shortfall prose fix-rounds)"
+
+printf '\n== select: a pruned routing log reads unmeasured ==\n'
+# begin-run prunes old run directories: run2's routing log (sel-p2's only
+# records) goes. A fresh store, the same settings.
+rm -rf "$FS/.agents/loop/run2"
+STORE2="$WORK/store2"
+sel "$STORE2" "$SSET"
+assert_eq "pruned: exit 0" "0" "$RC"
+assert_has "pruned: fix rounds read unmeasured, never 0" '"packet": "sel-p2", "class": "prose", "tier": "unrecorded", "fix_rounds": "unmeasured",' "$(row sel-p2)"
+# Now prose has no measured fix round: a missing-mix shortfall, naming how many
+# of its candidates are unmeasured, and still no code packet (c1 has a fix
+# round) borrowed to fill it.
+assert_eq "pruned: a missing fix-round mix is reported with the unmeasured count" \
+  '    {"class": "prose", "kind": "fix-rounds", "wanted": 1, "found": 0, "available": 0, "unmeasured": 2}' \
+  "$(shortfall prose fix-rounds)"
+assert_eq "pruned: the missing mix is not filled from the other class" "sel-p2 sel-p1" "$(chosen prose)"
+assert_eq "pruned: the code selection is unchanged" "sel-c5 sel-c2 sel-c1" "$(chosen code)"
+
+printf '\n== select: written once, read back unchanged ==\n'
+H1="$(cat "$STORE1/$SEL_ID/selection.json")"
+FIRST_OUT="$(ORCH_COMPARE_STORE="$STORE1" "$COMPARE" select "$SSET" 2>/dev/null)"
+# The source moves on: a newer code packet with a fix round lands, and run2 is
+# gone. A recomputed selection would differ; the stored one must not.
+fs_packet sel-c6 scripts/s.sh design-heavy
+fs_route run1 sel-c6 fix
+sel "$STORE1" "$SSET"
+assert_eq "second select: exit 0" "0" "$RC"
+assert_eq "second select: stdout byte-identical to the first" "$FIRST_OUT" "$OUT"
+assert_eq "second select: the stored file is unchanged" "$H1" "$(cat "$STORE1/$SEL_ID/selection.json")"
+assert_eq "second select: says it read the selection back" \
+  "compare.sh: selection read back unchanged: $STORE1/$SEL_ID/selection.json" "$ERR"
+# ... while a fresh store does see the new packet (the fixture change is real).
+sel "$WORK/store3" "$SSET"
+assert_has "a fresh store recomputes (control)" '"packet": "sel-c6"' "$OUT"
+# The stored selection's bytes, not just the printed text (a trailing newline
+# a command substitution would strip).
+if cmp -s "$STORE1/$SEL_ID/selection.json" <(ORCH_COMPARE_STORE="$STORE1" "$COMPARE" select "$SSET" 2>/dev/null); then
+  ok "second select: stdout bytes equal the file's bytes"
+else
+  bad "second select: stdout bytes equal the file's bytes"
+fi
+
+printf '\n== select: the default store is the harness main checkout ==\n'
+# A harness copy that is its own git checkout, run from a worktree of it: the
+# selection lands in the MAIN checkout's .agents/metrics/comparisons.
+HS="$WORK/harness-sel"
+mkdir -p "$HS/scripts"
+cp "$COMPARE" "$ROUTING" "$HERE/gspec-backlog.sh" "$HS/scripts/"
+git -C "$HS" init -q
+git -C "$HS" add -A >/dev/null
+git -C "$HS" -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false \
+  -c core.hooksPath=/dev/null commit -q -m harness >/dev/null
+git -C "$HS" worktree add -q "$WORK/harness-sel-wt" >/dev/null 2>&1
+OUT="$(ORCH_ROUTING_AGENTS_DIR="$REPO/agents" "$WORK/harness-sel-wt/scripts/compare.sh" select "$SSET" 2>/dev/null)"; RC=$?
+assert_eq "default store: exit 0" "0" "$RC"
+assert_eq "default store: written under the main checkout" "$OUT" \
+  "$(cat "$HS/.agents/metrics/comparisons/$SEL_ID/selection.json" 2>/dev/null)"
+assert_eq "default store: nothing written under the worktree" "no" \
+  "$(if [ -e "$WORK/harness-sel-wt/.agents" ]; then echo yes; else echo no; fi)"
+
+# A refused setting refuses before any git read and writes no selection.
+: > "$GITLOG"
+OUT="$(PATH="$WORK/bin:$PATH" ORCH_COMPARE_STORE="$WORK/store-refused" "$COMPARE" select "$(mkset "role: reviewer
+source_repo: $FS
+")" 2>"$WORK/err")"; RC=$?; ERR="$(cat "$WORK/err")"
+assert_eq "select, refused setting: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "select, refused setting: the refusal" "REFUSED setting=role value=reviewer" "$ERR"
+no_git "select, refused setting"
+assert_eq "select, refused setting: no store written" "no" "$(if [ -e "$WORK/store-refused" ]; then echo yes; else echo no; fi)"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
 "$COMPARE" settings >/dev/null 2>&1; assert_eq "settings without a file: exit 2" "2" "$?"
 "$COMPARE" settings "$WORK/absent.yaml" >/dev/null 2>&1; assert_eq "settings on a missing file: exit 2" "2" "$?"
 "$COMPARE" candidates >/dev/null 2>&1; assert_eq "candidates without a file: exit 2" "2" "$?"
+"$COMPARE" select >/dev/null 2>&1; assert_eq "select without a file: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

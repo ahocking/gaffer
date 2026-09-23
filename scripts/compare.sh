@@ -57,9 +57,40 @@
 #                     neither is EXCLUDED with the reason. This script never
 #                     parses a gspec file: resolution is the adapter's.
 #
-# Exit status: 0 printed settings / candidates; 1 refused, no experiment id
-# could be computed, or the source repository is not a git repository; 2
-# usage error, or routing.sh / gspec-backlog.sh missing beside this script.
+#   select <file>     choose the experiment's packets from `candidates`, per
+#                     class, and store the choice ONCE as
+#                       <store>/<EXPERIMENT>/selection.json
+#                     where <store> is `.agents/metrics/comparisons` in the
+#                     main checkout of the repository this script runs from
+#                     (ORCH_COMPARE_STORE overrides it). When that file already
+#                     exists it is printed back unchanged and nothing is
+#                     recomputed; otherwise it is computed, written and
+#                     printed. Stdout is always the stored file's bytes; one
+#                     line on stderr says which happened.
+#                     Per class, from that class's candidates only, taken
+#                     newest first (the reverse of the `candidates` order):
+#                       1. the newest packet whose fix rounds are 1 or more;
+#                       2. while fewer than two distinct recorded tiers are
+#                          chosen, the newest packet with a recorded tier not
+#                          yet chosen;
+#                       3. the rest newest first, up to PER_CLASS.
+#                     Tier is the own-line `[orch tier:<tier>]` trailer of the
+#                     latest of the packet's trailer commits carrying one, else
+#                     `unrecorded`, which is an absence and never counts toward
+#                     the tier mix. Fix rounds are the `fix` routing records for
+#                     the packet across the source's `.agents/loop/*/routing.jsonl`;
+#                     a packet with no routing record there at all (pruned, or
+#                     run before routing records existed) reads `unmeasured`,
+#                     never 0. Title is the earliest trailer commit's subject.
+#                     A class short of its count, of two recorded tiers or of a
+#                     measured fix round gets a `shortfalls` entry; a gap is
+#                     never filled from the other class. EXCLUDED and DROPPED
+#                     packets from `candidates` are named in the selection.
+#
+# Exit status: 0 printed settings / candidates / a selection; 1 refused, no
+# experiment id could be computed, the source repository is not a git
+# repository, or the selection could not be written; 2 usage error, or
+# routing.sh / gspec-backlog.sh missing beside this script.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -95,7 +126,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates} <file>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -613,11 +644,240 @@ $(awk -F'\t' '!seen[$1]++ { print $1 }' "$tmp/rows")
 EOF
 }
 
+# --- select ------------------------------------------------------------------------
+
+# store_root: where experiment results live. ORCH_COMPARE_STORE when set (the
+# sweep's fixture store); otherwise `.agents/metrics/comparisons` in the main
+# checkout of the harness repository (the checkout this script runs from, a
+# worktree resolved to its main checkout through the common git dir), and the
+# script's own parent directory when that is not a git checkout.
+store_root() {
+  if [ -n "${ORCH_COMPARE_STORE:-}" ]; then printf '%s' "$ORCH_COMPARE_STORE"; return 0; fi
+  local top common
+  top="$(cd "$HERE/.." && pwd -P)"
+  common="$(git -C "$top" rev-parse --git-common-dir 2>/dev/null | tr -d '\r')"
+  if [ -n "$common" ]; then
+    case "$common" in /*) ;; *) common="$top/$common" ;; esac
+    if [ -d "$common" ]; then top="$(cd "$common/.." && pwd -P)"; fi
+  fi
+  printf '%s/.agents/metrics/comparisons' "$top"
+}
+
+# fix_round_rows <src>: one `<packet>\t<fix-count>` row for every packet that
+# has at least one routing record in any `.agents/loop/*/routing.jsonl` of the
+# source repository. The count is the records whose token is `fix` (each is
+# one review that sent the packet back for a fix round). A packet with no row
+# has no routing record left to read (pruned, or run before routing records
+# existed): its fix rounds are unmeasured, never 0.
+fix_round_rows() {
+  local logs=() l
+  set +f
+  for l in "$1"/.agents/loop/*/routing.jsonl; do [ -f "$l" ] && logs+=("$l"); done
+  set -f
+  [ "${#logs[@]}" -gt 0 ] || return 0
+  awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    { sub(/\r$/, ""); p = field($0, "packet"); if (p == "") next
+      if (!(p in n)) { n[p] = 0; order[++k] = p }
+      if (field($0, "token") == "fix") n[p]++ }
+    END { for (i = 1; i <= k; i++) print order[i] "\t" n[order[i]] }
+  ' "${logs[@]}" 2>/dev/null
+}
+
+# commit_tier <src> <commit>: the value of the commit's own-line
+# `[orch tier:<tier>]` trailer (the line shape metrics.sh reads; the last one
+# when a message carries several), or nothing.
+commit_tier() {
+  git -C "$1" log -1 --format=%B "$2" 2>/dev/null | tr -d '\r' | awk '
+    /^[[:space:]]*\[orch tier:[^]]+\][[:space:]]*$/ {
+      if (match($0, /\[orch tier:[^]]+\]/)) {
+        v = substr($0, RSTART + 11, RLENGTH - 12); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+        if (v != "") t = v
+      }
+    }
+    END { if (t != "") print t }'
+}
+
+cmd_select() {
+  [ $# -eq 1 ] || usage
+  local sout
+  sout="$(cmd_settings "$1")" || exit $?
+  local exp store dir sel
+  exp="$(printf '%s\n' "$sout" | sed -n 's/^EXPERIMENT=//p')"
+  store="$(store_root)"
+  dir="$store/$exp"
+  sel="$dir/selection.json"
+
+  # Written once: a stored selection is read back unchanged, never recomputed.
+  if [ -f "$sel" ]; then
+    cat "$sel"
+    printf 'compare.sh: selection read back unchanged: %s\n' "$sel" >&2
+    return 0
+  fi
+
+  local cout rc
+  cout="$(cmd_candidates "$1")"; rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+  local src per
+  src="$(printf '%s\n' "$sout" | sed -n 's/^SOURCE_REPO=//p')"
+  per="$(printf '%s\n' "$sout" | sed -n 's/^PER_CLASS=//p')"
+
+  local tmp
+  tmp="$(mktemp -d 2>/dev/null)" || die "select: cannot create a temp root"
+  # shellcheck disable=SC2064  # expand $tmp now: it is local to this function
+  trap "rm -rf '$tmp'" EXIT
+  fix_round_rows "$src" > "$tmp/fix"
+
+  # One TSV row per candidate, NEWEST first (the reverse of the candidates
+  # order, which is each packet's earliest trailer commit, oldest first):
+  #   class tier fix packet handoff start commits title
+  local ln id class handoff start commits c tier fix title first
+  : > "$tmp/rows"
+  while IFS= read -r ln; do
+    case "$ln" in CANDIDATE\ *) ;; *) continue ;; esac
+    id="$(printf '%s\n' "$ln" | sed -n 's/.* packet=\([^ ]*\).*/\1/p')"
+    class="$(printf '%s\n' "$ln" | sed -n 's/.* class=\([^ ]*\).*/\1/p')"
+    handoff="$(printf '%s\n' "$ln" | sed -n 's/.* handoff=\([^ ]*\).*/\1/p')"
+    start="$(printf '%s\n' "$ln" | sed -n 's/.* start=\([^ ]*\).*/\1/p')"
+    commits="$(printf '%s\n' "$ln" | sed -n 's/.* commits=\([^ ]*\).*/\1/p')"
+    # Tier: the latest of the packet's trailer commits that carries one.
+    tier=""
+    for c in $(printf '%s' "$commits" | tr ',' '\n' | sed -n '1!G;h;$p'); do
+      tier="$(commit_tier "$src" "$c")"
+      [ -z "$tier" ] || break
+    done
+    tier="$(printf '%s' "${tier:-unrecorded}" | tr '\t' ' ')"
+    fix="$(ID="$id" awk -F'\t' '$1 == ENVIRON["ID"] { print $2; exit }' "$tmp/fix")"
+    [ -n "$fix" ] || fix="unmeasured"
+    # Title: the subject line of the packet's earliest trailer commit.
+    first="${commits%%,*}"
+    title="$(git -C "$src" log -1 --format=%s "$first" 2>/dev/null | tr -d '\r' | tr '\t' ' ')"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$class" "$tier" "$fix" "$id" "$handoff" "$start" "$commits" "$title" >> "$tmp/rows"
+  done <<EOF
+$cout
+EOF
+  sed -n '1!G;h;$p' "$tmp/rows" > "$tmp/newest"
+
+  # Per class, within that class's own candidates only (never the other's):
+  #   1. the newest packet with measured fix rounds of 1 or more, if any;
+  #   2. while fewer than two distinct RECORDED tiers are chosen, the newest
+  #      packet with a recorded tier not yet chosen (`unrecorded` is the
+  #      absence of a trailer, so it never counts toward the tier mix);
+  #   3. fill the rest newest-first.
+  # Selected rows keep newest-first order. A shortfall is one `F` row:
+  #   F class kind wanted found available [unmeasured]
+  awk -F'\t' -v N="$per" '
+    { cls = $1; i = ++cnt[cls]; row[cls, i] = $0; tr[cls, i] = $2; fx[cls, i] = $3 }
+    function pick(c, i) {
+      sel[c, i] = 1; picked[c]++
+      if (tr[c, i] != "unrecorded" && !((c, tr[c, i]) in tiers)) { tiers[c, tr[c, i]] = 1; ntiers[c]++ }
+    }
+    function fixed(c, i) { return fx[c, i] ~ /^[0-9]+$/ && fx[c, i] + 0 >= 1 }
+    END {
+      split("code prose", classes, " ")
+      for (k = 1; k <= 2; k++) {
+        c = classes[k]; n = cnt[c] + 0; picked[c] = 0; ntiers[c] = 0
+        for (i = 1; i <= n; i++) if (picked[c] < N && fixed(c, i)) { pick(c, i); break }
+        while (picked[c] < N && ntiers[c] < 2) {
+          got = 0
+          for (i = 1; i <= n; i++)
+            if (!((c, i) in sel) && tr[c, i] != "unrecorded" && !((c, tr[c, i]) in tiers)) { pick(c, i); got = 1; break }
+          if (!got) break
+        }
+        for (i = 1; i <= n; i++) if (picked[c] < N && !((c, i) in sel)) pick(c, i)
+        for (i = 1; i <= n; i++) if ((c, i) in sel) print "S\t" row[c, i]
+
+        avt = 0; avf = 0; unm = 0; delete seen
+        for (i = 1; i <= n; i++) {
+          if (tr[c, i] != "unrecorded" && !(tr[c, i] in seen)) { seen[tr[c, i]] = 1; avt++ }
+          if (fixed(c, i)) avf++
+          if (fx[c, i] == "unmeasured") unm++
+        }
+        sf = 0
+        for (i = 1; i <= n; i++) if (((c, i) in sel) && fixed(c, i)) sf++
+        if (n < N) print "F\t" c "\tcount\t" N "\t" n "\t" n
+        if (ntiers[c] < 2) print "F\t" c "\ttiers\t2\t" ntiers[c] "\t" avt
+        if (sf < 1) print "F\t" c "\tfix-rounds\t1\t" sf "\t" avf "\t" unm
+      }
+    }' "$tmp/newest" > "$tmp/picked"
+
+  printf '%s\n' "$cout" | awk '
+    /^EXCLUDED / { p = $2; sub(/^packet=/, "", p); r = $0; sub(/^EXCLUDED packet=[^ ]* reason=/, "", r); print "X\t" p "\t" r }
+    /^DROPPED /  { p = $2; sub(/^packet=/, "", p); print "D\t" p }' > "$tmp/other"
+
+  # The selection document: one packet, shortfall or exclusion per line, so it
+  # reads as the listing it is. `fix_rounds` is a number only when measured.
+  printf '%s\n' "$sout" > "$tmp/settings"
+  SRC="$src" SETTINGS="$tmp/settings" PICKED="$tmp/picked" OTHER="$tmp/other" awk -F'\t' '
+    function esc(s) {
+      gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/\t/, "\\t", s)
+      gsub(/[[:cntrl:]]/, " ", s)
+      return "\"" s "\""
+    }
+    function arr(csv,    n, a, i, o) {
+      n = split(csv, a, ","); o = ""
+      for (i = 1; i <= n; i++) o = o (i > 1 ? ", " : "") esc(a[i])
+      return "[" o "]"
+    }
+    FILENAME == ENVIRON["SETTINGS"] {
+      p = index($0, "="); if (p) kv[substr($0, 1, p - 1)] = substr($0, p + 1); next
+    }
+    FILENAME == ENVIRON["PICKED"] && $1 == "S" {
+      ns++
+      S[ns] = "    {\"packet\": " esc($5) ", \"class\": " esc($2) ", \"tier\": " esc($3) \
+              ", \"fix_rounds\": " ($4 ~ /^[0-9]+$/ ? $4 : esc($4)) ", \"title\": " esc($9) \
+              ", \"handoff\": " esc($6) ", \"start\": " esc($7) ", \"commits\": " arr($8) "}"
+      next
+    }
+    FILENAME == ENVIRON["PICKED"] && $1 == "F" {
+      nf++
+      F[nf] = "    {\"class\": " esc($2) ", \"kind\": " esc($3) ", \"wanted\": " $4 ", \"found\": " $5 \
+              ", \"available\": " $6 ($3 == "fix-rounds" ? ", \"unmeasured\": " $7 : "") "}"
+      next
+    }
+    FILENAME == ENVIRON["OTHER"] && $1 == "X" { nx++; X[nx] = "    {\"packet\": " esc($2) ", \"reason\": " esc($3) "}"; next }
+    FILENAME == ENVIRON["OTHER"] && $1 == "D" { nd++; D[nd] = "    " esc($2); next }
+    function block(name, A, n, last,    i) {
+      printf "  \"%s\": [", name
+      if (n == 0) { printf "]%s\n", (last ? "" : ","); return }
+      printf "\n"
+      for (i = 1; i <= n; i++) printf "%s%s\n", A[i], (i < n ? "," : "")
+      printf "  ]%s\n", (last ? "" : ",")
+    }
+    END {
+      printf "{\n"
+      printf "  \"experiment\": %s,\n", esc(kv["EXPERIMENT"])
+      printf "  \"settings\": {\"role\": %s, \"models\": %s, \"reviewer_model\": %s, \"source_repo\": %s, \"per_class\": %s, \"code_files\": %s, \"prose_files\": %s},\n", \
+        esc(kv["ROLE"]), arr(kv["MODELS"]), esc(kv["REVIEWER_MODEL"]), esc(ENVIRON["SRC"]), kv["PER_CLASS"] + 0, arr(kv["CODE_FILES"]), arr(kv["PROSE_FILES"])
+      block("selected", S, ns, 0)
+      block("shortfalls", F, nf, 0)
+      block("excluded", X, nx, 0)
+      block("dropped", D, nd, 1)
+      printf "}\n"
+    }' "$tmp/settings" "$tmp/picked" "$tmp/other" > "$tmp/selection.json" \
+    || die "select: the selection could not be rendered"
+
+  mkdir -p "$dir" || die "select: cannot create the experiment store: $dir"
+  cp "$tmp/selection.json" "$dir/.selection.json.$$" && mv "$dir/.selection.json.$$" "$sel" \
+    || die "select: cannot write the selection: $sel"
+  cat "$sel"
+  printf 'compare.sh: selection written: %s\n' "$sel" >&2
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
   settings)   cmd_settings "$@" ;;
   candidates) cmd_candidates "$@" ;;
+  select)     cmd_select "$@" ;;
   *) usage ;;
 esac
 exit 0

@@ -287,6 +287,11 @@ features:
     why: "operator request 2026-09-18, specced 2026-09-21: decide which model is best for which agent role on quality and cost, to feed model_routing (per-agent-model-routing left the comparison out of scope and named it the source of its values). Replays landed packets from their parent commit on each model with a fixed, blinded reviewer; first experiment is the implementer on Fable 5.1 / Opus 5 / Sonnet 5 over 8 prose + 8 code packets (48 replays), ranked blind side by side, reported per cell with a proposed routing change the operator applies. Ordered 28 beside dispatch-progress-metrics and gated behind it and implementer-continuation by depends_on: it needs per-dispatch cost/kind/progress, and it must run after the loop stops changing under it"
     depends_on: [per-agent-model-routing, handoff-spec-inlining, implementer-continuation, dispatch-progress-metrics]
 
+  - slug: runstate-summary-quoted-severity
+    order: 29
+    why: "found 2026-09-23 during the dispatch-progress-metrics run, filed on the operator's call: runstate.sh summary counts blocking questions with a bare-value regex, so a pending_questions entry written quoted -- the form the quote-every-value rule produces -- counts as 0 and a resume/stop report under-reports the question the run is stopped on. Ordered 29, after dispatch-progress-metrics so the paused run's backlog is undisturbed; one reader, runstate.sh + test-runstate.sh only"
+    depends_on: [runstate-write-integrity, runstate-write-integrity-gaps]
+
   - slug: skill-prompt-trim
     order: 29
     why: "operator request 2026-09-22, after the CLAUDE.md trim: the loop skills (run-loop, resume, pause) load into the driver session and stay in its context for the whole run; resume restates run-loop, rationale and task-id history sit inside instructions, and the landing/scan decision table is written out four times. Cut them by half without losing a rule, move reasoning to the closest ADR, name config keys only; one-shot skills last. Ordered after loop-prose-consistency-gaps and implementer-continuation, which edit the same passages, so the prose is trimmed once as it finally stands"

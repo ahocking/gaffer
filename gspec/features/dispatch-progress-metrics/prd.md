@@ -73,12 +73,17 @@ derived-done `run-metrics`; no existing field changes meaning.
 
 - [ ] **P0**: Every implementer dispatch in a packet is one row with a kind
   - one counted dispatch is one `Agent` event in the packet's window whose
-    `subagent_type` names the implementer role; its events are the events
-    carrying the `agent_id` whose first event falls after that `Agent` event
-    and before the next implementer-role `Agent` event in the same window.
-    When more than one `agent_id` qualifies, the one whose first event is
-    earliest is the dispatch's; when none qualifies, the dispatch is still a
-    row, resolved to no `agent_id`. Attribution keys on `agent_id` presence
+    `subagent_type` names the implementer role. The `Agent` event is logged
+    when the dispatch returns, so the dispatch's start is that event's
+    timestamp minus its own `duration_ms`, and its span runs from that start
+    to the event's timestamp, each bound widened by 1 s and inclusive. Its
+    events are the events carrying the `agent_id` whose first event falls
+    inside that span. When more than one `agent_id` qualifies, the one whose
+    first event is earliest is the dispatch's; when none qualifies, or the
+    `Agent` event carries no `duration_ms`, the dispatch is still a row,
+    resolved to no `agent_id` (amended 2026-09-23, operator's call: the event
+    is written after the subagent returns, so "first event after the `Agent`
+    event" would credit the next agent). Attribution keys on `agent_id` presence
     and the `Agent` event, never on `agent_type`, since a main thread run as
     an agent carries `agent_type` with no `agent_id`
   - `kind` is set by the latest record for the packet preceding the dispatch's
@@ -118,8 +123,9 @@ derived-done `run-metrics`; no existing field changes meaning.
     first, when the packet's trailer window is unmeasured, the run is legacy
     as the kind capability defines it, or the dispatch resolved to no
     `agent_id`; then `landed`, when the packet's commit trailer author time
-    falls after this dispatch's `Agent` event and before the next
-    implementer-role dispatch's, or before the window's end for the last
+    falls at or after this dispatch's start (as the kind capability defines
+    it) and before the next implementer-role dispatch's start, or before the
+    window's end for the last
     dispatch, using the same bounded trailer window as the packet row; then
     `advanced`, when the dispatch has at least one edit event and no such
     commit; then `none`, when it has zero edit events
@@ -202,7 +208,8 @@ derived-done `run-metrics`; no existing field changes meaning.
 ## Assumptions & Risks
 
 - Assumption: an implementer dispatch's events are those of the earliest
-  `agent_id` first seen after its `Agent` event. Two implementer dispatches
+  `agent_id` first seen inside its back-dated span (`Agent` event timestamp
+  minus `duration_ms`, to the timestamp, ±1 s). Two implementer dispatches
   inside one packet whose contexts interleave would join deterministically but
   possibly to the wrong context; the loop runs file-editing agents one at a
   time, so the case is guidance-excluded, not impossible.

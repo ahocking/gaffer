@@ -177,7 +177,7 @@ derived-done `run-metrics`; no existing field changes meaning.
   - `analyze` receives `dispatches[]` and `dispatch_waste` in the rollup it is
     handed, so it can name the top zero-progress dispatches by tokens
 
-- [ ] **P0**: Existing outputs keep their meaning and the sweep pins the new fields
+- [x] **P0**: Existing outputs keep their meaning and the sweep pins the new fields
   - for the current synthetic fixture, `collect` output with every new field
     deleted is byte-identical to the output before this feature, apart from
     `generated_at`; `scripts/test-metrics.sh` asserts it, and the assertion

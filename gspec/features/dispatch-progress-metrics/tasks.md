@@ -60,7 +60,7 @@ feature: dispatch-progress-metrics
   - covers: `show` renders the rollup where it is read
   - arch: —
   - files: skills/metrics/SKILL.md
-- [ ] **T10** **P0** Extend the CRLF-jq byte-identity assertion so the shimmed fixture carries start, `fix` and `continue` routing records, asserts that non-null `kind` and `progress` values are present before comparing (so the case cannot pass vacuously), and still requires byte identity with the clean run; add a case proving a `kind` value with a trailing `\r` fails it
+- [x] **T10** **P0** Extend the CRLF-jq byte-identity assertion so the shimmed fixture carries start, `fix` and `continue` routing records, asserts that non-null `kind` and `progress` values are present before comparing (so the case cannot pass vacuously), and still requires byte identity with the clean run; add a case proving a `kind` value with a trailing `\r` fails it
   - deps: T6
   - covers: Existing outputs keep their meaning and the sweep pins the new fields
   - arch: —

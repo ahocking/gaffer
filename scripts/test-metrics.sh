@@ -270,6 +270,10 @@ else
   diff <(jq -S 'del(.generated_at)' "$OUT") <(jq -S 'del(.generated_at)' "$CRLFOUT") \
     | head -40 | sed 's/^/       /'
 fi
+# This fixture has no start or routing record, so every dispatch-progress-metrics
+# field in it is null and the check above cannot see a CR inside one. The same byte
+# identity is asserted over the T3/T6 fixtures, which carry them, at "CRLF-jq over
+# dispatch kind and progress" below (after those fixtures are built).
 
 echo "== ADR 0019 v3.1: token_source=none says WHICH failure it was =="
 # `none` used to conflate "nothing on disk" with "files exist but none opened", and the
@@ -2676,6 +2680,53 @@ check "DPM T8: a legacy run renders dispatch_waste unmeasured with the legacy re
 jq 'del(.totals.dispatch_waste) | .notes |= map(select(startswith("dispatch_waste") | not))' "$DPOUT" > "$ROOT/dw-predates.json"
 check "DPM T8: a packet predating the rollup renders unmeasured, never clean" \
   'dispatch_waste: unmeasured — this packet predates the dispatch_waste rollup' "$(dws "$ROOT/dw-predates.json")"
+
+echo "== dispatch-progress-metrics T10: CRLF-jq over dispatch kind and progress =="
+# The ADR 0019 v3.1 byte-identity check, run over fixtures that carry the new fields:
+#   KDREPO  start records, `fix` routing records (RUN-OLD) and a `continue` routing
+#           record (RUN-NEW) -> kinds initial/fix/continuation, progress on every row
+#   WROVR   start + `continue` routing, transcripts and a threshold override ->
+#           dispatch tokens, totals.dispatch_waste and the waste:*-dispatch flags
+# Each is collected again with the CRLF shim on PATH ($SHIM, built above) and must be
+# byte-identical to its clean collect. The non-null counts are asserted FIRST: over an
+# all-null fixture the identity would hold vacuously, since a null carries no CR.
+crlf_same() { [ "$(jq -S 'del(.generated_at)' "$1")" = "$(jq -S 'del(.generated_at)' "$2")" ]; }
+crlf_case() { # crlf_case <label> <clean packet> <crlf packet>
+  if crlf_same "$2" "$3"; then ok "DPM T10: CRLF-jq $1 identical to clean run"
+  else
+    bad "DPM T10: CRLF-jq $1 identical to clean run" "differing fields (< clean, > CRLF-jq):"
+    diff <(jq -S 'del(.generated_at)' "$2") <(jq -S 'del(.generated_at)' "$3") \
+      | head -40 | sed 's/^/       /'
+  fi
+}
+KDCRLF="$ROOT/kd-crlf.json"; WRCRLF="$ROOT/wr-ovr-crlf.json"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$KDREPO" --projects-dir "$ROOT/none" --out "$KDCRLF" >/dev/null 2>&1 \
+  || bad "DPM T10: CRLF-jq KD collect exits 0" "collect returned nonzero"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$WROVR" --projects-dir "$WRPROJ" --out "$WRCRLF" >/dev/null 2>&1 \
+  || bad "DPM T10: CRLF-jq WR collect exits 0" "collect returned nonzero"
+# Non-vacuity: distinct non-null kinds, then non-null kind and progress row counts.
+crlf_nonnull() { jq -c '[.packets[].dispatches[]?] | [([.[].kind|select(. != null)]|unique), ([.[]|select(.kind != null)]|length), ([.[]|select(.progress != null)]|length)]' "$1"; }
+check "DPM T10: CRLF-jq KD run carries non-null kinds (initial, fix, continuation) and progress" \
+  '[["continuation","fix","initial"],6,7]' "$(crlf_nonnull "$KDCRLF")"
+check "DPM T10: CRLF-jq WR run carries non-null kinds, progress, tokens and a measured dispatch_waste" \
+  '[["continuation","initial"],2,2]|2|1' \
+  "$(printf '%s|%s|%s' "$(crlf_nonnull "$WRCRLF")" \
+     "$(jq -r '[.packets[].dispatches[]?|select(.tokens != null)]|length' "$WRCRLF")" \
+     "$(jq -r '.totals.dispatch_waste.continuations' "$WRCRLF")")"
+crlf_case "KD run (start, fix and continue records)" "$KDOUT" "$KDCRLF"
+crlf_case "WR run (tokens, dispatch_waste, waste flags)" "$WROUT_OVR" "$WRCRLF"
+# The identity must go red on a CR inside a new field: a `kind` (and a `progress`)
+# value carrying a trailing \r — what a `read`-fed routing token would leave behind.
+jq '.packets[0].dispatches[1].kind += "\r"' "$KDCRLF" > "$ROOT/kd-crlf-kind.json"
+check "DPM T10: the kind mutant carries a CR ('fix' + CR)" '"fix\r"' \
+  "$(jq -c '.packets[0].dispatches[1].kind' "$ROOT/kd-crlf-kind.json")"
+if crlf_same "$KDOUT" "$ROOT/kd-crlf-kind.json"; then
+  bad "DPM T10: a kind with a trailing CR fails the CRLF-jq identity" "the CR-carrying kind still matched the clean run"
+else ok "DPM T10: a kind with a trailing CR fails the CRLF-jq identity"; fi
+jq '.packets[0].dispatches[2].progress += "\r"' "$KDCRLF" > "$ROOT/kd-crlf-prog.json"
+if crlf_same "$KDOUT" "$ROOT/kd-crlf-prog.json"; then
+  bad "DPM T10: a progress with a trailing CR fails the CRLF-jq identity" "the CR-carrying progress still matched the clean run"
+else ok "DPM T10: a progress with a trailing CR fails the CRLF-jq identity"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -70,3 +70,8 @@ feature: dispatch-progress-metrics
   - covers: —
   - arch: —
   - files: CLAUDE.md, docs/adr/0019-run-metrics-observability.md
+- [ ] **T12** **P1** Make `runstate.sh summary` count a `pending_questions` entry as blocking by its decoded severity, through the shared run-state decode rule: the value after `severity:`, with surrounding whitespace and a trailing CR removed, counts when it decodes to exactly `blocking` whether single-quoted, double-quoted or bare, and a value that only starts with `blocking` does not count. Today's bare-value regex counts a quoted `blocking` as 0, so a stop or resume report under-reports the question the run is stopped on (found in this feature's own run, 2026-09-23). `test-runstate.sh` gains a counted and an uncounted case per form, checking the number, and the quoted counted cases fail against the current code; it all holds with `jq` and `python3` absent
+  - deps: —
+  - covers: —
+  - arch: —
+  - files: scripts/runstate.sh, scripts/test-runstate.sh

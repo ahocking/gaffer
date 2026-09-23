@@ -47,12 +47,14 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
 - **The one retro-spec is `run-metrics`** (ADR 0019). All its capabilities and tasks
   are checked, so it yields zero packets and reads as derived-done. Never run
   `/gspec-plan` against it (see the scope override at the end).
-- **A gap found while a feature is still in progress is a task in that feature's
-  `tasks.md`** (`covers: —` when no capability fits), never a new feature.
-- **Only once a feature is fully shipped (every checkbox checked) do its gaps become a
-  SEPARATE feature** (e.g. `metrics-coverage-gaps`), never an unchecked capability on
-  the shipped one — completion is derived from checkboxes, so a folded-in gap makes the
-  shipped feature read incomplete and blocks everything downstream of it.
+- **A gap or review note from a feature's run is a task in that feature's `tasks.md`,
+  never a new feature.** While the feature is in progress, `covers: —` is fine when no
+  capability fits. Once it has shipped (every capability checked), reopen it: add one
+  unchecked capability for the follow-ups and tasks that `covers:` it — completion is
+  derived from capability checkboxes, so a `covers: —` task on a shipped feature is
+  never scheduled. Reopening makes the feature read incomplete, and anything
+  depending on it waits until the follow-ups land. Older `-gaps` features (e.g.
+  `metrics-coverage-gaps`) predate this rule.
 - **A specced feature with no `tasks.md` is the intended state for deferred work**
   (the adapter reports `PLAN=none` plus the `/gspec-plan` hint); decompose when the
   work comes up. Same for a folder with no `arch.md` or `design.html` — this repo

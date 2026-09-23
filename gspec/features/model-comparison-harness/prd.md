@@ -71,7 +71,7 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
 
 ## Capabilities
 
-- [ ] **P0**: An experiment is defined entirely by settings
+- [x] **P0**: An experiment is defined entirely by settings
   - the settings are: the varied role, the model set, the reviewer model, the
     source repository, the per-class packet count, and the code and prose file
     sets. The first experiment's values are `implementer`; Fable 5.1, Opus 5

@@ -1,0 +1,64 @@
+# Model-comparison experiment settings — annotated reference
+# -----------------------------------------------------------------------------
+# One file defines one experiment. `scripts/compare.sh settings <this file>`
+# reads it, fills in every setting left out with the default noted beside it,
+# and prints the normalized settings plus an `EXPERIMENT=` id: a digest of those
+# normalized settings. Key order, list order and repeated list items do not
+# change the id; any change of value does, and starts a new experiment beside
+# the stored ones rather than resuming an old one.
+#
+# A setting that cannot be used is refused before any packet is selected: one
+# `REFUSED setting=<key> value=<value> reason=<reason>` line each, exit 1.
+# An unknown key is refused too, so a misspelt key never silently falls back to
+# its default.
+#
+# The values below are the first experiment's. Copy this file and edit the copy
+# to define another.
+
+# The role whose model the experiment varies. One of the roles a run-loop
+# handoff dispatches: implementer, architect, ux-designer, doc-writer.
+# Refused: `reviewer` (the fixed judge of every experiment), `loop-driver` (the
+# session itself) and any other name, including `chief-engineer` (the
+# escalation decider never runs inside a replay).
+# Default: the first experiment's role, below.
+role: implementer
+
+# The models the varied role is replayed on, as `model_routing` aliases. Each
+# must pass the same validation routing.sh applies to a live `model_routing`
+# value: a built-in alias, or one the source repository lists under its own
+# `extra_models` in `.agents/project-overrides.yaml`.
+# Default: the first experiment's three models, below.
+models:
+  - fable
+  - opus
+  - sonnet
+
+# The one model every review and every ranking runs on. Validated like
+# `models`. Left out, it is what the source repository's reviewer runs on
+# today: its `model_routing` entry for `reviewer`, else the reviewer agent's
+# frontmatter model. Name it to hold the judge fixed across experiments even if
+# the repository's routing changes later.
+# reviewer_model:
+
+# The repository whose landed packets are replayed. A relative path is read
+# from this file's directory. Left out, it is the checkout compare.sh runs
+# from.
+# source_repo:
+
+# Packets selected per class (prose and code), a positive integer.
+# Default: the first experiment's count, below.
+per_class: 8
+
+# Repo-relative path prefixes (a trailing `/` marks a directory) that decide a
+# packet's class from its landed commit's changed files: code when any changed
+# file is in the code set, prose when none is and any is in the prose set.
+# Default: the two sets below.
+code_files:
+  - scripts/
+  - hooks/
+prose_files:
+  - agents/
+  - skills/
+  - templates/
+  - docs/
+  - CLAUDE.md

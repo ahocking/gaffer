@@ -6,7 +6,9 @@
 # defaults, the shipped template, each role refusal, model validation through
 # routing.sh (built-in aliases, the routing reason passed through, `extra_models`
 # read from the source repository), the other refusals, the id's invariance
-# under reordering, and that no refusal reads git.
+# under reordering, and that no refusal reads git. `candidates`: a fixture
+# source repository with a code, a prose, a checkbox-flip-only, a neither and a
+# multi-commit packet, original and rebuilt handoffs, and excluded packets.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -372,11 +374,142 @@ assert_eq "no routing.sh: exit 2" "2" "$RC"
 assert_eq "no routing.sh: nothing on stdout" "" "$OUT"
 assert_has "no routing.sh: named on stderr" "routing.sh is missing" "$ERR"
 
+printf '\n== candidates: a fixture source repository ==\n'
+# One commit per step, dated a minute apart so --author-date-order is fixed.
+# The feature's plan is the gspec 3.x layout; gspec-backlog.sh (beside
+# compare.sh) is what resolves a task, so the fixture only has to be a plan the
+# adapter reads.
+FX="$WORK/fixture"
+mkdir -p "$FX/scripts" "$FX/agents" "$FX/gspec/features/feat" "$FX/.agents/loop/run1/feat-t1"
+FX_N=0
+fx_commit() {  # fx_commit <message> -> prints the new commit's sha
+  FX_N=$((FX_N + 1))
+  local d; d="2026-01-01T00:$(printf '%02d' "$FX_N"):00Z"
+  git -C "$FX" add -A >/dev/null
+  GIT_AUTHOR_DATE="$d" GIT_COMMITTER_DATE="$d" git -C "$FX" -c user.name=fixture -c user.email=fixture@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$FX" rev-parse HEAD
+}
+fx_edit() { printf '%s\n' "$2" >> "$FX/$1"; }          # a real change to <file>
+fx_flip() {                                            # tick task <Tn>'s checkbox
+  sed "s/^- \[ \] \*\*$1\*\*/- [x] **$1**/" "$FX/gspec/features/feat/tasks.md" > "$FX/t.new"
+  mv "$FX/t.new" "$FX/gspec/features/feat/tasks.md"
+}
+fx_task() {
+  printf -- '- [ ] **%s** **P0** Task %s.\n  - deps: —\n  - covers: The capability\n  - arch: —\n' "$1" "$1"
+}
+git -C "$FX" init -q
+printf '.agents/loop/\nt.new\n' > "$FX/.gitignore"
+printf 'echo a\n' > "$FX/scripts/a.sh"
+printf 'echo b\n' > "$FX/scripts/b.sh"
+printf '# x\n' > "$FX/agents/x.md"
+printf 'readme\n' > "$FX/README"
+printf -- '---\nspec-version: v2\nfeature: feat\n---\n\n# Feat\n\n## Capabilities\n\n- [ ] **The capability**\n' \
+  > "$FX/gspec/features/feat/prd.md"
+{ printf -- '---\nspec-version: v2\nfeature: feat\n---\n\n# Plan: feat\n\n## Plan\n\n'
+  for t in T1 T2 T3 T4 T5 T6; do fx_task "$t"; done; } > "$FX/gspec/features/feat/tasks.md"
+C0="$(fx_commit 'base')"
+# feat-t1: code (scripts/), with its original handoff still on disk.
+fx_edit scripts/a.sh 'echo t1'; fx_flip T1
+C1="$(fx_commit "$(printf 't1\n\n[orch packet:feat-t1]\n[orch tier:integration]')")"
+printf 'the original handoff\n' > "$FX/.agents/loop/run1/feat-t1/handoff.md"
+# feat-t2: prose (agents/), no original: rebuilt from the plan at its parent.
+fx_edit agents/x.md 't2'; fx_flip T2
+C2="$(fx_commit "$(printf 't2\n\n[orch packet:feat-t2]')")"
+# feat-t3: prose plus a checkbox-only gspec/ change. gspec/ is in this
+# experiment's code set, so only dropping the checkbox flip keeps it prose.
+fx_edit agents/x.md 't3'; fx_flip T3
+C3="$(fx_commit "$(printf 't3\n\n[orch packet:feat-t3]')")"
+# feat-t4: the control, prose plus a REAL gspec/ change: code.
+fx_edit agents/x.md 't4'
+sed 's/^\(- \[ \] \*\*T4\*\* \*\*P0\*\*\) Task T4\./\1 Task T4, reworded./' "$FX/gspec/features/feat/tasks.md" > "$FX/t.new"
+mv "$FX/t.new" "$FX/gspec/features/feat/tasks.md"
+C4="$(fx_commit "$(printf 't4\n\n[orch packet:feat-t4]')")"
+# feat-t5: neither set (README) plus a checkbox flip: dropped.
+fx_edit README 't5'; fx_flip T5
+C5="$(fx_commit "$(printf 't5\n\n[orch packet:feat-t5]')")"
+# feat-t6: two trailer commits, prose then code, a commit between them.
+fx_edit agents/x.md 't6 part 1'
+C6="$(fx_commit "$(printf 't6 part 1\n\n[orch packet:feat-t6]')")"
+fx_edit README 'between'
+C7="$(fx_commit 'between: this mentions [orch packet:feat-t8] inline, which is no trailer')"
+fx_edit scripts/b.sh 'echo t6'; fx_flip T6
+C8="$(fx_commit "$(printf 't6 part 2\n\n[orch packet:feat-t6]')")"
+# feat-t9: its task is only added to the plan AFTER it lands, so the plan at
+# its parent does not have it: no suppliable handoff.
+fx_edit agents/x.md 't9'
+C9="$(fx_commit "$(printf 't9\n\n[orch packet:feat-t9]')")"
+fx_task T9 >> "$FX/gspec/features/feat/tasks.md"
+C10="$(fx_commit 'plan: add T9')"
+# ghost-1: not a gspec task id at all.
+fx_edit agents/x.md 'ghost'
+C11="$(fx_commit "$(printf 'ghost\n\n[orch packet:ghost-1]')")"
+
+CSET="$(mkset "source_repo: $FX
+reviewer_model: opus
+code_files: [scripts/, gspec/]
+")"
+cand() {  # cand <settings-file>: OUT/ERR/RC as cs sets them
+  OUT="$("$COMPARE" candidates "$1" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+pk() { printf '%s\n' "$OUT" | awk -v p="packet=$1" '$2 == p'; }
+cand "$CSET"
+assert_eq "candidates: exit 0" "0" "$RC"
+assert_eq "candidates: no stderr" "" "$ERR"
+assert_eq "candidates: every trailer packet once, oldest first; an inline mention is no trailer" \
+  "feat-t1 feat-t2 feat-t3 feat-t4 feat-t5 feat-t6 feat-t9 ghost-1" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^[A-Z]* packet=\([^ ]*\).*/\1/p' | paste -sd' ' -)"
+assert_eq "candidates: a code packet, its original handoff" \
+  "CANDIDATE packet=feat-t1 class=code handoff=original start=$C0 commits=$C1" "$(pk feat-t1)"
+assert_eq "candidates: a prose packet, a rebuilt handoff" \
+  "CANDIDATE packet=feat-t2 class=prose handoff=rebuilt start=$C1 commits=$C2" "$(pk feat-t2)"
+assert_eq "candidates: a checkbox-only gspec/ change does not make a packet code" \
+  "CANDIDATE packet=feat-t3 class=prose handoff=rebuilt start=$C2 commits=$C3" "$(pk feat-t3)"
+assert_eq "candidates: a real gspec/ change in the code set does (control)" \
+  "CANDIDATE packet=feat-t4 class=code handoff=rebuilt start=$C3 commits=$C4" "$(pk feat-t4)"
+assert_eq "candidates: a packet in neither set is dropped, not a candidate" \
+  "DROPPED packet=feat-t5 class=neither" "$(pk feat-t5)"
+assert_eq "candidates: multi-commit packet classed from the union, started at the earliest commit's parent" \
+  "CANDIDATE packet=feat-t6 class=code handoff=rebuilt start=$C5 commits=$C6,$C8" "$(pk feat-t6)"
+assert_eq "candidates: a task absent from the plan at the parent is excluded, named with the adapter's reason" \
+  "EXCLUDED packet=feat-t9 reason=no original handoff, and gspec-backlog.sh does not resolve the task at the start commit: feat has no task t9 in gspec/features/feat/tasks.md" \
+  "$(pk feat-t9)"
+assert_has "candidates: a non-gspec id with no original is excluded, named with the reason" \
+  "EXCLUDED packet=ghost-1 reason=no original handoff, and gspec-backlog.sh does not resolve the task at the start commit: not a gspec task id" \
+  "$(pk ghost-1)"
+# The original handoff wins over a rebuild, and only its own packet's counts.
+mkdir -p "$FX/.agents/loop/run2/ghost-1"
+printf 'original\n' > "$FX/.agents/loop/run2/ghost-1/handoff.md"
+cand "$CSET"
+assert_eq "candidates: an original handoff supplies a packet no plan resolves" \
+  "CANDIDATE packet=ghost-1 class=prose handoff=original start=$C10 commits=$C11" "$(pk ghost-1)"
+assert_eq "candidates: another packet's original handoff is not borrowed" \
+  "EXCLUDED" "$(pk feat-t9 | cut -d' ' -f1)"
+# The source repository is left as it was: nothing staged, nothing written.
+assert_eq "candidates: the fixture's tree is untouched" "" "$(git -C "$FX" status --porcelain)"
+assert_eq "candidates: the fixture's HEAD is untouched" "$C11" "$(git -C "$FX" rev-parse HEAD)"
+
+# A refused setting refuses before any git read, exactly as `settings` does.
+: > "$GITLOG"
+OUT="$(PATH="$WORK/bin:$PATH" "$COMPARE" candidates "$(mkset "role: reviewer
+source_repo: $FX
+")" 2>"$WORK/err")"; RC=$?; ERR="$(cat "$WORK/err")"
+assert_eq "candidates, refused setting: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "candidates, refused setting: the refusal" "REFUSED setting=role value=reviewer" "$ERR"
+no_git "candidates, refused setting"
+# A source that is not a git repository is an error, not an empty list.
+cand "$(mkset "source_repo: $SRC_ROUTED
+")"
+assert_eq "candidates, no git repository: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "candidates, no git repository: named" "not a git repository" "$ERR"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
 "$COMPARE" settings >/dev/null 2>&1; assert_eq "settings without a file: exit 2" "2" "$?"
 "$COMPARE" settings "$WORK/absent.yaml" >/dev/null 2>&1; assert_eq "settings on a missing file: exit 2" "2" "$?"
+"$COMPARE" candidates >/dev/null 2>&1; assert_eq "candidates without a file: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

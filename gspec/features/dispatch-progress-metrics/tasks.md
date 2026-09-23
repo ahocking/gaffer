@@ -90,7 +90,7 @@ feature: dispatch-progress-metrics
   - covers: The feature's own run leaves no loose ends
   - arch: —
   - files: skills/metrics/SKILL.md
-- [ ] **T16** **P2** Correct `CLAUDE.md`'s run-metrics `progress` bullet so it states `progress`'s own null conditions (unmeasured trailer window, legacy run, unresolved dispatch) and drops the conditions that belong to other fields, matching ADR 0019 v3.6
+- [x] **T16** **P2** Correct `CLAUDE.md`'s run-metrics `progress` bullet so it states `progress`'s own null conditions (unmeasured trailer window, legacy run, unresolved dispatch) and drops the conditions that belong to other fields, matching ADR 0019 v3.6
   - deps: T15
   - covers: The feature's own run leaves no loose ends
   - arch: —

@@ -190,7 +190,7 @@ derived-done `run-metrics`; no existing field changes meaning.
   - the CRLF-jq byte-identity assertion covers the new fields, so a `kind` or
     `progress` value with a trailing carriage return turns the sweep red
 
-- [ ] **P1**: The feature's own run leaves no loose ends
+- [x] **P1**: The feature's own run leaves no loose ends
   - added 2026-09-23 on the operator's call, from this feature's whole-run review
     and its run: follow-ups are filed here rather than as a separate feature
   - `dispatch_waste.over_threshold` reads null, with a `notes[]` reason, whenever

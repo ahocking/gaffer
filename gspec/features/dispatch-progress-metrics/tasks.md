@@ -95,7 +95,7 @@ feature: dispatch-progress-metrics
   - covers: The feature's own run leaves no loose ends
   - arch: —
   - files: CLAUDE.md
-- [ ] **T17** **P1** State in `templates/status-line.md`, the one home of the status-line contract, that an agent's final reply is the exact line it passed to `write-result --status`, byte for byte, with nothing added or reformatted (on this feature's run three reviewers' saved lines passed the check while their replies added backticks and were refused)
+- [x] **T17** **P1** State in `templates/status-line.md`, the one home of the status-line contract, that an agent's final reply is the exact line it passed to `write-result --status`, byte for byte, with nothing added or reformatted (on this feature's run three reviewers' saved lines passed the check while their replies added backticks and were refused)
   - deps: —
   - covers: The feature's own run leaves no loose ends
   - arch: —

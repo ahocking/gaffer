@@ -75,3 +75,28 @@ feature: dispatch-progress-metrics
   - covers: —
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
+- [ ] **T13** **P1** Make `totals.dispatch_waste.over_threshold` (count and share) read null, with a `notes[]` reason naming the unresolved dispatch, whenever any counted implementer dispatch has a null `tool_calls`, instead of excluding it; cases cover a run with one unresolved dispatch nulling only `over_threshold` and a fully resolved run unchanged, and the T1 pin still holds
+  - deps: —
+  - covers: The feature's own run leaves no loose ends
+  - arch: —
+  - files: scripts/metrics.sh, scripts/test-metrics.sh
+- [ ] **T14** **P1** Replace the two copies of the implementer turn-budget reader (`resolve_turn_threshold` in `metrics.sh`, `_rs_implementer_turn_budget` in `runstate.sh`) with one shared strict reader: the value after `implementer_turn_budget:` counts only when, with any trailing comment and surrounding whitespace and quotes removed, it is a positive integer; each caller keeps its own fallback. Cases in both sweeps cover a digit only inside a trailing comment (not read), a quoted value, zero and a negative (not read), and a plain positive integer
+  - deps: T13
+  - covers: The feature's own run leaves no loose ends
+  - arch: —
+  - files: scripts/metrics.sh, scripts/runstate.sh, scripts/test-metrics.sh, scripts/test-runstate.sh
+- [ ] **T15** **P2** Add one sentence to the `analyze` hand-over in `skills/metrics/SKILL.md`: `landed` means the packet's commit falls in that dispatch's interval, not that the dispatch wrote what landed (a zero-edit last dispatch can read `landed`)
+  - deps: —
+  - covers: The feature's own run leaves no loose ends
+  - arch: —
+  - files: skills/metrics/SKILL.md
+- [ ] **T16** **P2** Correct `CLAUDE.md`'s run-metrics `progress` bullet so it states `progress`'s own null conditions (unmeasured trailer window, legacy run, unresolved dispatch) and drops the conditions that belong to other fields, matching ADR 0019 v3.6
+  - deps: T15
+  - covers: The feature's own run leaves no loose ends
+  - arch: —
+  - files: CLAUDE.md
+- [ ] **T17** **P1** State in `templates/status-line.md`, the one home of the status-line contract, that an agent's final reply is the exact line it passed to `write-result --status`, byte for byte, with nothing added or reformatted (on this feature's run three reviewers' saved lines passed the check while their replies added backticks and were refused)
+  - deps: —
+  - covers: The feature's own run leaves no loose ends
+  - arch: —
+  - files: templates/status-line.md

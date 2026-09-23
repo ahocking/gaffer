@@ -190,6 +190,24 @@ derived-done `run-metrics`; no existing field changes meaning.
   - the CRLF-jq byte-identity assertion covers the new fields, so a `kind` or
     `progress` value with a trailing carriage return turns the sweep red
 
+- [ ] **P1**: The feature's own run leaves no loose ends
+  - added 2026-09-23 on the operator's call, from this feature's whole-run review
+    and its run: follow-ups are filed here rather than as a separate feature
+  - `dispatch_waste.over_threshold` reads null, with a `notes[]` reason, whenever
+    a counted implementer dispatch has a null `tool_calls`, rather than leaving
+    that dispatch out and reporting a measured-looking count
+  - the implementer turn budget is read by one shared, strict parser used by both
+    `metrics.sh` and `runstate.sh`: a value counts only when the whole value after
+    the key is a positive integer, so a digit inside a trailing comment is never
+    read; the regression sweeps pin it
+  - the `analyze` hand-over says that `landed` means the packet's commit falls in
+    the dispatch's interval, not that the dispatch wrote what landed
+  - `CLAUDE.md`'s `progress` bullet states `progress`'s own null conditions and
+    no other field's
+  - every loop agent's final reply is the exact status line it passed to
+    `write-result`, byte for byte, so a line the check accepted in the result
+    file is never refused on return
+
 ## Dependencies
 
 - `run-metrics` — the parent: the collector, the trailer window, `message.id`

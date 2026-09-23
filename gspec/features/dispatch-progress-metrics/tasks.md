@@ -65,7 +65,7 @@ feature: dispatch-progress-metrics
   - covers: Existing outputs keep their meaning and the sweep pins the new fields
   - arch: —
   - files: scripts/test-metrics.sh
-- [ ] **T11** **P1** In one change, record in `CLAUDE.md` and in a new ADR 0019 v3.6 section: the per-dispatch join and its three sources; attribution by `agent_id` and never `agent_type`; the `kind` precedence with routing winning at a shared boundary; the pruned-routing-log null rule; the `progress` order; the null rules; the threshold stamp; and that no outcomes-log record kind was added. This is repo-convention upkeep, not a PRD criterion
+- [x] **T11** **P1** In one change, record in `CLAUDE.md` and in a new ADR 0019 v3.6 section: the per-dispatch join and its three sources; attribution by `agent_id` and never `agent_type`; the `kind` precedence with routing winning at a shared boundary; the pruned-routing-log null rule; the `progress` order; the null rules; the threshold stamp; and that no outcomes-log record kind was added. This is repo-convention upkeep, not a PRD criterion
   - deps: T8, T9, T10
   - covers: —
   - arch: —

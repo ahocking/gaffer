@@ -881,6 +881,125 @@ caught" and was built right first time, verified against a two-session fixture.
 Regression cases live under the `v3.5` heading in `scripts/test-spend.sh`, plus imports of
 the v3.3 dedup test and the timestamp-handling sweep cases.
 
+## v3.6 revision (2026-09-23) — one row per implementer dispatch (`dispatch-progress-metrics`)
+
+A packet row counted dispatches (`dispatched[]`, `audit.review_dispatches`) but did not split
+them: no dispatch carried its own kind, cost or progress, so a dispatch that spent its context
+and landed nothing hid behind the one that landed. The `dispatch-progress-metrics` PRD
+(`gspec/features/dispatch-progress-metrics/prd.md`) has the motivation and the baseline. This
+section records what shipped in `scripts/metrics.sh collect`. No existing field changed
+meaning. `scripts/test-metrics.sh` pins that by deleting the new fields and comparing the
+remaining output byte-for-byte.
+
+### 1. The per-dispatch join and its three sources
+
+`packets[].dispatches[]` has one row per implementer-role `Agent` event in the packet window.
+Each row carries `kind`, `tool_calls`, `duration_ms`, `edits`, `tokens` and `progress`. The
+join reads three logs that already existed:
+
+- **the events log**, grouped by `agent_id`: a dispatch's events, and so its `tool_calls`,
+  `duration_ms` and `edits` (the same four write tools the packet-level audit counts);
+- **the outcomes log's start records** (`kind` `start` or `continue`, the two shapes
+  `record-start` writes);
+- **the routing records** in every `.agents/loop/*/routing.jsonl`. These are scoped by parsed
+  `ts` to the run window and by packet id to the run's packets, because routing records
+  carry no session.
+
+`tokens` comes from the dispatch's own subagent transcript turns, taken from the same
+`message.id`-deduplicated turn set and single `token_source` as the packet total.
+
+**Attribution keys on `agent_id` presence and the `Agent` event, never on `agent_type`.** A
+main thread run as an agent carries `agent_type` with no `agent_id` (ADR 0028), and it is
+never attributed to a dispatch. The `Agent` event is logged when the dispatch returns, after
+the subagent's own events, so the dispatch span is back-dated: from the event's `ts` minus its
+`duration_ms` up to the `ts`, with each bound widened by 1 s and inclusive. The dispatch is
+the `agent_id` whose first event falls in that span. When several qualify, the earliest wins.
+A row with no qualifying `agent_id`, or whose `Agent` event has no `duration_ms`, still
+appears, resolved to nothing.
+
+### 2. `kind` precedence
+
+The latest start or routing record for the packet strictly before the dispatch's `Agent`
+event decides the kind:
+
+- a start, with or without `--continue`, gives `initial`;
+- a `continue` routing record gives `continuation`;
+- a `fix` or `retry` routing record gives that verdict.
+
+Only those three routing tokens carry a kind. **At a shared boundary the routing record
+wins.** When the latest record is a start and a `continue` routing record comes before it with
+no `Agent` event between the two, the kind is `continuation`. This is the case when
+`implementer-continuation` writes `route continue` and then `record-start --continue` back to
+back. Only `continue` pairs this way. A start after a `fix`/`retry` route is a resume's start
+and reads `initial`. A dispatch with no prior record gets `kind: null`.
+
+A run whose window holds neither record type is **legacy**. Every row's `kind` and `progress`
+is null there, never a guessed `initial`, and re-collecting it gives the same output.
+
+**Pruned routing log.** Sometimes the window holds a start record, but no routing record exists
+for any of the run's packets. `begin-run` keeps only the current and the newest other run
+directory, and every reviewed packet gets at least a `pass` record. So an absent routing log
+means pruned (or never reviewed), not a run without verdicts. Every row's `kind` is null,
+never the `initial` the start record alone would give a `fix` or `retry` dispatch, and a
+`notes[]` line names it routing-unmeasured.
+
+### 3. `progress` order
+
+Exactly one value applies, tested in this order:
+
+1. `null`: the packet's trailer window is unmeasured, the run is legacy, or the dispatch
+   resolved to no `agent_id`.
+2. `landed`: the packet's commit trailer author time falls in this dispatch's interval. The
+   interval runs from the dispatch's start (`Agent` `ts` minus `duration_ms`) to the next
+   implementer dispatch's start. For the last dispatch it runs to the end of the same bounded
+   trailer window the packet row uses.
+3. `advanced`: at least one edit event and no such commit.
+4. `none`: zero edit events.
+
+`landed` goes to one dispatch per trailer. If a later dispatch's commit carries an earlier
+dispatch's edits, the earlier one reads `advanced`.
+
+### 4. Null rules
+
+`null` stays unmeasured, never 0:
+
+- A row resolved to no `agent_id` has null `tool_calls`, `duration_ms`, `edits`, `tokens`
+  and `progress`.
+- `tokens` is null, with no partial figure, when the packet's `tokens` is null or when no
+  transcript turn resolves to the dispatch.
+- A swept or bundle-sibling packet has `dispatches: null`, in the null-field shape those rows
+  already use.
+
+In `totals.dispatch_waste`:
+
+- `zero_progress` is null when any row has a null `progress`.
+- `continuations` is null when any row has a null `kind`.
+- A token sum or share is null when a row it counts has null `tokens`.
+- Every component is null on a legacy run or a run with no implementer dispatch.
+- A `notes[]` line names each unmeasured component and why.
+
+A row with null `progress` or null `tool_calls` counts toward neither per-packet flag
+(`waste:zero-progress-dispatch(<n>)`, `waste:over-budget-dispatch(<n>)`). Both flags are
+suppressed on a legacy run and never emitted on a swept or sibling row. `show` renders a null
+component as unmeasured with its `notes[]` reason.
+
+### 5. The threshold stamp
+
+`over_threshold` and the over-budget flag use one threshold. It is the repository's
+`implementer_turn_budget` from `.agents/project-overrides.yaml` when that is a positive
+integer, read in tool calls, and otherwise the collector's default. `totals.dispatch_waste`
+stamps the threshold as `turn_threshold`: `value`, `unit` (`tool_calls`) and `source`
+(`implementer_turn_budget` or `default`). A reader can see which one applied and re-derive
+the counts.
+
+### 6. No outcomes-log record kind was added
+
+This feature adds no hook, no log, and no new record kind in the outcomes log.
+`_rs_open_packets` reads any outcomes record carrying `kind` as a packet boundary, so a helper
+record there would reopen packets. The join reads only records that already existed. A field
+the join needs but the records lack is a finding for the feature that writes those records.
+It is not something to fake in jq.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The

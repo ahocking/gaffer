@@ -143,6 +143,20 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   (append-only outcomes log, never run-state). **`interrupted` has one writer,
   `sweep-open`.**
 - Dispatch passes `routing.sh resolve <agent>`'s output as `model` (empty = omit).
+- **Per-dispatch rows (v3.6):** `packets[].dispatches[]` joins three existing logs: the
+  events log by `agent_id`, the outcomes log's start records, and every
+  `.agents/loop/*/routing.jsonl`. **Attribute by `agent_id` presence and the back-dated
+  `Agent` event span, never `agent_type`.**
+- `kind`: the latest start (`initial`) or `continue`/`fix`/`retry` routing record before
+  the `Agent` event decides. **At a shared boundary the routing record wins.** A legacy run
+  (neither record type) and a pruned routing log (starts but no routing record for any
+  packet) read `kind: null`, never a guessed `initial`.
+- `progress`, in order: `null` → `landed` → `advanced` → `none`. Null covers an
+  unresolved dispatch, swept/sibling rows (`dispatches: null`), null `tokens` and each
+  `dispatch_waste` component, and a `notes[]` line gives the reason. `turn_threshold`
+  stamps its value, unit and source.
+- **No outcomes-log record kind is added for the join.** `_rs_open_packets` reads any
+  `kind` record as a boundary.
 - Machine-wide spend lives in `scripts/spend.sh`. `.agents/metrics/` is gitignored in
   both `.gitignore`s.
 

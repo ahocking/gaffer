@@ -168,7 +168,7 @@ derived-done `run-metrics`; no existing field changes meaning.
   - `totals.audit.flagged_packets` lists a packet carrying either flag exactly
     as it lists one carrying any other
 
-- [ ] **P1**: `show` renders the rollup where it is read
+- [x] **P1**: `show` renders the rollup where it is read
   - `/gaffer:metrics show` prints `dispatch_waste` inside the audit block,
     above the per-packet table, on the rule that an audit signal off-screen
     goes unread

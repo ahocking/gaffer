@@ -3396,7 +3396,44 @@ assert_true "implementer_turn_budget: 0 reads as 120" "hb_has_budget pkt-bzero 1
 printf 'implementer_turn_budget: 00\n' > "$HW/.agents/project-overrides.yaml"
 hb_handoff pkt-bzero2 implementer
 assert_true "implementer_turn_budget: 00 (zero with a leading zero) reads as 120" "hb_has_budget pkt-bzero2 120"
+
+# --- the ONE strict reader (dispatch-progress-metrics T14) --------------------
+# The value counts only when the WHOLE value, with a trailing comment, the
+# surrounding whitespace and one pair of quotes removed, is a positive integer.
+# MUTATION RULED OUT: the old per-token scan, which took the first all-digit
+# token anywhere after the key -- it read `lots  # 150` as 150 and `150 200` as
+# 150; and a reader that keeps a leading `-` out of the digit test (reading
+# `-5` as 5).
+printf 'implementer_turn_budget: lots   # 150 would be plenty\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bcmt implementer
+assert_true "strict: a digit only inside a trailing comment is not read (120, not 150)" "hb_has_budget pkt-bcmt 120"
+printf 'implementer_turn_budget: 150 200\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bmulti implementer
+assert_true "strict: a multi-word value is not read by its first number (120, not 150)" "hb_has_budget pkt-bmulti 120"
+printf 'implementer_turn_budget: -5\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bneg implementer
+assert_true "strict: a negative value is not read (120, not 5)" "hb_has_budget pkt-bneg 120"
+printf 'implementer_turn_budget: "90"\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff pkt-bdq implementer
+assert_true "strict: a double-quoted positive integer is read (90)" "hb_has_budget pkt-bdq 90"
+
+# The subcommand metrics.sh reads the same reader through: no fallback of its
+# own (none, never 120), so each caller keeps its own default.
+tb_is() {  # <expected> -- TURN_BUDGET= line of `turn-budget` for $HW
+  [ "$("$RUNSTATE" turn-budget "$HW" 2>/dev/null)" = "TURN_BUDGET=$1" ]
+}
+printf 'implementer_turn_budget: 150\n' > "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: a plain positive integer prints it (150)" "tb_is 150"
+printf "implementer_turn_budget: '75'   # quoted, comment-trailed\n" > "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: a quoted, comment-trailed value prints 75" "tb_is 75"
+printf 'implementer_turn_budget: lots   # 150\n' > "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: a digit only inside a trailing comment prints none" "tb_is none"
+printf 'implementer_turn_budget: 0\n' > "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: zero prints none (no fallback applied)" "tb_is none"
+printf 'implementer_turn_budget: -5\n' > "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: a negative value prints none" "tb_is none"
 rm -f "$HW/.agents/project-overrides.yaml"
+assert_true "turn-budget: a missing file prints none" "tb_is none"
 
 hb_handoff pkt-bdoc doc-writer
 assert_true "a doc-writer handoff carries no budget line" \
@@ -3449,6 +3486,12 @@ assert_true "(no-tools host) an invalid implementer_turn_budget reads as 120" "h
 printf 'implementer_turn_budget: 0\n' > "$HW/.agents/project-overrides.yaml"
 hb_handoff_nt pkt-nt-bzero implementer
 assert_true "(no-tools host) implementer_turn_budget: 0 reads as 120" "hb_has_budget pkt-nt-bzero 120"
+printf 'implementer_turn_budget: lots   # 150 would be plenty\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bcmt implementer
+assert_true "(no-tools host) strict: a digit only inside a trailing comment is not read (120)" "hb_has_budget pkt-nt-bcmt 120"
+printf 'implementer_turn_budget: -5\n' > "$HW/.agents/project-overrides.yaml"
+hb_handoff_nt pkt-nt-bneg implementer
+assert_true "(no-tools host) strict: a negative value is not read (120)" "hb_has_budget pkt-nt-bneg 120"
 rm -f "$HW/.agents/project-overrides.yaml"
 
 hb_handoff_nt pkt-nt-bdoc doc-writer

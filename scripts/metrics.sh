@@ -222,27 +222,20 @@ resolve_idle_gap() {
 # --- dispatch_waste turn threshold (dispatch-progress-metrics T6) -------------
 # The repository's `implementer_turn_budget` (tool calls) when it is a positive
 # integer, else 150, the baseline's own cutoff. Prints "<value> <source>", where
-# source is `implementer_turn_budget` or `default`. Same token scan as
-# runstate.sh's _rs_implementer_turn_budget (a trailing comment and one matching
-# pair of quotes per token are tolerated; zero, `00` and non-digits are invalid),
-# but its fallback is this rollup's own 150, not the handoff budget default.
+# source is `implementer_turn_budget` or `default`. The value is read by
+# runstate.sh's `turn-budget` subcommand -- the ONE strict reader of that key,
+# shared with the handoff's budget line (dispatch-progress-metrics T14), so the
+# two can no longer disagree about what the key says. Only the fallback is this
+# rollup's own: 150, not the handoff's 120. runstate.sh is resolved beside this
+# script; when it cannot be run the value reads as the default.
 resolve_turn_threshold() {
-  local main_root="$1" v=""
-  local ov="${main_root}/.agents/project-overrides.yaml"
-  if [ -f "$ov" ]; then
-    v="$(awk '
-      /^implementer_turn_budget:[[:space:]]*/ {
-        line = $0
-        sub(/^implementer_turn_budget:[[:space:]]*/, "", line)
-        n = split(line, a, " ")
-        for (i = 1; i <= n; i++) {
-          tok = a[i]
-          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
-          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
-          if (tok ~ /^[0-9]+$/) { sub(/^0+/, "", tok); print tok; exit }
-        }
-      }
-    ' "$ov" 2>/dev/null)"
+  local main_root="$1" v="" here=""
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P 2>/dev/null || true)"
+  fi
+  if [ -n "$here" ] && [ -f "$here/runstate.sh" ]; then
+    v="$(bash "$here/runstate.sh" turn-budget "$main_root" 2>/dev/null \
+         | awk -F= '$1 == "TURN_BUDGET" { print $2; exit }' | tr -d '\r')"
   fi
   case "$v" in ''|0|*[!0-9]*) echo "150 default" ;; *) echo "$v implementer_turn_budget" ;; esac
 }

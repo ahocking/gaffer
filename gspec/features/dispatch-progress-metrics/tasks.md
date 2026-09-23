@@ -80,7 +80,7 @@ feature: dispatch-progress-metrics
   - covers: The feature's own run leaves no loose ends
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T14** **P1** Replace the two copies of the implementer turn-budget reader (`resolve_turn_threshold` in `metrics.sh`, `_rs_implementer_turn_budget` in `runstate.sh`) with one shared strict reader: the value after `implementer_turn_budget:` counts only when, with any trailing comment and surrounding whitespace and quotes removed, it is a positive integer; each caller keeps its own fallback. Cases in both sweeps cover a digit only inside a trailing comment (not read), a quoted value, zero and a negative (not read), and a plain positive integer
+- [x] **T14** **P1** Replace the two copies of the implementer turn-budget reader (`resolve_turn_threshold` in `metrics.sh`, `_rs_implementer_turn_budget` in `runstate.sh`) with one shared strict reader: the value after `implementer_turn_budget:` counts only when, with any trailing comment and surrounding whitespace and quotes removed, it is a positive integer; each caller keeps its own fallback. Cases in both sweeps cover a digit only inside a trailing comment (not read), a quoted value, zero and a negative (not read), and a plain positive integer
   - deps: T13
   - covers: The feature's own run leaves no loose ends
   - arch: —

@@ -30,7 +30,7 @@ feature: dispatch-progress-metrics
   - covers: Every implementer dispatch in a packet is one row with a kind
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T4** **P0** Give each dispatch row `tokens`: the sum of its `subagents/agent-<agent_id>.jsonl` transcript turns, deduplicated by `message.id` with the earliest row kept and id-less rows kept verbatim, read under the run's single `token_source`. It is null (no partial figure) when the packet's `tokens` is null, the dispatch is unresolved, or no turn resolves to it. Cases cover a duplicated message id counted once, a missing transcript, and a null packet `tokens` nulling every row
+- [x] **T4** **P0** Give each dispatch row `tokens`: the sum of its `subagents/agent-<agent_id>.jsonl` transcript turns, deduplicated by `message.id` with the earliest row kept and id-less rows kept verbatim, read under the run's single `token_source`. It is null (no partial figure) when the packet's `tokens` is null, the dispatch is unresolved, or no turn resolves to it. Cases cover a duplicated message id counted once, a missing transcript, and a null packet `tokens` nulling every row
   - deps: T3
   - covers: Each dispatch carries its own cost and its own progress
   - arch: —

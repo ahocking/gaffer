@@ -1207,6 +1207,11 @@ cmd_collect() {
      # never be attributed to a dispatch.
      | ($events | map(select((.agent_id // "") != "" and .ts != null)) | group_by(.agent_id)
         | map({key: .[0].agent_id, value: {first_ms: (map(.ts|ts_ms)|min), evs: .}})) as $aid_ctx
+     # Per-agent_id token sums (dispatch-progress-metrics T4): subagent turns only
+     # (a main-session aid is "main:<sid>", never an event agent_id), each message
+     # id already counted once by the section 4 dedup.
+     | ($turns | map(select(.role != "main")) | group_by(.aid)
+        | map({key: .[0].aid, value: (map(.tok)|sumtok(.))}) | from_entries) as $aid_tok
      # DISPATCH KIND (dispatch-progress-metrics T3). The latest start or routing
      # record for the packet strictly before the dispatch Agent event decides:
      # a start (with or without --continue) -> initial, a `continue` routing record
@@ -1285,13 +1290,21 @@ cmd_collect() {
                      (($a.ts|ts_ms) - $a.duration_ms - 1000) as $lo
                      | (($a.ts|ts_ms) + 1000) as $hi
                      | ($aid_ctx | map(select(.value.first_ms >= $lo and .value.first_ms <= $hi))
-                        | sort_by(.value.first_ms, .key) | (.[0].value.evs // null))
-                   else null end) as $devs
+                        | sort_by(.value.first_ms, .key) | (.[0] // null))
+                   else null end) as $dres
+                | ($dres.value.evs // null) as $devs
                 | dkind($p.id; ($a.ts|ts_ms)) as $kind
-                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null}
+                # tokens (T4): the resolved agent_id own transcript turns, from the
+                # SAME deduped, run-window-bounded turn set the packet total and
+                # token_source are read from. Null, never a partial figure, when the
+                # packet tokens are null, the dispatch is unresolved, or no turn
+                # resolves to its agent_id (a missing transcript).
+                | (if ($ts_ok and $dres != null) then ($aid_tok[$dres.key] // null) else null end) as $dtok
+                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null}
                   else {kind: $kind, tool_calls: ($devs|length),
                         duration_ms: ($devs|map(.duration_ms//0)|add),
-                        edits: ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length)}
+                        edits: ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length),
+                        tokens: $dtok}
                   end)) as $dispatches
          | ([ (if ($orch_edits>0 and ($impl_dispatched|not)) then "leak:orchestrator-edited-on-opus-without-delegating(\($orch_edits))" else empty end),
               (if ($p.impl=="delegated" and ($impl_dispatched|not)) then "label-contradiction:impl=delegated-but-no-implementer-dispatch" else empty end),

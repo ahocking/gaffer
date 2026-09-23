@@ -50,7 +50,7 @@ feature: dispatch-progress-metrics
   - covers: Per-packet flags surface zero-progress and over-threshold dispatches
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T8** **P1** Make `metrics.sh show` print `dispatch_waste` inside the audit block, above the per-packet table. A null component renders as unmeasured with its `notes[]` reason and a non-null zero renders as 0, never through a `// 0` fallback; cases on the rendered text cover a measured run, a partly null run and a legacy run
+- [x] **T8** **P1** Make `metrics.sh show` print `dispatch_waste` inside the audit block, above the per-packet table. A null component renders as unmeasured with its `notes[]` reason and a non-null zero renders as 0, never through a `// 0` fallback; cases on the rendered text cover a measured run, a partly null run and a legacy run
   - deps: T7
   - covers: `show` renders the rollup where it is read
   - arch: —

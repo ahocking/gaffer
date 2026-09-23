@@ -153,10 +153,10 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   the `Agent` event decides. **At a shared boundary the routing record wins.** A legacy run
   (neither record type) and a pruned routing log (starts but no routing record for any
   packet) read `kind: null`, never a guessed `initial`.
-- `progress`, in order: `null` → `landed` → `advanced` → `none`. Null covers an
-  unresolved dispatch, swept/sibling rows (`dispatches: null`), null `tokens` and each
-  `dispatch_waste` component, and a `notes[]` line gives the reason. `turn_threshold`
-  stamps its value, unit and source.
+- `progress`, in order: `null` → `landed` → `advanced` → `none`. It is null when the
+  packet's trailer window is unmeasured, the run is legacy, or the dispatch resolved to no
+  `agent_id`. Other fields' null rules are ADR 0019 v3.6 §4, not this bullet.
+- `totals.dispatch_waste.turn_threshold` stamps its value, unit and source.
 - **No outcomes-log record kind is added for the join.** `_rs_open_packets` reads any
   `kind` record as a boundary.
 - Machine-wide spend lives in `scripts/spend.sh`. `.agents/metrics/` is gitignored in

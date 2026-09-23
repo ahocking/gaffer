@@ -2200,8 +2200,9 @@ JSON
 DPOUT="$ROOT/dp-run.json"
 "$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
   || bad "DPM T2: collect exits 0" "collect returned nonzero"
-# `kind` (T3) is checked in its own section below; these cases pin T2's cost fields.
-dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens)' "$DPOUT"; }
+# `kind` (T3), `tokens` (T4) and `progress` (T5) are checked in their own sections
+# below; these cases pin T2's cost fields.
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens, .progress)' "$DPOUT"; }
 check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
   "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
 check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
@@ -2402,6 +2403,65 @@ check "DPM T4: a null packet tokens nulls every dispatch row (tk1 still has turn
   '[null,null,null]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].tokens]' "$TKOUTN")"
 check "DPM T4: the T2 fixture (no transcripts) reads tokens null on every row" \
   '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].tokens]' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T5: dispatches[].progress =="
+# progress, in the PRD order: null (no bounded trailer window, legacy run, unresolved
+# dispatch), landed (the commit trailer author time falls in [this dispatch start,
+# next implementer dispatch start), the last up to the trailer window end), advanced
+# (>=1 edit event, no such commit), none (zero edit events).
+#   pg-001 (commit :50)  start :01.1 -> d1 initial, 1 edit, start :01   -> advanced
+#                        fix :07.2   -> d2 fix,     1 edit, start :07.5 -> landed
+#                        (d1 edits were carried by the commit d2 landed: advanced, not landed)
+#   pg-002 (record-only, no commit; abandoned :72)
+#                        d3 no agent_id in its span (unresolved)         -> null
+#                        d4 zero edits (a Read)                          -> none
+#                        d5 one edit, last in the packet                 -> advanced
+#                        (last on purpose: reading the record-only end as a
+#                        commit time would land it, and the case would show it)
+PGREPO="$ROOT/pg-repo"
+mkdir -p "$PGREPO/.agents/metrics/events" "$PGREPO/.agents/metrics/outcomes" "$PGREPO/.agents/loop/RUN-PG"
+git -C "$PGREPO" init -q; git -C "$PGREPO" config user.email t@t; git -C "$PGREPO" config user.name t
+echo a > "$PGREPO/a.txt"; git -C "$PGREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$PGREPO" commit -q -m "pg1
+
+[orch packet:pg-001]"
+cat > "$PGREPO/.agents/metrics/events/PG.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"PG","agent_id":"g1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:05Z","session_id":"PG","agent_id":"gr","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:06Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:08Z","session_id":"PG","agent_id":"g2","agent_type":"gaffer:implementer","tool":"Write","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:01Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":200}
+{"ts":"2026-07-21T10:01:03Z","session_id":"PG","agent_id":"g3","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:01:04Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:07Z","session_id":"PG","agent_id":"g4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:08Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$PGREPO/.agents/metrics/outcomes/PG.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"pg-001","session":"PG","kind":"start"}
+{"ts":"2026-07-21T10:01:00.100Z","packet":"pg-002","session":"PG","kind":"start"}
+{"ts":"2026-07-21T10:01:12.000Z","packet":"pg-002","session":"PG","outcome":"abandoned"}
+JSON
+cat > "$PGREPO/.agents/loop/RUN-PG/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"pg-001","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+PGOUT="$ROOT/pg-run.json"
+"$METRICS" collect --main-root "$PGREPO" --projects-dir "$ROOT/none" --out "$PGOUT" >/dev/null 2>&1 \
+  || bad "DPM T5: collect exits 0" "collect returned nonzero"
+pg_rows() { jq -c --arg id "$1" '[.packets[]|select(.id==$id)|.dispatches[]|[.kind, .progress]]' "$PGOUT"; }
+check "DPM T5: initial -> fix, only the fix row reads landed; the initial row whose edits the commit carried reads advanced" \
+  '[["initial","advanced"],["fix","landed"]]' "$(pg_rows pg-001)"
+check "DPM T5: no commit -> zero-edit none, edited advanced, unresolved null" \
+  '[["initial",null],["initial","none"],["initial","advanced"]]' "$(pg_rows pg-002)"
+check "DPM T5: at most one landed dispatch per trailer, across every packet of the run" \
+  '[1,0]' "$(jq -c '[.packets[]|[.dispatches[]?|select(.progress=="landed")]|length]' "$PGOUT")"
+check "DPM T5: routing-unmeasured run still measures progress (only kind is nulled)" \
+  '["advanced","landed"]' "$(jq -c '[.packets[]|select(.id=="p-001")|.dispatches[].progress]' "$PROUT")"
+check "DPM T5: legacy run -> every progress null (a commit and edits notwithstanding)" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].progress]' "$DPOUT")"
 
 echo
 if [ "$fail" -eq 0 ]; then

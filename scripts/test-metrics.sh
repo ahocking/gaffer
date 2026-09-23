@@ -2201,7 +2201,7 @@ DPOUT="$ROOT/dp-run.json"
 "$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
   || bad "DPM T2: collect exits 0" "collect returned nonzero"
 # `kind` (T3) is checked in its own section below; these cases pin T2's cost fields.
-dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind)' "$DPOUT"; }
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens)' "$DPOUT"; }
 check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
   "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
 check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
@@ -2350,6 +2350,58 @@ DPOUT2="$ROOT/dp-run-2.json"
 if [ "$(jq -S -c 'del(.generated_at)' "$DPOUT")" = "$(jq -S -c 'del(.generated_at)' "$DPOUT2")" ]; then
   ok "DPM T3: legacy run re-collects identically"
 else bad "DPM T3: legacy run re-collects identically" "second collect differs from the first"; fi
+
+echo "== dispatch-progress-metrics T4: dispatches[].tokens from the agent_id transcript =="
+# One packet (tk-001), three implementer dispatches:
+#   d1  agent tk1 -> subagents/agent-tk1.jsonl: message m1 logged TWICE (identical
+#       usage, the later copy +26 s), m2 once, one id-less row -> m1 counted once
+#   d2  agent tk2 -> no transcript file on disk              -> tokens null
+#   d3  no agent_id in its span (unresolved)                 -> tokens null
+# A second projects dir holds the same tk1 transcript with NO per-turn timestamps,
+# so the packet tokens are null there (per-packet split unmeasurable) and every
+# dispatch row must be null too, never the tk1 sum it could still compute.
+TKREPO="$ROOT/tk-repo"; mkdir -p "$TKREPO/.agents/metrics/events"
+git -C "$TKREPO" init -q; git -C "$TKREPO" config user.email t@t; git -C "$TKREPO" config user.name t
+echo tk > "$TKREPO/log.txt"; git -C "$TKREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$TKREPO" commit -q -m "work
+
+[orch packet:tk-001]"
+cat > "$TKREPO/.agents/metrics/events/TK.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"TK","agent_id":"tk1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:08Z","session_id":"TK","agent_id":"tk2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:20Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}
+{"ts":"2026-07-21T10:00:45Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+JSON
+TKPROJ="$ROOT/tk-proj"; mkdir -p "$TKPROJ/proj/TK/subagents"
+cat > "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:02.100Z","message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5}}}
+{"timestamp":"2026-07-21T10:00:02.300Z","message":{"id":"m2","model":"claude-sonnet-5","usage":{"input_tokens":20,"output_tokens":2,"cache_creation_input_tokens":200,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:02.900Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":5,"cache_read_input_tokens":6}}}
+{"timestamp":"2026-07-21T10:00:28.100Z","message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5}}}
+JSON
+TKPROJN="$ROOT/tk-proj-nots"; mkdir -p "$TKPROJN/proj/TK/subagents"
+jq -c 'del(.timestamp)' "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" > "$TKPROJN/proj/TK/subagents/agent-tk1.jsonl"
+TKOUT="$ROOT/tk-run.json"; TKOUTN="$ROOT/tk-run-nots.json"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$TKPROJ" --out "$TKOUT" >/dev/null 2>&1 \
+  || bad "DPM T4: collect exits 0" "collect returned nonzero"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$TKPROJN" --out "$TKOUTN" >/dev/null 2>&1 \
+  || bad "DPM T4: no-ts collect exits 0" "collect returned nonzero"
+tk_tok() { jq -c --argjson n "$2" '.packets[]|select(.id=="tk-001")|.dispatches[$n].tokens' "$1"; }
+check "DPM T4: fixture reads token_source=transcript" "transcript" "$(jq -r '.token_source' "$TKOUT")"
+check "DPM T4: a duplicated message id is counted once; the id-less row is kept" \
+  '{"input":123,"output":16,"cache_creation":1205,"cache_read":12}' "$(tk_tok "$TKOUT" 0)"
+check "DPM T4: a resolved dispatch with no transcript on disk -> tokens null (not 0)" "null" "$(tk_tok "$TKOUT" 1)"
+check "DPM T4: an unresolved dispatch -> tokens null" "null" "$(tk_tok "$TKOUT" 2)"
+check "DPM T4: no-ts fixture -> packet tokens null" "null" \
+  "$(jq -c '.packets[]|select(.id=="tk-001")|.tokens' "$TKOUTN")"
+check "DPM T4: a null packet tokens nulls every dispatch row (tk1 still has turns on disk)" \
+  '[null,null,null]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].tokens]' "$TKOUTN")"
+check "DPM T4: the T2 fixture (no transcripts) reads tokens null on every row" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].tokens]' "$DPOUT")"
 
 echo
 if [ "$fail" -eq 0 ]; then

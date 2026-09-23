@@ -17,7 +17,19 @@
 # table (a directly keyed model, an agreeing family, a disagreeing family left
 # unpriced), an unmeasured packet named and excluded, the newest measured
 # run-metrics row used, `--remaining` after some records exist, and two
-# estimates issuing different pending tokens bound to their sets.
+# estimates issuing different pending tokens bound to their sets. `prepare`:
+# six clones (two packets x three models) leaving the source's `git status`,
+# `.agents/` tree and `for-each-ref` byte-identical, each clone on its start
+# commit and one opaque branch with no remote, `routing.sh --root <clone>`
+# resolving the model and the reviewer model with every other config line
+# kept, each packet's three handoffs byte-identical from the per-packet cache
+# (an original copied verbatim, a rebuilt one carrying the verification
+# contract), no directory or branch name containing a model identifier, and
+# the refusals leaving no clone behind. A spliced original, built by the real
+# `runstate.sh refresh-handoff` and `amend-handoff`, installed as the plain
+# first-dispatch handoff for all three models from the earliest run, with the
+# store inside the source's `.agents/metrics/comparisons` leaving everything
+# outside the experiment's own store unchanged.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -894,6 +906,298 @@ est "$EA" --remaining
 assert_eq "unreadable records: refused, not guessed" "1:" "$RC:$OUT"
 assert_has "unreadable records: names the file" "records file is not readable JSONL" "$ERR"
 
+printf '\n== prepare: a fixture source repository and store ==\n'
+# prep-t1 has its original handoff on disk; prep-t2 has none, so it is rebuilt
+# from the plan at its parent. The source's tracked project-overrides.yaml
+# carries other keys, a comment and other model_routing entries, which the
+# clone must keep. Its main checkout holds untracked .agents/ state (a run-state
+# and the original handoff) whose bytes must not change.
+PR="$WORK/prepsrc"
+mkdir -p "$PR/scripts" "$PR/gspec/features/prep" "$PR/.agents"
+PR_N=0
+pr_commit() {  # pr_commit <message> -> prints the new commit's sha
+  PR_N=$((PR_N + 1))
+  local d; d="2026-04-01T00:$(printf '%02d' "$PR_N"):00Z"
+  git -C "$PR" add -A >/dev/null
+  GIT_AUTHOR_DATE="$d" GIT_COMMITTER_DATE="$d" git -C "$PR" -c user.name=fixture -c user.email=fixture@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$PR" rev-parse HEAD
+}
+git -C "$PR" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n' > "$PR/.gitignore"
+printf 'echo a\n' > "$PR/scripts/a.sh"
+printf 'project:\n  name: fixture\nmodel_routing:\n    architect: haiku   # kept\n    implementer: haiku\n# a comment after the map\nimplementer_turn_budget: 77\n' \
+  > "$PR/.agents/project-overrides.yaml"
+printf -- '---\nspec-version: v2\nfeature: prep\n---\n\n# Prep\n\n## Capabilities\n\n- [ ] **The capability**\n' \
+  > "$PR/gspec/features/prep/prd.md"
+{ printf -- '---\nspec-version: v2\nfeature: prep\n---\n\n# Plan: prep\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** Task T1.\n  - deps: —\n  - covers: The capability\n  - arch: —\n'
+  printf -- '- [ ] **T2** **P0** Task T2.\n  - deps: —\n  - covers: The capability\n  - arch: —\n'; } > "$PR/gspec/features/prep/tasks.md"
+P0="$(pr_commit base)"
+printf 'echo t1\n' >> "$PR/scripts/a.sh"
+P1="$(pr_commit "$(printf 't1\n\n[orch packet:prep-t1]')")"
+printf 'echo t2\n' >> "$PR/scripts/a.sh"
+P2="$(pr_commit "$(printf 't2\n\n[orch packet:prep-t2]')")"
+git -C "$PR" branch -q other-branch "$P1"
+mkdir -p "$PR/.agents/loop/20260401T000000-aa/prep-t1"
+printf '# prep-t1: the original\n\nrun-state: /elsewhere/run-state.yaml\n\nno trailing newline' \
+  > "$PR/.agents/loop/20260401T000000-aa/prep-t1/handoff.md"
+printf "schema: 3\nstatus: 'paused'\n" > "$PR/.agents/run-state.yaml"
+
+PEXP=ccccccccccc1
+PSTORE="$WORK/prepstore"
+PSCRATCH="$WORK/prepscratch"
+mkdir -p "$PSTORE/$PEXP"
+cat > "$PSTORE/$PEXP/selection.json" <<EOF
+{
+  "experiment": "$PEXP",
+  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "opus", "source_repo": "$PR", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "prep-t2", "class": "code", "tier": "unrecorded", "fix_rounds": "unmeasured", "title": "t2", "handoff": "rebuilt", "start": "$P1", "commits": ["$P2"]},
+    {"packet": "prep-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "t1", "handoff": "original", "start": "$P0", "commits": ["$P1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+prep() {  # prep <args...>: OUT/ERR/RC, with the fixture store and scratch root
+  OUT="$(ORCH_COMPARE_STORE="$PSTORE" ORCH_COMPARE_SCRATCH="$PSCRATCH" "$COMPARE" prepare "$@" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+# agents_tree <root>: every path under <root>/.agents with each file's checksum.
+agents_tree() {
+  (cd "$1" && find .agents -print | LC_ALL=C sort | while IFS= read -r p; do
+     if [ -f "$p" ]; then printf '%s %s\n' "$p" "$(cksum < "$p")"; else printf '%s\n' "$p"; fi
+   done)
+}
+BEFORE_STATUS="$(git -C "$PR" status --porcelain=v1 --untracked-files=all --ignored)"
+BEFORE_AGENTS="$(agents_tree "$PR")"
+BEFORE_REFS="$(git -C "$PR" for-each-ref)"
+
+# Every model, both packets: six replays.
+PREP_CLONES=""
+for pk in prep-t1 prep-t2; do
+  for m in fable opus sonnet; do
+    prep "$PEXP" "$pk" "$m"
+    assert_eq "prepare $pk $m: exit 0" "0" "$RC"
+    C="$(line CLONE)"; B="$(line BRANCH)"; H="$(line HANDOFF)"; R="$(line REPLAY)"
+    PREP_CLONES="$PREP_CLONES $C"
+    eval "PH_${pk#prep-}_$m=\$H"
+    assert_eq "prepare $pk $m: the clone is under the scratch root" "$PSCRATCH" "$(dirname "$C")"
+    assert_eq "prepare $pk $m: the clone's HEAD is the packet's start" \
+      "$(if [ "$pk" = prep-t1 ]; then echo "$P0"; else echo "$P1"; fi)" "$(git -C "$C" rev-parse HEAD 2>/dev/null)"
+    assert_eq "prepare $pk $m: the clone is on its opaque branch, its only branch" \
+      "refs/heads/$B:refs/heads/$B" "$(git -C "$C" symbolic-ref HEAD 2>/dev/null):$(git -C "$C" for-each-ref --format='%(refname)' refs/heads/ | paste -sd' ' -)"
+    assert_eq "prepare $pk $m: the clone has no remote back to the source" "" "$(git -C "$C" remote)"
+    assert_eq "prepare $pk $m: routing.sh --root <clone> resolve implementer prints the model" \
+      "$m" "$("$ROUTING" --root "$C" resolve implementer)"
+    assert_eq "prepare $pk $m: routing.sh --root <clone> resolve reviewer prints the reviewer model" \
+      "opus" "$("$ROUTING" --root "$C" resolve reviewer)"
+    assert_eq "prepare $pk $m: the clone's routing config validates clean" "" "$("$ROUTING" --root "$C" validate)"
+    assert_eq "prepare $pk $m: the replay record in the store is stdout" "$OUT" "$(cat "$PSTORE/$PEXP/replays/$R.env" 2>/dev/null)"
+    assert_eq "prepare $pk $m: the handoff is installed in the clone's run directory" \
+      "$C/.agents/loop/$(line RUN_ID)/$pk/handoff.md" "$H"
+    assert_eq "prepare $pk $m: begin-run minted the clone's run_id" \
+      "$(line RUN_ID)" "$("$HERE/runstate.sh" get "$C/.agents/run-state.yaml" run_id)"
+  done
+done
+assert_eq "prepare: the source's git status is byte-identical after six prepares" \
+  "$BEFORE_STATUS" "$(git -C "$PR" status --porcelain=v1 --untracked-files=all --ignored)"
+assert_eq "prepare: the source's .agents/ tree hash is byte-identical" "$BEFORE_AGENTS" "$(agents_tree "$PR")"
+assert_eq "prepare: the source's for-each-ref output is byte-identical" "$BEFORE_REFS" "$(git -C "$PR" for-each-ref)"
+
+# The other keys, the comment and the other entry are kept; the two set ones
+# are not duplicated.
+C="${PREP_CLONES##* }"
+assert_eq "prepare: every other key and line of project-overrides.yaml is kept" \
+"project:
+  name: fixture
+model_routing:
+    implementer: sonnet
+    reviewer: opus
+    architect: haiku   # kept
+# a comment after the map
+implementer_turn_budget: 77" "$(cat "$C/.agents/project-overrides.yaml")"
+assert_eq "prepare: an entry other than the role's and the reviewer's still resolves" "haiku" "$("$ROUTING" --root "$C" resolve architect)"
+
+# Byte-identical handoffs across the three models, from the per-packet cache.
+for pk in t1 t2; do
+  eval "HF=\$PH_${pk}_fable; HO=\$PH_${pk}_opus; HS=\$PH_${pk}_sonnet"
+  if cmp -s "$HF" "$HO" && cmp -s "$HF" "$HS"; then ok "prepare prep-$pk: three models' handoffs are byte-identical"
+  else bad "prepare prep-$pk: three models' handoffs are byte-identical"; fi
+  if cmp -s "$HF" "$PSTORE/$PEXP/handoffs/prep-$pk.md"; then ok "prepare prep-$pk: the handoff is the experiment's cached copy"
+  else bad "prepare prep-$pk: the handoff is the experiment's cached copy"; fi
+done
+if cmp -s "$PH_t1_fable" "$PR/.agents/loop/20260401T000000-aa/prep-t1/handoff.md"; then
+  ok "prepare: an original handoff with no splice block is copied byte-for-byte"
+else bad "prepare: an original handoff with no splice block is copied byte-for-byte"; fi
+# The rebuilt handoff went through runstate.sh handoff: the adapter's lines,
+# the stored tier as it stands (never a guessed one), and the verification
+# contract appended verbatim at the end.
+RB="$(cat "$PH_t2_fable")"
+assert_has "prepare: a rebuilt handoff carries the adapter's packet" "PACKET=prep-t2" "$RB"
+assert_has "prepare: a rebuilt handoff states the stored tier, unrecorded included" "tier: unrecorded" "$RB"
+assert_has "prepare: a rebuilt handoff names the varied role as its agent" "agent: implementer" "$RB"
+assert_has "prepare: a rebuilt handoff carries the required-verification block" \
+  "$(cat "$REPO/templates/handoff-required.md")" "$RB"
+REQ_HEAD="$(sed -n '1p' "$REPO/templates/handoff-required.md")"
+assert_eq "prepare: the verification block ends the rebuilt handoff" \
+  "$(cat "$REPO/templates/handoff-required.md")" "$(awk -v h="$REQ_HEAD" '$0 == h { on = 1 } on' "$PH_t2_fable")"
+# A second prepare reuses the cache rather than rebuilding.
+prep "$PEXP" prep-t2 opus
+assert_eq "prepare again: the cache is reused, not rewritten" "0:reused" "$RC:$(line HANDOFF_CACHED)"
+PREP_CLONES="$PREP_CLONES $(line CLONE)"
+
+# No directory or branch name contains any model identifier (or the reviewer's).
+leak=""
+for C in $PREP_CLONES; do
+  for n in "$(basename "$C")" $(git -C "$C" for-each-ref --format='%(refname)'); do
+    for m in fable opus sonnet; do
+      case "$(printf '%s' "$n" | tr 'A-Z' 'a-z')" in *"$m"*) leak="$leak $n" ;; esac
+    done
+  done
+done
+assert_eq "prepare: no clone directory or branch name contains a model identifier" "" "$leak"
+assert_eq "prepare: the clones' directory names are distinct" "7" \
+  "$(for C in $PREP_CLONES; do basename "$C"; done | sort -u | wc -l | tr -d ' ')"
+
+printf '\n== prepare: refusals ==\n'
+N_CLONES="$(ls "$PSCRATCH" | wc -l | tr -d ' ')"
+prep "$PEXP" prep-t1 haiku
+assert_eq "prepare, a model outside the settings: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "prepare, a model outside the settings: named" "haiku is not one of experiment $PEXP's models" "$ERR"
+prep "$PEXP" prep-t9 opus
+assert_eq "prepare, a packet outside the selection: exit 1" "1" "$RC"
+assert_has "prepare, a packet outside the selection: named" "packet prep-t9 is not in experiment $PEXP's selection" "$ERR"
+prep dddddddddddd prep-t1 opus
+assert_eq "prepare, no stored selection: exit 1" "1" "$RC"
+assert_has "prepare, no stored selection: says to run select" "run \`compare.sh select\` first" "$ERR"
+prep ../etc prep-t1 opus
+assert_eq "prepare, not an experiment id: exit 1" "1" "$RC"
+OUT="$(ORCH_COMPARE_STORE="$PSTORE" ORCH_COMPARE_SCRATCH="$PR/scratch" "$COMPARE" prepare "$PEXP" prep-t1 opus 2>"$WORK/err")"; RC=$?; ERR="$(cat "$WORK/err")"
+assert_eq "prepare, a scratch root inside the source: exit 1" "1" "$RC"
+assert_has "prepare, a scratch root inside the source: named" "lies inside the source repository's working tree" "$ERR"
+rmdir "$PR/scratch" 2>/dev/null
+# A routing config the clone cannot set is refused, and the half-built clone removed.
+printf 'model_routing: [not, a, map]\n' > "$PR/.agents/project-overrides.yaml"
+P3="$(pr_commit 'break the routing map')"
+mkdir -p "$PSTORE/ccccccccccc2"
+sed "s/$PEXP/ccccccccccc2/; s/\"start\": \"$P0\"/\"start\": \"$P3\"/" \
+  "$PSTORE/$PEXP/selection.json" > "$PSTORE/ccccccccccc2/selection.json"
+prep ccccccccccc2 prep-t1 opus
+assert_eq "prepare, an unreadable model_routing: exit 1" "1" "$RC"
+assert_has "prepare, an unreadable model_routing: named" "model_routing cannot be read" "$ERR"
+assert_eq "prepare: no refused prepare leaves a clone behind" "$N_CLONES" "$(ls "$PSCRATCH" | wc -l | tr -d ' ')"
+
+printf '\n== prepare: a spliced original, and the store inside the source ==\n'
+# The original handoff is produced the way the loop produces one: `runstate.sh
+# handoff` writes the first-dispatch file (kept aside as the expected bytes),
+# then the REAL `refresh-handoff` (a dirty in-scope file) and `amend-handoff`
+# splice their blocks into it. A later run's handoff for the same packet must
+# not be the one used. The store is the source's own .agents/metrics/comparisons,
+# as the default store is when the source is the harness's own checkout.
+SP="$WORK/splicesrc"
+mkdir -p "$SP/scripts" "$SP/.agents"
+git -C "$SP" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n.agents/metrics/\n' > "$SP/.gitignore"
+printf 'echo a\n' > "$SP/scripts/a.sh"
+printf 'model_routing:\n  architect: haiku\n' > "$SP/.agents/project-overrides.yaml"
+sp_commit() {
+  git -C "$SP" add -A >/dev/null
+  GIT_AUTHOR_DATE=2026-04-02T00:00:00Z GIT_COMMITTER_DATE=2026-04-02T00:00:00Z git -C "$SP" -c user.name=fixture \
+    -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$SP" rev-parse HEAD
+}
+S0="$(sp_commit base)"
+printf 'echo s1\n' >> "$SP/scripts/a.sh"
+S1="$(sp_commit "$(printf 's1\n\n[orch packet:splice-t1]')")"
+SRS="$SP/.agents/run-state.yaml"
+printf "schema: 3\nstatus: 'running'\nbranch: 'orch/splice-t1'\nlast_green_commit: '%s'\n" "$S1" \
+  | (cd "$SP" && CLAUDE_PROJECT_DIR="$SP" "$HERE/runstate.sh" write "$SRS") >/dev/null 2>&1
+SRUN="$(cd "$SP" && CLAUDE_PROJECT_DIR="$SP" "$HERE/runstate.sh" begin-run "$SRS" 2>/dev/null | sed -n 's/^RUN_ID=//p')"
+SH="$(printf 'PACKET=splice-t1\nFILES=scripts/a.sh\n\nDo the task.\nREQUIRED: a driver-appended line\n' \
+  | (cd "$SP" && CLAUDE_PROJECT_DIR="$SP" "$HERE/runstate.sh" handoff "$SRS" splice-t1 --tier integration --agent implementer) 2>/dev/null \
+  | sed -n 's/^HANDOFF=//p')"
+cp "$SH" "$WORK/splice-plain.md" 2>/dev/null
+printf 'echo dirty\n' >> "$SP/scripts/a.sh"
+SREF="$(cd "$SP" && CLAUDE_PROJECT_DIR="$SP" "$HERE/runstate.sh" refresh-handoff "$SRS" splice-t1 2>&1)"
+SAMD="$(printf 'Change one thing.\n' | (cd "$SP" && CLAUDE_PROJECT_DIR="$SP" "$HERE/runstate.sh" amend-handoff "$SRS" splice-t1) 2>&1)"
+# The fixture's own preconditions: both splices happened, and the plain file
+# has the budget block the first dispatch carries.
+assert_has "splice fixture: refresh-handoff inserted its block" "PARTIAL_WORK=inserted" "$SREF"
+assert_has "splice fixture: amend-handoff inserted its block" "AMENDMENT=inserted" "$SAMD"
+SPLICED="$(cat "$SH" 2>/dev/null)"
+assert_has "splice fixture: the original carries the partial-work block" "<!-- orch:partial-work -->" "$SPLICED"
+assert_has "splice fixture: the original carries the decider-amendment block" "<!-- orch:decider-amendment -->" "$SPLICED"
+assert_has "splice fixture: the first-dispatch handoff carries the budget block" "<!-- orch:budget -->" "$(cat "$WORK/splice-plain.md" 2>/dev/null)"
+cp "$SH" "$WORK/splice-spliced.md" 2>/dev/null
+mkdir -p "$SP/.agents/loop/99991231T235959-zz/splice-t1"
+printf 'a later run'"'"'s handoff\n' > "$SP/.agents/loop/99991231T235959-zz/splice-t1/handoff.md"
+
+SEXP=ccccccccccc3
+SSTORE="$SP/.agents/metrics/comparisons"
+SSCRATCH="$WORK/splicescratch"
+mkdir -p "$SSTORE/$SEXP"
+cat > "$SSTORE/$SEXP/selection.json" <<EOF
+{
+  "experiment": "$SEXP",
+  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "opus", "source_repo": "$SP", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "splice-t1", "class": "code", "tier": "integration", "fix_rounds": 1, "title": "s1", "handoff": "original", "start": "$S0", "commits": ["$S1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+# Everything under .agents/ except the experiment's own store.
+agents_tree_outside_store() { agents_tree "$1" | awk -v s=".agents/metrics/comparisons/$SEXP" 'index($0, s) != 1'; }
+S_BEFORE_STATUS="$(git -C "$SP" status --porcelain=v1 --untracked-files=all)"
+S_BEFORE_IGN="$(git -C "$SP" status --porcelain=v1 --untracked-files=all --ignored | awk -v s=".agents/metrics/comparisons/$SEXP/" 'index($0, "!! " s) != 1')"
+S_BEFORE_AGENTS="$(agents_tree_outside_store "$SP")"
+S_BEFORE_REFS="$(git -C "$SP" for-each-ref)"
+for m in fable opus sonnet; do
+  OUT="$(ORCH_COMPARE_STORE="$SSTORE" ORCH_COMPARE_SCRATCH="$SSCRATCH" "$COMPARE" prepare "$SEXP" splice-t1 "$m" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+  assert_eq "prepare splice-t1 $m: exit 0" "0" "$RC"
+  H="$(line HANDOFF)"
+  if cmp -s "$WORK/splice-plain.md" "$H"; then
+    ok "prepare splice-t1 $m: the installed handoff is the first-dispatch handoff, splice blocks removed"
+  else bad "prepare splice-t1 $m: the installed handoff is the first-dispatch handoff, splice blocks removed" "$(diff "$WORK/splice-plain.md" "$H" 2>&1 | head -5)"; fi
+done
+if cmp -s "$WORK/splice-plain.md" "$SSTORE/$SEXP/handoffs/splice-t1.md"; then
+  ok "prepare splice-t1: the cached handoff is the first-dispatch handoff"
+else bad "prepare splice-t1: the cached handoff is the first-dispatch handoff"; fi
+if cmp -s "$WORK/splice-spliced.md" "$SH"; then ok "prepare splice-t1: the source handoff itself is not modified"
+else bad "prepare splice-t1: the source handoff itself is not modified"; fi
+assert_eq "prepare, store inside the source: git status is byte-identical" \
+  "$S_BEFORE_STATUS" "$(git -C "$SP" status --porcelain=v1 --untracked-files=all)"
+assert_eq "prepare, store inside the source: git status --ignored is byte-identical outside the experiment's store" \
+  "$S_BEFORE_IGN" "$(git -C "$SP" status --porcelain=v1 --untracked-files=all --ignored | awk -v s=".agents/metrics/comparisons/$SEXP/" 'index($0, "!! " s) != 1')"
+assert_eq "prepare, store inside the source: the .agents/ tree hash is byte-identical outside the experiment's store" \
+  "$S_BEFORE_AGENTS" "$(agents_tree_outside_store "$SP")"
+assert_eq "prepare, store inside the source: for-each-ref output is byte-identical" "$S_BEFORE_REFS" "$(git -C "$SP" for-each-ref)"
+assert_ne "prepare, store inside the source: the experiment's store did receive the cache" "" \
+  "$(ls "$SSTORE/$SEXP/handoffs" 2>/dev/null)"
+# A marker the loop could not have placed is refused, not guessed around.
+mkdir -p "$SSTORE/ccccccccccc4"
+sed "s/$SEXP/ccccccccccc4/" "$SSTORE/$SEXP/selection.json" > "$SSTORE/ccccccccccc4/selection.json"
+cp "$SH" "$WORK/splice-keep.md"
+printf '<!-- orch:partial-work -->\nunterminated\n' >> "$SH"
+OUT="$(ORCH_COMPARE_STORE="$SSTORE" ORCH_COMPARE_SCRATCH="$SSCRATCH" "$COMPARE" prepare ccccccccccc4 splice-t1 opus 2>"$WORK/err")"; RC=$?
+ERR="$(cat "$WORK/err")"
+assert_eq "prepare, an unterminated splice block: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "prepare, an unterminated splice block: named" "first-dispatch bytes are unknown" "$ERR"
+cp "$WORK/splice-keep.md" "$SH"
+# A closing marker with no opening one is no span either command wrote.
+printf '<!-- /orch:decider-amendment -->\n' >> "$SH"
+OUT="$(ORCH_COMPARE_STORE="$SSTORE" ORCH_COMPARE_SCRATCH="$SSCRATCH" "$COMPARE" prepare ccccccccccc4 splice-t1 opus 2>"$WORK/err")"; RC=$?
+ERR="$(cat "$WORK/err")"
+assert_eq "prepare, a stray closing splice marker: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "prepare, a stray closing splice marker: named" "first-dispatch bytes are unknown" "$ERR"
+cp "$WORK/splice-keep.md" "$SH"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -903,6 +1207,7 @@ printf '\n== usage ==\n'
 "$COMPARE" select >/dev/null 2>&1; assert_eq "select without a file: exit 2" "2" "$?"
 "$COMPARE" estimate >/dev/null 2>&1; assert_eq "estimate without an experiment: exit 2" "2" "$?"
 "$COMPARE" estimate aaaaaaaaaaa1 --bogus >/dev/null 2>&1; assert_eq "estimate with an unknown flag: exit 2" "2" "$?"
+"$COMPARE" prepare aaaaaaaaaaa1 est-e1 >/dev/null 2>&1; assert_eq "prepare without a model: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

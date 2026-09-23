@@ -132,12 +132,82 @@
 #                     before it is printed. Append-only: the newest pending
 #                     line supersedes every earlier one; `run` consumes it.
 #
-# Exit status: 0 printed settings / candidates / a selection / an estimate; 1
-# refused, no experiment id could be computed, the source repository is not a
-# git repository, the selection could not be written, or (estimate) no stored
-# selection, an unreadable selection, records file or price table, or the
-# token could not be stored; 2 usage error, or routing.sh / gspec-backlog.sh
-# missing beside this script.
+#   prepare <experiment> <packet> <model>
+#                     build one replay's isolated work clone from the stored
+#                     selection (`select` first). <packet> must be selected and
+#                     <model> one of the settings' models. Steps, in order:
+#                       1. `git clone --shared --no-checkout` of the source
+#                          repository into <scratch>/<16 hex>, where <scratch> is
+#                          ${ORCH_COMPARE_SCRATCH:-${TMPDIR:-/tmp}} and must lie
+#                          outside the source's working tree; check out the
+#                          packet's stored `start` (the earliest trailer
+#                          commit's first parent) on a new branch
+#                          `replay-<16 hex>`, then delete every other local
+#                          branch and the `origin` remote, so the clone's refs
+#                          are that one branch (and any tags) and nothing it does
+#                          can reach the source. Neither name contains any of
+#                          the settings' model identifiers (checked,
+#                          case-insensitive, and redrawn when one does).
+#                       2. rewrite the clone's `.agents/project-overrides.yaml`
+#                          so `model_routing` maps the settings' role to <model>
+#                          and `reviewer` to the settings' reviewer model. Every
+#                          other entry, key, comment and line is kept as it was
+#                          (a flow-form map becomes a block; an absent key is
+#                          appended). Then `routing.sh --root <clone> resolve`
+#                          must print exactly those two models, or it is refused.
+#                       3. write a minimal run-state and run `runstate.sh
+#                          begin-run` in the clone.
+#                       4. install the packet's handoff at
+#                          <clone>/.agents/loop/<run_id>/<packet>/handoff.md
+#                          from the experiment's handoff cache,
+#                            <store>/<experiment>/handoffs/<packet>.md
+#                          written ONCE per packet (never replaced), so every
+#                          model's replay receives identical bytes. On a miss the
+#                          cache is filled from the `original` handoff (the
+#                          source's earliest `.agents/loop/*/<packet>/handoff.md`,
+#                          the one `candidates` finds first) as first
+#                          dispatched, loop splice blocks removed: every
+#                          `orch:decider-amendment` and `orch:partial-work`
+#                          span the loop added after that dispatch is dropped
+#                          as `amend-handoff`/`refresh-handoff` placed it, and
+#                          every other byte is kept, the budget block included
+#                          (a marker it cannot place that way is refused); or,
+#                          for a `rebuilt` one, from
+#                          `gspec-backlog.sh handoff <packet> <clone>` piped into
+#                          `runstate.sh handoff <run-state> <packet> --tier
+#                          <stored tier> --agent <role>` in the clone, which
+#                          appends the verification contract exactly as a live
+#                          handoff gets it. The stored tier is passed as it
+#                          stands, `unrecorded` included: never a guessed tier.
+#                     Output (and <store>/<experiment>/replays/<replay>.env,
+#                     the same lines, where <replay> is a fresh 12 hex id):
+#                       REPLAY= EXPERIMENT= PACKET= MODEL= ROLE=
+#                       REVIEWER_MODEL= SOURCE_REPO= START= CLONE= BRANCH=
+#                       RUN_STATE= RUN_ID= HANDOFF= HANDOFF_SOURCE=<original|rebuilt>
+#                       HANDOFF_CACHE= HANDOFF_CACHED=<written|reused>
+#                     Nothing is written in the source repository outside
+#                     the experiment's own store, <store>/<experiment>/: its
+#                     tree, `.agents/` and refs are otherwise unchanged (the
+#                     default store lies inside the harness's main checkout,
+#                     so when that is the source the handoff cache and
+#                     replay records land under its `.agents/metrics/`,
+#                     which this repository's .gitignore ignores). The source
+#                     handoff is only read, never modified. On any failure the
+#                     half-built clone is removed. The scripts used are the
+#                     ones beside this file, never the clone's own copies.
+#                     A cached handoff's header names the run-state, result
+#                     and review paths of wherever it was written (the source
+#                     run for an original, the first clone for a rebuild):
+#                     identical bytes mean those paths are not this clone's.
+#
+# Exit status: 0 printed settings / candidates / a selection / an estimate / a
+# prepared replay; 1 refused, no experiment id could be computed, the source
+# repository is not a git repository, the selection could not be written, or
+# (estimate) no stored selection, an unreadable selection, records file or
+# price table, or the token could not be stored, or (prepare) no stored
+# selection, a packet or model outside it, a scratch root inside the source,
+# or a clone, routing, run-state or handoff step that failed; 2 usage error,
+# or routing.sh / gspec-backlog.sh / runstate.sh missing beside this script.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -148,6 +218,7 @@ set -f   # no globbing: list items are split on `,` and must never expand
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 ROUTING="$HERE/routing.sh"
 BACKLOG="$HERE/gspec-backlog.sh"
+RUNSTATE="$HERE/runstate.sh"
 AGENTS_DIR="${ORCH_ROUTING_AGENTS_DIR:-$HERE/../agents}"
 
 # --- REPLAYABLE_ROLES: the roles an experiment may vary ------------------------
@@ -173,7 +244,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining]\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -1236,6 +1307,342 @@ cmd_estimate() {
   printf 'APPROVAL=%s\n' "$tok"
 }
 
+# --- prepare -----------------------------------------------------------------------
+
+# names_model <name> <ids-file>: does <name> contain any identifier listed in
+# <ids-file>, one per line, compared case-insensitively?
+names_model() {
+  NAME="$1" awk 'BEGIN { n = tolower(ENVIRON["NAME"]) } $0 != "" && index(n, tolower($0)) { f = 1 } END { exit !f }' "$2"
+}
+
+# opaque_name <prefix> <ids-file>: <prefix><16 hex>, redrawn while it contains
+# any identifier in <ids-file>. Exit 1 when no draw is clean.
+opaque_name() {
+  local i t
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    t="$1$(new_token | cut -c1-16)"
+    if [ "${#t}" -eq $(( ${#1} + 16 )) ] && ! names_model "$t" "$2"; then printf '%s' "$t"; return 0; fi
+  done
+  return 1
+}
+
+# set_routing <in> <out> <role> <model> <reviewer-model>: <in> (absent or not)
+# rewritten to <out> with the top-level `model_routing` mapping <role> to
+# <model> and `reviewer` to <reviewer-model>. Every other line is kept verbatim;
+# the block's own entry indentation is reused (routing.sh requires one indent);
+# a flow-form map is rewritten as a block; an absent key is appended. Exit 3
+# when the map cannot be read (a flow value that is not one `{...}`, or a
+# second `model_routing:` key, which routing.sh reads as unparseable anyway).
+set_routing() {
+  local in="$1"
+  [ -f "$in" ] || in=/dev/null
+  ROLE="$3" MODEL="$4" RM="$5" awk '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function keyof(s,   p) {
+      s = trim(s); p = match(s, /:([[:space:]]|$)/); if (p == 0) return ""
+      s = trim(substr(s, 1, p - 1))
+      if (length(s) >= 2 && (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/)) s = substr(s, 2, length(s) - 2)
+      return s
+    }
+    function emit(   i, ind) {
+      ind = (ei == "" ? "  " : ei)
+      print "model_routing:"
+      print ind ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
+      print ind "reviewer: " ENVIRON["RM"]
+      for (i = 1; i <= nb; i++) print buf[i]
+      nb = 0; inb = 0; done = 1
+    }
+    { sub(/\r$/, "") }
+    inb {
+      if ($0 ~ /^[[:space:]]*(#.*)?$/) { buf[++nb] = $0; next }
+      if ($0 ~ /^[[:space:]]/) {
+        if (ei == "") { match($0, /^[[:space:]]+/); ei = substr($0, 1, RLENGTH) }
+        k = keyof($0)
+        if (k == ENVIRON["ROLE"] || k == "reviewer") next
+        buf[++nb] = $0; next
+      }
+      emit()
+    }
+    /^model_routing:/ {
+      if (done) { bad = 1; next }
+      rest = substr($0, length("model_routing:") + 1)
+      rest = trim(rest); if (rest ~ /^#/) rest = ""
+      sub(/[[:space:]]+#.*$/, "", rest); rest = trim(rest)
+      if (rest == "") { inb = 1; next }
+      if (rest !~ /^\{[^{}]*\}$/) { bad = 1; done = 1; next }
+      inner = trim(substr(rest, 2, length(rest) - 2))
+      n = (inner == "" ? 0 : split(inner, pcs, ","))
+      for (i = 1; i <= n; i++) {
+        pc = trim(pcs[i]); if (pc == "") continue
+        k = keyof(pc); if (k == "") { bad = 1; continue }
+        if (k == ENVIRON["ROLE"] || k == "reviewer") continue
+        buf[++nb] = "  " pc
+      }
+      emit(); next
+    }
+    { print }
+    END {
+      if (inb) emit()
+      if (!done) {
+        print "model_routing:"
+        print "  " ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
+        print "  reviewer: " ENVIRON["RM"]
+      }
+      if (bad) exit 3
+    }' "$in" > "$2"
+}
+
+# first_dispatch <in> <out>: the handoff as its FIRST dispatch received it.
+# The loop splices two marked blocks into a handoff after that dispatch, and a
+# replay starts before the work they describe existed, so both are removed:
+#   - `runstate.sh amend-handoff` appends "\n" + its block (begin marker line
+#     through end marker line); the removed span is that "\n" plus the block,
+#     which is what it added whether or not the file ended in a newline.
+#   - `runstate.sh refresh-handoff` inserts its block after the header plus one
+#     blank line after it; the removed span is the block plus that blank line,
+#     exactly what its own "remove" path drops.
+# Every other byte is kept, the `orch:budget` block and any driver REQUIRED
+# lines included: the first dispatch had them. Amendment spans go first, so an
+# amendment whose text quotes a partial-work marker is removed whole. A marker
+# line left over afterwards (unterminated, or at the top of the file where
+# neither command writes one) is not a span either command wrote: exit 3,
+# refused rather than guessed. The markers are runstate.sh's `_RS_AMEND_*` and
+# `_RS_PARTIAL_*` constants, repeated here because this script never sources it.
+_CMP_AMEND_BEGIN='<!-- orch:decider-amendment -->'
+_CMP_AMEND_END='<!-- /orch:decider-amendment -->'
+_CMP_PARTIAL_BEGIN='<!-- orch:partial-work -->'
+_CMP_PARTIAL_END='<!-- /orch:partial-work -->'
+first_dispatch() {
+  local c nl=$'\n' pre rest
+  c="$(cat "$1" && printf x)" || return 1
+  c="${c%x}"
+  while :; do
+    case "$c" in *"$nl$_CMP_AMEND_BEGIN$nl"*) ;; *) break ;; esac
+    pre="${c%%"$nl$_CMP_AMEND_BEGIN$nl"*}"
+    rest="${c#*"$nl$_CMP_AMEND_BEGIN$nl"}"
+    case "$rest" in
+      *"$nl$_CMP_AMEND_END$nl"*) rest="${rest#*"$nl$_CMP_AMEND_END$nl"}" ;;
+      *"$nl$_CMP_AMEND_END") rest="" ;;
+      *) return 3 ;;
+    esac
+    c="$pre$rest"
+  done
+  while :; do
+    case "$c" in *"$nl$_CMP_PARTIAL_BEGIN$nl"*) ;; *) break ;; esac
+    pre="${c%%"$nl$_CMP_PARTIAL_BEGIN$nl"*}$nl"
+    rest="${c#*"$nl$_CMP_PARTIAL_BEGIN$nl"}"
+    case "$rest" in
+      *"$nl$_CMP_PARTIAL_END$nl"*) rest="${rest#*"$nl$_CMP_PARTIAL_END$nl"}"; rest="${rest#"$nl"}" ;;
+      *"$nl$_CMP_PARTIAL_END") rest="" ;;
+      *) return 3 ;;
+    esac
+    c="$pre$rest"
+  done
+  case "$nl$c$nl" in
+    *"$nl$_CMP_AMEND_BEGIN$nl"*|*"$nl$_CMP_AMEND_END$nl"*|*"$nl$_CMP_PARTIAL_BEGIN$nl"*|*"$nl$_CMP_PARTIAL_END$nl"*)
+      return 3 ;;
+  esac
+  printf '%s' "$c" > "$2"
+}
+
+# Globals, not locals: the EXIT trap below runs after cmd_prepare has returned
+# or died, when its locals are gone. The half-built clone is removed on every
+# exit that does not clear _CMP_CLONE first.
+_CMP_TMP=""
+_CMP_CLONE=""
+_cmp_prepare_cleanup() {
+  if [ -n "$_CMP_TMP" ]; then rm -rf "$_CMP_TMP"; fi
+  if [ -n "$_CMP_CLONE" ]; then rm -rf "$_CMP_CLONE"; fi
+  return 0
+}
+
+cmd_prepare() {
+  [ $# -eq 3 ] || usage
+  local exp="$1" pkt="$2" model="$3"
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "prepare: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  case "$pkt" in ''|*[!A-Za-z0-9._-]*) die "prepare: not a packet id: $pkt" ;; esac
+  case "$model" in ''|*[!A-Za-z0-9._-]*) die "prepare: not a model token: $model" ;; esac
+  [ -x "$ROUTING" ] || die "prepare: routing.sh is missing or not executable: $ROUTING" 2
+  [ -x "$BACKLOG" ] || die "prepare: gspec-backlog.sh is missing or not executable: $BACKLOG" 2
+  [ -x "$RUNSTATE" ] || die "prepare: runstate.sh is missing or not executable: $RUNSTATE" 2
+
+  local store dir sel
+  store="$(store_root)"
+  dir="$store/$exp"
+  sel="$dir/selection.json"
+  [ -f "$sel" ] || die "prepare: no stored selection for experiment $exp (run \`compare.sh select\` first): $sel"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "prepare: cannot create a temp root"
+  trap _cmp_prepare_cleanup EXIT
+  local tmp="$_CMP_TMP"
+
+  # --- the stored selection: settings, and this packet's row -----------------
+  json_flat "$sel" > "$tmp/sel" || die "prepare: the stored selection is not readable JSON: $sel"
+  local sexp src role rmodel
+  sexp="$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")"
+  [ "$sexp" = "$exp" ] || die "prepare: the stored selection names experiment [$sexp], not $exp: $sel"
+  src="$(awk -F'\t' '$2 == ".settings.source_repo" { print $4; exit }' "$tmp/sel")"
+  role="$(awk -F'\t' '$2 == ".settings.role" { print $4; exit }' "$tmp/sel")"
+  rmodel="$(awk -F'\t' '$2 == ".settings.reviewer_model" { print $4; exit }' "$tmp/sel")"
+  awk -F'\t' '$2 ~ /^\.settings\.models\[[0-9]+\]$/ { print $4 }' "$tmp/sel" > "$tmp/models"
+  case "$role" in ''|*[!a-z-]*) die "prepare: the stored selection's role is malformed: [$role]" ;; esac
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "prepare: the stored selection's reviewer model is malformed: [$rmodel]" ;; esac
+  if LC_ALL=C grep -q '[^A-Za-z0-9._-]' "$tmp/models" 2>/dev/null || [ ! -s "$tmp/models" ]; then
+    die "prepare: the stored selection's models are malformed: $sel"
+  fi
+  if ! M="$model" awk '$0 == ENVIRON["M"] { f = 1 } END { exit !f }' "$tmp/models"; then
+    die "prepare: $model is not one of experiment $exp's models ($(paste -sd, - < "$tmp/models"))"
+  fi
+  # Every identifier a name must not contain: each model, and the reviewer's.
+  { cat "$tmp/models"; printf '%s\n' "$rmodel"; } > "$tmp/ids"
+
+  local idx start kind tier
+  idx="$(P="$pkt" awk -F'\t' '$2 ~ /^\.selected\[[0-9]+\]\.packet$/ && $4 == ENVIRON["P"] { i = $2; sub(/^\.selected\[/, "", i); sub(/\].*$/, "", i); print i; exit }' "$tmp/sel")"
+  [ -n "$idx" ] || die "prepare: packet $pkt is not in experiment $exp's selection: $sel"
+  start="$(I=".selected[$idx].start" awk -F'\t' '$2 == ENVIRON["I"] { print $4; exit }' "$tmp/sel")"
+  kind="$(I=".selected[$idx].handoff" awk -F'\t' '$2 == ENVIRON["I"] { print $4; exit }' "$tmp/sel")"
+  tier="$(I=".selected[$idx].tier" awk -F'\t' '$2 == ENVIRON["I"] { print $4; exit }' "$tmp/sel")"
+  case "$start" in ''|*[!0-9a-f]*) die "prepare: packet $pkt's stored start is not a commit id: [$start]" ;; esac
+  case "$kind" in original|rebuilt) ;; *) die "prepare: packet $pkt's stored handoff source is neither original nor rebuilt: [$kind]" ;; esac
+  case "$tier" in ''|*[!a-z-]*) die "prepare: packet $pkt's stored tier is not [a-z-]+: [$tier]" ;; esac
+
+  # --- the source and the scratch root -----------------------------------------
+  [ -n "$src" ] && git -C "$src" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "prepare: the source repository is not a git repository: $src"
+  git -C "$src" cat-file -e "${start}^{commit}" 2>/dev/null \
+    || die "prepare: packet $pkt's start commit is not in the source repository: $start"
+  local srctop scratch
+  srctop="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+  [ -n "$srctop" ] && srctop="$(cd "$srctop" && pwd -P)"
+  scratch="${ORCH_COMPARE_SCRATCH:-${TMPDIR:-/tmp}}"
+  mkdir -p "$scratch" 2>/dev/null || die "prepare: cannot create the scratch root: $scratch"
+  scratch="$(cd "$scratch" && pwd -P)" || die "prepare: cannot enter the scratch root: $scratch"
+  if [ -n "$srctop" ]; then
+    case "$scratch/" in
+      "$srctop/"*) die "prepare: the scratch root lies inside the source repository's working tree, which a replay must leave untouched: $scratch" ;;
+    esac
+  fi
+
+  # --- 1. the clone, on its opaque branch -----------------------------------------
+  local dname bname rid clone
+  dname="$(opaque_name "" "$tmp/ids")" || die "prepare: no directory name free of every model identifier could be drawn"
+  bname="$(opaque_name "replay-" "$tmp/ids")" || die "prepare: no branch name free of every model identifier could be drawn"
+  rid="$(opaque_name "" "$tmp/ids" | cut -c1-12)"
+  [ "${#rid}" -eq 12 ] || die "prepare: no replay id could be drawn"
+  clone="$scratch/$dname"
+  [ ! -e "$clone" ] || die "prepare: the drawn clone path already exists: $clone"
+  _CMP_CLONE="$clone"
+  git clone -q --shared --no-checkout "$src" "$clone" >/dev/null 2>"$tmp/git.err" \
+    || die "prepare: git clone --shared failed: $(head -1 "$tmp/git.err")"
+  git -C "$clone" -c advice.detachedHead=false checkout -q -b "$bname" "$start" >/dev/null 2>"$tmp/git.err" \
+    || die "prepare: cannot check out $start in the clone: $(head -1 "$tmp/git.err")"
+  local ref
+  git -C "$clone" for-each-ref --format='%(refname)' refs/heads/ > "$tmp/heads" 2>/dev/null
+  while IFS= read -r ref; do
+    [ -n "$ref" ] && [ "$ref" != "refs/heads/$bname" ] || continue
+    git -C "$clone" update-ref -d "$ref" >/dev/null 2>&1 || die "prepare: cannot drop the clone's branch $ref"
+  done < "$tmp/heads"
+  if git -C "$clone" remote 2>/dev/null | grep -qx origin; then
+    git -C "$clone" remote remove origin >/dev/null 2>&1 || die "prepare: cannot drop the clone's origin remote"
+  fi
+
+  # --- 2. model_routing in the clone's own configuration ---------------------------
+  local ov got_role got_rev
+  ov="$clone/.agents/project-overrides.yaml"
+  mkdir -p "$clone/.agents" || die "prepare: cannot create $clone/.agents"
+  set_routing "$ov" "$tmp/overrides" "$role" "$model" "$rmodel" \
+    || die "prepare: the clone's model_routing cannot be read, so it cannot be set: $ov"
+  cp "$tmp/overrides" "$ov" || die "prepare: cannot write $ov"
+  got_role="$(ORCH_ROUTING_AGENTS_DIR="$AGENTS_DIR" "$ROUTING" --root "$clone" resolve "$role" 2>/dev/null | tr -d '\r')"
+  got_rev="$(ORCH_ROUTING_AGENTS_DIR="$AGENTS_DIR" "$ROUTING" --root "$clone" resolve reviewer 2>/dev/null | tr -d '\r')"
+  [ "$got_role" = "$model" ] && [ "$got_rev" = "$rmodel" ] \
+    || die "prepare: routing.sh does not resolve the clone's routing as set ($role -> [$got_role], wanted $model; reviewer -> [$got_rev], wanted $rmodel)"
+
+  # --- 3. run-state and begin-run, run in the clone ----------------------------------
+  local rs bout run_id
+  rs="$clone/.agents/run-state.yaml"
+  printf "schema: 3\nstatus: 'running'\nbranch: '%s'\nlast_green_commit: '%s'\n" "$bname" "$start" \
+    | (cd "$clone" && CLAUDE_PROJECT_DIR="$clone" "$RUNSTATE" write "$rs") >/dev/null 2>"$tmp/rs.err" \
+    || die "prepare: runstate.sh write failed in the clone: $(head -1 "$tmp/rs.err")"
+  bout="$(cd "$clone" && CLAUDE_PROJECT_DIR="$clone" "$RUNSTATE" begin-run "$rs" 2>"$tmp/rs.err" | tr -d '\r')" \
+    || die "prepare: runstate.sh begin-run failed in the clone: $(head -1 "$tmp/rs.err")"
+  run_id="$(printf '%s\n' "$bout" | sed -n 's/^RUN_ID=//p' | head -1)"
+  [ -n "$run_id" ] || die "prepare: runstate.sh begin-run printed no RUN_ID"
+
+  # --- 4. the handoff: cached once per packet, installed from the cache ----------------
+  local pktdir target cache cached="reused" hout d orig=""
+  pktdir="$clone/.agents/loop/$run_id/$pkt"
+  target="$pktdir/handoff.md"
+  cache="$dir/handoffs/$pkt.md"
+  if [ ! -f "$cache" ]; then
+    case "$kind" in
+      original)
+        # The earliest run's handoff (run ids sort by time), the first match,
+        # as `candidates` detects it: the one its first dispatch received.
+        set +f
+        for d in "$src"/.agents/loop/*/; do
+          if [ -f "${d}${pkt}/handoff.md" ]; then orig="${d}${pkt}/handoff.md"; break; fi
+        done
+        set -f
+        [ -n "$orig" ] || die "prepare: packet $pkt's original handoff is no longer in the source repository, and none is cached: $cache"
+        first_dispatch "$orig" "$tmp/handoff" \
+          || die "prepare: the original handoff carries a loop splice block that cannot be removed as either command writes it, so its first-dispatch bytes are unknown: $orig"
+        ;;
+      rebuilt)
+        (cd "$clone" && CLAUDE_PROJECT_DIR="$clone" "$BACKLOG" handoff "$pkt" "$clone" </dev/null) > "$tmp/body" 2>"$tmp/bl.err" \
+          || die "prepare: gspec-backlog.sh handoff failed in the clone: $(head -1 "$tmp/bl.err")"
+        case "$(head -1 "$tmp/body")" in
+          PACKET=*) ;;
+          *) die "prepare: gspec-backlog.sh does not resolve $pkt in the clone: $(sed -n 's/^REASON=//p' "$tmp/body" | head -1)" ;;
+        esac
+        hout="$(cd "$clone" && CLAUDE_PROJECT_DIR="$clone" "$RUNSTATE" handoff "$rs" "$pkt" --tier "$tier" --agent "$role" < "$tmp/body" 2>"$tmp/rs.err" | tr -d '\r')" \
+          || die "prepare: runstate.sh handoff failed in the clone: $(head -1 "$tmp/rs.err")"
+        case "$hout" in
+          HANDOFF=*) ;;
+          *) die "prepare: runstate.sh handoff wrote no handoff: $(printf '%s' "$hout" | head -1)" ;;
+        esac
+        cp "${hout#HANDOFF=}" "$tmp/handoff" || die "prepare: cannot read the rebuilt handoff: ${hout#HANDOFF=}"
+        ;;
+    esac
+    # Written once: `ln` refuses an existing name, so a cache another prepare
+    # wrote first is kept and used, never replaced.
+    mkdir -p "$dir/handoffs" || die "prepare: cannot create the handoff cache: $dir/handoffs"
+    cp "$tmp/handoff" "$dir/handoffs/.$pkt.md.$$" || die "prepare: cannot write the handoff cache: $cache"
+    if ln "$dir/handoffs/.$pkt.md.$$" "$cache" 2>/dev/null; then cached="written"; fi
+    rm -f "$dir/handoffs/.$pkt.md.$$"
+    [ -f "$cache" ] || die "prepare: the handoff cache could not be written: $cache"
+  fi
+  mkdir -p "$pktdir" || die "prepare: cannot create $pktdir"
+  cp "$cache" "$target" || die "prepare: cannot install the handoff: $target"
+
+  # --- the replay's record, then the clone is kept -------------------------------------
+  local out
+  out="REPLAY=$rid
+EXPERIMENT=$exp
+PACKET=$pkt
+MODEL=$model
+ROLE=$role
+REVIEWER_MODEL=$rmodel
+SOURCE_REPO=$src
+START=$start
+CLONE=$clone
+BRANCH=$bname
+RUN_STATE=$rs
+RUN_ID=$run_id
+HANDOFF=$target
+HANDOFF_SOURCE=$kind
+HANDOFF_CACHE=$cache
+HANDOFF_CACHED=$cached"
+  mkdir -p "$dir/replays" || die "prepare: cannot create $dir/replays"
+  printf '%s\n' "$out" > "$dir/replays/.$rid.env.$$" && mv "$dir/replays/.$rid.env.$$" "$dir/replays/$rid.env" \
+    || die "prepare: cannot write the replay record: $dir/replays/$rid.env"
+  _CMP_CLONE=""
+  printf '%s\n' "$out"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -1243,6 +1650,7 @@ case "$SUB" in
   candidates) cmd_candidates "$@" ;;
   select)     cmd_select "$@" ;;
   estimate)   cmd_estimate "$@" ;;
+  prepare)    cmd_prepare "$@" ;;
   *) usage ;;
 esac
 exit 0

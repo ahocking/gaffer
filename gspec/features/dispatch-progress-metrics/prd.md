@@ -134,7 +134,7 @@ derived-done `run-metrics`; no existing field changes meaning.
     whose interval the commit falls, and a packet has at most one `landed`
     dispatch per trailer
 
-- [ ] **P0**: A run-level rollup names the waste
+- [x] **P0**: A run-level rollup names the waste
   - `totals.dispatch_waste` carries: `zero_progress` (count and token sum of
     dispatches with `progress: none`), `continuations` (count of dispatches
     with `kind: continuation`), `over_threshold` (count of dispatches whose

@@ -53,6 +53,9 @@ jobs:
       - name: Model routing sweep
         run: bash scripts/test-routing.sh
 
+      - name: Model-comparison harness sweep
+        run: bash scripts/test-compare.sh
+
       - name: Validate plugin manifest & structure (best-effort)
         run: |
           if command -v claude >/dev/null 2>&1; then

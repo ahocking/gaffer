@@ -35,7 +35,7 @@ feature: dispatch-progress-metrics
   - covers: Each dispatch carries its own cost and its own progress
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh
-- [ ] **T5** **P0** Give each dispatch row `progress`, tested in the PRD's order: `null` (unmeasured trailer window, legacy run, or unresolved dispatch); `landed` (the packet's trailer author time falls at or after this dispatch's back-dated start and before the next implementer dispatch's start, or within the same bounded trailer window the packet row uses); `advanced` (≥1 edit event and no such commit); `none` (zero edit events). Cases cover `initial`→`fix` where only the `fix` row reads `landed`, an earlier dispatch whose edits a later commit carried reading `advanced`, a zero-edit dispatch reading `none`, a legacy run reading `progress: null`, and at most one `landed` per trailer
+- [x] **T5** **P0** Give each dispatch row `progress`, tested in the PRD's order: `null` (unmeasured trailer window, legacy run, or unresolved dispatch); `landed` (the packet's trailer author time falls at or after this dispatch's back-dated start and before the next implementer dispatch's start, or within the same bounded trailer window the packet row uses); `advanced` (≥1 edit event and no such commit); `none` (zero edit events). Cases cover `initial`→`fix` where only the `fix` row reads `landed`, an earlier dispatch whose edits a later commit carried reading `advanced`, a zero-edit dispatch reading `none`, a legacy run reading `progress: null`, and at most one `landed` per trailer
   - deps: T4
   - covers: Each dispatch carries its own cost and its own progress
   - arch: —

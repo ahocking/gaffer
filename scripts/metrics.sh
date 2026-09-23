@@ -629,8 +629,10 @@ cmd_collect() {
   # zero-width window, which a genuine same-second coincidence between two
   # unrelated single-trailer commits could otherwise produce too. `seq` never
   # reaches the final packet objects section 5 emits — it is an internal
-  # ordering/branching aid only. `id` is appended as a final tie-break because the
-  # `awk 'for (k in last)'` dedup above feeds jq in hash order, not file order, so
+  # ordering/branching aid only. Nor does `trailer: true`, which marks an `end`
+  # that IS a commit trailer author time (a record-only entry merged in below has
+  # no commit); section 5 reads it for a dispatch row progress `landed`.
+  # `id` is appended as a final tie-break because the `awk 'for (k in last)'` dedup above feeds jq in hash order, not file order, so
   # without it two unrelated single-trailer commits (both seq==1) landing in the
   # same second would sort nondeterministically — the byte-identical-for-a-
   # single-trailer-commit guarantee depends on this being stable.
@@ -641,7 +643,7 @@ cmd_collect() {
                   |map({id:.[0], end:.[1],
                         tier:((.[2]//"")|if .=="" then null else . end),
                         impl:((.[3]//"")|if .=="" then null else . end),
-                        seq:((.[4]//"1")|tonumber)})
+                        seq:((.[4]//"1")|tonumber), trailer:true})
                   |sort_by([.end, .seq, .id])' \
       > "$tmp/pk_ends.json" 2>/dev/null || echo '[]' > "$tmp/pk_ends.json"
   else
@@ -1185,6 +1187,7 @@ cmd_collect() {
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
      --arg run_start "$win_start" \
+     --arg we_bound "$we_bound" \
      "${JQ_TS_MS}"'
      def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
                      cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
@@ -1284,8 +1287,31 @@ cmd_collect() {
          # 0, which would read as a measured dispatch that did nothing). edits
          # counts the same four write tools as the packet-level audit above.
          | ($win | map(select(.tool=="Agent" and .subagent_type=="gaffer:implementer"))
-            | sort_by(.ts|ts_ms)
-            | map(. as $a
+            | sort_by(.ts|ts_ms)) as $iag
+         # PROGRESS (dispatch-progress-metrics T5). Each dispatch owns the interval
+         # from its start (Agent ts minus duration_ms, unwidened: the kind
+         # capability start) up to the next implementer dispatch start, the last
+         # one up to the bounded trailer window end the packet row was scanned
+         # under. A dispatch with no duration_ms has no known start; its Agent ts
+         # (the latest it can have started) bounds the intervals instead, so they
+         # still partition the packet and never overlap. `landed` goes to the ONE
+         # index whose interval holds the packet commit trailer author time --
+         # picked once per packet, so a packet has at most one landed dispatch per
+         # trailer, and a dispatch whose edits a later dispatch commit carried
+         # reads `advanced`. A record-only packet (no trailer: never committed) has
+         # no commit time and lands nothing. Tested in the PRD order: null (no
+         # bounded trailer window, a legacy run, or an unresolved dispatch), then
+         # landed, then advanced (>=1 edit event), then none (zero edit events).
+         | ($iag | map((.ts|ts_ms) - (if (.duration_ms|type) == "number" then .duration_ms else 0 end))) as $dstart
+         | (($we_bound // "") == "") as $trailer_unmeasured
+         | (if ($trailer_unmeasured or ($p.trailer != true)) then null else ($p.end|ts_ms) end) as $commit_ms
+         | (if $commit_ms == null then null
+            else ([range(0; $iag|length) | select(. as $j
+                     | ($dstart[$j] <= $commit_ms)
+                     and (if $j == (($iag|length) - 1) then ($commit_ms <= ($we_bound|ts_ms))
+                          else ($commit_ms < $dstart[$j+1]) end))] | last)
+            end) as $landed_i
+         | ([range(0; $iag|length)] | map(. as $j | $iag[$j] as $a
                 | (if ($a.duration_ms|type) == "number" then
                      (($a.ts|ts_ms) - $a.duration_ms - 1000) as $lo
                      | (($a.ts|ts_ms) + 1000) as $hi
@@ -1300,11 +1326,16 @@ cmd_collect() {
                 # packet tokens are null, the dispatch is unresolved, or no turn
                 # resolves to its agent_id (a missing transcript).
                 | (if ($ts_ok and $dres != null) then ($aid_tok[$dres.key] // null) else null end) as $dtok
-                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null}
-                  else {kind: $kind, tool_calls: ($devs|length),
+                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null, progress: null}
+                  else ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length) as $dedits
+                    | {kind: $kind, tool_calls: ($devs|length),
                         duration_ms: ($devs|map(.duration_ms//0)|add),
-                        edits: ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length),
-                        tokens: $dtok}
+                        edits: $dedits,
+                        tokens: $dtok,
+                        progress: (if ($trailer_unmeasured or $kjn.legacy) then null
+                                   elif $j == $landed_i then "landed"
+                                   elif $dedits > 0 then "advanced"
+                                   else "none" end)}
                   end)) as $dispatches
          | ([ (if ($orch_edits>0 and ($impl_dispatched|not)) then "leak:orchestrator-edited-on-opus-without-delegating(\($orch_edits))" else empty end),
               (if ($p.impl=="delegated" and ($impl_dispatched|not)) then "label-contradiction:impl=delegated-but-no-implementer-dispatch" else empty end),

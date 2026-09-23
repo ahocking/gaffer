@@ -110,7 +110,7 @@ derived-done `run-metrics`; no existing field changes meaning.
     declares unmeasured, has `dispatches: null`, in the same null-field shape
     those rows use today
 
-- [ ] **P0**: Each dispatch carries its own cost and its own progress
+- [x] **P0**: Each dispatch carries its own cost and its own progress
   - `tool_calls` is the count of the dispatch's events, `duration_ms` their
     `duration_ms` sum, `edits` the count among them with tool `Edit`, `Write`,
     `MultiEdit` or `NotebookEdit`, the same write surface the packet-level

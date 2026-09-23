@@ -13,6 +13,11 @@
 # and `unmeasured` (a pruned routing log), count and missing-mix shortfalls
 # with no cross-class fill, the selection written once and read back
 # byte-identical, and the default store in the harness's main checkout.
+# `estimate`: the replay count, per-model and total dollars from a fixture price
+# table (a directly keyed model, an agreeing family, a disagreeing family left
+# unpriced), an unmeasured packet named and excluded, the newest measured
+# run-metrics row used, `--remaining` after some records exist, and two
+# estimates issuing different pending tokens bound to their sets.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -680,6 +685,215 @@ assert_has "select, refused setting: the refusal" "REFUSED setting=role value=re
 no_git "select, refused setting"
 assert_eq "select, refused setting: no store written" "no" "$(if [ -e "$WORK/store-refused" ]; then echo yes; else echo no; fi)"
 
+printf '\n== estimate: a fixture store, source and price table ==\n'
+# The estimate reads only the stored selection (experiment, settings.models,
+# settings.source_repo, selected[].packet), the source's run-metrics and the
+# price table, so the selections here are written directly.
+#   est-e1  measured twice: run-a (older, decoy figures) and run-b (newer, used)
+#   est-e2  measured once, in run-a
+#   est-e3  tokens null in run-b, no other row: unmeasured
+#   est-e4  all-zero in run-b (newer), measured in run-a (older): run-a is used
+ES="$WORK/estsrc"
+mkdir -p "$ES/.agents/metrics/run-a" "$ES/.agents/metrics/run-b"
+# rm_row <id> <input> <output> <cache_creation> <cache_read> | rm_row <id> null
+# Each measured row also carries a dispatch row with decoy tokens, which the
+# estimate must not read as the packet's.
+rm_row() {
+  if [ "$2" = null ]; then
+    printf '    {\n      "id": "%s",\n      "tokens": null,\n      "dispatches": null\n    }' "$1"
+  else
+    printf '    {\n      "id": "%s",\n      "tokens": {\n        "input": %s,\n        "output": %s,\n        "cache_creation": %s,\n        "cache_read": %s\n      },\n      "dispatches": [\n        {\n          "tokens": {\n            "input": 777777777,\n            "output": 777777777,\n            "cache_creation": 777777777,\n            "cache_read": 777777777\n          }\n        }\n      ]\n    }' "$1" "$2" "$3" "$4" "$5"
+  fi
+}
+mkrm() {  # mkrm <run> <generated_at> <row>...
+  local run="$1" gen="$2" sep="" r; shift 2
+  {
+    printf '{\n  "schema": 2,\n  "run_id": "%s",\n  "generated_at": "%s",\n  "token_source": "transcript",\n  "packets": [\n' "$run" "$gen"
+    for r in "$@"; do printf '%s' "$sep"; eval "rm_row $r"; sep=",
+"; done
+    printf '\n  ]\n}\n'
+  } > "$ES/.agents/metrics/$run/run-metrics.json"
+}
+mkrm run-a 2026-03-01T00:00:00Z "est-e1 5 5 5 5" "est-e2 0 200000 0 1000000" "est-e4 0 100000 0 0"
+mkrm run-b 2026-03-02T00:00:00Z "est-e1 1000000 100000 200000 2000000" "est-e3 null" "est-e4 0 0 0 0"
+
+# USD per million tokens. alpha is keyed directly; beta only through a
+# claude-beta-* family whose entries agree; gamma's family entries disagree.
+EPRICES="$WORK/prices.json"
+cat > "$EPRICES" <<'EOF'
+{
+  "table_date": "2026-03-15",
+  "prices": {
+    "alpha":          { "input": 2, "cache_write_5m": 2.50, "cache_write_1h": 4, "cache_read": 0.20, "output": 10 },
+    "claude-beta-1":  { "input": 1, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.10, "output": 5 },
+    "claude-beta-2":  { "input": 1, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.10, "output": 5 },
+    "claude-gamma-1": { "input": 1, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.10, "output": 5 },
+    "claude-gamma-2": { "input": 1, "cache_write_5m": 1.25, "cache_write_1h": 2, "cache_read": 0.20, "output": 5 }
+  }
+}
+EOF
+ESTORE="$WORK/eststore"
+mksel() {  # mksel <experiment> <models-csv> <packet>...
+  local exp="$1" models="$2" ms="" m p sep=""; shift 2
+  for m in $(printf '%s' "$models" | tr ',' ' '); do ms="$ms${ms:+, }\"$m\""; done
+  mkdir -p "$ESTORE/$exp"
+  {
+    printf '{\n  "experiment": "%s",\n' "$exp"
+    printf '  "settings": {"role": "implementer", "models": [%s], "reviewer_model": "opus", "source_repo": "%s", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["agents/"]},\n' "$ms" "$ES"
+    printf '  "selected": [\n'
+    for p in "$@"; do
+      printf '%s    {"packet": "%s", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "land %s", "handoff": "original", "start": "0000000", "commits": ["1111111"]}' "$sep" "$p" "$p"
+      sep=",
+"
+    done
+    printf '\n  ],\n  "shortfalls": [],\n  "excluded": [],\n  "dropped": []\n}\n'
+  } > "$ESTORE/$exp/selection.json"
+}
+est() {  # est <args...>: OUT/ERR/RC
+  OUT="$(ORCH_COMPARE_STORE="$ESTORE" ORCH_COMPARE_PRICES="$EPRICES" "$COMPARE" estimate "$@" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+eline() { printf '%s\n' "$OUT" | awk -v p="$1 " 'index($0, p) == 1'; }
+lines_of() { printf '%s\n' "$OUT" | awk -v p="$1 " 'index($0, p) == 1'; }
+
+EA=aaaaaaaaaaa1
+mksel "$EA" alpha,beta est-e1 est-e2 est-e3
+est "$EA"
+assert_eq "estimate: exit 0" "0" "$RC"
+assert_eq "estimate: no stderr" "" "$ERR"
+assert_eq "estimate: the replay count is packets x models (3 x 2)" "6" "$(line REPLAYS)"
+assert_eq "estimate: scope all, nothing recorded" "all:0" "$(line SCOPE):$(line RECORDED)"
+assert_eq "estimate: every replay listed, packet then model, stored order" \
+"REPLAY packet=est-e1 model=alpha
+REPLAY packet=est-e1 model=beta
+REPLAY packet=est-e2 model=alpha
+REPLAY packet=est-e2 model=beta
+REPLAY packet=est-e3 model=alpha
+REPLAY packet=est-e3 model=beta" "$(lines_of REPLAY)"
+assert_eq "estimate: the price table's date is stated" "2026-03-15" "$(line PRICE_TABLE_DATE)"
+# Per-model dollars, worked by hand from the fixture table (est-e1 from run-b,
+# est-e2 from run-a; cache writes at the 5-minute rate for min, 1-hour for max):
+#   alpha e1 2.00+1.00+0.40+0.50=3.90 (max +0.30=4.20), e2 2.00+0.20=2.20 -> 6.10 / 6.40
+#   beta  e1 1.00+0.50+0.20+0.25=1.95 (max +0.15=2.10), e2 1.00+0.10=1.10 -> 3.05 / 3.20
+assert_eq "estimate: alpha priced from its own table entry" \
+  "ESTIMATE model=alpha replays=3 estimated=2 tokens=4500000 input=1000000 output=300000 cache_creation=200000 cache_read=3000000 dollars_min=6.10 dollars_max=6.40 price=alpha" \
+  "$(eline "ESTIMATE model=alpha")"
+assert_eq "estimate: beta priced through its agreeing claude-beta-* family" \
+  "ESTIMATE model=beta replays=3 estimated=2 tokens=4500000 input=1000000 output=300000 cache_creation=200000 cache_read=3000000 dollars_min=3.05 dollars_max=3.20 price=family:claude-beta-1,claude-beta-2" \
+  "$(eline "ESTIMATE model=beta")"
+assert_eq "estimate: the total across models" \
+  "ESTIMATE model=total replays=6 estimated=4 tokens=9000000 input=2000000 output=600000 cache_creation=400000 cache_read=6000000 dollars_min=9.15 dollars_max=9.60" \
+  "$(eline "ESTIMATE model=total")"
+# est-e3's cost is unmeasured: named, excluded, and never counted as 0 (the
+# replays still run, so they stay in the count; only the estimate omits them).
+assert_eq "estimate: an unmeasured packet is named and excluded" \
+  "EXCLUDED packet=est-e3 reason=original cost unmeasured, excluded from the estimate: no measured row among 1 run-metrics row(s) (tokens null: 1, all zero: 0, no transcript token source: 0)" \
+  "$(lines_of EXCLUDED)"
+assert_eq "estimate: no model is unpriced" "" "$(lines_of UNPRICED)"
+APPROVAL1="$(line APPROVAL)"
+case "$APPROVAL1" in
+  ''|none|*[!0-9a-f]*) bad "estimate: an APPROVAL token is printed" "got [$APPROVAL1]" ;;
+  *) ok "estimate: an APPROVAL token is printed" ;;
+esac
+assert_eq "estimate: APPROVAL is the last line" "APPROVAL=$APPROVAL1" "$(printf '%s\n' "$OUT" | sed -n '$p')"
+APPR_LAST="$(tail -1 "$ESTORE/$EA/approvals.jsonl" 2>/dev/null)"
+assert_has "estimate: the token is stored as pending" "{\"token\":\"$APPROVAL1\",\"state\":\"pending\",\"experiment\":\"$EA\",\"scope\":\"all\"," "$APPR_LAST"
+assert_has "estimate: the stored token is bound to exactly the printed set" \
+  '"replays":[{"packet":"est-e1","model":"alpha"},{"packet":"est-e1","model":"beta"},{"packet":"est-e2","model":"alpha"},{"packet":"est-e2","model":"beta"},{"packet":"est-e3","model":"alpha"},{"packet":"est-e3","model":"beta"}]}' \
+  "$APPR_LAST"
+
+printf '\n== estimate: two estimates issue different tokens ==\n'
+est "$EA"
+APPROVAL2="$(line APPROVAL)"
+assert_eq "second estimate: exit 0" "0" "$RC"
+assert_ne "second estimate: a different token" "$APPROVAL1" "$APPROVAL2"
+assert_eq "second estimate: both stored pending, newest last" \
+  "$APPROVAL1 pending
+$APPROVAL2 pending" \
+  "$(sed 's/^{"token":"\([0-9a-f]*\)","state":"\([a-z]*\)".*/\1 \2/' "$ESTORE/$EA/approvals.jsonl")"
+
+printf '\n== estimate: unpriced model and zero rows ==\n'
+EB=aaaaaaaaaaa2
+mksel "$EB" alpha,gamma est-e2 est-e4
+est "$EB"
+assert_eq "unpriced: exit 0" "0" "$RC"
+assert_eq "unpriced: a family with differing rates is named, not guessed" \
+  "UNPRICED model=gamma reason=the claude-gamma-* entries carry different rates, and which one gamma resolves to is not recorded (claude-gamma-1,claude-gamma-2)" \
+  "$(lines_of UNPRICED)"
+# est-e4's newer run-b row is all zero, so the older measured run-a row is used.
+assert_eq "unpriced: its dollars read unmeasured, its tokens stand" \
+  "ESTIMATE model=gamma replays=2 estimated=2 tokens=1300000 input=0 output=300000 cache_creation=0 cache_read=1000000 dollars_min=unmeasured dollars_max=unmeasured price=unpriced" \
+  "$(eline "ESTIMATE model=gamma")"
+assert_eq "unpriced: the total's dollars read unmeasured, never a partial sum" \
+  "ESTIMATE model=total replays=4 estimated=4 tokens=2600000 input=0 output=600000 cache_creation=0 cache_read=2000000 dollars_min=unmeasured dollars_max=unmeasured" \
+  "$(eline "ESTIMATE model=total")"
+assert_eq "zero row: an all-zero newer row does not replace a measured one" "" "$(lines_of EXCLUDED)"
+
+EC=aaaaaaaaaaa3
+mksel "$EC" alpha est-e3
+est "$EC"
+assert_eq "all unmeasured: tokens and dollars read unmeasured, never 0" \
+  "ESTIMATE model=alpha replays=1 estimated=0 tokens=unmeasured input=unmeasured output=unmeasured cache_creation=unmeasured cache_read=unmeasured dollars_min=unmeasured dollars_max=unmeasured price=alpha" \
+  "$(eline "ESTIMATE model=alpha")"
+
+printf '\n== estimate: --remaining after some records exist ==\n'
+# Two records of this experiment (one invalid: any record counts) and one of
+# another experiment on a replay this one has not recorded.
+{
+  printf '{"experiment":"%s","packet":"est-e1","model":"alpha","outcome":"passed"}\n' "$EA"
+  printf '{"experiment": "%s", "packet": "est-e3", "model": "beta", "outcome": "invalid"}\n' "$EA"
+  printf '{"experiment":"%s","packet":"est-e2","model":"alpha","outcome":"passed"}\n' "$EB"
+} > "$ESTORE/records.jsonl"
+est "$EA" --remaining
+assert_eq "remaining: exit 0" "0" "$RC"
+assert_eq "remaining: scope, recorded and remaining counts" "remaining:2:4" "$(line SCOPE):$(line RECORDED):$(line REPLAYS)"
+assert_eq "remaining: only the unrecorded replays are listed" \
+"REPLAY packet=est-e1 model=beta
+REPLAY packet=est-e2 model=alpha
+REPLAY packet=est-e2 model=beta
+REPLAY packet=est-e3 model=alpha" "$(lines_of REPLAY)"
+assert_eq "remaining: alpha's estimate covers only e2 (e1 recorded, e3 unmeasured)" \
+  "ESTIMATE model=alpha replays=2 estimated=1 tokens=1200000 input=0 output=200000 cache_creation=0 cache_read=1000000 dollars_min=2.20 dollars_max=2.20 price=alpha" \
+  "$(eline "ESTIMATE model=alpha")"
+assert_eq "remaining: beta's estimate covers e1 and e2" \
+  "ESTIMATE model=beta replays=2 estimated=2 tokens=4500000 input=1000000 output=300000 cache_creation=200000 cache_read=3000000 dollars_min=3.05 dollars_max=3.20 price=family:claude-beta-1,claude-beta-2" \
+  "$(eline "ESTIMATE model=beta")"
+assert_has "remaining: the unmeasured packet still in the set is still named" "EXCLUDED packet=est-e3 " "$(lines_of EXCLUDED)"
+APPROVAL3="$(line APPROVAL)"
+APPR_LAST="$(tail -1 "$ESTORE/$EA/approvals.jsonl" 2>/dev/null)"
+assert_has "remaining: its token is bound to the remaining set only" \
+  "{\"token\":\"$APPROVAL3\",\"state\":\"pending\",\"experiment\":\"$EA\",\"scope\":\"remaining\"," "$APPR_LAST"
+assert_has "remaining: the stored set is the four remaining replays" \
+  '"replays":[{"packet":"est-e1","model":"beta"},{"packet":"est-e2","model":"alpha"},{"packet":"est-e2","model":"beta"},{"packet":"est-e3","model":"alpha"}]}' \
+  "$APPR_LAST"
+est "$EA"
+assert_eq "remaining: without the flag every replay is counted" "all:0:6" "$(line SCOPE):$(line RECORDED):$(line REPLAYS)"
+
+# Everything recorded: nothing to run, so no token is issued.
+{
+  for p in est-e2 est-e4; do printf '{"experiment":"%s","packet":"%s","model":"alpha"}\n' "$EB" "$p"; printf '{"experiment":"%s","packet":"%s","model":"gamma"}\n' "$EB" "$p"; done
+} >> "$ESTORE/records.jsonl"
+EB_BEFORE="$(cat "$ESTORE/$EB/approvals.jsonl")"
+est "$EB" --remaining
+assert_eq "nothing remaining: no replay, no token" "0:none" "$(line REPLAYS):$(line APPROVAL)"
+assert_eq "nothing remaining: no pending token stored" "$EB_BEFORE" "$(cat "$ESTORE/$EB/approvals.jsonl")"
+
+printf '\n== estimate: refusals ==\n'
+est bbbbbbbbbbbb
+assert_eq "no stored selection: exit 1" "1" "$RC"
+assert_has "no stored selection: says to run select" "run \`compare.sh select\` first" "$ERR"
+est ../etc
+assert_eq "not an experiment id: exit 1" "1" "$RC"
+cp "$ESTORE/records.jsonl" "$WORK/records.good"
+printf '{"experiment": "%s", "packet": est-e2, "model": "beta"}\n' "$EA" >> "$ESTORE/records.jsonl"
+est "$EA" --remaining
+assert_eq "records with a bare word: refused, not guessed" "1:" "$RC:$OUT"
+cp "$WORK/records.good" "$ESTORE/records.jsonl"
+printf 'not json\n' >> "$ESTORE/records.jsonl"
+est "$EA" --remaining
+assert_eq "unreadable records: refused, not guessed" "1:" "$RC:$OUT"
+assert_has "unreadable records: names the file" "records file is not readable JSONL" "$ERR"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -687,6 +901,8 @@ printf '\n== usage ==\n'
 "$COMPARE" settings "$WORK/absent.yaml" >/dev/null 2>&1; assert_eq "settings on a missing file: exit 2" "2" "$?"
 "$COMPARE" candidates >/dev/null 2>&1; assert_eq "candidates without a file: exit 2" "2" "$?"
 "$COMPARE" select >/dev/null 2>&1; assert_eq "select without a file: exit 2" "2" "$?"
+"$COMPARE" estimate >/dev/null 2>&1; assert_eq "estimate without an experiment: exit 2" "2" "$?"
+"$COMPARE" estimate aaaaaaaaaaa1 --bogus >/dev/null 2>&1; assert_eq "estimate with an unknown flag: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -34,7 +34,7 @@ feature: model-comparison-harness
   - covers: Packets are selected from landed history and classed as prose or code
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh
-- [ ] **T4** **P0** Add `compare.sh estimate <experiment> [--remaining]`. It prints the replay count (packets × models, or only the replays with no stored record under `--remaining`) and the token and dollar forecast under the plan's estimate rule, per model and in total, with the price-table date. Any packet whose original cost is unmeasured is named as excluded and never counted as 0. It also prints a single-use `APPROVAL=` token bound to exactly that replay set and stored as pending. `scripts/test-compare.sh` gains cases for the count, per-model dollars from a fixture price table, an unmeasured packet named and excluded, `--remaining` after some records exist, and two estimates issuing different tokens.
+- [x] **T4** **P0** Add `compare.sh estimate <experiment> [--remaining]`. It prints the replay count (packets × models, or only the replays with no stored record under `--remaining`) and the token and dollar forecast under the plan's estimate rule, per model and in total, with the price-table date. Any packet whose original cost is unmeasured is named as excluded and never counted as 0. It also prints a single-use `APPROVAL=` token bound to exactly that replay set and stored as pending. `scripts/test-compare.sh` gains cases for the count, per-model dollars from a fixture price table, an unmeasured packet named and excluded, `--remaining` after some records exist, and two estimates issuing different tokens.
   - deps: T3
   - covers: The operator approves the spend before any replay starts
   - arch: —

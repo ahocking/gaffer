@@ -2636,6 +2636,47 @@ check "DPM T7: a legacy run carries no waste: flag" '[]' "$(wf "$WROUT_LEGACY")"
 check "DPM T7: the T2 legacy run carries no waste: flag on any packet" '[]' \
   "$(jq -c '[.packets[].audit.flags[]|select(startswith("waste:"))]' "$DPOUT")"
 
+echo "== dispatch-progress-metrics T8: show renders dispatch_waste in the audit block =="
+# Rendered text, not the packet: the lines between the routing-audit header and the
+# packets table. Reuses the T6/T7 fixtures:
+#   ovr    fully measured (zero_progress 1, continuations 1, over 1, share 0.25)
+#   def    a measured 0 over threshold and a 0 share -> must print 0, not unmeasured
+#   notok  partly null: token sum and share null, counts measured
+#   noprog partly null: zero_progress null, over_threshold note on the left-out row
+#   DPOUT  the legacy run: every component null
+dws() { # dws <packet> -> the dispatch_waste lines show prints, joined by |
+  "$METRICS" show "$1" 2>/dev/null \
+    | awk '/^routing audit/{a=1} /^packets \(/{a=0} a && /dispatch_waste|^    (zero_progress|continuations|over_threshold)|^      note:/' \
+    | sed 's/^ *//' | paste -sd'|' -
+}
+dwpos() { # dwpos <packet> -> "audit<dw<packets" when ordered as required
+  "$METRICS" show "$1" 2>/dev/null | awk '
+    /^routing audit/ && !r {r=NR} /dispatch_waste/ && !d {d=NR} /^packets \(/ && !p {p=NR}
+    END { if (r && d && p && r < d && d < p) print "audit<dw<packets"; else print "r=" r " d=" d " p=" p }'
+}
+check "DPM T8: dispatch_waste sits inside the audit block, above the packets table" \
+  'audit<dw<packets' "$(dwpos "$WROUT_OVR")"
+check "DPM T8: a fully measured run renders every component as a number" \
+  'dispatch_waste (turn threshold: 2 tool_calls, source implementer_turn_budget):|zero_progress=1   tokens: in=100 out=10 cacheR=90 cacheC=800|continuations=1|over_threshold=1   token_share: 0.25' \
+  "$(dws "$WROUT_OVR")"
+check "DPM T8: a measured zero renders as 0, not unmeasured" \
+  'over_threshold=0   token_share: 0' "$(dws "$WROUT_DEF" | tr '|' '\n' | grep '^over_threshold')"
+check "DPM T8: partly null (tokens) renders the null parts unmeasured with their notes[] reason" \
+  'zero_progress=1   tokens: unmeasured — 1 of 1 progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands.|continuations=1|over_threshold=1   token_share: unmeasured — 1 of 2 counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands.' \
+  "$(dws "$WROUT_NOTOK" | cut -d'|' -f2-)"
+check "DPM T8: partly null (progress) renders zero_progress unmeasured and keeps the over_threshold caveat" \
+  'zero_progress=unmeasured — 1 of 3 dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0.|continuations=2|over_threshold=0   token_share: 0|note: 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch) and are left out of both the count and the token share, which cover the other 2 row(s) only.' \
+  "$(dws "$WROUT_NOPROG" | cut -d'|' -f2-)"
+check "DPM T8: partly null (kind) renders continuations unmeasured with its notes[] reason" \
+  'continuations=unmeasured — 1 of 2 dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0.' \
+  "$(dws "$WROUT_NOKIND" | tr '|' '\n' | grep '^continuations')"
+check "DPM T8: a legacy run renders dispatch_waste unmeasured with the legacy reason, no 0" \
+  'dispatch_waste: unmeasured — legacy run (no start or routing record for any of its packets falls in this window), so every dispatch kind and progress is null and zero_progress, continuations, over_threshold and turn_threshold are all null, never 0.' \
+  "$(dws "$DPOUT")"
+jq 'del(.totals.dispatch_waste) | .notes |= map(select(startswith("dispatch_waste") | not))' "$DPOUT" > "$ROOT/dw-predates.json"
+check "DPM T8: a packet predating the rollup renders unmeasured, never clean" \
+  'dispatch_waste: unmeasured — this packet predates the dispatch_waste rollup' "$(dws "$ROOT/dw-predates.json")"
+
 echo
 if [ "$fail" -eq 0 ]; then
   printf 'test-metrics.sh: ALL %d checks passed\n' "$pass"; exit 0

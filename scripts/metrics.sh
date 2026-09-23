@@ -2115,6 +2115,43 @@ cmd_show() {
     "  dispatches=\(if .audit.dispatches_total == null then "unmeasured" else .audit.dispatches_total end) (model overrides vs routing resolved at dispatch: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-routing run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(if .audit.by_dispatch_model_override == null then "unmeasured" else (.audit.by_dispatch_model_override | tojson) end)",
     "  configured routing: \(if .audit.configured_routing == null then "unmeasured — pre-routing run" elif (.audit.configured_routing | length) == 0 then "none" else (.audit.configured_routing | to_entries | map("\(.key) \(.value)") | join(", ")) end)",
     "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
+    # dispatch-progress-metrics T8: totals.dispatch_waste renders HERE, inside the
+    # audit block, because an audit signal pushed below the packets table goes
+    # unread. No `// 0` on any component: null is UNMEASURED and renders with the
+    # reason the collector wrote to notes[] (keyed `dispatch_waste[.<component>]: `);
+    # a non-null zero is a measured 0 and renders as 0. A packet collected before the
+    # rollup existed has no dispatch_waste key at all and reads unmeasured, not clean.
+    ((.notes // []) as $notes
+     | def dwnote($k):
+         ($notes | map(select(type == "string" and startswith($k + ": "))) | first) as $n
+         | if $n == null then null
+           else ($n | ltrimstr($k + ": ") | if startswith("unmeasured — ") then ltrimstr("unmeasured — ") else . end) end;
+       def dwwhy($k): (dwnote($k) // "no reason recorded in notes[]");
+       def dwtok: "in=\(.input) out=\(.output) cacheR=\(.cache_read) cacheC=\(.cache_creation)";
+       (.totals.dispatch_waste) as $dw
+     | if ($dw == null) or ($dw | type) != "object" then
+         "  dispatch_waste: unmeasured — \(dwnote("dispatch_waste") // "this packet predates the dispatch_waste rollup")"
+       elif ($dw.zero_progress == null and $dw.continuations == null and $dw.over_threshold == null and $dw.turn_threshold == null) then
+         "  dispatch_waste: unmeasured — \(dwwhy("dispatch_waste"))"
+       else
+         "  dispatch_waste (turn threshold: \(if $dw.turn_threshold == null then "unmeasured" else "\($dw.turn_threshold.value) \($dw.turn_threshold.unit), source \($dw.turn_threshold.source)" end)):",
+         (if $dw.zero_progress == null then
+            "    zero_progress=unmeasured — \(dwwhy("dispatch_waste.zero_progress"))"
+          else
+            "    zero_progress=\($dw.zero_progress.count)   tokens: \(if $dw.zero_progress.tokens == null then "unmeasured — \(dwwhy("dispatch_waste.zero_progress.tokens"))" else ($dw.zero_progress.tokens | dwtok) end)"
+          end),
+         (if $dw.continuations == null then
+            "    continuations=unmeasured — \(dwwhy("dispatch_waste.continuations"))"
+          else
+            "    continuations=\($dw.continuations)"
+          end),
+         (if $dw.over_threshold == null then
+            "    over_threshold=unmeasured — \(dwwhy("dispatch_waste.over_threshold"))"
+          else
+            "    over_threshold=\($dw.over_threshold.count)   token_share: \(if $dw.over_threshold.token_share == null then "unmeasured — \(dwwhy("dispatch_waste.over_threshold.token_share"))" else $dw.over_threshold.token_share end)",
+            (dwnote("dispatch_waste.over_threshold") | if . == null then empty else "      note: \(.)" end)
+          end)
+       end),
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
     "",
     # by outcome: each STARTED packet counted once (loop-measurement T5/T6). A row

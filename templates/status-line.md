@@ -80,6 +80,18 @@ reported can read its own result file rather than holding it in context; a
 different agent picking the file up sees the status line first and the detail
 below it.
 
+## Your reply is the saved line, byte for byte
+
+Your final reply is **exactly** the line you passed to `write-result
+--status`, byte for byte, with nothing added and nothing reformatted: no
+backticks or code fence around it, no quotes, no leading label or trailing
+remark, no changed spacing or separator. The driver runs `check-status` on
+the line it reads from your reply, not on the one in your result file, so a
+line that passed the check in `write-result` is still refused on return if
+the reply wraps it in backticks. The `'\''` escape above is shell quoting,
+not part of the line: a `'` in your text appears in the reply as a plain
+`'`.
+
 ## One line, no exceptions
 
 A status line that grows past one line — a second line, a wrapped paragraph,

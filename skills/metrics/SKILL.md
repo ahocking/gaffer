@@ -197,7 +197,10 @@ Look for, and cite the figures behind, at least:
   `zero_progress` (count and token sum of `progress: none` rows), `continuations`,
   `over_threshold` (count and `token_share`) and the `turn_threshold` it was judged
   against, with that threshold's unit and source. Use them to name the top
-  zero-progress dispatches by tokens. `null` anywhere here means **unmeasured, never
+  zero-progress dispatches by tokens. `landed` means the packet's commit falls in
+  that dispatch's interval, not that the dispatch wrote what landed — it is tested
+  before edits, so a last dispatch with zero edits can read `landed` while the
+  earlier dispatch whose edits it committed reads `advanced`. `null` anywhere here means **unmeasured, never
   0**: a swept or sibling packet has `dispatches: null`, a row resolved to no
   subagent has null cost fields and null `progress`, a legacy run has null `kind` and
   `progress` on every row and a null rollup — and `notes[]` names which

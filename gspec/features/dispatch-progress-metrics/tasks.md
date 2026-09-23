@@ -85,7 +85,7 @@ feature: dispatch-progress-metrics
   - covers: The feature's own run leaves no loose ends
   - arch: —
   - files: scripts/metrics.sh, scripts/runstate.sh, scripts/test-metrics.sh, scripts/test-runstate.sh
-- [ ] **T15** **P2** Add one sentence to the `analyze` hand-over in `skills/metrics/SKILL.md`: `landed` means the packet's commit falls in that dispatch's interval, not that the dispatch wrote what landed (a zero-edit last dispatch can read `landed`)
+- [x] **T15** **P2** Add one sentence to the `analyze` hand-over in `skills/metrics/SKILL.md`: `landed` means the packet's commit falls in that dispatch's interval, not that the dispatch wrote what landed (a zero-edit last dispatch can read `landed`)
   - deps: —
   - covers: The feature's own run leaves no loose ends
   - arch: —

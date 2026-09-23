@@ -6305,7 +6305,22 @@ cmd_summary() {
   cursor="$(cmd_cursor "$f")";     cursor="${cursor:-none}"
   # counts are best-effort hints, not load-bearing.
   pending="$(awk '/^[[:space:]]*pending:/{f=1;next} /^[^[:space:]]/{f=0} f&&/^[[:space:]]*-[[:space:]]/{n++} END{print n+0}' "$f")"
-  blocking="$(grep -cE '^[[:space:]]*severity:[[:space:]]*blocking' "$f" || true)"
+  # A question counts as blocking by its DECODED severity, through rs_decode
+  # from _YAML_AWK_DECODE -- the one decode rule, not a copy of it. The value
+  # after `severity:` has a trailing CR and surrounding whitespace removed, is
+  # decoded, and must then EQUAL `blocking`: single-quoted, double-quoted and
+  # bare all count, and a value that only starts with `blocking` does not. The
+  # bare-value regex this replaces counted a quoted `blocking` as 0, so a stop
+  # or resume report under-reported the question the run was stopped on.
+  blocking="$(awk "$_YAML_AWK_DECODE"'
+    /^[[:space:]]*severity:/ {
+      v = $0
+      sub(/^[[:space:]]*severity:/, "", v)
+      sub(/\r$/, "", v)
+      sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (rs_decode(v) == "blocking") n++
+    }
+    END { print n+0 }' "$f")"
   printf 'in-flight run on %s — status=%s, cursor=%s, %s pending, %s blocking question(s)' \
     "$branch" "$status" "$cursor" "$pending" "$blocking"
   # `status: running` alone is ambiguous — it means BOTH "crashed" and "a second

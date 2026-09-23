@@ -2502,7 +2502,7 @@ echo "== dispatch-progress-metrics T6: totals.dispatch_waste =="
 #   notok w1 transcript absent -> d1 tokens null: only the sums and share null
 #   nokind  start record absent -> d1 kind null: only continuations null
 #   noprog  an extra unresolved dispatch d3 (no agent_id in its span) -> progress
-#           null on it: only zero_progress null (d3 left out of over_threshold)
+#           and tool_calls null on it: zero_progress and (T13) over_threshold null
 #   nodisp  start record, commit, no implementer Agent event -> all null
 # The legacy run is the T2 fixture ($DPOUT).
 WRREPO="$ROOT/wr-repo"
@@ -2589,10 +2589,10 @@ check "DPM T6: null kind names continuations in notes[]" '["dispatch_waste.conti
 check "DPM T6: the no-progress fixture has one unresolved row" \
   '[["initial","none"],["continuation","advanced"],["continuation",null]]' \
   "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.kind,.progress]]' "$WROUT_NOPROG")"
-check "DPM T6: one null progress nulls only zero_progress" \
-  '{"zero_progress":null,"continuations":2,"over_threshold":{"count":0,"token_share":0},"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
+check "DPM T6: one unresolved row nulls zero_progress and over_threshold only" \
+  '{"zero_progress":null,"continuations":2,"over_threshold":null,"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
   "$(dw "$WROUT_NOPROG")"
-check "DPM T6: null progress names zero_progress, and the row left out of over_threshold, in notes[]" \
+check "DPM T6: an unresolved row names zero_progress and over_threshold in notes[]" \
   '["dispatch_waste.zero_progress","dispatch_waste.over_threshold"]' "$(dwn "$WROUT_NOPROG")"
 DW_ALLNULL='{"zero_progress":null,"continuations":null,"over_threshold":null,"turn_threshold":null}'
 check "DPM T6: a run with no implementer dispatch reads all-null" "$DW_ALLNULL" "$(dw "$WROUT_NODISP")"
@@ -2646,7 +2646,7 @@ echo "== dispatch-progress-metrics T8: show renders dispatch_waste in the audit 
 #   ovr    fully measured (zero_progress 1, continuations 1, over 1, share 0.25)
 #   def    a measured 0 over threshold and a 0 share -> must print 0, not unmeasured
 #   notok  partly null: token sum and share null, counts measured
-#   noprog partly null: zero_progress null, over_threshold note on the left-out row
+#   noprog partly null: zero_progress and over_threshold null (an unresolved row)
 #   DPOUT  the legacy run: every component null
 dws() { # dws <packet> -> the dispatch_waste lines show prints, joined by |
   "$METRICS" show "$1" 2>/dev/null \
@@ -2668,8 +2668,8 @@ check "DPM T8: a measured zero renders as 0, not unmeasured" \
 check "DPM T8: partly null (tokens) renders the null parts unmeasured with their notes[] reason" \
   'zero_progress=1   tokens: unmeasured — 1 of 1 progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands.|continuations=1|over_threshold=1   token_share: unmeasured — 1 of 2 counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands.' \
   "$(dws "$WROUT_NOTOK" | cut -d'|' -f2-)"
-check "DPM T8: partly null (progress) renders zero_progress unmeasured and keeps the over_threshold caveat" \
-  'zero_progress=unmeasured — 1 of 3 dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0.|continuations=2|over_threshold=0   token_share: 0|note: 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch) and are left out of both the count and the token share, which cover the other 2 row(s) only.' \
+check "DPM T8: partly null (unresolved row) renders zero_progress and over_threshold unmeasured" \
+  'zero_progress=unmeasured — 1 of 3 dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0.|continuations=2|over_threshold=unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows.' \
   "$(dws "$WROUT_NOPROG" | cut -d'|' -f2-)"
 check "DPM T8: partly null (kind) renders continuations unmeasured with its notes[] reason" \
   'continuations=unmeasured — 1 of 2 dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0.' \
@@ -2680,6 +2680,44 @@ check "DPM T8: a legacy run renders dispatch_waste unmeasured with the legacy re
 jq 'del(.totals.dispatch_waste) | .notes |= map(select(startswith("dispatch_waste") | not))' "$DPOUT" > "$ROOT/dw-predates.json"
 check "DPM T8: a packet predating the rollup renders unmeasured, never clean" \
   'dispatch_waste: unmeasured — this packet predates the dispatch_waste rollup' "$(dws "$ROOT/dw-predates.json")"
+
+echo "== dispatch-progress-metrics T13: an unresolved dispatch nulls over_threshold =="
+# Before T13 a row with null tool_calls was left out of over_threshold and the count
+# over the other rows read as a measurement. Reuses the T6 wr-* fixtures:
+#   noprogovr the noprog repo (d3 unresolved) under the threshold-2 override: d1 is
+#             over, so the old exclusion reported {count 1, share 0.25}; now null
+#   ovr/notok fully resolved runs: over_threshold unchanged, no over_threshold note
+# An unresolved row is null in tool_calls AND progress (T2 builds it that way), so
+# zero_progress is already null on it under T6; T13 changes over_threshold alone,
+# which the before/after comparison below pins against the T6 values.
+WRNOPROGOVR="$(wr_variant noprogovr)"
+cp "$WRNOPROG/.agents/metrics/events/WR.jsonl" "$WRNOPROGOVR/.agents/metrics/events/WR.jsonl"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRNOPROGOVR/.agents/project-overrides.yaml"
+WROUT_NOPROGOVR="$(wr_collect "$WRNOPROGOVR" "$WRPROJ" noprogovr-run)"
+check "DPM T13: the fixture has d1 over the threshold and d3 unresolved ([progress, tool_calls])" \
+  '[["none",3],["advanced",1],[null,null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]' "$WROUT_NOPROGOVR")"
+check "DPM T13: one unresolved dispatch nulls over_threshold, count and share, never a count over the rest" \
+  'null' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_NOPROGOVR")"
+check "DPM T13: every other component reads exactly as T6 made it (only over_threshold moved)" \
+  '{"zero_progress":null,"continuations":2,"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(jq -c '.totals.dispatch_waste | del(.over_threshold)' "$WROUT_NOPROGOVR")"
+check "DPM T13: the notes[] reason names the unresolved dispatch by packet and position" \
+  '["dispatch_waste.over_threshold: unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows."]' \
+  "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))]' "$WROUT_NOPROGOVR")"
+check "DPM T13: show renders over_threshold unmeasured with that reason" \
+  'over_threshold=unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows.' \
+  "$(dws "$WROUT_NOPROGOVR" | tr '|' '\n' | grep '^over_threshold')"
+check "DPM T13: the per-packet over-budget flag still counts only measured rows" \
+  '["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]' "$(wf "$WROUT_NOPROGOVR")"
+check "DPM T13: a fully resolved run is unchanged (count 1, share 0.25, no over_threshold note)" \
+  '{"count":1,"token_share":0.25}|[]' \
+  "$(printf '%s|%s' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_OVR")" \
+     "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))]' "$WROUT_OVR")")"
+check "DPM T13: a fully resolved run with null tokens keeps its count and names only the share" \
+  '{"count":1,"token_share":null}|["dispatch_waste.over_threshold.token_share"]' \
+  "$(printf '%s|%s' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_NOTOK")" \
+     "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))|split(":")[0]]' "$WROUT_NOTOK")")"
 
 echo "== dispatch-progress-metrics T10: CRLF-jq over dispatch kind and progress =="
 # The ADR 0019 v3.1 byte-identity check, run over fixtures that carry the new fields:

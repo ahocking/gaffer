@@ -1728,10 +1728,11 @@ EOF
     # support it: zero_progress when any row has a null progress (its token sum when
     # any progress-none row has null tokens), continuations when any row has a null
     # kind, and everything on a legacy run or a run with no implementer dispatch.
-    # over_threshold counts rows whose tool_calls exceeds the threshold; a row with
-    # null tool_calls (an unresolved dispatch) is in neither side of the count nor of
-    # the token share, and a note says how many were left out; the share is null
-    # when any row it does count has null tokens. token_share = over-threshold
+    # over_threshold counts rows whose tool_calls exceeds the threshold; it is null,
+    # count and share alike, when any row has null tool_calls (an unresolved
+    # dispatch), and a note names each such dispatch by packet id and position --
+    # leaving the row out would report a measured-looking count (T13). The share is
+    # null when any counted row has null tokens. token_share = over-threshold
     # tokens / all counted tokens, each dispatch total = input + output +
     # cache_creation + cache_read. (No apostrophes in here: one single-quoted word.)
     | (($kindj[0] // {}).legacy == true) as $dw_legacy
@@ -1751,11 +1752,12 @@ EOF
                                            else ($zp | map(.tokens) | dw_tsum) end)} end),
             continuations: (if ($drows | any(.kind == null)) then null
                             else ($drows | map(select(.kind == "continuation")) | length) end),
-            over_threshold: {count: ($ot|length),
-                             token_share: (if ($tc | any(.tokens == null)) then null
-                                           else (($tc | map(.tokens|dw_tot) | add // 0) as $all
-                                                 | if $all > 0 then ((($ot | map(.tokens|dw_tot) | add // 0) / $all)*1000|floor)/1000
-                                                   else null end) end)},
+            over_threshold: (if ($drows | any((.tool_calls|type) != "number")) then null
+                             else {count: ($ot|length),
+                                   token_share: (if ($tc | any(.tokens == null)) then null
+                                                 else (($tc | map(.tokens|dw_tot) | add // 0) as $all
+                                                       | if $all > 0 then ((($ot | map(.tokens|dw_tot) | add // 0) / $all)*1000|floor)/1000
+                                                         else null end) end)} end),
             turn_threshold: {value: $turn_threshold, unit: "tool_calls", source: $turn_threshold_source}}
        end) as $dw
     | ([ if $dw_legacy then
@@ -1770,11 +1772,15 @@ EOF
             | if (($drows | any(.progress == null)) | not) and $n > 0 then "dispatch_waste.zero_progress.tokens: unmeasured — \($n) of \($zp|length) progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands." else empty end),
            (($drows | map(select(.kind == null)) | length) as $n
             | if $n > 0 then "dispatch_waste.continuations: unmeasured — \($n) of \($drows|length) dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0." else empty end),
-           (($drows | map(select((.tool_calls|type) != "number")) | length) as $n
-            | if $n > 0 then "dispatch_waste.over_threshold: \($n) of \($drows|length) dispatch row(s) carry null tool_calls (an unresolved dispatch) and are left out of both the count and the token share, which cover the other \(($drows|length) - $n) row(s) only." else empty end),
+           (([($packets[0] // [])[] | .id as $pid | (.dispatches // []) as $pd
+             | range(0; $pd|length) | select(($pd[.].tool_calls|type) != "number")
+             | "\($pid) dispatch \(. + 1) of \($pd|length)"]) as $unres
+            | ($unres | join(", ")) as $unres_s
+            | if ($unres|length) > 0 then "dispatch_waste.over_threshold: unmeasured — \($unres|length) of \($drows|length) dispatch row(s) carry null tool_calls (an unresolved dispatch: \($unres_s)), so the count and the token share are null, never a count over the other rows." else empty end),
            (($drows | map(select((.tool_calls|type) == "number"))) as $tc
             | ($tc | map(select(.tokens == null)) | length) as $n
-            | if $n > 0 then "dispatch_waste.over_threshold.token_share: unmeasured — \($n) of \($tc|length) counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands."
+            | if ($drows | any((.tool_calls|type) != "number")) then empty
+              elif $n > 0 then "dispatch_waste.over_threshold.token_share: unmeasured — \($n) of \($tc|length) counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands."
               elif (($dw.over_threshold.token_share == null) and (($tc|length) > 0)) then "dispatch_waste.over_threshold.token_share: unmeasured — the counted dispatch rows hold zero tokens in total, so no share can be taken."
               else empty end)
          end ]) as $dw_notes
@@ -2148,8 +2154,7 @@ cmd_show() {
          (if $dw.over_threshold == null then
             "    over_threshold=unmeasured — \(dwwhy("dispatch_waste.over_threshold"))"
           else
-            "    over_threshold=\($dw.over_threshold.count)   token_share: \(if $dw.over_threshold.token_share == null then "unmeasured — \(dwwhy("dispatch_waste.over_threshold.token_share"))" else $dw.over_threshold.token_share end)",
-            (dwnote("dispatch_waste.over_threshold") | if . == null then empty else "      note: \(.)" end)
+            "    over_threshold=\($dw.over_threshold.count)   token_share: \(if $dw.over_threshold.token_share == null then "unmeasured — \(dwwhy("dispatch_waste.over_threshold.token_share"))" else $dw.over_threshold.token_share end)"
           end)
        end),
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),

@@ -75,7 +75,7 @@ feature: dispatch-progress-metrics
   - covers: —
   - arch: —
   - files: scripts/runstate.sh, scripts/test-runstate.sh
-- [ ] **T13** **P1** Make `totals.dispatch_waste.over_threshold` (count and share) read null, with a `notes[]` reason naming the unresolved dispatch, whenever any counted implementer dispatch has a null `tool_calls`, instead of excluding it; cases cover a run with one unresolved dispatch nulling only `over_threshold` and a fully resolved run unchanged, and the T1 pin still holds
+- [x] **T13** **P1** Make `totals.dispatch_waste.over_threshold` (count and share) read null, with a `notes[]` reason naming the unresolved dispatch, whenever any counted implementer dispatch has a null `tool_calls`, instead of excluding it; cases cover a run with one unresolved dispatch nulling only `over_threshold` and a fully resolved run unchanged, and the T1 pin still holds
   - deps: —
   - covers: The feature's own run leaves no loose ends
   - arch: —

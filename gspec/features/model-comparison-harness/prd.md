@@ -85,7 +85,7 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
   - a model not accepted by the validation that `model_routing` already
     applies is refused in the same way, before selection
 
-- [ ] **P0**: Packets are selected from landed history and classed as prose or code
+- [x] **P0**: Packets are selected from landed history and classed as prose or code
   - a candidate is a packet in the source repository with a landed
     `[orch packet:<id>]` commit whose handoff can be supplied: its original
     handoff file still exists, or its task resolves in the plan file at the

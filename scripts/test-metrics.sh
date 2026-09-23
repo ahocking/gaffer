@@ -2577,6 +2577,30 @@ printf 'implementer_turn_budget: 0\n' > "$WRREPO/.agents/project-overrides.yaml"
 WROUT_ZERO="$(wr_collect "$WRREPO" "$WRPROJ" zero-run)"; rm -f "$WRREPO/.agents/project-overrides.yaml"
 check "DPM T6: implementer_turn_budget: 0 is not a positive integer -> the default" \
   '{"value":150,"unit":"tool_calls","source":"default"}' "$(jq -c '.totals.dispatch_waste.turn_threshold' "$WROUT_ZERO")"
+# DPM T14: the threshold comes from runstate.sh's ONE strict reader -- the whole
+# value, with a trailing comment, surrounding whitespace and one pair of quotes
+# removed, must be a positive integer; the fallback (150) stays this rollup's.
+# MUTATION RULED OUT: the old per-token scan, which read the `2` out of
+# `lots   # 2` and so reported a measured-looking threshold of 2 the repository
+# never configured; and a copy of the reader that drifts from runstate.sh's.
+wr_threshold() { # wr_threshold <override-line> <name> -> turn_threshold JSON
+  printf '%s\n' "$1" > "$WRREPO/.agents/project-overrides.yaml"
+  local o; o="$(wr_collect "$WRREPO" "$WRPROJ" "$2")"
+  rm -f "$WRREPO/.agents/project-overrides.yaml"
+  jq -c '.totals.dispatch_waste.turn_threshold' "$o"
+}
+check "DPM T14: a digit only inside a trailing comment is not read -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(wr_threshold 'implementer_turn_budget: lots   # 2' t14-cmt-run)"
+check "DPM T14: a negative value is not read -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(wr_threshold 'implementer_turn_budget: -2' t14-neg-run)"
+check "DPM T14: a quoted, comment-trailed positive integer is read" \
+  '{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}' \
+  "$(wr_threshold "implementer_turn_budget: '2'   # tool calls" t14-q-run)"
+check "DPM T14: a plain positive integer is read" \
+  '{"value":3,"unit":"tool_calls","source":"implementer_turn_budget"}' \
+  "$(wr_threshold 'implementer_turn_budget: 3' t14-plain-run)"
 check "DPM T6: one null tokens nulls only the sums and share" \
   '{"zero_progress":{"count":1,"tokens":null},"continuations":1,"over_threshold":{"count":1,"token_share":null},"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
   "$(dw "$WROUT_NOTOK")"

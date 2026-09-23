@@ -655,6 +655,17 @@
 #                                    findings index and every other key are
 #                                    outside the rewritten span and are copied
 #                                    through byte-for-byte.
+#   turn-budget [<main-root>]        dispatch-progress-metrics T14: prints
+#                                    TURN_BUDGET=<n|none>. Pure reader, no
+#                                    side effect. The ONE strict reader of
+#                                    `implementer_turn_budget` in
+#                                    .agents/project-overrides.yaml: <n> only
+#                                    when the whole value, with a trailing
+#                                    comment, surrounding whitespace and one
+#                                    pair of quotes removed, is a positive
+#                                    integer; otherwise none, with no fallback
+#                                    (each caller keeps its own). metrics.sh
+#                                    reads its turn threshold through it.
 #   bundle-cap                       packet-bundling T2: prints CAP=<n> the
 #                                    way periodic-pause prints EVERY=. Pure
 #                                    reader, no side effect. Comes from
@@ -3652,34 +3663,62 @@ _rs_latest_routing_token() {
 }
 
 # --- implementer_turn_budget: the implementer's budget, in tool calls ---------
-# implementer-continuation T1. Same token-scanning shape as
-# _rs_packet_attempts_limit: token-scan the remainder after
-# `implementer_turn_budget:`, skipping anything that is not purely digits (so
-# a trailing comment cannot defeat this) and stripping one matching pair of
-# quotes from EACH token before testing digit-ness (`'150'` is legal YAML and
-# must not read as invalid). Missing, invalid and zero all read as 120; leading
-# zeros are stripped in awk, so `00` reads as zero (120) rather than slipping
-# past the `0` case as a "positive" value.
-_rs_implementer_turn_budget() {
-  local main_root="$1" ov v
+# dispatch-progress-metrics T14: the ONE strict reader of this key, shared with
+# metrics.sh (which reaches it through the `turn-budget` subcommand rather than
+# keeping a copy). The FIRST line whose key is exactly `implementer_turn_budget:`
+# followed by whitespace or end of line decides; its value counts only when,
+# after removing a trailing comment (a `#` preceded by whitespace), CRs and
+# surrounding whitespace, and then ONE matching pair of surrounding quotes, what
+# remains is purely digits and not zero. Leading zeros are stripped, so `00`
+# reads as zero. Prints the positive integer, or NOTHING when the file or key is
+# missing or the value is not a positive integer -- the caller supplies its own
+# fallback. Unlike the old token scan this never picks a digit out of a trailing
+# comment (`lots  # 150` is invalid, not 150) and never reads the first number of
+# a multi-word value (`150 200` is invalid).
+_rs_read_turn_budget() {
+  local main_root="$1" ov
   ov="${main_root}/.agents/project-overrides.yaml"
-  v=""
-  if [ -f "$ov" ]; then
-    v="$(awk '
-      /^implementer_turn_budget:[[:space:]]*/ {
-        line = $0
-        sub(/^implementer_turn_budget:[[:space:]]*/, "", line)
-        n = split(line, a, " ")
-        for (i = 1; i <= n; i++) {
-          tok = a[i]
-          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
-          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
-          if (tok ~ /^[0-9]+$/) { sub(/^0+/, "", tok); print tok; exit }
-        }
-      }
-    ' "$ov" 2>/dev/null)"
-  fi
+  [ -f "$ov" ] || return 0
+  awk '
+    /^implementer_turn_budget:([ \t\r]|$)/ {
+      v = substr($0, length("implementer_turn_budget:") + 1)
+      gsub(/\r/, "", v)
+      c = index(v, " #"); t = index(v, "\t#")
+      if (t > 0 && (c == 0 || t < c)) c = t
+      if (c > 0) v = substr(v, 1, c - 1)
+      sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      if (length(v) >= 2 && ((v ~ /^".*"$/) || (v ~ /^'"'"'.*'"'"'$/)))
+        v = substr(v, 2, length(v) - 2)
+      if (v ~ /^[0-9]+$/) { sub(/^0+/, "", v); if (v != "") print v }
+      exit
+    }
+  ' "$ov" 2>/dev/null || true
+  return 0
+}
+
+# implementer-continuation T1's handoff budget: the shared reader above, with
+# this caller's own fallback of 120 for a missing or invalid value.
+_rs_implementer_turn_budget() {
+  local v
+  v="$(_rs_read_turn_budget "$1")"
   case "$v" in ''|0|*[!0-9]*) echo 120 ;; *) echo "$v" ;; esac
+}
+
+# Always exits 0 -- a pure reader, same contract as bundle-cap. Prints
+# TURN_BUDGET=<n> when `implementer_turn_budget` is a positive integer by the
+# strict rule above, else TURN_BUDGET=none -- NO fallback is applied here, so
+# each caller (the handoff's 120, metrics.sh's 150) keeps its own. The main
+# root defaults to this checkout's; metrics.sh passes the one it measures.
+cmd_turn_budget() {
+  local main_root="${1:-}" v
+  if [ -z "$main_root" ]; then
+    if ! main_root="$(_rs_main_checkout_root)"; then
+      printf 'TURN_BUDGET=none\n'
+      return 0
+    fi
+  fi
+  v="$(_rs_read_turn_budget "$main_root")"
+  printf 'TURN_BUDGET=%s\n' "${v:-none}"
 }
 
 # --- the budget line's own whole-line markers --------------------------------
@@ -4599,7 +4638,8 @@ _RS_ROUTE_FIELD_AWK='
 
 # --- packet_continuations: the continuation cap per attempt -----------------
 # implementer-continuation T3. Same token-scanning shape as
-# _rs_implementer_turn_budget (T1): skip anything that is not purely digits,
+# _rs_packet_attempts_limit (the turn budget's reader was made strict by
+# dispatch-progress-metrics T14; this one was not): skip anything that is not purely digits,
 # strip one matching pair of quotes from EACH token, and strip leading zeros so
 # `00` reads as zero. Missing, invalid and zero all read as 3.
 _rs_packet_continuations_limit() {
@@ -6690,6 +6730,7 @@ case "$cmd" in
   prune-questions)   cmd_prune_questions   "$@" ;;
   reorder-pending)   cmd_reorder_pending   "$@" ;;
   bundle-cap)        cmd_bundle_cap        "$@" ;;
+  turn-budget)       cmd_turn_budget       "$@" ;;
   # The header block, printed to its OWN end rather than to a hardcoded line
   # number. The number was `498` while the header actually ran to 553, so help
   # had been silently truncating its last 55 lines mid-sentence -- a range

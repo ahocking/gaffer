@@ -1207,7 +1207,15 @@ cmd_collect() {
   # Contiguous windows: start = prev end (or run_start), end = trailer commit time;
   # roll up events whose ts falls in (start, end], plus per-packet active_seconds
   # (idle-gap-aware) and per-packet tokens (from turns with a ts in the window).
+  # The dispatch_waste turn threshold is resolved once, here, so the per-packet
+  # waste:over-budget-dispatch flag (T7) and the section 7 rollup (T6) read the
+  # same value in the same unit (tool_calls).
+  local turn_threshold turn_threshold_source
+  read -r turn_threshold turn_threshold_source <<EOF
+$(resolve_turn_threshold "$main_root")
+EOF
   jq \
+     --argjson turn_threshold "$turn_threshold" \
      --slurpfile ev "$tmp/events.json" \
      --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
@@ -1376,7 +1384,22 @@ cmd_collect() {
               # silently no-ops (a null tier matches none of them). Say so
               # explicitly rather than letting an unlabelled packet read as clean.
               (if ($run_labelled and $p.tier == null) then "unlabelled:no-tier-trailer" else empty end),
-              (if ($run_labelled and $p.impl == null) then "unlabelled:no-impl-trailer" else empty end)
+              (if ($run_labelled and $p.impl == null) then "unlabelled:no-impl-trailer" else empty end),
+              # DISPATCH WASTE FLAGS (dispatch-progress-metrics T7). Counted over this
+              # packet dispatch rows with the same turn_threshold and unit (tool_calls)
+              # the totals.dispatch_waste rollup stamps. A row with a null progress or
+              # null tool_calls counts toward neither (its own nulls carry the
+              # unmeasured state), so a packet of such rows gets no flag. Suppressed
+              # wholesale on a legacy run, as the unlabelled flags are on an unlabelled
+              # one; the swept and sibling branches below strip both.
+              (if $kjn.legacy then empty
+               else ($dispatches | map(select(.progress == "none")) | length) as $zpn
+                 | if $zpn > 0 then "waste:zero-progress-dispatch(\($zpn))" else empty end
+               end),
+              (if $kjn.legacy then empty
+               else ($dispatches | map(select((.tool_calls|type) == "number" and .tool_calls > $turn_threshold)) | length) as $obn
+                 | if $obn > 0 then "waste:over-budget-dispatch(\($obn))" else empty end
+               end)
             ]) as $flags
          # SWEPT (C1, loop-measurement T4/T8 finding). `sweep-open` closes an open
          # packet by copying its boundary ts VERBATIM (that is what makes the close
@@ -1489,7 +1512,11 @@ cmd_collect() {
                    orchestrator_impl_edits: null,
                    implementer_dispatched: null,
                    review_dispatches: null,
-                   flags: ($obj.audit.flags + ["unmeasured:swept-by-later-session"])
+                   # dispatches is null on a swept row, so no dispatch-derived flag
+                   # may survive either (dispatch-progress-metrics T7).
+                   flags: (($obj.audit.flags | map(select(
+                             (startswith("waste:zero-progress-dispatch(") or startswith("waste:over-budget-dispatch(")) | not
+                           ))) + ["unmeasured:swept-by-later-session"])
                  })
                })
              elif $is_sibling then
@@ -1604,10 +1631,6 @@ cmd_collect() {
   local wall=0
   [ -n "$win_start" ] && [ -n "$win_end" ] && wall=$(( $(epoch "$win_end") - $(epoch "$win_start") ))
   [ "$wall" -ge 0 ] 2>/dev/null || wall=0
-  local turn_threshold turn_threshold_source
-  read -r turn_threshold turn_threshold_source <<EOF
-$(resolve_turn_threshold "$main_root")
-EOF
 
   jq -n \
     --argjson turn_threshold "$turn_threshold" \

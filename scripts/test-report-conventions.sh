@@ -1167,6 +1167,97 @@ out="$(_lint C "$LD/c-routing.md" "$LD/digest")"
 sed 's/^▶ \*\*Routing\*\* implementer/▶ ✅ **Routing** implementer/' "$LD/c-routing.md" > "$LD/v-routing-two.md"
 fires 'two-glyphs: a ▶ Routing line carrying a second glyph is named' two-glyphs "$(_lint C "$LD/v-routing-two.md" "$LD/digest-empty")"
 
+# session-effort-reporting T2: the kickoff's `▶ Session` line says every dispatched
+# agent inherits the session's effort, as far as its model accepts one, and an
+# optional `⚠️ Effort override` line follows `⚠️ Routing config` when
+# `runstate.sh session-effort` printed `EFFORT_ENV=set`. The template is pinned from
+# its literal lines (not the prose, which names the same words), and rendered
+# kickoffs carrying each form lint clean against an empty and a populated digest.
+SE_INHERIT='inherited by every dispatched agent as far as its model accepts one'
+se_line="$(grep '^▶ \*\*Session\*\* <model>' "$ROOT/templates/report-templates.md")"
+case "$se_line" in
+  *"effort <effort>, $SE_INHERIT"*) ok "shape C's ▶ Session line says every dispatched agent inherits the session's effort" ;;
+  *) bad "shape C's ▶ Session line says every dispatched agent inherits the session's effort" "got: [$se_line]" ;;
+esac
+se_rule_raw="$(sed -n '/^# - \*\*`▶ Session` states model and effort/,/^# - /p' "$ROOT/templates/report-templates.md")"
+under_ceiling "the ▶ Session rule span stops at its end anchor" "$se_rule_raw"
+se_rule="$(printf '%s\n' "$se_rule_raw" | sed 's/^# *//' | tr '\n' ' ' | tr -s ' ')"
+has "shape C's Session rule keeps the words 'effort unknown' for unknown, with the inheritance clause" \
+  "*effort unknown, $SE_INHERIT*" "$se_rule"
+has "shape C's Session rule says every dispatched agent inherits the session's effort" \
+  "every agent the run dispatches inherits the session's effort" "$se_rule"
+ex_session="$(sed -n '/^#   ▶ \*\*Session\*\* claude-opus-5/,/^#$/p' "$ROOT/templates/report-templates.md" | sed 's/^# *//' | tr '\n' ' ' | tr -s ' ')"
+has "shape C's worked example renders the Session line with a recorded level and the inheritance clause" \
+  "effort xhigh, $SE_INHERIT" "$ex_session"
+eo_line="$(grep '^⚠️ \*\*Effort override\*\*' "$ROOT/templates/report-templates.md")"
+case "$eo_line" in
+  *'`CLAUDE_CODE_EFFORT_LEVEL` is set'*'overrides the session effort for the driver and every dispatched agent this run'*)
+    ok "shape C carries a ⚠️ Effort override line naming CLAUDE_CODE_EFFORT_LEVEL and what it overrides" ;;
+  *) bad "shape C carries a ⚠️ Effort override line naming CLAUDE_CODE_EFFORT_LEVEL and what it overrides" "got: [$eo_line]" ;;
+esac
+# Placement: directly after `⚠️ Routing config` among shape C's literal lines.
+se_after="$(grep -v '^#' "$ROOT/templates/report-templates.md" | grep -v '^$' \
+  | grep -A1 '^⚠️ \*\*Routing config\*\*' | sed -n 2p)"
+case "$se_after" in
+  '⚠️ **Effort override**'*) ok "shape C's ⚠️ Effort override line comes right after ⚠️ Routing config" ;;
+  *) bad "shape C's ⚠️ Effort override line comes right after ⚠️ Routing config" "line after Routing config: [$se_after]" ;;
+esac
+# Its rule comment: rendered only on EFFORT_ENV=set, absent on unset, asks nothing, never stops.
+eo_rule_raw="$(sed -n '/^# - \*\*`⚠️ Effort override` is rendered only when/,/^# - /p' "$ROOT/templates/report-templates.md")"
+# The bullet sits closer to the end of the file than SPAN_CEILING, so a span that ran
+# on to EOF would still pass under_ceiling; the end anchor is checked directly instead.
+eo_rule_end="$(printf '%s\n' "$eo_rule_raw" | tail -n 1)"
+if [ -z "$eo_rule_raw" ]; then
+  bad "the ⚠️ Effort override rule span is found and stops at its end anchor" 'no rule bullet found'
+else
+  case "$eo_rule_end" in
+    '# - '*) under_ceiling "the ⚠️ Effort override rule span is found and stops at its end anchor" "$eo_rule_raw" ;;
+    *) bad "the ⚠️ Effort override rule span is found and stops at its end anchor" \
+         "the span ran on to [$eo_rule_end], not to the next rule bullet" ;;
+  esac
+fi
+eo_rule="$(printf '%s\n' "$eo_rule_raw" | sed 's/^# *//' | tr '\n' ' ' | tr -s ' ')"
+has "the Effort override rule renders it only when session-effort printed EFFORT_ENV=set" \
+  'printed `EFFORT_ENV=set`**' "$eo_rule"
+has "the Effort override rule leaves the line absent on EFFORT_ENV=unset (unset or empty)" \
+  'printed `EFFORT_ENV=unset` (the variable unset or empty) the line is absent' "$eo_rule"
+has "the Effort override rule says it asks nothing and never stops the run" \
+  'It asks nothing and never stops the run' "$eo_rule"
+
+# Rendered kickoffs: a recorded level, `unknown`, and one carrying the override line.
+_se_kickoff() {  # $1 = the ▶ Session line, $2 = an optional ⚠️ line after Routing config
+  printf '%s\n' \
+    '▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **5 packets** · 2 phases' '' \
+    '> **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals' '' \
+    '⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.' '' \
+    '⚠️ **Routing config** — 1 entry ignored: loop-driver (loop-driver)' ''
+  [ -n "$2" ] && printf '%s\n' "$2" ''
+  printf '%s\n' \
+    '🔀 **Will need you** — none' '' \
+    '> **Won'"'"'t touch:** the transactions table schema, so no migration.' '' \
+    "$1" '' \
+    '▶ **Stops at** `orch/txn-import` ready for review'
+}
+SE_EO='⚠️ **Effort override** — `CLAUDE_CODE_EFFORT_LEVEL` is set, and overrides the session effort for the driver and every dispatched agent this run'
+_se_kickoff "▶ **Session** claude-opus-5[1m] · effort xhigh, $SE_INHERIT · compaction 400000" '' > "$LD/c-effort-xhigh.md"
+_se_kickoff "▶ **Session** claude-opus-5[1m] · effort unknown, $SE_INHERIT · compaction 400000" '' > "$LD/c-effort-unknown.md"
+_se_kickoff "▶ **Session** claude-opus-5[1m] · effort xhigh, $SE_INHERIT · compaction 400000" "$SE_EO" > "$LD/c-effort-override.md"
+for se_case in xhigh unknown override; do
+  for se_dg in digest-empty digest; do
+    out="$(_lint C "$LD/c-effort-$se_case.md" "$LD/$se_dg")"
+    [ "$out" = 'REPORT_LINT=clean' ] && ok "a kickoff with the effort-$se_case Session form is clean against $se_dg" \
+      || bad "a kickoff with the effort-$se_case Session form is clean against $se_dg" "$out"
+  done
+done
+grep -qF "effort xhigh, $SE_INHERIT" "$LD/c-effort-xhigh.md" \
+  && grep -qF "effort unknown, $SE_INHERIT" "$LD/c-effort-unknown.md" \
+  && grep -qF '⚠️ **Effort override**' "$LD/c-effort-override.md" \
+  && ok 'the three effort kickoff fixtures carry the forms they are named for' \
+  || bad 'the three effort kickoff fixtures carry the forms they are named for' "$(cat "$LD/c-effort-override.md")"
+# Control: the lint judges the override line -- a second glyph on it fires.
+sed 's/^⚠️ \*\*Effort override\*\*/⚠️ ✅ **Effort override**/' "$LD/c-effort-override.md" > "$LD/v-effort-two.md"
+fires 'two-glyphs: a ⚠️ Effort override line carrying a second glyph is named' two-glyphs "$(_lint C "$LD/v-effort-two.md" "$LD/digest-empty")"
+
 # The shape-defined constructs, one assertion each, against the rule each would
 # otherwise trip -- so an exemption that silently widens or vanishes shows here.
 b_ok="$(_lint B "$LD/b-ok.md" "$LD/digest")"

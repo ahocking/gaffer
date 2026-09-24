@@ -407,11 +407,13 @@
 
 ⚠️ **Routing config** — <n> entr(y|ies) ignored: <key> (<reason>), …
 
+⚠️ **Effort override** — `CLAUDE_CODE_EFFORT_LEVEL` is set, and overrides the session effort for the driver and every dispatched agent this run
+
 🔀 **Will need you** — <the packets expected to stop for a decision, by title, and why>
 
 > **Won't touch:** <only the hard gates this backlog realistically approaches>
 
-▶ **Session** <model> · effort <effort> · compaction <threshold>
+▶ **Session** <model> · effort <effort>, inherited by every dispatched agent as far as its model accepts one · compaction <threshold>
 
 ▶ **Routing** <agent> <frontmatter> → <alias> · …
 
@@ -421,7 +423,12 @@
 #   number only when one is in effect, asking for nothing.** Model and effort are
 #   taken verbatim from the digest's `enter` line. Where effort is `unknown`, say
 #   so in words — *effort unknown* — since effort is always in effect and merely
-#   unrecorded. Where the whole `enter` line is absent, write *`▶ **Session** —
+#   unrecorded. **The effort element always carries the inheritance clause** —
+#   *inherited by every dispatched agent as far as its model accepts one* — since
+#   every agent the run dispatches inherits the session's effort, and a model that
+#   accepts no effort setting simply runs without one; with `unknown` it reads
+#   *effort unknown, inherited by every dispatched agent as far as its model accepts
+#   one*. Where the whole `enter` line is absent, write *`▶ **Session** —
 #   can't tell: no driver-mode record`*. **Whenever the reader's `SOURCE` named no
 #   value in effect** (`gaffer-default` or `unknown` — neither is a value the
 #   harness enforces), the threshold element states the absence in exactly the
@@ -448,6 +455,14 @@
 #   from its frontmatter with both models. An empty or all-default map adds no line.
 #   Like `▶ Session`, these explain a run's cost and routing afterwards; they do not
 #   open a negotiation about configuration.
+# - **`⚠️ Effort override` is rendered only when `runstate.sh session-effort`
+#   printed `EFFORT_ENV=set`** at entry — `CLAUDE_CODE_EFFORT_LEVEL` is set to a
+#   non-empty value and overrides the session effort for the driver and every
+#   dispatched agent this run. Where it printed `EFFORT_ENV=unset` (the variable
+#   unset or empty) the line is absent. It asks nothing and never stops the run:
+#   the ⚠️ is because the `▶ Session` effort is not the effort in force, not a
+#   request to unset the variable — the run proceeds exactly as it would without
+#   the line.
 # - **Group by phase or theme, not as a numbered list of every packet.** Up to six
 #   packets may be listed individually; past that, three to five themed lines with
 #   their packets inline. A 30-line numbered list is not a plan the human can check,
@@ -487,8 +502,9 @@
 #   > **Won't touch:** the transactions table schema — totals cache alongside it
 #   > rather than adding a column, so no migration.
 #
-#   ▶ **Session** claude-opus-5[1m] · effort unknown · no compaction threshold in
-#   effect for this session — the settings key `autoCompactWindow` supplies one
+#   ▶ **Session** claude-opus-5[1m] · effort xhigh, inherited by every dispatched
+#   agent as far as its model accepts one · no compaction threshold in effect for
+#   this session — the settings key `autoCompactWindow` supplies one
 #
 #   ▶ **Routing** implementer sonnet → opus
 #

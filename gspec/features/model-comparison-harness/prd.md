@@ -107,7 +107,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     the tier or fix-round mix above — is reported, and selection proceeds with
     the candidates found. It never fills a gap from the other class
 
-- [ ] **P0**: The operator approves the spend before any replay starts
+- [x] **P0**: The operator approves the spend before any replay starts
   - before the first replay, the harness states the replay count (packets ×
     models). It also states a cost estimate in tokens and API-equivalent
     dollars, derived from the selected packets' own recorded original cost
@@ -190,7 +190,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
   - a packet with an `invalid` replay is not ranked until that replay has been
     re-run, and the report counts the packets left unranked
 
-- [ ] **P0**: A report per cell proposes a `model_routing` change
+- [x] **P0**: A report per cell proposes a `model_routing` change
   - one cell is one model × packet class. Each cell reports its pass rate
     (`passed` over non-`invalid` replays, so `escalated` counts as not
     passed), its mean fix rounds among `passed` replays, its mean rank, and its

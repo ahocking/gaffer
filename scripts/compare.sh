@@ -398,9 +398,56 @@
 #                     <store>/<experiment>/replays/<replay>.routing, replaced on
 #                     each run.
 #
+#   sweeps <replay>   run the sweeps the replay's handoff requires on its final
+#                     diff (its record, as for review-view). Refused until the
+#                     replay has ended (an END= line in its step log, as for
+#                     routing-check). THE REQUIRED-SWEEPS READING: every
+#                     `scripts/test-<name>.sh` path the handoff names is a
+#                     required sweep, read from the experiment's handoff cache
+#                     (HANDOFF_CACHE=, the bytes every model's replay of the
+#                     packet was first given), never from the work clone's
+#                     handoff, which a continuation or fix round may since
+#                     have spliced a partial-work block into. A path may be
+#                     absolute (it names that checkout's sweep); a pattern such
+#                     as `scripts/test-*.sh` names none. No path named reads
+#                       REPLAY= REQUIRED=none SWEEPS=none-required
+#                     and nothing is built. Otherwise:
+#                       1. the final diff is the tree `replay`'s land commit
+#                          holds (its _CMP_LAND_EXCLUDED paths as the start
+#                          holds them, the replay's `model_routing` taken back
+#                          out), built from the work clone as it now stands, so a
+#                          replay that ended without landing is tested on the
+#                          work it left. It is built through a temp index and a
+#                          temp object directory: the work clone is only read.
+#                       2. for each sweep, in sorted order, a fresh `git clone
+#                          --shared` of the source at the start under the scratch
+#                          root (as `prepare`), the final diff applied and
+#                          committed there (its tree checked against step 1's),
+#                          then `bash <sweep>` run in it with stdin from
+#                          /dev/null, no ORCH_* or GIT_* variable, and
+#                          CLAUDE_PROJECT_DIR set to that clone, killed with
+#                          every process it started when it outlives
+#                          ${ORCH_COMPARE_SWEEP_TIMEOUT} seconds (the default is
+#                          _CMP_SWEEP_TIMEOUT_DEFAULT below). The clone is then
+#                          removed; its output is kept as a log.
+#                     Output (each line also written to
+#                     <store>/<experiment>/replays/<replay>.sweeps, replaced on
+#                     each run; logs under <replay>.sweep-logs/<name>.log):
+#                       REPLAY=<replay>
+#                       REQUIRED=<path,...|none>
+#                       TREE=<the final diff's tree>
+#                       SWEEP path=<p> result=<pass|fail> exit=<code|timeout|not-run>
+#                             [seconds=<n> log=<path>] [reason=absent-from-final-diff]
+#                       FAILED=<path,...>            only when one failed
+#                       SWEEPS=<pass|fail|none-required>
+#                     A required sweep the final diff does not hold fails,
+#                     `exit=not-run`: it was not run, and the requirement is
+#                     not met.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
-# check that printed its ROUTING_CHECK= line (pass, fail or not-run); 1 refused, no experiment id could be computed, the source
+# check that printed its ROUTING_CHECK= line (pass, fail or not-run) / a sweeps
+# run that printed its SWEEPS= line (pass, fail or none-required); 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -414,9 +461,13 @@
 # or (routing-check) no single replay record, a work clone that is not a git
 # repository, a replay not run or not ended, no stored selection or one pinning
 # no id for the replay's models in `model_ids`, or an output path that cannot be
-# written or lies inside a review view;
+# written or lies inside a review view, or (sweeps) no single replay record, a
+# work clone or source that is not a git repository, a replay not run or not
+# ended, a missing handoff cache, a scratch root inside the source, or a tree,
+# diff, clone, apply or commit step that failed;
 # 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
-# this script, or (replay) no session command or a malformed timeout.
+# this script, or (replay) no session command, or (replay, sweeps) a malformed
+# timeout.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -453,7 +504,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -2344,12 +2395,16 @@ unset_routing() {
     END { if (bad) exit 3 }' "$1" > "$3"
 }
 
-# land_commit: the packet's diff, and only it, as one commit on the start;
-# the replay's branch moved to it. Sets LAND_COMMIT (a sha, or `none` for an
-# empty change). Returns 1 on a git failure, 3 when the packet's own edit to
-# the routing configuration cannot be separated from the replay's.
-land_commit() {
-  local c="$_RP_CLONE" s="$_RP_START" idx="$_CMP_TMP/land.idx" ov=".agents/project-overrides.yaml" p blob tree commit
+# land_tree: the packet's diff, and only it, as a tree on the start: the work
+# clone's tree as it stands (committed, staged, unstaged and untracked-but-not-
+# ignored alike) with _CMP_LAND_EXCLUDED as the start holds it and the replay's
+# routing change taken back out. Built through a temp index; the objects it
+# needs are written wherever git's object environment points (the clone's own
+# store for `land_commit`, a temp store for `sweeps`). Sets LAND_TREE. Returns 1
+# on a git failure, 3 when the packet's own edit to the routing configuration
+# cannot be separated from the replay's.
+land_tree() {
+  local c="$_RP_CLONE" s="$_RP_START" idx="$_CMP_TMP/land.idx" ov=".agents/project-overrides.yaml" p blob
   _gl() { GIT_INDEX_FILE="$idx" git -C "$c" "$@"; }
   _gl read-tree "$s" 2>/dev/null || return 1
   _gl add -A -- . 2>/dev/null || return 1
@@ -2378,7 +2433,17 @@ land_commit() {
     blob="$(git -C "$c" hash-object -w "$_CMP_TMP/ov.land" 2>/dev/null)" || return 1
     _gl update-index --add --cacheinfo "100644,$blob,$ov" 2>/dev/null || return 1
   fi
-  tree="$(_gl write-tree 2>/dev/null)" || return 1
+  LAND_TREE="$(_gl write-tree 2>/dev/null)" && [ -n "$LAND_TREE" ] || return 1
+}
+
+# land_commit: land_tree's tree as one commit on the start; the replay's branch
+# moved to it. Sets LAND_COMMIT (a sha, or `none` for an empty change). Returns
+# land_tree's 1 or 3, or 1 on a failed commit.
+land_commit() {
+  local c="$_RP_CLONE" s="$_RP_START" tree commit rc
+  land_tree; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  tree="$LAND_TREE"
   if [ "$tree" = "$(git -C "$c" rev-parse "$s^{tree}" 2>/dev/null)" ]; then
     LAND_COMMIT="none"
     return 0
@@ -2792,6 +2857,241 @@ cmd_routing_check() {
   fi
 }
 
+# --- sweeps --------------------------------------------------------------------------
+
+# How long one required sweep may run, in seconds, when ORCH_COMPARE_SWEEP_TIMEOUT
+# is unset.
+_CMP_SWEEP_TIMEOUT_DEFAULT=1800
+
+# sw_required <handoff>: every `scripts/test-<name>.sh` path the handoff names,
+# sorted and de-duped, one per line. A path is read from each maximal run of
+# path characters ([A-Za-z0-9._/-]) with its trailing full stops dropped, so a
+# sentence's full stop is not part of it; the run must END in the sweep path,
+# which must begin the run or follow a `/` (an absolute path to some checkout's
+# sweep names that sweep). `scripts/test-*.sh`, a pattern, names none.
+sw_required() {
+  awk '
+    { s = $0
+      while (match(s, /[A-Za-z0-9._\/-]+/)) {
+        t = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+        sub(/\.+$/, "", t)
+        if (match(t, /(^|\/)scripts\/test-[A-Za-z0-9._-]+\.sh$/)) {
+          t = substr(t, RSTART); sub(/^\//, "", t); print t
+        }
+      }
+    }' "$1" | LC_ALL=C sort -u
+}
+
+# sw_tree_pids <pid>: <pid> and every process descended from it, one per line.
+sw_tree_pids() {
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      q[1] = root; n = 1
+      for (i = 1; i <= n; i++) {
+        print q[i]
+        m = split(kids[q[i]], k, " ")
+        for (j = 1; j <= m; j++) if (k[j] != "") q[++n] = k[j]
+      }
+    }'
+}
+
+# run_sweep <clone> <path> <log>: `bash <path>` in <clone>, stdin from /dev/null,
+# stdout and stderr to <log>, killed together with every process it started
+# when it outlives the sweep time limit. Its environment is the caller's with
+# every ORCH_* and GIT_* variable removed and CLAUDE_PROJECT_DIR set to <clone>,
+# so no harness setting or project root reaches it. Sets SW_EXIT to its exit
+# code, or `timeout`.
+run_sweep() {
+  local dir="$1" path="$2" log="$3" pid t0 rc v pids
+  local -a unset_args=()
+  for v in $(compgen -e); do
+    case "$v" in ORCH_*|GIT_*) unset_args+=(-u "$v") ;; esac
+  done
+  ( cd "$dir" && exec env ${unset_args[@]+"${unset_args[@]}"} CLAUDE_PROJECT_DIR="$dir" bash "$path" ) </dev/null >"$log" 2>&1 &
+  pid=$!
+  t0=$SECONDS
+  SW_EXIT=""
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $((SECONDS - t0)) -ge "$_CMP_SW_TIMEOUT" ]; then
+      pids="$(sw_tree_pids "$pid")"
+      kill -TERM $pids 2>/dev/null
+      sleep 1
+      kill -KILL $pids 2>/dev/null
+      SW_EXIT="timeout"
+      break
+    fi
+    sleep 0.2
+  done
+  wait "$pid" 2>/dev/null; rc=$?
+  [ -n "$SW_EXIT" ] || SW_EXIT="$rc"
+}
+
+_SW_OUT=""
+sw_emit() {
+  printf '%s\n' "$1"
+  printf '%s\n' "$1" >> "$_SW_OUT"
+}
+
+_CMP_SW_CLONE=""
+_cmp_sweeps_cleanup() {
+  if [ -n "$_CMP_TMP" ]; then rm -rf "$_CMP_TMP"; fi
+  if [ -n "$_CMP_SW_CLONE" ]; then rm -rf "$_CMP_SW_CLONE"; fi
+  return 0
+}
+
+cmd_sweeps() {
+  [ $# -eq 1 ] || usage
+  local rid="$1"
+  case "$rid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "sweeps: not a replay id (12 hex, as \`prepare\` prints it): $rid" ;;
+  esac
+  _CMP_SW_TIMEOUT="${ORCH_COMPARE_SWEEP_TIMEOUT:-$_CMP_SWEEP_TIMEOUT_DEFAULT}"
+  case "$_CMP_SW_TIMEOUT" in ''|0|*[!0-9]*) die "sweeps: ORCH_COMPARE_SWEEP_TIMEOUT is not a positive number of seconds: $_CMP_SW_TIMEOUT" 2 ;; esac
+
+  # --- the replay's record, found in whichever experiment holds it --------------
+  local store env="" f n=0
+  store="$(store_root)"
+  set +f
+  for f in "$store"/*/replays/"$rid".env; do
+    if [ -f "$f" ]; then env="$f"; n=$((n + 1)); fi
+  done
+  set -f
+  [ "$n" -gt 0 ] || die "sweeps: no replay record for $rid under $store (run \`compare.sh prepare\` first)"
+  [ "$n" -eq 1 ] || die "sweeps: replay $rid is recorded in $n experiments under $store; refusing to guess"
+  local src cache steps
+  _RP_PKT="$(sed -n 's/^PACKET=//p' "$env" | head -1)"
+  _RP_ROLE="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+  _RP_MODEL="$(sed -n 's/^MODEL=//p' "$env" | head -1)"
+  _RP_RMODEL="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+  _RP_START="$(sed -n 's/^START=//p' "$env" | head -1)"
+  _RP_CLONE="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+  src="$(sed -n 's/^SOURCE_REPO=//p' "$env" | head -1)"
+  cache="$(sed -n 's/^HANDOFF_CACHE=//p' "$env" | head -1)"
+  case "$_RP_PKT" in ''|*[!A-Za-z0-9._-]*) die "sweeps: the replay record's packet is malformed: [$_RP_PKT]" ;; esac
+  case "$_RP_ROLE" in ''|*[!a-z-]*) die "sweeps: the replay record's role is malformed: [$_RP_ROLE]" ;; esac
+  case "$_RP_MODEL" in ''|*[!A-Za-z0-9._-]*) die "sweeps: the replay record's model is malformed: [$_RP_MODEL]" ;; esac
+  case "$_RP_RMODEL" in ''|*[!A-Za-z0-9._-]*) die "sweeps: the replay record's reviewer model is malformed: [$_RP_RMODEL]" ;; esac
+  case "$_RP_START" in ''|*[!0-9a-f]*) die "sweeps: the replay record's start is not a commit id: [$_RP_START]" ;; esac
+  [ -n "$_RP_CLONE" ] && git -C "$_RP_CLONE" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "sweeps: the replay's work clone is not a git repository: $_RP_CLONE"
+  git -C "$_RP_CLONE" cat-file -e "${_RP_START}^{commit}" 2>/dev/null \
+    || die "sweeps: the replay's start commit is not in its work clone: $_RP_START"
+
+  # --- only on the final diff: the replay's step log carries its END -----------------
+  steps="$(dirname "$env")/$rid.steps"
+  [ -f "$steps" ] || die "sweeps: replay $rid has not been run (no step log): $steps"
+  grep -q '^END=' "$steps" \
+    || die "sweeps: replay $rid has not ended (no END= line in its step log), so its diff is not final: $steps"
+
+  # --- the required sweeps: from the packet's cached handoff, as first dispatched -----
+  # Every model's replay of the packet reads the same bytes; the work clone's own
+  # handoff may since carry a partial-work block naming what one model touched.
+  [ -n "$cache" ] && [ -f "$cache" ] || die "sweeps: the replay's cached handoff is missing: $cache"
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "sweeps: cannot create a temp root"
+  trap _cmp_sweeps_cleanup EXIT
+  local tmp="$_CMP_TMP" required
+  sw_required "$cache" > "$tmp/required" || die "sweeps: cannot read the cached handoff: $cache"
+  required="$(paste -sd, - < "$tmp/required")"
+
+  _SW_OUT="$(dirname "$env")/$rid.sweeps"
+  : > "$_SW_OUT" 2>/dev/null || die "sweeps: cannot write $_SW_OUT"
+  sw_emit "REPLAY=$rid"
+  sw_emit "REQUIRED=${required:-none}"
+  if [ -z "$required" ]; then
+    sw_emit "SWEEPS=none-required"
+    return 0
+  fi
+
+  # --- the final diff, as a tree, built without touching the work clone ---------------
+  # land_tree's tree (what a land commit of the clone as it now stands holds),
+  # built through a temp index and a temp object directory with the clone's own
+  # objects as an alternate: the clone's index, object store and refs are only read.
+  local cobj thead tstart rc
+  cobj="$(cd "$_RP_CLONE" && cd "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null && pwd -P)" \
+    || die "sweeps: cannot find the work clone's object store: $_RP_CLONE"
+  mkdir -p "$tmp/objects" || die "sweeps: cannot create a temp object store"
+  ( export GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj"
+    land_tree || exit $?
+    printf '%s\n' "$LAND_TREE" > "$tmp/tree" ); rc=$?
+  case "$rc" in
+    0) ;;
+    3) die "sweeps: the work clone's .agents/project-overrides.yaml cannot be read (a second model_routing key), so the replay's routing cannot be taken out of the final diff" ;;
+    *) die "sweeps: cannot build the final diff's tree from the work clone" ;;
+  esac
+  thead="$(cat "$tmp/tree")"
+  tstart="$(git -C "$_RP_CLONE" rev-parse "${_RP_START}^{tree}" 2>/dev/null)" || die "sweeps: cannot read the start's tree"
+  GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj" \
+    git -C "$_RP_CLONE" diff --binary --no-renames "$tstart" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
+    || die "sweeps: cannot diff the final change: $(head -1 "$tmp/git.err")"
+  sw_emit "TREE=$thead"
+
+  # --- the scratch root: never inside the source's working tree ----------------------
+  local scratch srctop
+  [ -n "$src" ] && git -C "$src" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "sweeps: the source repository is not a git repository: $src"
+  scratch="${ORCH_COMPARE_SCRATCH:-${TMPDIR:-/tmp}}"
+  mkdir -p "$scratch" 2>/dev/null || die "sweeps: cannot create the scratch root: $scratch"
+  scratch="$(cd "$scratch" && pwd -P)" || die "sweeps: cannot enter the scratch root: $scratch"
+  srctop="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+  [ -n "$srctop" ] && srctop="$(cd "$srctop" && pwd -P)"
+  if [ -n "$srctop" ]; then
+    case "$scratch/" in
+      "$srctop/"*) die "sweeps: the scratch root lies inside the source repository's working tree: $scratch" ;;
+    esac
+  fi
+
+  # --- each required sweep, in its own fresh clone of the final diff -----------------
+  local logs sw dname bname sc head got t0 failed=""
+  logs="$(dirname "$env")/$rid.sweep-logs"
+  rm -rf "$logs" && mkdir -p "$logs" || die "sweeps: cannot create $logs"
+  : > "$tmp/noids"
+  while IFS= read -r sw; do
+    [ -n "$sw" ] || continue
+    dname="$(opaque_name "" "$tmp/noids")" && bname="$(opaque_name "sweep-" "$tmp/noids")" \
+      || die "sweeps: cannot draw a clone name"
+    sc="$scratch/$dname"
+    [ ! -e "$sc" ] || die "sweeps: the drawn clone path already exists: $sc"
+    _CMP_SW_CLONE="$sc"
+    opaque_clone sweeps "$src" "$_RP_START" "$sc" "$bname" "$tmp"
+    if [ -s "$tmp/change.patch" ]; then
+      git -C "$sc" apply --index --binary "$tmp/change.patch" 2>"$tmp/git.err" \
+        || die "sweeps: the final diff does not apply to a fresh clone: $(head -1 "$tmp/git.err")"
+    fi
+    got="$(git -C "$sc" write-tree 2>/dev/null)"
+    [ "$got" = "$thead" ] || die "sweeps: the fresh clone's tree [$got] is not the final diff's [$thead]"
+    head="$(GIT_AUTHOR_NAME="$_CMP_VIEW_NAME" GIT_AUTHOR_EMAIL="$_CMP_VIEW_EMAIL" GIT_AUTHOR_DATE="$_CMP_VIEW_DATE" \
+            GIT_COMMITTER_NAME="$_CMP_VIEW_NAME" GIT_COMMITTER_EMAIL="$_CMP_VIEW_EMAIL" GIT_COMMITTER_DATE="$_CMP_VIEW_DATE" \
+            git -C "$sc" -c commit.gpgsign=false commit-tree "$thead" -p "$_RP_START" -m "Final diff under test" 2>/dev/null)" \
+      && [ -n "$head" ] || die "sweeps: cannot commit the final diff in the fresh clone"
+    git -C "$sc" update-ref "refs/heads/$bname" "$head" >/dev/null 2>&1 \
+      || die "sweeps: cannot move the fresh clone's branch to the final diff"
+    if [ ! -f "$sc/$sw" ]; then
+      sw_emit "SWEEP path=$sw result=fail exit=not-run reason=absent-from-final-diff"
+      failed="$failed${failed:+,}$sw"
+    else
+      t0=$SECONDS
+      run_sweep "$sc" "$sw" "$logs/$(basename "$sw" .sh).log"
+      if [ "$SW_EXIT" = 0 ]; then
+        sw_emit "SWEEP path=$sw result=pass exit=0 seconds=$((SECONDS - t0)) log=$logs/$(basename "$sw" .sh).log"
+      else
+        sw_emit "SWEEP path=$sw result=fail exit=$SW_EXIT seconds=$((SECONDS - t0)) log=$logs/$(basename "$sw" .sh).log"
+        failed="$failed${failed:+,}$sw"
+      fi
+    fi
+    rm -rf "$sc"
+    _CMP_SW_CLONE=""
+  done < "$tmp/required"
+
+  if [ -n "$failed" ]; then
+    sw_emit "FAILED=$failed"
+    sw_emit "SWEEPS=fail"
+  else
+    sw_emit "SWEEPS=pass"
+  fi
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -2803,6 +3103,7 @@ case "$SUB" in
   review-view) cmd_review_view "$@" ;;
   replay)     cmd_replay "$@" ;;
   routing-check) cmd_routing_check "$@" ;;
+  sweeps)     cmd_sweeps "$@" ;;
   *) usage ;;
 esac
 exit 0

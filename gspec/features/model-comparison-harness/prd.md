@@ -75,7 +75,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
 - [x] **P0**: An experiment is defined entirely by settings
   - the settings are: the varied role, the model set, the reviewer model, the
     source repository, the per-class packet count, and the code and prose file
-    sets. The first experiment's values are `implementer`; Fable 5.1, Opus 5
+    sets. The first experiment's values are `implementer`; Fable 5.1, Opus 5.5
     and Sonnet 5; this repository; 8 prose plus 8 code packets; and the default
     file sets — code is `scripts/` and `hooks/`, prose is `agents/`,
     `skills/`, `templates/`, `docs/` and `CLAUDE.md`
@@ -212,6 +212,15 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     repository, adds records beside the existing ones. Cells are never pooled
     across different varied roles, reviewer models or source repositories, and
     ranks from different ranking sets are never averaged together
+
+- [ ] **P0**: Every replay session runs unattended, and a denied action is a harness fault
+  - every replay, review-view and ranking session starts in the bypass
+    permission mode, confined to that session's disposable clone, so no step
+    waits on a permission prompt nobody can answer. The guardrail's hard-deny
+    rules still apply inside it
+  - a replay in which any session had a tool call denied, by the guardrail or
+    by the permission system, is `invalid`: a harness fault that is rerun and
+    left out of the pass rate, never counted against the varied model
 
 ## Dependencies
 

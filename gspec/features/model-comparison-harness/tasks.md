@@ -69,7 +69,7 @@ feature: model-comparison-harness
   - covers: Every replay is recorded with its outcome, sweeps and cost
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh
-- [ ] **T20** [P] **P0** Add a `claude-opus-5-5` entry to `scripts/spend-prices.json`, so the estimate and the record can price the Opus 5.5 arm (today every Opus 5.5 token counts as unpriced). Every rate — input, output, cache read and both cache-write lifetimes — is copied from the pricing page the file's `source` names, never derived from a multiplier, and the table's date and `source` verification stamp move to the day it was read. `scripts/test-spend.sh` gains a case pricing an Opus 5.5 row at those rates, no longer reported unpriced. This edits the price data, not `spend.sh`.
+- [x] **T20** [P] **P0** Add a `claude-opus-5-5` entry to `scripts/spend-prices.json`, so the estimate and the record can price the Opus 5.5 arm (today every Opus 5.5 token counts as unpriced). Every rate — input, output, cache read and both cache-write lifetimes — is copied from the pricing page the file's `source` names, never derived from a multiplier, and the table's date and `source` verification stamp move to the day it was read. `scripts/test-spend.sh` gains a case pricing an Opus 5.5 row at those rates, no longer reported unpriced. This edits the price data, not `spend.sh`.
   - deps: —
   - covers: Every replay is recorded with its outcome, sweeps and cost
   - arch: —

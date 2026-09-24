@@ -501,6 +501,34 @@
 #                                    therefore misread a malformed settings
 #                                    file as "not set" rather than erroring —
 #                                    acceptable for a display-only reader.
+#   session-effort [session-id]      session-effort-reporting T1: prints
+#                                    EFFORT=<level|unknown>, REASON=<transcript|
+#                                    no-effort-row|no-transcript|ambiguous|
+#                                    unreadable|no-parser|no-session> and
+#                                    EFFORT_ENV=<set|unset>. ALWAYS exits 0 —
+#                                    a query, so driver-mode entry proceeds
+#                                    whatever it reads. Pure reader, never
+#                                    writes. The session id is the argument,
+#                                    else $CLAUDE_CODE_SESSION_ID, held to
+#                                    driver-mode's session-id rule WITHOUT
+#                                    dying (a missing or invalid id reads
+#                                    REASON=no-session). EFFORT is the
+#                                    top-level `.effort` of the LAST row of
+#                                    the session's main-thread transcript —
+#                                    exactly one `<projects dir>/*/<id>.jsonl`,
+#                                    projects dir from
+#                                    $ORCH_METRICS_PROJECTS_DIR, default
+#                                    ~/.claude/projects; never a `subagents/`
+#                                    file — that carries a non-null one. Read,
+#                                    never inferred from the model: it is
+#                                    `unknown` when no row carries one, when
+#                                    zero or several transcripts match, when
+#                                    the file cannot be read or parsed, when
+#                                    jq does not execute, or when the level
+#                                    fails [A-Za-z0-9_-]+ (hostile input; a
+#                                    rejected level reads REASON=unreadable).
+#                                    EFFORT_ENV is `set` only when
+#                                    $CLAUDE_CODE_EFFORT_LEVEL is non-empty.
 #   periodic-pause [session-id]      thin-loop-driver T10 (ADR 0028 result 2):
 #                                    prints ENDED=<n>, EVERY=<n|off>,
 #                                    DUE=yes|no. Pure reader, no side effect —
@@ -3035,6 +3063,92 @@ cmd_compact_threshold() {
   # rather than harness-wide, so this reader states no number rather than
   # inventing one.
   printf 'THRESHOLD=unknown\nSOURCE=unknown\nAPPLIED=no\n'
+  return 0
+}
+
+# --- session-effort (session-effort-reporting T1) ---------------------------
+# Always exits 0 -- a query, same contract as compact-threshold: driver-mode
+# entry passes the printed EFFORT to `--effort` and proceeds whatever it is.
+# Never writes anything. See the header comment for the full contract.
+#
+# The transcript is hostile input: the level must match [A-Za-z0-9_-]+ or it
+# reads as unknown (REASON=unreadable), so nothing the file carries can reach
+# the driver-mode mark or its JSON log unvetted.
+_rs_session_effort_out() {
+  local env_state=unset
+  [ -n "${CLAUDE_CODE_EFFORT_LEVEL:-}" ] && env_state=set
+  printf 'EFFORT=%s\nREASON=%s\nEFFORT_ENV=%s\n' "$1" "$2" "$env_state"
+}
+
+cmd_session_effort() {
+  local sess="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
+  # _rs_check_session_id's rule, applied without its `die`: a query must not
+  # exit non-zero on a session it cannot name.
+  case "$sess" in
+    ''|*[!A-Za-z0-9._-]*|*..*) _rs_session_effort_out unknown no-session; return 0 ;;
+  esac
+
+  # Main-thread transcript only: `*/<id>.jsonl` never reaches the
+  # `*/<id>/subagents/` files. The id's charset already excludes every glob
+  # metacharacter. An unmatched glob stays literal, hence the -e count.
+  local projects_dir="${ORCH_METRICS_PROJECTS_DIR:-${HOME:-}/.claude/projects}"
+  local f match="" n=0
+  for f in "$projects_dir"/*/"$sess".jsonl; do
+    [ -e "$f" ] || continue
+    n=$((n + 1)); match="$f"
+  done
+  if [ "$n" -eq 0 ]; then _rs_session_effort_out unknown no-transcript; return 0; fi
+  if [ "$n" -gt 1 ]; then _rs_session_effort_out unknown ambiguous;     return 0; fi
+  if [ ! -f "$match" ] || [ ! -r "$match" ]; then
+    _rs_session_effort_out unknown unreadable; return 0
+  fi
+
+  # Probe the parser by EXECUTION, not `command -v`: a stub or broken jq on
+  # PATH must read as absent, not as a transcript that failed to parse.
+  if ! jq -n 'empty' >/dev/null 2>&1; then
+    _rs_session_effort_out unknown no-parser; return 0
+  fi
+
+  # One streaming pass (a transcript can run to tens of MB): keep the last
+  # non-null top-level .effort. A parse failure anywhere in the file makes jq
+  # exit non-zero, which reads as unreadable rather than as a partial answer.
+  #
+  # The charset is judged INSIDE jq, on the decoded value, before any byte of
+  # it reaches bash: `$(...)` strips trailing LFs and bash drops NUL bytes, so
+  # a check run on the capture would read "high\n" or "hi\u0000gh" as "high".
+  # jq emits "V<level>" only for a non-empty string whose every codepoint is in
+  # [A-Za-z0-9_-] (by `explode`, not `test`: jq's regex `$` matches before a
+  # trailing newline), "N" for no row, and "B" for anything else -- a
+  # non-string, an empty string, or a level that fails the charset.
+  # `-j` (raw, no trailing newline) rather than `-r`: jq writes no newline, so
+  # no platform CR either (MSYS jq writes CRLF after `-r` output), and nothing
+  # is stripped afterwards.
+  local out
+  if ! out="$(jq -n -j '
+        reduce inputs as $r (null;
+          if ($r | type) == "object" then
+            (if $r.effort != null then $r.effort else . end)
+          else . end)
+        | if . == null then "N"
+          elif type == "string" and length > 0
+               and (explode | all((. >= 48 and . <= 57) or (. >= 65 and . <= 90)
+                                  or (. >= 97 and . <= 122) or . == 45 or . == 95))
+          then "V" + .
+          else "B" end
+      ' < "$match" 2>/dev/null)"; then
+    _rs_session_effort_out unknown unreadable; return 0
+  fi
+
+  case "$out" in
+    N) _rs_session_effort_out unknown no-effort-row; return 0 ;;
+    V*) out="${out#V}" ;;
+    *) _rs_session_effort_out unknown unreadable; return 0 ;;   # B, or anything unexpected
+  esac
+  # Second layer: the same charset, re-checked on the capture.
+  case "$out" in
+    ''|*[!A-Za-z0-9_-]*) _rs_session_effort_out unknown unreadable; return 0 ;;
+  esac
+  _rs_session_effort_out "$out" transcript
   return 0
 }
 
@@ -6723,6 +6837,7 @@ case "$cmd" in
   record-decision) cmd_record_decision "$@" ;;
   record-review)   cmd_record_review   "$@" ;;
   compact-threshold) cmd_compact_threshold "$@" ;;
+  session-effort)    cmd_session_effort    "$@" ;;
   periodic-pause)    cmd_periodic_pause    "$@" ;;
   review-due)        cmd_review_due        "$@" ;;
   run-digest)        cmd_run_digest        "$@" ;;

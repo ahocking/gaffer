@@ -105,7 +105,7 @@ and measured per dispatch.
   - `scripts/test-metrics.sh` covers a single level, a level changed
     mid-dispatch, an unreadable effort (`null`), and a legacy run (`null`)
 
-- [ ] **P1**: The `scripts/spend.sh` effort note is amended
+- [x] **P1**: The `scripts/spend.sh` effort note is amended
   - the header note that dispatched-agent rows carry no `.effort` is amended
     with a dated observation that they now carry it and older rows do not
   - the earlier dated probe stays in the note

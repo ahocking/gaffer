@@ -114,7 +114,7 @@ feature: model-comparison-harness
   - covers: The operator approves the spend before any replay starts · A report per cell proposes a `model_routing` change
   - arch: —
   - files: skills/compare-models/SKILL.md
-- [ ] **T18** **P1** Record the harness in `CLAUDE.md` (a new bullet, plus `scripts/test-compare.sh` in the test list) and in a new `docs/adr/0030-model-comparison-harness.md`. Cover the clone-not-worktree reason, the per-step headless sessions and why an in-session dispatch reads as an override, the review view's redacted channels, the estimate rule, the store and why it is outside `.agents/loop/`, the approval token, the deterministic proposal rule, the fixed effort and why `CLAUDE_CODE_EFFORT_LEVEL` is stripped from every session, the required-sweeps reading (every `scripts/test-*.sh` path the handoff names), and that the harness copies `run-loop` §3's sequence and must be amended alongside it. Repo-convention upkeep, not a PRD criterion.
+- [x] **T18** **P1** Record the harness in `CLAUDE.md` (a new bullet, plus `scripts/test-compare.sh` in the test list) and in a new `docs/adr/0030-model-comparison-harness.md`. Cover the clone-not-worktree reason, the per-step headless sessions and why an in-session dispatch reads as an override, the review view's redacted channels, the estimate rule, the store and why it is outside `.agents/loop/`, the approval token, the deterministic proposal rule, the fixed effort and why `CLAUDE_CODE_EFFORT_LEVEL` is stripped from every session, the required-sweeps reading (every `scripts/test-*.sh` path the handoff names), and that the harness copies `run-loop` §3's sequence and must be amended alongside it. Repo-convention upkeep, not a PRD criterion.
   - deps: T16, T17
   - covers: —
   - arch: —

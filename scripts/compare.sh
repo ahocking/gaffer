@@ -671,11 +671,73 @@
 #                     `review-view` carries the reviewed change. On any failure
 #                     the half-built clone is removed.
 #
+#   rank <experiment> <packet>
+#                     rank the packet's latest prepared ranking (the last
+#                     <store>/labels.jsonl line naming the experiment and
+#                     packet, `rank-prepare` first) with one reviewer session
+#                     in its ranking clone, and record the ranking. Refused
+#                     (exit 1, nothing appended, no label resolved) when that
+#                     ranking is already recorded in rankings.jsonl (a new
+#                     ranking is `rank-prepare` again), its clone is gone or
+#                     no longer resolves the reviewer to the selection's
+#                     reviewer model, a label has no diff file there, or the
+#                     stored selection pins no id for the reviewer model or
+#                     names no effort in EFFORT_LEVELS. Before the session
+#                     only the map's labels are read, never its models.
+#                     THE SESSION: one, started as `replay` starts every
+#                     session (`--plugin-dir <harness> --effort <the
+#                     selection's effort>`, CLAUDE_CODE_EFFORT_LEVEL removed,
+#                     stdin /dev/null, killed at ${ORCH_COMPARE_STEP_TIMEOUT}),
+#                     in the ranking clone, dispatching the `reviewer` agent
+#                     once on what `routing.sh --root <clone> resolve reviewer`
+#                     prints. Its brief names the diff files by label and
+#                     nothing else of the packet or the models. THE RESULT is
+#                     the lines after the last line of the session's stdout
+#                     that reads `RANKING`, blank lines skipped, each
+#                       RANK <position> <label> <one-line reason>
+#                     and it must be a strict best-to-worst order: every label
+#                     exactly once, positions 1..N in that order, no ties, a
+#                     non-empty reason per label. Otherwise it is REFUSED,
+#                     one line per broken rule on stderr,
+#                       REFUSED rule=<rule> [position=<n>] [label=<L>] [line=<n>]
+#                     where <rule> is no-ranking, malformed-line,
+#                     unknown-label, missing-reason, duplicate-label, tie,
+#                     missing-label or not-strict-order (the order is judged
+#                     only when no other rule is broken), or session-crashed
+#                     / session-timed-out when the session ends without one.
+#                     THE MODEL AND EFFORT CHECK: then routing-check's reviewer
+#                     checks, the same three (`reviewer-resolved-id`,
+#                     `reviewer-models` against the pinned id, and `effort`),
+#                     run on the ranking clone through `metrics.sh collect
+#                     --all-sessions` (its packet in a temp directory removed on
+#                     exit, never in the clone), as `CHECK scope=rank ...`
+#                     lines; any line
+#                     not `pass` refuses the ranking (`REFUSED rule=model-or-
+#                     effort`, the CHECK lines on stderr). Every session that
+#                     ever ran in the clone is checked, so a clone a ranking
+#                     on the wrong model ran in cannot be ranked again: run
+#                     `rank-prepare` for a new one.
+#                     Only then is one line appended to
+#                     <store>/rankings.jsonl:
+#                       {"experiment", "packet", "ranking", "dir", "start",
+#                        "reviewer_model", "effort", "routing_check": "pass",
+#                        "order": [{"position", "label", "reason"}, ...],
+#                        "ranked_at"}
+#                     naming no compared model; and only after that append are
+#                     the map's models read and each label resolved.
+#                     Output (stdout empty on a refusal):
+#                       EXPERIMENT= PACKET= RANKING= DIR= EFFORT= REVIEWER_MODEL=
+#                       CHECK scope=rank check=<name> result=pass value=<...>
+#                       RANK position=<n> label=<L> reason=<reason>   best first
+#                       RECORDED=<rankings.jsonl path>
+#                       RESOLVED position=<n> label=<L> model=<m> replay=<r>
+#                       RANKED=<ranking>
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
 # check that printed its ROUTING_CHECK= line (pass, fail or not-run) / a sweeps
 # run that printed its SWEEPS= line (pass, fail or none-required) / a record
-# appended / a ranking clone built; 1 refused, no experiment id could be computed, the source
+# appended / a ranking clone built / a ranking recorded; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -705,10 +767,14 @@
 # stored selection, a packet outside it, a model with no rankable latest record,
 # an unreadable records file, a replay record or work clone that cannot be read
 # or disagrees with the selection, a scratch root inside the source or naming a
-# model, or a diff, clone, commit, routing or label-map step that failed;
+# model, or a diff, clone, commit, routing or label-map step that failed, or
+# (rank) no stored selection or prepared ranking, a ranking already recorded, a
+# ranking clone gone or re-routed, a selection pinning no reviewer id or naming
+# no effort, a session that crashed or timed out, a ranking that breaks a rule,
+# a model or effort check not passing, or a record that cannot be appended;
 # 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
-# this script, or (replay) no session command, or (replay, sweeps) a malformed
-# timeout.
+# this script, or (replay, rank) no session command, or (replay, sweeps, rank) a
+# malformed timeout.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -751,7 +817,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>] | rank-prepare <experiment> <packet>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>] | rank-prepare <experiment> <packet> | rank <experiment> <packet>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -4240,6 +4306,223 @@ cmd_rank_prepare() {
   printf 'LABELS=%s\nLABELS_FILE=%s\n' "$labels" "$store/labels.jsonl"
 }
 
+# --- rank ------------------------------------------------------------------------------
+
+# rank_prompt <dir> <labels-csv>: the ranking session's prompt. It names the
+# diff files by label and no model: the reviewer's model is whatever routing.sh
+# resolves in <dir>.
+rank_prompt() {
+  local L
+  printf 'You are running one ranking step of a packet comparison. The harness that launched you is the loop driver; you do this one step and nothing else.\n\n'
+  printf 'Dispatch the `reviewer` agent (the gaffer plugin'"'"'s agent of that name) exactly once. Set the dispatch'"'"'s model to what this command prints, and omit the model when it prints nothing; never choose a model yourself:\n\n'
+  printf '    %s/scripts/routing.sh --root %s resolve reviewer\n\n' "$_CMP_HARNESS" "$1"
+  printf 'Give the agent exactly this brief:\n\n'
+  printf 'Rank these final diffs from best to worst. Each is an independent attempt at the same task, made from the commit this checkout holds; each is labelled with one letter:\n\n'
+  for L in $(printf '%s' "$2" | tr ',' ' '); do
+    printf '    %s  %s/%s/%s.diff\n' "$L" "$1" "$_CMP_RANK_DIR" "$L"
+  done
+  printf '\nJudge each diff as work under review: whether it does its task correctly and completely, its tests, and whether it stays in scope. The ranking is a strict order: every label exactly once, no ties, and a one-line reason for each label. Do not edit, commit or write anything. Return exactly this block, best first, and nothing after it:\n\n'
+  printf 'RANKING\nRANK 1 <label> <one-line reason>\nRANK 2 <label> <one-line reason>\n...\n'
+  printf '\nDo not edit, commit or run anything else yourself. When the agent returns, print its ranking block exactly as it returned it, the line RANKING first, as the last lines of your output, with nothing after it.\n'
+}
+
+# rank_parse <session-out> <labels-csv>: the ranking in the session's output (the
+# lines after its last `RANKING` line), checked. Prints `<position>\t<label>\t
+# <reason>` per line, best first, and returns 0 when it is a strict best-to-worst
+# order of every label with a reason each; otherwise one `REFUSED rule=...` line
+# per broken rule, and returns 1. The order is judged only when no other rule is
+# broken, so a tie reads as a tie, not also as a gap in the order.
+rank_parse() {
+  LABELS="$2" awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    BEGIN { n = split(ENVIRON["LABELS"], lab, ","); for (i = 1; i <= n; i++) known[lab[i]] = 1 }
+    { sub(/\r$/, ""); l[NR] = $0; if (trim($0) == "RANKING") start = NR }
+    END {
+      if (!start) { print "REFUSED rule=no-ranking"; exit 1 }
+      k = 0; bad = 0
+      for (i = start + 1; i <= NR; i++) {
+        s = trim(l[i])
+        if (s == "") continue
+        ln = i - start
+        if (!match(s, /^RANK[ \t]+[0-9]+/)) { printf "REFUSED rule=malformed-line line=%d\n", ln; bad = 1; continue }
+        pos = substr(s, 1, RLENGTH); sub(/^RANK[ \t]+/, "", pos); pos += 0
+        rest = substr(s, RLENGTH + 1)
+        if (rest !~ /^[ \t]+[^ \t]/) { printf "REFUSED rule=malformed-line line=%d\n", ln; bad = 1; continue }
+        rest = trim(rest)
+        lb = rest; sub(/[ \t].*$/, "", lb)
+        reason = trim(substr(rest, length(lb) + 1)); gsub(/\t/, " ", reason)
+        if (!(lb in known)) { printf "REFUSED rule=unknown-label position=%d label=%s line=%d\n", pos, lb, ln; bad = 1 }
+        if (reason == "") { printf "REFUSED rule=missing-reason position=%d label=%s line=%d\n", pos, lb, ln; bad = 1 }
+        if (lb in seen) { printf "REFUSED rule=duplicate-label position=%d label=%s line=%d\n", pos, lb, ln; bad = 1 }
+        seen[lb] = 1
+        if (pos in taken) { printf "REFUSED rule=tie position=%d label=%s line=%d\n", pos, lb, ln; bad = 1 }
+        taken[pos] = 1
+        k++; P[k] = pos; B[k] = lb; R[k] = reason
+      }
+      if (k == 0 && !bad) { print "REFUSED rule=no-ranking"; exit 1 }
+      for (i = 1; i <= n; i++) if (!(lab[i] in seen)) { printf "REFUSED rule=missing-label label=%s\n", lab[i]; bad = 1 }
+      if (!bad) for (j = 1; j <= k; j++) if (P[j] != j) { printf "REFUSED rule=not-strict-order position=%d label=%s line=%d\n", P[j], B[j], j; bad = 1; break }
+      if (bad) exit 1
+      for (j = 1; j <= k; j++) printf "%d\t%s\t%s\n", P[j], B[j], R[j]
+    }' "$1"
+}
+
+_cmp_rank_run_cleanup() {
+  if [ -n "$_CMP_TMP" ]; then rm -rf "$_CMP_TMP"; fi
+  return 0
+}
+
+cmd_rank() {
+  [ $# -eq 2 ] || usage
+  local exp="$1" pkt="$2"
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "rank: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  case "$pkt" in ''|*[!A-Za-z0-9._-]*) die "rank: not a packet id: $pkt" ;; esac
+  [ -x "$ROUTING" ] || die "rank: routing.sh is missing or not executable: $ROUTING" 2
+  METRICS="$HERE/metrics.sh"
+  [ -x "$METRICS" ] || die "rank: metrics.sh is missing or not executable: $METRICS" 2
+  _CMP_CLAUDE="${ORCH_COMPARE_CLAUDE:-claude}"
+  command -v "$_CMP_CLAUDE" >/dev/null 2>&1 || die "rank: no session command: $_CMP_CLAUDE (set ORCH_COMPARE_CLAUDE)" 2
+  _CMP_TIMEOUT="${ORCH_COMPARE_STEP_TIMEOUT:-$_CMP_STEP_TIMEOUT_DEFAULT}"
+  case "$_CMP_TIMEOUT" in ''|0|*[!0-9]*) die "rank: ORCH_COMPARE_STEP_TIMEOUT is not a positive number of seconds: $_CMP_TIMEOUT" 2 ;; esac
+  _CMP_HARNESS="$(cd "$HERE/.." && pwd -P)"
+
+  local store sel lfile rfile
+  store="$(store_root)"
+  sel="$store/$exp/selection.json"
+  lfile="$store/labels.jsonl"
+  rfile="$store/rankings.jsonl"
+  [ -f "$sel" ] || die "rank: no stored selection for experiment $exp (run \`compare.sh select\` first): $sel"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "rank: cannot create a temp root"
+  trap _cmp_rank_run_cleanup EXIT
+  local tmp="$_CMP_TMP"
+
+  # --- the selection: the reviewer model, its pinned id, the effort ------------------
+  json_flat "$sel" > "$tmp/sel" || die "rank: the stored selection is not readable JSON: $sel"
+  local sexp rmodel
+  sexp="$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")"
+  [ "$sexp" = "$exp" ] || die "rank: the stored selection names experiment [$sexp], not $exp: $sel"
+  rmodel="$(awk -F'\t' '$2 == ".settings.reviewer_model" { print $4; exit }' "$tmp/sel")"
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "rank: the stored selection's reviewer model is malformed: [$rmodel]" ;; esac
+  _RC_PINS="$tmp/pins"
+  awk -F'\t' 'index($2, ".settings.model_ids.") == 1 && $3 == "s" && $4 != "" {
+      print substr($2, length(".settings.model_ids.") + 1) "\t" $4 }' "$tmp/sel" > "$_RC_PINS"
+  A="$rmodel" awk -F'\t' '$1 == ENVIRON["A"] { f = 1 } END { exit !f }' "$_RC_PINS" \
+    || die "rank: experiment $exp's model_ids pins no id for the reviewer model $rmodel: $sel"
+  _CMP_EFFORT="$(sel_effort < "$tmp/sel")"
+  effort_is_level "$_CMP_EFFORT" \
+    || die "rank: experiment $exp's stored settings name no effort in: ${EFFORT_LEVELS[*]} (got [$_CMP_EFFORT]): $sel"
+  _RC_EFFORT="$_CMP_EFFORT"
+
+  # --- the packet's latest prepared ranking: its labels only, never its models ------
+  [ -f "$lfile" ] || die "rank: no prepared ranking for packet $pkt (run \`compare.sh rank-prepare\` first): $lfile"
+  # The models are dropped as the map is read: nothing before the append can use them.
+  json_flat "$lfile" | awk -F'\t' '$2 !~ /^\.labels\[[0-9]+\]\.model$/' > "$tmp/lmap" \
+    || die "rank: the label map file is not readable JSONL: $lfile"
+  local doc rkid rdir rstart lrev labels
+  doc="$(E="$exp" P="$pkt" awk -F'\t' '
+      $2 == ".experiment" && $3 == "s" { e[$1] = $4 }
+      $2 == ".packet" && $3 == "s" { p[$1] = $4 }
+      $1 + 0 > n { n = $1 + 0 }
+      END { for (d = 1; d <= n; d++) if ((d in e) && e[d] == ENVIRON["E"] && (d in p) && p[d] == ENVIRON["P"]) last = d; print last }' "$tmp/lmap")"
+  [ -n "$doc" ] || die "rank: no prepared ranking for packet $pkt in experiment $exp (run \`compare.sh rank-prepare\` first): $lfile"
+  _lm() { D="$doc" K="$1" awk -F'\t' '$1 == ENVIRON["D"] && $2 == ENVIRON["K"] { print $4; exit }' "$tmp/lmap"; }
+  rkid="$(_lm .ranking)"; rdir="$(_lm .dir)"; rstart="$(_lm .start)"; lrev="$(_lm .reviewer_model)"
+  labels="$(D="$doc" awk -F'\t' '$1 == ENVIRON["D"] && $2 ~ /^\.labels\[[0-9]+\]\.label$/ { print $4 }' "$tmp/lmap" | paste -sd, -)"
+  case "$rkid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "rank: the prepared ranking's id is malformed: [$rkid]" ;;
+  esac
+  case "$rstart" in ''|*[!0-9a-f]*) die "rank: ranking $rkid's start is not a commit id: [$rstart]" ;; esac
+  [ "$lrev" = "$rmodel" ] || die "rank: ranking $rkid was prepared for reviewer [$lrev], not the selection's $rmodel"
+  case ",$labels," in *,,*|*[!A-Z,]*) die "rank: ranking $rkid's labels are malformed: [$labels]" ;; esac
+  if [ -f "$rfile" ]; then
+    json_flat "$rfile" > "$tmp/ranks" || die "rank: the rankings file is not readable JSONL: $rfile"
+    if R="$rkid" awk -F'\t' '$2 == ".ranking" && $4 == ENVIRON["R"] { f = 1 } END { exit !f }' "$tmp/ranks"; then
+      die "rank: ranking $rkid is already recorded in $rfile (run \`compare.sh rank-prepare\` for a new one)"
+    fi
+  fi
+  [ -n "$rdir" ] && git -C "$rdir" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "rank: ranking $rkid's clone is not a git repository: $rdir"
+  local L r_rev
+  for L in $(printf '%s' "$labels" | tr ',' ' '); do
+    case "$L" in [A-Z]) ;; *) die "rank: ranking $rkid's label is not one letter: [$L]" ;; esac
+    [ -f "$rdir/$_CMP_RANK_DIR/$L.diff" ] || die "rank: label $L has no diff in ranking $rkid's clone: $rdir/$_CMP_RANK_DIR/$L.diff"
+  done
+  r_rev="$(ORCH_ROUTING_AGENTS_DIR="$AGENTS_DIR" "$ROUTING" --root "$rdir" resolve reviewer 2>/dev/null | tr -d '\r')"
+  [ "$r_rev" = "$rmodel" ] \
+    || die "rank: routing.sh does not resolve ranking $rkid's reviewer as set (reviewer -> [$r_rev], wanted $rmodel)"
+
+  # --- the one ranking session, at the experiment's effort --------------------------
+  rank_prompt "$rdir" "$labels" > "$tmp/prompt"
+  run_session "$rdir" "$tmp/prompt" "$tmp/out" "$tmp/err"
+  if [ "$STEP_EXIT" = timeout ]; then
+    printf 'REFUSED rule=session-timed-out\n' >&2
+    die "rank: the ranking session outlived ${_CMP_TIMEOUT}s and was killed; nothing recorded"
+  elif [ "$STEP_EXIT" != 0 ]; then
+    printf 'REFUSED rule=session-crashed exit=%s\n' "$STEP_EXIT" >&2
+    die "rank: the ranking session exited $STEP_EXIT; nothing recorded"
+  fi
+
+  # --- the result: a strict best-to-worst order of every label ----------------------
+  if ! rank_parse "$tmp/out" "$labels" > "$tmp/rank"; then
+    grep '^REFUSED ' "$tmp/rank" >&2
+    die "rank: ranking $rkid's result breaks the rules above; nothing recorded"
+  fi
+
+  # --- the reviewer and effort checks on the ranking session -------------------------
+  _RC_OUT=/dev/null; _RC_FAIL=0; _RC_NOTRUN=0
+  rc_scope rank "$rdir" "$tmp/metrics.json" reviewer "$rmodel" 0 > "$tmp/checks"
+  if [ "$_RC_FAIL" = 1 ] || [ "$_RC_NOTRUN" = 1 ]; then
+    grep '^CHECK ' "$tmp/checks" >&2
+    printf 'REFUSED rule=model-or-effort\n' >&2
+    die "rank: ranking $rkid was not shown to run on the reviewer model $rmodel at effort $_CMP_EFFORT; nothing recorded"
+  fi
+
+  # --- the record: appended before any label is resolved ------------------------------
+  local pos lab reason order="" line
+  while IFS="$(printf '\t')" read -r pos lab reason; do
+    order="$order${order:+,}{\"position\":$pos,\"label\":$(rd_json_str "$lab"),\"reason\":$(rd_json_str "$reason")}"
+  done < "$tmp/rank"
+  line="{\"experiment\":$(rd_json_str "$exp"),\"packet\":$(rd_json_str "$pkt"),\"ranking\":$(rd_json_str "$rkid"),\"dir\":$(rd_json_str "$rdir"),\"start\":$(rd_json_str "$rstart"),\"reviewer_model\":$(rd_json_str "$rmodel"),\"effort\":$(rd_json_str "$_CMP_EFFORT"),\"routing_check\":\"pass\",\"order\":[$order],\"ranked_at\":$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")}"
+  printf '%s\n' "$line" > "$tmp/line.json"
+  json_flat "$tmp/line.json" > /dev/null 2>&1 || die "rank: the ranking could not be built as one JSON line"
+  mkdir -p "$store" 2>/dev/null && printf '%s\n' "$line" >> "$rfile" \
+    || die "rank: the ranking could not be appended: $rfile"
+
+  # --- only now: each label resolved to its model, from the stored map ---------------
+  # The map is read again, whole, and the ranking's line found by its id.
+  local om orid mdoc
+  json_flat "$lfile" > "$tmp/lmodels" || die "rank: ranking $rkid is recorded in $rfile, but the label map file can no longer be read to resolve it: $lfile"
+  mdoc="$(R="$rkid" awk -F'\t' '$2 == ".ranking" && $4 == ENVIRON["R"] { d = $1 } END { print d }' "$tmp/lmodels")"
+  [ -n "$mdoc" ] || die "rank: ranking $rkid is recorded in $rfile, but its label map line is gone: $lfile"
+  {
+    printf 'EXPERIMENT=%s\nPACKET=%s\nRANKING=%s\nDIR=%s\nEFFORT=%s\nREVIEWER_MODEL=%s\n' \
+      "$exp" "$pkt" "$rkid" "$rdir" "$_CMP_EFFORT" "$rmodel"
+    grep '^CHECK ' "$tmp/checks"
+    while IFS="$(printf '\t')" read -r pos lab reason; do
+      printf 'RANK position=%s label=%s reason=%s\n' "$pos" "$lab" "$reason"
+    done < "$tmp/rank"
+    printf 'RECORDED=%s\n' "$rfile"
+  } > "$tmp/stdout"
+  while IFS="$(printf '\t')" read -r pos lab reason; do
+    om="$(D="$mdoc" L="$lab" awk -F'\t' '
+        $1 == ENVIRON["D"] && $2 ~ /^\.labels\[[0-9]+\]\.label$/ && $4 == ENVIRON["L"] { i = $2; sub(/\.label$/, "", i) }
+        $1 == ENVIRON["D"] && $2 ~ /^\.labels\[[0-9]+\]\.model$/ { m[$2] = $4 }
+        END { if (i != "") print m[i ".model"] }' "$tmp/lmodels")"
+    orid="$(D="$mdoc" L="$lab" awk -F'\t' '
+        $1 == ENVIRON["D"] && $2 ~ /^\.labels\[[0-9]+\]\.label$/ && $4 == ENVIRON["L"] { i = $2; sub(/\.label$/, "", i) }
+        $1 == ENVIRON["D"] && $2 ~ /^\.labels\[[0-9]+\]\.replay$/ { r[$2] = $4 }
+        END { if (i != "") print r[i ".replay"] }' "$tmp/lmodels")"
+    printf 'RESOLVED position=%s label=%s model=%s replay=%s\n' "$pos" "$lab" "${om:-unresolved}" "${orid:-unresolved}" >> "$tmp/stdout"
+  done < "$tmp/rank"
+  printf 'RANKED=%s\n' "$rkid" >> "$tmp/stdout"
+  cat "$tmp/stdout"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -4255,6 +4538,7 @@ case "$SUB" in
   record)     cmd_record "$@" ;;
   run)        cmd_run "$@" ;;
   rank-prepare) cmd_rank_prepare "$@" ;;
+  rank)       cmd_rank "$@" ;;
   *) usage ;;
 esac
 exit 0

@@ -917,6 +917,16 @@ the `agent_id` whose first event falls in that span. When several qualify, the e
 A row with no qualifying `agent_id`, or whose `Agent` event has no `duration_ms`, still
 appears, resolved to nothing.
 
+**Addendum (2026-09-24, `session-effort-reporting`): `effort`.** Each row also carries
+`effort`, read from the same `message.id`-deduplicated, run-window-bounded turns whose `aid`
+is the dispatch's resolved `agent_id` (the turn set `tokens` reads). When every such turn
+carries one level, `effort` is that level as a string. When the level changed mid-dispatch,
+it is an array of the distinct levels in first-seen order, meaning the turns sorted by `ts`
+(a turn with no `ts` sorts first). Unlike `tokens`, it is not gated on the run having
+per-turn timestamps, because attribution goes by `agent_id`, not time. `totals.by_effort`
+is unchanged. `scripts/test-metrics.sh` deletes `effort` in the pin and its T2 row check
+before comparing.
+
 ### 2. `kind` precedence
 
 The latest start or routing record for the packet strictly before the dispatch's `Agent`
@@ -969,6 +979,17 @@ dispatch's edits, the earlier one reads `advanced`.
   transcript turn resolves to the dispatch.
 - A swept or bundle-sibling packet has `dispatches: null`, in the null-field shape those rows
   already use.
+
+**Addendum (2026-09-24, `session-effort-reporting`): `effort` null rules.** `effort` is null,
+never a guessed level, when:
+
+- the row resolved to no `agent_id`;
+- no transcript turn resolves to the dispatch;
+- any of the dispatch's turns carries no effort. A partial read is unmeasured, so the levels
+  the other turns carried are not reported.
+
+A run collected from transcripts that predate the per-turn `effort` field reads null on
+every row. So does a dispatch on a model that takes no effort, since its turns carry none.
 
 In `totals.dispatch_waste`:
 

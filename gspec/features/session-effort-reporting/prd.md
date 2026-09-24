@@ -92,7 +92,7 @@ and measured per dispatch.
   - when it is unset or empty, the kickoff carries no such line
   - a sweep case pins the line for set, empty and unset
 
-- [ ] **P1**: Each dispatch's effort is on its run-metrics per-dispatch row
+- [x] **P1**: Each dispatch's effort is on its run-metrics per-dispatch row
   - each `packets[].dispatches[]` row carries the effort read from that
     dispatch's own transcript rows: one level when every row carries the same
     one, or the set of distinct levels when it changed mid-dispatch

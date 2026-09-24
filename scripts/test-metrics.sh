@@ -106,7 +106,9 @@ check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
 # pass — a difference here is a changed existing field, not a stale golden.
 DPM_NEW_FIELDS=('.packets[].dispatches'   # jq paths added by dispatch-progress-metrics (T2: dispatches)
                 '.totals.dispatch_waste'  # T6: the rollup
-                '.notes[] | select(startswith("dispatch_waste"))')   # T6: its notes[] lines
+                '.notes[] | select(startswith("dispatch_waste"))'    # T6: its notes[] lines
+                '.packets[].dispatches[]?.effort')  # session-effort-reporting T3: per-dispatch effort;
+                # totals.by_effort stays IN the golden, so this pin proves it unchanged
 # T7: the two per-packet dispatch flags are new entries in an EXISTING array, so they
 # are stripped rather than deleted, and flagged_packets is re-derived without them (an
 # entry whose only flags were these two drops out, exactly as the collector would list it).
@@ -2226,9 +2228,9 @@ JSON
 DPOUT="$ROOT/dp-run.json"
 "$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
   || bad "DPM T2: collect exits 0" "collect returned nonzero"
-# `kind` (T3), `tokens` (T4) and `progress` (T5) are checked in their own sections
-# below; these cases pin T2's cost fields.
-dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens, .progress)' "$DPOUT"; }
+# `kind` (T3), `tokens` (T4), `progress` (T5) and `effort` (session-effort-reporting
+# T3) are checked in their own sections below; these cases pin T2's cost fields.
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens, .effort, .progress)' "$DPOUT"; }
 check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
   "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
 check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
@@ -2789,6 +2791,62 @@ jq '.packets[0].dispatches[2].progress += "\r"' "$KDCRLF" > "$ROOT/kd-crlf-prog.
 if crlf_same "$KDOUT" "$ROOT/kd-crlf-prog.json"; then
   bad "DPM T10: a progress with a trailing CR fails the CRLF-jq identity" "the CR-carrying progress still matched the clean run"
 else ok "DPM T10: a progress with a trailing CR fails the CRLF-jq identity"; fi
+
+echo "== session-effort-reporting T3: dispatches[].effort from the agent_id transcript =="
+# The T4 fixture's events ($TKREPO: d1 -> tk1, d2 -> tk2, d3 unresolved), read against
+# two new projects dirs that carry per-turn `effort`:
+#   EFPROJ   tk1: m1 (logged twice) and m2 both `high`         -> "high"
+#            tk2: ids e3/e1/e2 at ts .100/.200/.300 carrying medium/high/medium
+#                 -> ["medium","high"]: first-seen by ts. Sorting by message id
+#                 would give ["high","medium"], and a sorted set the same.
+#   EFPROJN  the same, except tk1's id-less row has no `effort` -> d1 null
+#            (tk2 is still an array: the null is per dispatch, not per run)
+# d3 (unresolved) is null in both. The legacy run is $TKOUT: the same tk1 transcript
+# with no `.effort` on any turn, and tk2 with no transcript at all.
+EFPROJ="$ROOT/ef-proj"; mkdir -p "$EFPROJ/proj/TK/subagents"
+jq -c '. + {effort: "high"}' "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" > "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl"
+cat > "$EFPROJ/proj/TK/subagents/agent-tk2.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:08.100Z","effort":"medium","message":{"id":"e3","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:08.200Z","effort":"high","message":{"id":"e1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:08.300Z","effort":"medium","message":{"id":"e2","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+JSON
+EFPROJN="$ROOT/ef-proj-nulleff"; mkdir -p "$EFPROJN/proj/TK/subagents"
+jq -c 'if .message.id == null then del(.effort) else . end' "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl" \
+  > "$EFPROJN/proj/TK/subagents/agent-tk1.jsonl"
+cp "$EFPROJ/proj/TK/subagents/agent-tk2.jsonl" "$EFPROJN/proj/TK/subagents/"
+EFOUT="$ROOT/ef-run.json"; EFOUTN="$ROOT/ef-run-nulleff.json"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJ" --out "$EFOUT" >/dev/null 2>&1 \
+  || bad "SER T3: collect exits 0" "collect returned nonzero"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJN" --out "$EFOUTN" >/dev/null 2>&1 \
+  || bad "SER T3: null-effort collect exits 0" "collect returned nonzero"
+ef_row() { jq -c --argjson n "$2" '.packets[]|select(.id=="tk-001")|.dispatches[$n].effort' "$1"; }
+check "SER T3: fixture tk1 turns carry effort (null-row fixture has exactly one without)" "0|1" \
+  "$(jq -r '[inputs|select(.effort == null)]|length' -n "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl")|$(jq -r '[inputs|select(.effort == null)]|length' -n "$EFPROJN/proj/TK/subagents/agent-tk1.jsonl")"
+check "SER T3: every turn at one level -> that level as a string" '"high"' "$(ef_row "$EFOUT" 0)"
+check "SER T3: a level changed mid-dispatch -> distinct levels in first-seen (ts) order" \
+  '["medium","high"]' "$(ef_row "$EFOUT" 1)"
+check "SER T3: one turn with no effort nulls the row (never the other turns' level)" "null" "$(ef_row "$EFOUTN" 0)"
+check "SER T3: ...and only that row: the other dispatch keeps its levels" '["medium","high"]' "$(ef_row "$EFOUTN" 1)"
+check "SER T3: an unresolved dispatch -> effort null" "null" "$(ef_row "$EFOUT" 2)"
+check "SER T3: legacy run (no .effort on any turn) -> null on every row" \
+  '[null,null,null]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].effort]' "$TKOUT")"
+check "SER T3: the T2 fixture (no transcripts, no turn resolves) -> null on every row" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].effort]' "$DPOUT")"
+# high = tk1 m1 (once, deduped) + m2 + the id-less row + tk2 e1; medium = e3 + e2.
+check "SER T3: totals.by_effort is unchanged in meaning (per-turn counts over the deduped set)" \
+  '{"high":4,"medium":2}' "$(jq -c '.totals.by_effort|map_values(.turns)' "$EFOUT")"
+# CRLF byte-identity (ADR 0019 v3.1) over a run whose rows carry effort values: a
+# string and an array. Non-vacuity first, then the identity, then a CR mutant.
+EFCRLF="$ROOT/ef-crlf.json"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJ" --out "$EFCRLF" >/dev/null 2>&1 \
+  || bad "SER T3: CRLF-jq collect exits 0" "collect returned nonzero"
+check "SER T3: CRLF-jq run carries non-null effort values (a string and an array)" \
+  '["high",["medium","high"]]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].effort|select(. != null)]' "$EFCRLF")"
+crlf_case "effort run (string and array effort)" "$EFOUT" "$EFCRLF"
+jq '.packets[0].dispatches[0].effort += "\r"' "$EFCRLF" > "$ROOT/ef-crlf-eff.json"
+if crlf_same "$EFOUT" "$ROOT/ef-crlf-eff.json"; then
+  bad "SER T3: an effort with a trailing CR fails the CRLF-jq identity" "the CR-carrying effort still matched the clean run"
+else ok "SER T3: an effort with a trailing CR fails the CRLF-jq identity"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then

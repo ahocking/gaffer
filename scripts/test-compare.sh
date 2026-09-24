@@ -40,6 +40,15 @@
 # nothing the start did not hold; the result file and handoff redacted in every
 # form, header paths pointed into the view; the two models' views identical;
 # and refusals (unknown replay, a scratch root naming a model) leaving no view.
+# `replay`: every agent step through a scripted stub session (ORCH_COMPARE_CLAUDE)
+# for pass first time, fix then pass, continue then pass, escalate, fix past the
+# limit, a crashed and a timed-out step, and check-status's one re-dispatch; each
+# leaving the clone with at most one new commit, on the start, touching no
+# gspec/ or .agents/roadmap.yaml path and carrying no routing change (a packet's
+# own edit to project-overrides.yaml kept); no chief-engineer session ever; the
+# harness checkout as every session's plugin dir and routing.sh, never the
+# clone's own agents/ or scripts/; a fresh view per review; and a second replay
+# of the same id refused.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -1439,6 +1448,311 @@ assert_eq "review-view, a refusal after the view is built: no view is recorded" 
   "$RVVIEWS_BEFORE" "$(cat "$RVSTORE/$RVEXP/replays/$RVR_fable.views" 2>/dev/null)"
 assert_eq "review-view: no refused review-view leaves a view behind" "$N_VIEWS" "$(ls "$RVSCRATCH" | wc -l | tr -d ' ')"
 
+printf '\n== replay: stub-scripted sessions through the run-loop path ==\n'
+# Every agent step runs through a stub named by ORCH_COMPARE_CLAUDE. The stub logs
+# its arguments and working directory, answers with the next line of its script
+# (or crashes, or hangs), and does what the step's agent would do to the tree: an
+# implementer-like step edits scripts/a.sh and also flips a plan checkbox and
+# edits .agents/roadmap.yaml (which no replay commit may carry); a reviewer-like
+# step writes the review file its view's handoff names. The fixture start holds
+# its own agents/ and scripts/ copies, so a session pointed at the clone's copies
+# would be seen.
+RP="$WORK/rpsrc"
+mkdir -p "$RP/scripts" "$RP/agents" "$RP/.agents" "$RP/gspec/features/rp"
+git -C "$RP" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n' > "$RP/.gitignore"
+printf 'echo a\n' > "$RP/scripts/a.sh"
+printf -- '---\nname: implementer\nmodel: inherit\n---\nthe start commit'"'"'s own copy\n' > "$RP/agents/implementer.md"
+printf -- '- [ ] **T1** rp work\n' > "$RP/gspec/features/rp/tasks.md"
+printf 'order: []\n' > "$RP/.agents/roadmap.yaml"
+printf 'project:\n  name: rp\npacket_attempts: 1\n' > "$RP/.agents/project-overrides.yaml"
+git -C "$RP" add -A >/dev/null
+GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$RP" -c user.name=fixture \
+  -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m base >/dev/null
+RP0="$(git -C "$RP" rev-parse HEAD)"
+printf 'echo landed\n' >> "$RP/scripts/a.sh"
+git -C "$RP" add -A >/dev/null
+GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$RP" -c user.name=fixture \
+  -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+  commit -q -m "$(printf 'rp\n\n[orch packet:rp-t1]')" >/dev/null
+RP1="$(git -C "$RP" rev-parse HEAD)"
+mkdir -p "$RP/.agents/loop/20260501T000000-aa/rp-t1"
+printf '# rp-t1: the original\n\ntier: integration\nagent: implementer\nrun-state: /elsewhere/run-state.yaml\nresult: /elsewhere/implementer.md\nreview: /elsewhere/review.md\n\nPACKET=rp-t1\nFILES=scripts/a.sh\n' \
+  > "$RP/.agents/loop/20260501T000000-aa/rp-t1/handoff.md"
+RPEXP=ccccccccccc6
+RPSTORE="$WORK/rpstore"
+RPSCRATCH="$WORK/rpscratch"
+mkdir -p "$RPSTORE/$RPEXP"
+cat > "$RPSTORE/$RPEXP/selection.json" <<EOF
+{
+  "experiment": "$RPEXP",
+  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "source_repo": "$RP", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rp-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rp", "handoff": "original", "start": "$RP0", "commits": ["$RP1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+cat > "$WORK/stub-claude" <<'STUB'
+#!/usr/bin/env bash
+d="$STUB_DIR"
+n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/count"
+prompt=""; plugin=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) prompt="$2"; shift 2 ;;
+    --plugin-dir) plugin="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+agent="$(printf '%s\n' "$prompt" | sed -n 's/^Dispatch the `\([a-z-]*\)` agent.*/\1/p' | head -1)"
+printf 'call=%s agent=%s cwd=%s plugin=%s\n' "$n" "$agent" "$(pwd -P)" "$plugin" >> "$d/log"
+printf '%s\n' "$prompt" > "$d/prompt.$n"
+line="$(sed -n "${n}p" "$d/script")"
+case "$line" in
+  crash) echo boom >&2; exit 3 ;;
+  hang) exec sleep 30 ;;
+esac
+if [ "$agent" = reviewer ]; then
+  rv="$(printf '%s\n' "$prompt" | sed -n 's/^review: //p' | head -1)"
+  if [ -n "$rv" ]; then cat "$rv" > "$d/seen.$n" 2>/dev/null; fi
+  h="$(printf '%s\n' "$prompt" | sed -n 's/^Handoff: //p' | head -1)"
+  r="$(sed -n 's/^review: //p' "$h" | head -1)"
+  case "$line" in
+    norev+*) line="${line#norev+}" ;;
+    *) if [ -n "$r" ]; then printf 'review from call %s\n' "$n" > "$r"; fi ;;
+  esac
+else
+  rv="$(printf '%s\n' "$prompt" | sed -n 's/^review: //p' | head -1)"
+  if [ -n "$rv" ]; then cat "$rv" > "$d/seen.$n" 2>/dev/null; fi
+  printf 'echo step %s\n' "$n" >> scripts/a.sh
+  sed 's/- \[ \]/- [x]/' gspec/features/rp/tasks.md > .stub.tmp && mv .stub.tmp gspec/features/rp/tasks.md
+  printf '# edited by call %s\n' "$n" >> .agents/roadmap.yaml
+  case "$line" in
+    ov+*)
+      line="${line#ov+}"
+      printf 'implementer_turn_budget: 5\n' >> .agents/project-overrides.yaml ;;
+    rorev+*)
+      line="${line#rorev+}"
+      res="$(printf '%s\n' "$prompt" | sed -n 's/^result: //p' | head -1)"
+      : > "$(dirname "$res")/review.md" && chmod 444 "$(dirname "$res")/review.md" ;;
+    att+*)
+      line="${line#att+}"
+      sed 's/^packet_attempts: 1$/packet_attempts: 3/' .agents/project-overrides.yaml > .stub.tmp \
+        && mv .stub.tmp .agents/project-overrides.yaml ;;
+    commit+*)
+      line="${line#commit+}"
+      git add -A >/dev/null 2>&1
+      git -c user.name=agent -c user.email=agent@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+        commit -q -m "the agent's own commit" >/dev/null 2>&1 ;;
+  esac
+fi
+printf 'working on it\n%s\n' "$line"
+STUB
+chmod +x "$WORK/stub-claude"
+IMPL_DONE='done · did the work · result: no · /r/implementer.md'
+IMPL_CONT='continue · stopped at the budget · result: needs-reading · /r/implementer.md'
+REV_PASS='pass · looks right · result: no · /r/review.md'
+REV_FIX='fix · needs a test · result: needs-reading · /r/review.md'
+REV_ESC='escalate · a design question · result: needs-reading · /r/review.md'
+NOT_A_LINE='all finished, nothing more to say'
+RPN=0
+# rp_run <script lines...>: a fresh replay (prepared on fable) run through the stub.
+# Sets OUT/RC/ERR, RPC (clone), RPR (replay), RPB (branch), RPH (handoff), SD
+# (the stub's directory) and RPAGENTS (the agents the stub was asked for, in order).
+rp_run() {
+  RPN=$((RPN + 1)); SD="$WORK/stub$RPN"; mkdir -p "$SD"; : > "$SD/log"
+  printf '%s\n' "$@" > "$SD/script"
+  OUT="$(ORCH_COMPARE_STORE="$RPSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" prepare "$RPEXP" rp-t1 fable 2>/dev/null)"
+  RPC="$(line CLONE)"; RPR="$(line REPLAY)"; RPB="$(line BRANCH)"; RPH="$(line HANDOFF)"
+  OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT="${RP_TIMEOUT:-60}" \
+    ORCH_COMPARE_STORE="$RPSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" replay "$RPR" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+  RPAGENTS="$(sed -n 's/^call=[0-9]* agent=\([^ ]*\) .*/\1/p' "$SD/log" | paste -sd' ' -)"
+}
+# rp_commits <label> <expected new commits>: every ref of the clone holds at
+# most that many commits beyond the start, touching no plan or roadmap path.
+rp_commits() {
+  local n paths
+  n="$(git -C "$RPC" rev-list --all --not "$RP0" | wc -l | tr -d ' ')"
+  assert_eq "$1: the clone holds $2 new commit(s) on any ref" "$2" "$n"
+  paths="$(git -C "$RPC" diff --name-only "$RP0" "refs/heads/$RPB" | paste -sd' ' -)"
+  case " $paths " in
+    *" gspec/"*|*" .agents/roadmap.yaml "*) bad "$1: the new commit touches no gspec/ or .agents/roadmap.yaml path" "$paths" ;;
+    *) ok "$1: the new commit touches no gspec/ or .agents/roadmap.yaml path" ;;
+  esac
+}
+
+rp_run "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, pass first time: exit 0" "0" "$RC"
+assert_eq "replay, pass first time: ends landed" "land" "$(line END)"
+assert_eq "replay, pass first time: implementer, then reviewer" "implementer reviewer" "$RPAGENTS"
+assert_has "replay, pass first time: the verdict is routed in the clone" "ROUTE agent=reviewer token=pass action=land" "$OUT"
+rp_commits "replay, pass first time" 1
+assert_eq "replay, pass first time: the commit is the packet's diff alone, on the start" \
+  "$RP0|scripts/a.sh" "$(git -C "$RPC" rev-parse "refs/heads/$RPB^")|$(git -C "$RPC" diff --name-only "$RP0" "refs/heads/$RPB" | paste -sd' ' -)"
+assert_eq "replay, pass first time: COMMIT= names the branch head" \
+  "$(git -C "$RPC" rev-parse "refs/heads/$RPB")" "$(line COMMIT)"
+assert_has "replay, pass first time: the commit carries the packet trailer" "[orch packet:rp-t1]" \
+  "$(git -C "$RPC" log -1 --format=%B "refs/heads/$RPB")"
+assert_eq "replay, pass first time: the plan checkbox stays unflipped in the commit" "- [ ] **T1** rp work" \
+  "$(git -C "$RPC" show "refs/heads/$RPB:gspec/features/rp/tasks.md")"
+assert_eq "replay, pass first time: the replay's routing is not in the commit" "" \
+  "$(git -C "$RPC" diff "$RP0" "refs/heads/$RPB" -- .agents/project-overrides.yaml)"
+assert_eq "replay, pass first time: the step log holds the printed lines" "$OUT" \
+  "$(cat "$RPSTORE/$RPEXP/replays/$RPR.steps")"
+RP_VIEW="$(line VIEW)"
+assert_eq "replay, pass first time: the reviewer ran in the review view, the implementer in the clone" \
+  "$RPC|$RP_VIEW" "$(sed -n 's/^call=1 .* cwd=\([^ ]*\) .*/\1/p' "$SD/log")|$(sed -n 's/^call=2 .* cwd=\([^ ]*\) .*/\1/p' "$SD/log")"
+assert_eq "replay, pass first time: the view resolves the reviewer model" "haiku" "$("$ROUTING" --root "$RP_VIEW" resolve reviewer)"
+RP_PASS_SD="$SD"; RP_PASS_C="$RPC"
+# Once per replay.
+OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STORE="$RPSTORE" \
+  ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" replay "$RPR" 2>"$WORK/err")"; RC=$?
+assert_eq "replay, run a second time: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "replay, run a second time: named" "has already been run" "$(cat "$WORK/err")"
+
+printf '\n== replay: the plugin dir is the harness checkout ==\n'
+RPL="$(cat "$RP_PASS_SD/log")"
+assert_eq "replay: every session is given the harness checkout as its plugin dir" "$REPO $REPO" \
+  "$(sed -n 's/.* plugin=\(.*\)$/\1/p' "$RP_PASS_SD/log" | paste -sd' ' -)"
+case "$RPL" in
+  *"plugin=$RP_PASS_C"*) bad "replay: no session is given the clone as its plugin dir" "$RPL" ;;
+  *) ok "replay: no session is given the clone as its plugin dir" ;;
+esac
+RPP="$(cat "$RP_PASS_SD/prompt.1" "$RP_PASS_SD/prompt.2")"
+assert_has "replay: the implementer is dispatched through the harness's routing.sh against the clone" \
+  "$REPO/scripts/routing.sh --root $RP_PASS_C resolve implementer" "$RPP"
+assert_has "replay: the reviewer is dispatched through the harness's routing.sh against the view" \
+  "$REPO/scripts/routing.sh --root $RP_VIEW resolve reviewer" "$RPP"
+case "$RPP" in
+  *"$RP_PASS_C/agents"*|*"$RP_PASS_C/scripts"*|*"$RP_VIEW/agents"*|*"$RP_VIEW/scripts"*)
+    bad "replay: no prompt points at the clone's or view's own agents/ or scripts/" "$RPP" ;;
+  *) ok "replay: no prompt points at the clone's or view's own agents/ or scripts/" ;;
+esac
+assert_eq "replay fixture: the clone does hold its own agents/ copy" "yes" \
+  "$(if [ -f "$RP_PASS_C/agents/implementer.md" ]; then echo yes; else echo no; fi)"
+case "$RPP" in
+  *fable*|*haiku*|*sonnet*) bad "replay: no prompt names a model" "$RPP" ;;
+  *) ok "replay: no prompt names a model" ;;
+esac
+
+printf '\n== replay: fix then pass ==\n'
+# The second attempt commits on its own (after refresh-handoff has seen the
+# first attempt's uncommitted work), so the land has an agent commit to replace.
+rp_run "$IMPL_DONE" "$REV_FIX" "commit+$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, fix then pass: exit 0, ends landed" "0:land" "$RC:$(line END)"
+assert_eq "replay, fix then pass: implementer, reviewer, implementer, reviewer" \
+  "implementer reviewer implementer reviewer" "$RPAGENTS"
+assert_has "replay, fix then pass: the fix is routed as an attempt" "ROUTE agent=reviewer token=fix action=attempt attempts=1 limit=1" "$OUT"
+assert_has "replay, fix then pass: refresh-handoff runs before the re-dispatch" "REFRESH partial_work=inserted paths=1" "$OUT"
+assert_eq "replay, fix then pass: each review gets a fresh view" "2" "$(printf '%s\n' "$OUT" | grep -c '^VIEW=')"
+RPREV="$(dirname "$RPH")/review.md"
+assert_has "replay, fix then pass: the second attempt's brief names the review" "review: $RPREV" "$(cat "$SD/prompt.3")"
+assert_eq "replay, fix then pass: the second attempt reads the first review, copied into the clone" \
+  "review from call 2" "$(cat "$SD/seen.3" 2>/dev/null)"
+assert_eq "replay, fix then pass: the first attempt's brief names no review" "0" "$(grep -c '^review: ' "$SD/prompt.1")"
+assert_eq "replay, fix then pass: the first reviewer's brief names no review" "0" "$(grep -c '^review: ' "$SD/prompt.2")"
+RPVREV="$(sed -n 's/^review: //p' "$SD/prompt.4" | head -1)"
+RPV4="$(sed -n 's/^call=4 .* cwd=\([^ ]*\) .*/\1/p' "$SD/log")"
+case "$RPVREV" in
+  "$RPV4"/?*) ok "replay, fix then pass: the second reviewer's brief names a review path in its own view" ;;
+  *) bad "replay, fix then pass: the second reviewer's brief names a review path in its own view" "[$RPVREV] not under [$RPV4]" ;;
+esac
+assert_eq "replay, fix then pass: the second reviewer reads the first review there (run-loop §3.4)" \
+  "review from call 2" "$(cat "$SD/seen.4" 2>/dev/null)"
+rp_commits "replay, fix then pass (the agent committed on its own)" 1
+assert_eq "replay, fix then pass: the one commit's parent is the start" "$RP0" "$(git -C "$RPC" rev-parse "refs/heads/$RPB^")"
+assert_eq "replay, fix then pass: the commit is the packet's diff alone" "scripts/a.sh" \
+  "$(git -C "$RPC" diff --name-only "$RP0" "refs/heads/$RPB" | paste -sd' ' -)"
+
+printf '\n== replay: continue then pass ==\n'
+# The second step also edits project-overrides.yaml itself, beside the replay's routing.
+rp_run "$IMPL_CONT" "ov+$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, continue then pass: exit 0, ends landed" "0:land" "$RC:$(line END)"
+RPOVD="$(git -C "$RPC" diff "$RP0" "refs/heads/$RPB" -- .agents/project-overrides.yaml | awk '/^[+-]/ && !/^(\+\+\+|---) /')"
+assert_eq "replay, a packet's own edit to project-overrides.yaml: kept, and the routing is not" \
+  "+implementer_turn_budget: 5" "$RPOVD"
+assert_eq "replay, continue then pass: implementer twice, then one review" "implementer implementer reviewer" "$RPAGENTS"
+assert_has "replay, continue then pass: continue is routed, spending no attempt" \
+  "ROUTE agent=implementer token=continue action=continue attempts=0 limit=1" "$OUT"
+assert_has "replay, continue then pass: refresh-handoff runs before the continuation" "REFRESH partial_work=inserted paths=1" "$OUT"
+assert_has "replay, continue then pass: the continuation's handoff carries the partial-work block" \
+  "<!-- orch:partial-work -->" "$(cat "$RPH")"
+assert_eq "replay, continue then pass: a continuation start is recorded in the clone" "start continue" \
+  "$(cat "$RPC"/.agents/metrics/outcomes/*.jsonl 2>/dev/null | sed -n 's/.*"kind":"\([a-z]*\)".*/\1/p' | paste -sd' ' -)"
+rp_commits "replay, continue then pass" 1
+
+printf '\n== replay: escalate ==\n'
+rp_run "$IMPL_DONE" "$REV_ESC"
+assert_eq "replay, escalate: exit 0, ends at the decider" "0:decider" "$RC:$(line END)"
+assert_has "replay, escalate: routed to the decider" "ROUTE agent=reviewer token=escalate action=decider" "$OUT"
+assert_eq "replay, escalate: the stub log shows no chief-engineer dispatch" "implementer reviewer" "$RPAGENTS"
+case "$(cat "$SD/log")" in
+  *chief-engineer*) bad "replay, escalate: no session names the chief-engineer" ;;
+  *) ok "replay, escalate: no session names the chief-engineer" ;;
+esac
+assert_eq "replay, escalate: COMMIT=none" "none" "$(line COMMIT)"
+rp_commits "replay, escalate" 0
+
+printf '\n== replay: fix past the limit ==\n'
+rp_run "$IMPL_DONE" "$REV_FIX" "$IMPL_DONE" "$REV_FIX" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, fix past the limit: exit 0, ends at the decider" "0:decider" "$RC:$(line END)"
+assert_has "replay, fix past the limit: the second fix is past packet_attempts" \
+  "ROUTE agent=reviewer token=fix action=decider attempts=2 limit=1" "$OUT"
+assert_eq "replay, fix past the limit: no dispatch after the limit, no chief-engineer" \
+  "implementer reviewer implementer reviewer" "$RPAGENTS"
+rp_commits "replay, fix past the limit" 0
+
+printf '\n== replay: a reviewer that leaves the seeded review as it was ==\n'
+# The first step raises packet_attempts to 3, so a third attempt runs; the
+# second reviewer writes no review of its own, so the seeded copy of the first
+# is not this round's review and the third attempt is briefed with none.
+rp_run "att+$IMPL_DONE" "$REV_FIX" "$IMPL_DONE" "norev+$REV_FIX" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, an unwritten review: ends landed after three attempts" \
+  "0:land:implementer reviewer implementer reviewer implementer reviewer" "$RC:$(line END):$RPAGENTS"
+assert_eq "replay, an unwritten review: the second reviewer was given the first review" \
+  "review from call 2" "$(cat "$SD/seen.4" 2>/dev/null)"
+assert_eq "replay, an unwritten review: the third attempt is not briefed with the previous round's review" \
+  "0" "$(grep -c '^review: ' "$SD/prompt.5")"
+assert_eq "replay, an unwritten review: nor is the third reviewer" "0" "$(grep -c '^review: ' "$SD/prompt.6")"
+rp_commits "replay, an unwritten review" 1
+
+printf '\n== replay: the review cannot be copied into the work clone ==\n'
+# The first step leaves a read-only file where the clone's review copy goes.
+rp_run "rorev+$IMPL_DONE" "$REV_FIX" "$IMPL_DONE"
+assert_eq "replay, an uncopyable review: exit 1, ends in error, no further attempt" \
+  "1:error:implementer reviewer" "$RC:$(line END):$RPAGENTS"
+assert_has "replay, an uncopyable review: named" "cannot copy the review into the work clone" "$ERR"
+rp_commits "replay, an uncopyable review" 0
+
+printf '\n== replay: a crashed step, a timed-out step ==\n'
+rp_run "$IMPL_DONE" crash
+assert_eq "replay, a crashed step: exit 0, ends crashed" "0:crashed" "$RC:$(line END)"
+assert_has "replay, a crashed step: the exit code is recorded" "STEP n=2 agent=reviewer try=1 exit=3 status=none" "$OUT"
+assert_eq "replay, a crashed step: no step after it" "implementer reviewer" "$RPAGENTS"
+rp_commits "replay, a crashed step" 0
+T0=$SECONDS
+RP_TIMEOUT=1 rp_run hang
+assert_eq "replay, a timed-out step: exit 0, ends timed out" "0:timed-out" "$RC:$(line END)"
+assert_has "replay, a timed-out step: recorded as a timeout" "STEP n=1 agent=implementer try=1 exit=timeout status=none" "$OUT"
+assert_eq "replay, a timed-out step: killed at the limit, not left to finish" "yes" \
+  "$(if [ $((SECONDS - T0)) -lt 20 ]; then echo yes; else echo no; fi)"
+rp_commits "replay, a timed-out step" 0
+
+printf '\n== replay: check-status and its one re-dispatch ==\n'
+rp_run "$NOT_A_LINE" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, a refused line then a good one: ends landed" "0:land" "$RC:$(line END)"
+assert_has "replay, a refused line: recorded as refused" "STEP n=1 agent=implementer try=1 exit=0 status=refused" "$OUT"
+assert_has "replay, the re-dispatch carries check-status's reason" "check-status\` refused" "$(cat "$SD/prompt.2")"
+rp_commits "replay, a refused line then a good one" 1
+rp_run "$NOT_A_LINE" "$NOT_A_LINE" "$IMPL_DONE"
+assert_eq "replay, a line refused twice: ends refused after two dispatches" "0:refused:implementer implementer" \
+  "$RC:$(line END):$RPAGENTS"
+rp_commits "replay, a line refused twice" 0
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -1450,6 +1764,7 @@ printf '\n== usage ==\n'
 "$COMPARE" estimate aaaaaaaaaaa1 --bogus >/dev/null 2>&1; assert_eq "estimate with an unknown flag: exit 2" "2" "$?"
 "$COMPARE" prepare aaaaaaaaaaa1 est-e1 >/dev/null 2>&1; assert_eq "prepare without a model: exit 2" "2" "$?"
 "$COMPARE" review-view >/dev/null 2>&1; assert_eq "review-view without a replay: exit 2" "2" "$?"
+"$COMPARE" replay >/dev/null 2>&1; assert_eq "replay without a replay id: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -974,6 +974,10 @@ In `totals.dispatch_waste`:
 
 - `zero_progress` is null when any row has a null `progress`.
 - `continuations` is null when any row has a null `kind`.
+- `over_threshold` (count and token share) is null when any counted implementer dispatch
+  has a null `tool_calls` (an unresolved dispatch). The dispatch is not left out: a count
+  over the other rows would read as measured. The `notes[]` reason names each unresolved
+  dispatch by packet id and position.
 - A token sum or share is null when a row it counts has null `tokens`.
 - Every component is null on a legacy run or a run with no implementer dispatch.
 - A `notes[]` line names each unmeasured component and why.
@@ -991,6 +995,14 @@ integer, read in tool calls, and otherwise the collector's default. `totals.disp
 stamps the threshold as `turn_threshold`: `value`, `unit` (`tool_calls`) and `source`
 (`implementer_turn_budget` or `default`). A reader can see which one applied and re-derive
 the counts.
+
+`implementer_turn_budget` has one strict reader, `_rs_read_turn_budget` in `runstate.sh`,
+exposed as `runstate.sh turn-budget`. `metrics.sh`'s `resolve_turn_threshold` calls that
+subcommand rather than keeping its own copy, and `_rs_implementer_turn_budget` (the handoff's
+budget line) calls the same function, so the two cannot disagree about what the key says.
+The reader applies no fallback; each caller keeps its own. A value counts only when, after a
+trailing comment, surrounding whitespace and one pair of surrounding quotes are removed, it
+is a positive integer.
 
 ### 6. No outcomes-log record kind was added
 

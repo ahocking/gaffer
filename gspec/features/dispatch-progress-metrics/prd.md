@@ -208,7 +208,7 @@ derived-done `run-metrics`; no existing field changes meaning.
     `write-result`, byte for byte, so a line the check accepted in the result
     file is never refused on return
 
-- [ ] **P1**: ADR 0019 v3.6 states what T13 and T14 shipped
+- [x] **P1**: ADR 0019 v3.6 states what T13 and T14 shipped
   - added 2026-09-23 on the operator's call: the ADR's v3.6 section predates T13
     and T14, so it is reopened here rather than filed as a separate feature
   - ADR 0019's v3.6 null rules (§4) state that `totals.dispatch_waste.over_threshold`

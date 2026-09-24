@@ -7,8 +7,11 @@
 # routing.sh (built-in aliases, the routing reason passed through, `extra_models`
 # read from the source repository), the other refusals, the id's invariance
 # under reordering, `model_ids` (printed, part of the id, every model and the
-# reviewer pinned to a non-empty id or refused naming it), and that no refusal
-# reads git. `candidates`: a fixture
+# reviewer pinned to a non-empty id or refused naming it; a pin missing from
+# the price table, or with an incomplete entry there, and an unreadable table
+# refused naming it), `effort` (absent, not a level, empty or a list refused
+# naming it; printed, and two settings differing only in it two experiments),
+# and that no refusal reads git. `candidates`: a fixture
 # source repository with a code, a prose, a checkbox-flip-only, a neither and a
 # multi-commit packet, original and rebuilt handoffs, and excluded packets.
 # `select`: the tier and fix-round mix chosen over newer packets, `unrecorded`
@@ -50,15 +53,20 @@
 # own edit to project-overrides.yaml kept); no chief-engineer session ever; the
 # harness checkout as every session's plugin dir and routing.sh, never the
 # clone's own agents/ or scripts/; a fresh view per review; and a second replay
-# of the same id refused. `routing-check`: the real metrics.sh collecting
+# of the same id refused; every session of both roles started with `--effort`
+# at the selection's setting and without the CLAUDE_CODE_EFFORT_LEVEL this sweep
+# exports, and a selection naming no effort refused before any session.
+# `routing-check`: the real metrics.sh collecting
 # fixture event logs and transcripts in a replay's work clone and review view
 # (aliases stamped at dispatch, full ids in transcripts, the experiment's
 # model_ids pinning one to the other): a clean replay passing, an override
 # count of 1, a null override count, a same-family different-version subject
 # model, a wrong reviewer model and an unpinned resolved alias each failing on a
-# line naming its check, an empty stamp read as unresolved, the packets written
+# line naming its check, an empty stamp read as unresolved, the effort check
+# (no level named passing, every turn at the setting passing, another level in
+# the work clone or a view failing on a line naming it), the packets written
 # outside the view, and a replay whose step log has no END or whose selection
-# pins no id for its model refused. `sweeps`: the required sweeps read from the
+# pins no id for its model or names no effort refused. `sweeps`: the required sweeps read from the
 # cached handoff (an absolute and a sentence-final path each naming one; a
 # pattern, a longer file name and another directory naming none) and run on the
 # final diff in a fresh clone: a passing sweep on a landed replay (its tree the
@@ -76,7 +84,7 @@
 # stored null when not run, cost from the implementer's dispatch rows or
 # another role's by_agent_role row priced at the pinned id, a missing
 # transcript, no dispatch row and an unpriced pin reading null and never 0, the
-# record's exact key set with the settings carried, and refusals (no routing
+# record's exact key set with the settings and the effort setting carried, and refusals (no routing
 # check, not ended, routing records disagreeing with the step log, an unknown
 # END, a replay already recorded) appending nothing; `estimate --remaining`
 # counts what it appends.
@@ -109,6 +117,25 @@ assert_has() {  # assert_has <label> <needle> <haystack>
 WORK="$(cd "$(mktemp -d)" && pwd -P)"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
+
+# Every replay in this sweep runs with CLAUDE_CODE_EFFORT_LEVEL set, so the stub
+# session's seeing it unset shows that `replay` removed it, not that it was
+# never there.
+export CLAUDE_CODE_EFFORT_LEVEL=low
+# The price table every `settings` read uses unless a case names another: the
+# shipped table plus an entry for each placeholder id PINS (below) pins, and
+# one incomplete entry. The shipped template is read against the shipped table
+# itself (ORCH_COMPARE_PRICES empty falls back to it).
+CS_PRICES="$WORK/cs-prices.json"
+awk '{ print }
+  /^  "prices": \{/ {
+    print "    \"claude-haiku-test\":  { \"input\": 1, \"cache_write_5m\": 1.25, \"cache_write_1h\": 2, \"cache_read\": 0.1, \"output\": 5 },"
+    print "    \"gpt9-test\":          { \"input\": 1, \"cache_write_5m\": 1.25, \"cache_write_1h\": 2, \"cache_read\": 0.1, \"output\": 5 },"
+    print "    \"other-model-test\":   { \"input\": 1, \"cache_write_5m\": 1.25, \"cache_write_1h\": 2, \"cache_read\": 0.1, \"output\": 5 },"
+    print "    \"opus-capital-test\":  { \"input\": 1, \"cache_write_5m\": 1.25, \"cache_write_1h\": 2, \"cache_read\": 0.1, \"output\": 5 },"
+    print "    \"claude-partial-test\": { \"input\": 1, \"output\": 5 },"
+  }' "$HERE/spend-prices.json" > "$CS_PRICES"
+export ORCH_COMPARE_PRICES="$CS_PRICES"
 
 # --- a git shim on PATH: every call is logged, so "before any git read" is ----
 # checked by the log staying empty, not assumed.
@@ -147,11 +174,23 @@ pins_for() {
   done
   printf '%s' "$out"
 }
-mkset_raw() {
+# Both also append `effort: high` to a file that names no `effort`, so a case
+# about another setting is never refused for the missing effort;
+# mkset_bare <yaml> writes the yaml alone, exactly.
+mkset_bare() {
   local f
   f="$(mktemp "$WORK/set.XXXXXX")"
   printf '%s' "$1" > "$f"
   printf '%s' "$f"
+}
+mkset_raw() {
+  case "$1" in
+    effort:*|*"
+effort:"*) mkset_bare "$1" ;;
+    *) mkset_bare "$1${1:+
+}effort: high
+" ;;
+  esac
 }
 mkset() {
   case "$1" in
@@ -198,11 +237,12 @@ EXPECTED="ROLE=implementer
 MODELS=fable,opus,sonnet
 REVIEWER_MODEL=haiku
 MODEL_IDS=$(pins_for fable haiku opus sonnet)
+EFFORT=high
 SOURCE_REPO=$SRC_ROUTED
 PER_CLASS=8
 CODE_FILES=hooks/,scripts/
 PROSE_FILES=CLAUDE.md,agents/,docs/,skills/,templates/"
-assert_eq "defaults: the eight normalized lines (only the run's aliases pinned)" "$EXPECTED" "$(printf '%s\n' "$OUT" | sed '$d')"
+assert_eq "defaults: the nine normalized lines (only the run's aliases pinned)" "$EXPECTED" "$(printf '%s\n' "$OUT" | sed '$d')"
 case "$(line MODEL_IDS)" in
   *:,*|*:) bad "defaults: every printed pin is non-empty" "got [$(line MODEL_IDS)]" ;;
   *) ok "defaults: every printed pin is non-empty" ;;
@@ -235,8 +275,11 @@ no_git "pins only"
 EMPTY_ID="$(line EXPERIMENT)"
 
 printf '\n== settings: the shipped template ==\n'
-cs "$REPO/templates/model-comparison.yaml"
+# Read against the shipped price table (spend-prices.json beside compare.sh):
+# every id the template pins is priced there.
+ORCH_COMPARE_PRICES= cs "$REPO/templates/model-comparison.yaml"
 assert_eq "template: exit 0" "0" "$RC"
+assert_eq "template: effort" "high" "$(line EFFORT)"
 assert_eq "template: no stderr" "" "$ERR"
 assert_eq "template: role" "implementer" "$(line ROLE)"
 assert_eq "template: models" "fable,opus,sonnet" "$(line MODELS)"
@@ -572,6 +615,80 @@ model_ids:
   opus: claude-opus-5-5
 " "REFUSED setting=models value=- reason=expected-a-list"
 
+printf '\n== settings: model_ids pins only priced ids ==\n'
+# Every pin the experiment runs on needs a complete entry in the price table,
+# else it is refused naming model_ids, before any git read.
+refused_raw "model_ids: a pinned id missing from the price table" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-9-9
+" "REFUSED setting=model_ids value=opus reason=unpriced(the price table has no complete entry for claude-opus-9-9: $CS_PRICES)"
+refused_raw "model_ids: the reviewer's pinned id missing from the price table" "models: [opus]
+reviewer_model: haiku
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+  haiku: claude-haiku-9
+" "REFUSED setting=model_ids value=haiku reason=unpriced(the price table has no complete entry for claude-haiku-9"
+refused_raw "model_ids: a pinned id whose price entry is incomplete" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-partial-test
+" "REFUSED setting=model_ids value=opus reason=unpriced(the price table has no complete entry for claude-partial-test"
+f="$(mkset_raw "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+")"
+: > "$GITLOG"
+OUT="$(PATH="$WORK/bin:$PATH" ORCH_COMPARE_PRICES="$WORK/no-such-prices.json" "$COMPARE" settings "$f" 2>"$WORK/err")"; RC=$?; ERR="$(cat "$WORK/err")"
+assert_eq "model_ids: an unreadable price table: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "model_ids: an unreadable price table: refused naming model_ids" \
+  "REFUSED setting=model_ids value=- reason=price-table-unreadable($WORK/no-such-prices.json)" "$ERR"
+no_git "model_ids: an unreadable price table"
+
+printf '\n== settings: effort is required and one level ==\n'
+refused_bare() {  # refused_bare <label> <yaml> <expected-stderr-fragment>
+  local f
+  f="$(mkset_bare "$2")"
+  cs "$f"
+  assert_eq "$1: exit 1" "1" "$RC"
+  assert_eq "$1: nothing on stdout" "" "$OUT"
+  assert_has "$1: refusal" "$3" "$ERR"
+  no_git "$1"
+}
+refused_bare "effort: absent" "source_repo: $SRC_ROUTED
+$PINS
+" "REFUSED setting=effort value=- reason=required(one of: low medium high xhigh max)"
+refused_bare "effort: not a level" "source_repo: $SRC_ROUTED
+effort: ultra
+$PINS
+" "REFUSED setting=effort value=ultra reason=not-an-effort-level(one of: low medium high xhigh max)"
+refused_bare "effort: empty" "source_repo: $SRC_ROUTED
+effort: ''
+$PINS
+" "REFUSED setting=effort value= reason=not-an-effort-level("
+refused_bare "effort: a list" "source_repo: $SRC_ROUTED
+effort: [high]
+$PINS
+" "REFUSED setting=effort value=- reason=expected-a-single-value"
+# Printed, and part of the id: two settings differing only in effort are two
+# experiments.
+E1="$(mkset "source_repo: $SRC_ROUTED
+effort: high
+")"
+E2="$(mkset "source_repo: $SRC_ROUTED
+effort: medium
+")"
+cs "$E1"; ID_E1="$(line EXPERIMENT)"; RC_E1="$RC"; EF_E1="$(line EFFORT)"
+cs "$E2"; ID_E2="$(line EXPERIMENT)"; RC_E2="$RC"; EF_E2="$(line EFFORT)"
+assert_eq "effort: both accepted, each printed as EFFORT=" "0:0:high:medium" "$RC_E1:$RC_E2:$EF_E1:$EF_E2"
+assert_ne "effort: settings differing only in effort get different EXPERIMENT ids" "$ID_E1" "$ID_E2"
+no_git "effort"
+
 printf '\n== settings: the id is produced, or nothing is printed ==\n'
 # A PATH holding only the tools compare.sh and routing.sh use, never a sha256
 # tool unless one is added: no id can be computed, so no settings are printed.
@@ -824,6 +941,8 @@ assert_has "select: the selection names its experiment" "\"experiment\": \"$SEL_
 SEL_PINS="$(printf '%s\n' "$OUT" | jq -r '.settings.model_ids | to_entries | map("\(.key):\(.value)") | join(",")')"
 assert_eq "select: the stored settings carry model_ids, as settings printed them" \
   "$(cs "$SSET"; line MODEL_IDS)" "$SEL_PINS"
+assert_eq "select: the stored settings carry effort, as settings printed it" \
+  "$(cs "$SSET"; line EFFORT)" "$(printf '%s\n' "$OUT" | jq -r '.settings.effort')"
 # The mix is preferred over newer packets: c1 (the only fix round) and c2 (the
 # only second tier) are chosen over the newer c4 and c3.
 assert_eq "select: the fix-round and tier mix beats newest-first (code)" "sel-c5 sel-c2 sel-c1" "$(chosen code)"
@@ -1457,7 +1576,7 @@ mkdir -p "$RVSTORE/$RVEXP"
 cat > "$RVSTORE/$RVEXP/selection.json" <<EOF
 {
   "experiment": "$RVEXP",
-  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "source_repo": "$RV", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "effort": "high", "source_repo": "$RV", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
     {"packet": "rv-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rv", "handoff": "original", "start": "$R0", "commits": ["$R1"]}
   ],
@@ -1685,7 +1804,7 @@ mkdir -p "$RPSTORE/$RPEXP"
 cat > "$RPSTORE/$RPEXP/selection.json" <<EOF
 {
   "experiment": "$RPEXP",
-  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "source_repo": "$RP", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "effort": "high", "source_repo": "$RP", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
     {"packet": "rp-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rp", "handoff": "original", "start": "$RP0", "commits": ["$RP1"]}
   ],
@@ -1698,16 +1817,18 @@ cat > "$WORK/stub-claude" <<'STUB'
 #!/usr/bin/env bash
 d="$STUB_DIR"
 n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/count"
-prompt=""; plugin=""
+prompt=""; plugin=""; effort="(none)"
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
     --plugin-dir) plugin="$2"; shift 2 ;;
+    --effort) effort="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 agent="$(printf '%s\n' "$prompt" | sed -n 's/^Dispatch the `\([a-z-]*\)` agent.*/\1/p' | head -1)"
-printf 'call=%s agent=%s cwd=%s plugin=%s\n' "$n" "$agent" "$(pwd -P)" "$plugin" >> "$d/log"
+printf 'call=%s agent=%s effort=%s effort_env=%s cwd=%s plugin=%s\n' "$n" "$agent" "$effort" \
+  "${CLAUDE_CODE_EFFORT_LEVEL-(unset)}" "$(pwd -P)" "$plugin" >> "$d/log"
 printf '%s\n' "$prompt" > "$d/prompt.$n"
 line="$(sed -n "${n}p" "$d/script")"
 case "$line" in
@@ -1952,6 +2073,33 @@ assert_eq "replay, a line refused twice: ends refused after two dispatches" "0:r
   "$RC:$(line END):$RPAGENTS"
 rp_commits "replay, a line refused twice" 0
 
+printf '\n== replay: every session at the experiment'"'"'s effort ==\n'
+# Every session every replay above launched, varied role and reviewer alike, was
+# given `--effort` at the selection's setting and saw no CLAUDE_CODE_EFFORT_LEVEL,
+# though this sweep exports one.
+RPEFF="$(cat "$WORK"/stub[0-9]*/log)"
+RPEFF_N="$(printf '%s\n' "$RPEFF" | grep -c '^call=')"
+RPEFF_R="$(printf '%s\n' "$RPEFF" | grep -c '^call=[0-9]* agent=reviewer ')"
+RPEFF_OK="$(printf '%s\n' "$RPEFF" | grep -c '^call=[0-9]* agent=[a-z-]* effort=high effort_env=(unset) ')"
+if [ "$RPEFF_N" -gt 0 ] && [ "$RPEFF_R" -gt 0 ]; then ok "replay effort: sessions of both roles were logged ($RPEFF_N, $RPEFF_R reviewer)"
+else bad "replay effort: sessions of both roles were logged" "$RPEFF_N sessions, $RPEFF_R reviewer"; fi
+assert_eq "replay effort: every session was started with --effort high and no CLAUDE_CODE_EFFORT_LEVEL" \
+  "$RPEFF_N" "$RPEFF_OK"
+# A stored selection naming no effort is refused before any session starts, and
+# the replay is left unrun.
+cp "$RPSTORE/$RPEXP/selection.json" "$WORK/rp.sel"
+sed 's/"effort": "high", //' "$WORK/rp.sel" > "$RPSTORE/$RPEXP/selection.json"
+RPN=$((RPN + 1)); SD="$WORK/stub$RPN"; mkdir -p "$SD"; : > "$SD/log"; printf '%s\n' "$IMPL_DONE" "$REV_PASS" > "$SD/script"
+OUT="$(ORCH_COMPARE_STORE="$RPSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" prepare "$RPEXP" rp-t1 fable 2>/dev/null)"
+RPR="$(line REPLAY)"
+OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STORE="$RPSTORE" \
+  ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" replay "$RPR" 2>"$WORK/err")"; RC=$?
+cp "$WORK/rp.sel" "$RPSTORE/$RPEXP/selection.json"
+assert_eq "replay, a selection naming no effort: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "replay, a selection naming no effort: named" "name no effort" "$(cat "$WORK/err")"
+assert_eq "replay, a selection naming no effort: no session started, no step log" "0:no" \
+  "$(grep -c '^call=' "$SD/log"):$(if [ -e "$RPSTORE/$RPEXP/replays/$RPR.steps" ]; then echo yes; else echo no; fi)"
+
 printf '\n== routing-check: run metrics from the work clone and each review view ==\n'
 # A replay prepared on model aliases, as the first experiment names them, each
 # pinned by the experiment's model_ids to one full id, run through the stub (implementer done, reviewer pass), then given fixture event
@@ -1985,7 +2133,7 @@ mkdir -p "$RCSTORE/$RCEXP"
 cat > "$RCSTORE/$RCEXP/selection.json" <<EOF
 {
   "experiment": "$RCEXP",
-  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$RC", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "effort": "high", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$RC", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
     {"packet": "rc-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rc", "handoff": "original", "start": "$RC0", "commits": ["$RC1"]}
   ],
@@ -2010,17 +2158,20 @@ RCREPLAYS="$RCSTORE/$RCEXP/replays"
 # one dispatch of gaffer:<agent> from a session's main thread, the subagent's own
 # tool event, and its transcript turn. `-` leaves the field off the Agent event;
 # `nook` leaves `ok` off every event (a run before the ok capture).
+# RC_EFF, when set, is the transcript turn's `effort`; unset, the turn carries
+# none, as a model that takes no effort leaves it.
 rc_seed() {
-  local ev="$1/.agents/metrics/events/$2.jsonl" ok=',"ok":true' mf="" st=""
+  local ev="$1/.agents/metrics/events/$2.jsonl" ok=',"ok":true' mf="" st="" ef=""
   [ "${7:-}" = nook ] && ok=""
+  [ -z "${RC_EFF:-}" ] || ef=",\"effort\":\"$RC_EFF\""
   [ "$4" = - ] || mf=",\"model\":\"$4\""
   [ "$5" = - ] || st=",\"routing_resolved\":\"$5\",\"routing_table\":{\"$3\":\"$5\"}"
   mkdir -p "$(dirname "$ev")" "$RCPROJ/p/$2/subagents"
   printf '{"ts":"2026-05-02T00:00:02Z","session_id":"%s","agent_id":"%sa","agent_type":"gaffer:%s","tool":"Edit"%s}\n' "$2" "$2" "$3" "$ok" > "$ev"
   printf '{"ts":"2026-05-02T00:00:03Z","session_id":"%s","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:%s"%s%s%s}\n' \
     "$2" "$3" "$mf" "$st" "$ok" >> "$ev"
-  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z","message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
-    "$2" "$6" > "$RCPROJ/p/$2/subagents/agent-$2a.jsonl"
+  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z"%s,"message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$ef" "$2" "$6" > "$RCPROJ/p/$2/subagents/agent-$2a.jsonl"
 }
 rc_reset() { rm -rf "$RCC/.agents/metrics/events" "$RCV/.agents/metrics/events" "$RCPROJ"; }
 rc_run() {  # rc_run: OUT/ERR/RC for `compare.sh routing-check` on the fixture replay
@@ -2053,6 +2204,52 @@ assert_eq "routing-check: the collect in the view was the view's own" "$RCV" \
   "$(printf '%s\n' "$OUT" | sed -n 's/^METRICS scope=view-1 dir=\([^ ]*\) .*/\1/p')"
 assert_eq "routing-check: nothing is written inside the review view" "$RCVFILES" "$(find "$RCV" -type f | LC_ALL=C sort)"
 assert_eq "routing-check: the lines are stored as <replay>.routing" "$OUT" "$(cat "$RCREPLAYS/$RCR.routing")"
+assert_eq "routing-check: the second line carries the experiment's effort setting" "EFFORT=high" \
+  "$(printf '%s\n' "$OUT" | sed -n 2p)"
+assert_eq "routing-check, a clean replay whose transcripts carry no effort: the effort check passes, none named" \
+  "CHECK scope=work check=effort result=pass value=none|CHECK scope=view-1 check=effort result=pass value=none" \
+  "$(chk work effort | sed 's/ reason=.*//')|$(chk view-1 effort | sed 's/ reason=.*//')"
+
+# Every turn at the setting passes.
+rc_reset
+RC_EFF=high rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+RC_EFF=high rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, every turn at the setting: exit 0, passes" "0:pass" "$RC:$(line ROUTING_CHECK)"
+assert_eq "routing-check, every turn at the setting: work and view name only it" \
+  "CHECK scope=work check=effort result=pass value=high|CHECK scope=view-1 check=effort result=pass value=high" \
+  "$(chk work effort)|$(chk view-1 effort)"
+
+# The work clone's transcript at another effort fails, naming the check.
+rc_reset
+RC_EFF=medium rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+RC_EFF=high rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, the work clone at another effort: the packet's by_effort names it" "medium" \
+  "$(jq -r '.totals.by_effort | keys | join(",")' "$RCREPLAYS/$RCR.metrics/work.json")"
+assert_eq "routing-check, the work clone at another effort: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_has "routing-check, the work clone at another effort: the failing line names the effort check" \
+  "CHECK scope=work check=effort result=fail value=medium reason=totals.by_effort names medium, not only high" "$(chk work effort)"
+assert_eq "routing-check, the work clone at another effort: every other check passes" \
+  "1" "$(printf '%s\n' "$OUT" | grep -c 'result=fail')"
+
+# A review view's transcript at another effort fails too.
+rc_reset
+RC_EFF=high rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+RC_EFF=xhigh rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, a view at another effort: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_has "routing-check, a view at another effort: the failing line names the effort check" \
+  "CHECK scope=view-1 check=effort result=fail value=xhigh " "$(chk view-1 effort)"
+
+# A stored selection naming no effort is refused before any check.
+cp "$RCSTORE/$RCEXP/selection.json" "$WORK/rc.sel"
+sed 's/"effort": "high", //' "$WORK/rc.sel" > "$RCSTORE/$RCEXP/selection.json"
+rm -f "$RCREPLAYS/$RCR.routing"
+rc_run
+cp "$WORK/rc.sel" "$RCSTORE/$RCEXP/selection.json"
+assert_eq "routing-check, a selection naming no effort: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "routing-check, a selection naming no effort: named" "name no effort" "$ERR"
 
 # An override count of 1: the implementer was passed a model routing did not resolve.
 rc_reset
@@ -2196,7 +2393,7 @@ mkdir -p "$SWSTORE/$SWEXP"
 cat > "$SWSTORE/$SWEXP/selection.json" <<EOF
 {
   "experiment": "$SWEXP",
-  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$SW", "per_class": 4, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "effort": "high", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$SW", "per_class": 4, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
 $SWSEL
   ],
@@ -2353,7 +2550,7 @@ mkdir -p "$RDSTORE/$RDEXP/replays"
 cat > "$RDSTORE/$RDEXP/selection.json" <<EOF
 {
   "experiment": "$RDEXP",
-  "settings": {"role": "implementer", "models": ["opus"], "reviewer_model": "haiku", "model_ids": {"haiku": "claude-haiku-rd", "opus": "claude-opus-rd"}, "source_repo": "$WORK/rdsrc", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["opus"], "reviewer_model": "haiku", "effort": "high", "model_ids": {"haiku": "claude-haiku-rd", "opus": "claude-opus-rd"}, "source_repo": "$WORK/rdsrc", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
     {"packet": "rd-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rd", "handoff": "original", "start": "0000000000000000000000000000000000000000", "commits": ["1111111111111111111111111111111111111111"]}
   ],
@@ -2441,12 +2638,12 @@ assert_eq "record, pass first time: tokens are the dispatch rows' sum, dollars p
 assert_eq "record: one line appended to <store>/records.jsonl" "1:$RDSTORE/records.jsonl" "$(rd_count):$(line RECORDS)"
 RDL="$(rd_rec "$RDR1")"
 assert_eq "record: the record's exact key set" \
-  "experiment replay packet model role reviewer_model handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
+  "experiment replay packet model role reviewer_model effort handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
   "$(printf '%s\n' "$RDL" | rd_keys)"
 assert_has "record: the experiment's settings are carried as stored" \
-  "\"settings\":{\"role\": \"implementer\", \"models\": [\"opus\"], \"reviewer_model\": \"haiku\", \"model_ids\": {\"haiku\": \"claude-haiku-rd\", \"opus\": \"claude-opus-rd\"}," "$RDL"
-assert_has "record: the model, reviewer model and handoff source" \
-  "\"model\":\"opus\",\"role\":\"implementer\",\"reviewer_model\":\"haiku\",\"handoff_source\":\"original\"," "$RDL"
+  "\"settings\":{\"role\": \"implementer\", \"models\": [\"opus\"], \"reviewer_model\": \"haiku\", \"effort\": \"high\", \"model_ids\": {\"haiku\": \"claude-haiku-rd\", \"opus\": \"claude-opus-rd\"}," "$RDL"
+assert_has "record: the model, reviewer model, effort setting and handoff source" \
+  "\"model\":\"opus\",\"role\":\"implementer\",\"reviewer_model\":\"haiku\",\"effort\":\"high\",\"handoff_source\":\"original\"," "$RDL"
 assert_has "record, pass first time: outcome, verdict, rounds, sweeps and routing check" \
   "\"outcome\":\"passed\",\"outcome_reason\":\"the reviewer returned pass\",\"first_verdict\":\"pass\",\"fix_rounds\":0,\"sweeps\":\"pass\",\"routing_check\":\"pass\",\"end\":\"land\"," "$RDL"
 assert_has "record, pass first time: the cost" \

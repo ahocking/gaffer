@@ -733,11 +733,64 @@
 #                       RESOLVED position=<n> label=<L> model=<m> replay=<r>
 #                       RANKED=<ranking>
 #
+#   report <experiment>
+#                     render the experiment's stored results for the human, in
+#                     the report-conventions layout (templates/report-conventions.md:
+#                     flush-left headings, facts behind a `> ` bar, one line per
+#                     thing, no table). It reads only the store: the stored
+#                     selection (`select` first), records.jsonl, rankings.jsonl
+#                     and labels.jsonl; it runs nothing, writes nothing, and
+#                     prints no timestamp. Sections, in order:
+#                       the header   the varied role and models, the reviewer
+#                                    and effort, and one line saying what each
+#                                    figure is over.
+#                       Cells        one line per model x class (the settings'
+#                                    model order; code, then prose). A cell is
+#                                    every selected packet of the class, each
+#                                    read through THE LATEST-RECORD RULE. A
+#                                    replay is SCORED when its latest record is
+#                                    not `invalid`; `invalid` is a harness
+#                                    fault and is left out of every figure
+#                                    (and counted as excluded). Per cell:
+#                                      pass rate   `passed` over scored replays,
+#                                                  so `escalated` and
+#                                                  `failed-at-limit` count as
+#                                                  not passed;
+#                                      fix rounds  the mean of `fix_rounds`
+#                                                  over the passed replays;
+#                                      rank        the mean position (1 best)
+#                                                  over the class's ranked
+#                                                  packets;
+#                                      tokens      the mean of the four token
+#                                                  fields' sum, and dollars the
+#                                                  mean dollars_min-dollars_max,
+#                                                  each over the scored replays
+#                                                  whose figure is not null (a
+#                                                  null is left out of the mean
+#                                                  and its n, never read as 0);
+#                                    each with its n. A figure with n=0 reads
+#                                    `unmeasured`, and a cell with no scored
+#                                    replay reads `unmeasured` whole, naming how
+#                                    many of its packets are recorded and how
+#                                    many of those are invalid.
+#                       Packets      one line per selected packet: its title,
+#                                    class, handoff source (`original` or
+#                                    `rebuilt`, as the selection stored it and
+#                                    `prepare` installed it), and ranked or
+#                                    unranked with why.
+#                       Ranking      the count of selected packets left
+#                                    unranked. A packet is ranked by its last
+#                                    rankings.jsonl line for the experiment,
+#                                    resolved to models through the labels.jsonl
+#                                    line carrying the same ranking id; one with
+#                                    no ranking, or whose labels do not resolve,
+#                                    is unranked.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
 # check that printed its ROUTING_CHECK= line (pass, fail or not-run) / a sweeps
 # run that printed its SWEEPS= line (pass, fail or none-required) / a record
-# appended / a ranking clone built / a ranking recorded; 1 refused, no experiment id could be computed, the source
+# appended / a ranking clone built / a ranking recorded / a report rendered; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -771,8 +824,9 @@
 # (rank) no stored selection or prepared ranking, a ranking already recorded, a
 # ranking clone gone or re-routed, a selection pinning no reviewer id or naming
 # no effort, a session that crashed or timed out, a ranking that breaks a rule,
-# a model or effort check not passing, or a record that cannot be appended;
-# 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
+# a model or effort check not passing, or a record that cannot be appended, or
+# (report) no stored selection, or a selection, records, rankings or labels
+# file that cannot be read; 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
 # this script, or (replay, rank) no session command, or (replay, sweeps, rank) a
 # malformed timeout.
 #
@@ -817,7 +871,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>] | rank-prepare <experiment> <packet> | rank <experiment> <packet>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>] | rank-prepare <experiment> <packet> | rank <experiment> <packet> | report <experiment>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -4523,6 +4577,159 @@ cmd_rank() {
   cat "$tmp/stdout"
 }
 
+# --- report ------------------------------------------------------------------------
+
+cmd_report() {
+  [ $# -eq 1 ] || usage
+  local exp="$1"
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "report: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  local store sel
+  store="$(store_root)"
+  sel="$store/$exp/selection.json"
+  [ -f "$sel" ] || die "report: no stored selection for experiment $exp (run \`compare.sh select\` first): $sel"
+
+  local tmp
+  tmp="$(mktemp -d 2>/dev/null)" || die "report: cannot create a temp root"
+  # shellcheck disable=SC2064  # expand $tmp now: it is local to this function
+  trap "rm -rf '$tmp'" EXIT
+
+  json_flat "$sel" > "$tmp/sel" || die "report: the stored selection is not readable JSON: $sel"
+  [ "$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")" = "$exp" ] \
+    || die "report: the stored selection does not name experiment $exp: $sel"
+  # The three stores, each read whole; an absent one holds nothing yet, an
+  # unreadable one is refused rather than half-read.
+  local name f
+  for name in records rankings labels; do
+    f="$store/$name.jsonl"
+    : > "$tmp/$name"
+    if [ -f "$f" ]; then
+      json_flat "$f" > "$tmp/$name" || die "report: the $name file is not readable JSONL: $f"
+    fi
+  done
+
+  EXP="$exp" SEL="$tmp/sel" RECS="$tmp/records" RANKS="$tmp/rankings" LABELS="$tmp/labels" awk -F'\t' '
+    function ix(path, pre,   s) { s = substr(path, length(pre) + 1); sub(/\].*$/, "", s); return s + 0 }
+    function leaf(path,   s) { s = path; sub(/^.*\./, "", s); return s }
+    function mean(s, n, fmt) { return n > 0 ? sprintf(fmt, s / n) : "unmeasured" }
+    FILENAME == ENVIRON["SEL"] {
+      if ($2 == ".settings.role" && $3 == "s") role = $4
+      else if ($2 == ".settings.reviewer_model" && $3 == "s") rev = $4
+      else if ($2 == ".settings.effort" && $3 == "s") eff = $4
+      else if ($2 ~ /^\.settings\.models\[[0-9]+\]$/ && $3 == "s") { nm++; mod[nm] = $4 }
+      else if ($2 ~ /^\.selected\[[0-9]+\]\.(packet|class|title|handoff)$/) {
+        i = ix($2, ".selected["); S[i, leaf($2)] = $4; if (i + 1 > np) np = i + 1
+      }
+      next
+    }
+    FILENAME == ENVIRON["RECS"] {
+      d = $1 + 0; if (d > nr) nr = d
+      if ($2 == ".experiment" && $3 == "s") re[d] = $4
+      else if ($2 == ".packet" && $3 == "s") rp[d] = $4
+      else if ($2 == ".model" && $3 == "s") rmod[d] = $4
+      else if ($2 == ".outcome" && $3 == "s") ro[d] = $4
+      else if ($2 == ".fix_rounds" && $3 == "n" && $4 ~ /^[0-9]+$/) rf[d] = $4 + 0
+      else if ($2 ~ /^\.tokens\.(input|output|cache_creation|cache_read)$/ && $3 == "n" && $4 ~ /^[0-9]+$/) { rt[d] += $4; rtn[d]++ }
+      else if ($2 == ".dollars_min" && $3 == "n" && $4 ~ /^[0-9]+(\.[0-9]+)?$/) rdl[d] = $4 + 0
+      else if ($2 == ".dollars_max" && $3 == "n" && $4 ~ /^[0-9]+(\.[0-9]+)?$/) rdh[d] = $4 + 0
+      next
+    }
+    FILENAME == ENVIRON["RANKS"] {
+      d = $1 + 0; if (d > nk) nk = d
+      if ($2 == ".experiment" && $3 == "s") ke[d] = $4
+      else if ($2 == ".packet" && $3 == "s") kp[d] = $4
+      else if ($2 == ".ranking" && $3 == "s") kr[d] = $4
+      else if ($2 ~ /^\.order\[[0-9]+\]\.(position|label)$/) {
+        i = ix($2, ".order["); KO[d, i, leaf($2)] = $4; if (i + 1 > ko[d]) ko[d] = i + 1
+      }
+      next
+    }
+    FILENAME == ENVIRON["LABELS"] {
+      d = $1 + 0; if (d > nl) nl = d
+      if ($2 == ".ranking" && $3 == "s") lr[d] = $4
+      else if ($2 ~ /^\.labels\[[0-9]+\]\.(label|model)$/) {
+        i = ix($2, ".labels["); LB[d, i, leaf($2)] = $4; if (i + 1 > lbn[d]) lbn[d] = i + 1
+      }
+      next
+    }
+    END {
+      E = ENVIRON["EXP"]
+      # THE LATEST-RECORD RULE: the last record naming the experiment, packet and model.
+      for (d = 1; d <= nr; d++) if ((d in re) && re[d] == E && (d in rp) && (d in rmod)) latest[rp[d], rmod[d]] = d
+      # A packet'"'"'s ranking is its last recorded one; its labels resolve through the
+      # label map line carrying the same ranking id.
+      for (d = 1; d <= nk; d++) if ((d in ke) && ke[d] == E && (d in kp) && (d in kr)) lastrank[kp[d]] = d
+      for (d = 1; d <= nl; d++) if (d in lr) lmap[lr[d]] = d
+      unranked = 0
+      for (j = 0; j < np; j++) {
+        p = S[j, "packet"]
+        if (!(p in lastrank)) { why[p] = "no ranking recorded"; unranked++; continue }
+        d = lastrank[p]
+        if (!(kr[d] in lmap)) { why[p] = "its ranking " kr[d] " has no label map line"; unranked++; continue }
+        ld = lmap[kr[d]]; good = (ko[d] > 0)
+        for (i = 0; i < ko[d]; i++) {
+          mm[i] = ""
+          for (k = 0; k < lbn[ld]; k++) if (LB[ld, k, "label"] == KO[d, i, "label"]) mm[i] = LB[ld, k, "model"]
+          if (mm[i] == "" || KO[d, i, "position"] !~ /^[0-9]+$/) good = 0
+        }
+        if (!good) { why[p] = "its ranking " kr[d] " does not resolve to models"; unranked++; continue }
+        for (i = 0; i < ko[d]; i++) rankpos[p, mm[i]] = KO[d, i, "position"] + 0
+      }
+
+      ml = ""; for (i = 1; i <= nm; i++) ml = ml (i > 1 ? ", " : "") mod[i]
+      printf "**Model comparison** (experiment `%s`)\n", E
+      printf "> Varied role: %s, across %s\n", role, ml
+      printf "> Reviewer: %s, at effort %s\n", rev, (eff == "" ? "unrecorded" : eff)
+      printf "> Pass rate is passed over replays not invalid. Fix rounds are over passed replays. Rank is 1 for best, over ranked packets. Tokens and dollars are means over replays not invalid with a measured figure. n is what each figure is over.\n"
+
+      printf "\n**Cells**\n"
+      split("code prose", cls, " ")
+      for (mi = 1; mi <= nm; mi++) for (ci = 1; ci <= 2; ci++) {
+        m = mod[mi]; c = cls[ci]
+        npk = 0; rec = 0; inval = 0; scored = 0; passed = 0
+        frs = 0; frn = 0; rks = 0; rkn = 0; tks = 0; tkn = 0; lo = 0; hi = 0; dn = 0
+        for (j = 0; j < np; j++) {
+          if (S[j, "class"] != c) continue
+          p = S[j, "packet"]; npk++
+          if ((p, m) in rankpos) { rks += rankpos[p, m]; rkn++ }
+          if (!((p, m) in latest)) continue
+          d = latest[p, m]; rec++
+          if (ro[d] == "invalid") { inval++; continue }
+          scored++
+          if (ro[d] == "passed") { passed++; if (d in rf) { frs += rf[d]; frn++ } }
+          if (rtn[d] == 4) { tks += rt[d]; tkn++ }
+          if ((d in rdl) && (d in rdh)) { lo += rdl[d]; hi += rdh[d]; dn++ }
+        }
+        if (scored == 0) {
+          if (npk == 0) r = "no " c " packet is selected"
+          else r = rec " of " npk " " c " packet(s) recorded, " inval " invalid"
+          printf "> ⚠️ **%s, %s** — unmeasured: no scored replay (%s)\n", m, c, r
+          continue
+        }
+        printf "> **%s, %s** — pass rate %.2f (%d passed, n=%d%s)", m, c, passed / scored, passed, scored, \
+          (inval > 0 ? "; " inval " invalid excluded" : "")
+        printf " · fix rounds %s (n=%d)", mean(frs, frn, "%.2f"), frn
+        printf " · rank %s (n=%d)", mean(rks, rkn, "%.2f"), rkn
+        printf " · tokens %s (n=%d)", mean(tks, tkn, "%.0f"), tkn
+        printf " · dollars %s (n=%d)\n", (dn > 0 ? sprintf("%.2f–%.2f", lo / dn, hi / dn) : "unmeasured"), dn
+      }
+
+      printf "\n**Packets**\n"
+      for (j = 0; j < np; j++) {
+        p = S[j, "packet"]
+        printf "> **%s** (`%s`) — %s, handoff %s, %s\n", S[j, "title"], p, S[j, "class"], \
+          (S[j, "handoff"] == "" ? "unrecorded" : S[j, "handoff"]), ((p in why) ? "unranked: " why[p] : "ranked")
+      }
+
+      printf "\n**Ranking**\n"
+      printf "> %s%d of %d packet(s) unranked\n", (unranked > 0 ? "⚠️ " : ""), unranked, np
+    }' "$tmp/sel" "$tmp/records" "$tmp/rankings" "$tmp/labels" > "$tmp/out" \
+    || die "report: the report could not be rendered"
+  cat "$tmp/out"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -4539,6 +4746,7 @@ case "$SUB" in
   run)        cmd_run "$@" ;;
   rank-prepare) cmd_rank_prepare "$@" ;;
   rank)       cmd_rank "$@" ;;
+  report)     cmd_report "$@" ;;
   *) usage ;;
 esac
 exit 0

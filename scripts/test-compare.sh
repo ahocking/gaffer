@@ -117,7 +117,17 @@
 # compared model, the check passing, the record naming no compared model and
 # appended before any RESOLVED line, each label resolved to the model the map
 # gives it; the same ranking again refused with no session; and an append that
-# fails leaving every label unresolved.
+# fails leaving every label unresolved. `report`: a hand-written store of three
+# models over two code packets and one prose packet, one line per model x class
+# cell in model then class order: an `escalated` replay counted as not passed,
+# an `invalid` replay left out of the denominator (and a superseded `invalid`
+# record not read), a `null` cost left out of the mean and its n, a cell with
+# only an invalid replay and a cell with no record each reading unmeasured, a
+# ranked cell's mean rank and an unranked one's unmeasured, each packet's
+# handoff source (a rebuilt one stated), the unranked count (and a ranking
+# whose label map is gone counted unranked), no table, a second render
+# byte-identical, and refusals (no selection, an unreadable records file, a
+# malformed id).
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -3349,6 +3359,122 @@ case "$OUT$ERR" in *RESOLVED*|*fable*|*opus*|*sonnet*) bad "rank, an append that
 rmdir "$RKSTORE/rankings.jsonl"
 mv "$RK_SAVED" "$RKSTORE/rankings.jsonl"
 
+printf '\n== report: stored results, one line per model x class cell ==\n'
+# A fixture store, written by hand: three models over two code packets and one
+# prose packet. Latest records (THE LATEST-RECORD RULE):
+#   rp-c1 code  fable passed  fix 0 tokens 200  $0.10-0.20
+#               opus  passed  fix 2 tokens 1000 $1.00-1.50
+#               sonnet invalid, then a rerun: passed fix 1, tokens and dollars null
+#   rp-c2 code  fable escalated fix 1 tokens 400 $0.30-0.40
+#               opus  invalid
+#               sonnet failed-at-limit tokens 600 $0.60-0.70
+#   rp-p1 prose fable passed; opus invalid; sonnet no record
+# plus another experiment's passed record for fable on rp-c2, never read here.
+# rp-c1 is ranked (opus 1, sonnet 2, fable 3); rp-c2 and rp-p1 are not.
+RPSTORE="$WORK/rpstore"
+RPEXP="0123456789ab"
+mkdir -p "$RPSTORE/$RPEXP"
+cat > "$RPSTORE/$RPEXP/selection.json" <<EOF
+{
+  "experiment": "$RPEXP",
+  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "haiku", "model_ids": {"fable": "claude-fable-1", "opus": "claude-opus-1", "sonnet": "claude-sonnet-1", "haiku": "claude-haiku-1"}, "effort": "high", "source_repo": "/nowhere", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "rp-c1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "Add the widget", "handoff": "original", "start": "0000000", "commits": ["1111111"]},
+    {"packet": "rp-c2", "class": "code", "tier": "mechanical", "fix_rounds": 1, "title": "Fix the gadget", "handoff": "rebuilt", "start": "0000000", "commits": ["2222222"]},
+    {"packet": "rp-p1", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Document the widget", "handoff": "original", "start": "0000000", "commits": ["3333333"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+rp_rec() {  # rp_rec <experiment> <packet> <model> <outcome> <fix> <tokens-json|null> <dmin|null> <dmax|null>
+  printf '{"experiment":"%s","replay":"r-%s-%s","packet":"%s","model":"%s","role":"implementer","reviewer_model":"haiku","effort":"high","handoff_source":"original","settings":{"role":"implementer"},"outcome":"%s","outcome_reason":"x","first_verdict":null,"fix_rounds":%s,"sweeps":null,"routing_check":"pass","end":"land","tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":null,"price_table_date":"2026-01-01","cost_source":"dispatches","cost_note":null,"recorded_at":"2026-01-01T00:00:00Z"}\n' \
+    "$1" "$2" "$3" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >> "$RPSTORE/records.jsonl"
+}
+rp_tok() { printf '{"input":%s,"output":%s,"cache_creation":0,"cache_read":0}' "$1" "$2"; }
+rp_rec "$RPEXP" rp-c1 fable passed 0 "$(rp_tok 100 100)" 0.10 0.20
+rp_rec "$RPEXP" rp-c1 opus passed 2 "$(rp_tok 500 500)" 1.00 1.50
+rp_rec "$RPEXP" rp-c1 sonnet invalid 0 "$(rp_tok 9000 9000)" null null
+rp_rec "$RPEXP" rp-c1 sonnet passed 1 null null null
+rp_rec "$RPEXP" rp-c2 fable escalated 1 "$(rp_tok 200 200)" 0.30 0.40
+rp_rec aaaaaaaaaaaa rp-c2 fable passed 0 "$(rp_tok 1 1)" 0.01 0.01
+rp_rec "$RPEXP" rp-c2 opus invalid 0 "$(rp_tok 700 700)" null null
+rp_rec "$RPEXP" rp-c2 sonnet failed-at-limit 3 "$(rp_tok 300 300)" 0.60 0.70
+rp_rec "$RPEXP" rp-p1 fable passed 0 "$(rp_tok 50 50)" 0.05 0.06
+rp_rec "$RPEXP" rp-p1 opus invalid 0 null null null
+printf '{"experiment":"%s","packet":"rp-c1","ranking":"abcdefabcdef","dir":"/x","start":"0000000","reviewer_model":"haiku","labels":[{"label":"A","model":"opus","replay":"r1"},{"label":"B","model":"fable","replay":"r2"},{"label":"C","model":"sonnet","replay":"r3"}],"prepared_at":"2026-01-01T00:00:00Z"}\n' \
+  "$RPEXP" > "$RPSTORE/labels.jsonl"
+printf '{"experiment":"%s","packet":"rp-c1","ranking":"abcdefabcdef","dir":"/x","start":"0000000","reviewer_model":"haiku","effort":"high","routing_check":"pass","order":[{"position":1,"label":"A","reason":"best"},{"position":2,"label":"C","reason":"middle"},{"position":3,"label":"B","reason":"worst"}],"ranked_at":"2026-01-01T00:00:00Z"}\n' \
+  "$RPEXP" > "$RPSTORE/rankings.jsonl"
+rpt() {  # rpt [experiment]: OUT/ERR/RC for `compare.sh report`
+  OUT="$(ORCH_COMPARE_STORE="$RPSTORE" "$COMPARE" report "${1:-$RPEXP}" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+cell() { printf '%s\n' "$OUT" | awk -v p="**$1, $2** — " 'index($0, p) { print; exit }'; }
+pkline() { printf '%s\n' "$OUT" | P="$1" awk 'index($0, "(" sprintf("%c", 96) ENVIRON["P"] sprintf("%c", 96) ")") { print; exit }'; }
+rpt
+assert_eq "report: exit 0" "0" "$RC"
+assert_eq "report: an escalated replay counts as not passed (fable, code: 1 of 2)" \
+  "> **fable, code** — pass rate 0.50 (1 passed, n=2) · fix rounds 0.00 (n=1) · rank 3.00 (n=1) · tokens 300 (n=2) · dollars 0.20–0.30 (n=2)" \
+  "$(cell fable code)"
+assert_eq "report: an invalid replay is left out of the denominator (opus, code: 1 of 1)" \
+  "> **opus, code** — pass rate 1.00 (1 passed, n=1; 1 invalid excluded) · fix rounds 2.00 (n=1) · rank 1.00 (n=1) · tokens 1000 (n=1) · dollars 1.00–1.50 (n=1)" \
+  "$(cell opus code)"
+assert_eq "report: a null cost is left out of the mean and its n; the superseded invalid record is not read (sonnet, code)" \
+  "> **sonnet, code** — pass rate 0.50 (1 passed, n=2) · fix rounds 1.00 (n=1) · rank 2.00 (n=1) · tokens 600 (n=1) · dollars 0.60–0.70 (n=1)" \
+  "$(cell sonnet code)"
+assert_eq "report: a cell with one passed replay and no ranking reads rank unmeasured (fable, prose)" \
+  "> **fable, prose** — pass rate 1.00 (1 passed, n=1) · fix rounds 0.00 (n=1) · rank unmeasured (n=0) · tokens 100 (n=1) · dollars 0.05–0.06 (n=1)" \
+  "$(cell fable prose)"
+assert_eq "report: a cell whose only replay is invalid reads unmeasured, never 0 (opus, prose)" \
+  "> ⚠️ **opus, prose** — unmeasured: no scored replay (1 of 1 prose packet(s) recorded, 1 invalid)" \
+  "$(cell opus prose)"
+assert_eq "report: a cell with no replay recorded reads unmeasured (sonnet, prose)" \
+  "> ⚠️ **sonnet, prose** — unmeasured: no scored replay (0 of 1 prose packet(s) recorded, 0 invalid)" \
+  "$(cell sonnet prose)"
+assert_eq "report: one entry per model x class cell, in model then class order" \
+  "fable, code|fable, prose|opus, code|opus, prose|sonnet, code|sonnet, prose" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^> \(⚠️ \)\{0,1\}\*\*\([a-z]*, [a-z]*\)\*\* — .*/\2/p' | paste -sd'|' -)"
+assert_eq "report: a rebuilt handoff is stated for its packet" \
+  "> **Fix the gadget** (\`rp-c2\`) — code, handoff rebuilt, unranked: no ranking recorded" \
+  "$(pkline rp-c2)"
+assert_eq "report: an original handoff is stated for its packet, and it is ranked" \
+  "> **Add the widget** (\`rp-c1\`) — code, handoff original, ranked" \
+  "$(pkline rp-c1)"
+assert_eq "report: the unranked count" "> ⚠️ 2 of 3 packet(s) unranked" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Ranking\*\*$/{n;p;}')"
+case "$OUT" in
+  *'|'*) bad "report: no table" "$OUT" ;;
+  *) ok "report: no table" ;;
+esac
+assert_eq "report: every line is a flush-left heading, a quote-bar fact or a blank" "" \
+  "$(printf '%s\n' "$OUT" | grep -v -e '^$' -e '^> ' -e '^\*\*[A-Z][A-Za-z ]*\*\*' )"
+RP_FIRST="$OUT"
+rpt
+assert_eq "report: a second render of the same store is byte-identical" "$RP_FIRST" "$OUT"
+# A label map line that is missing leaves the ranked packet unranked, with why.
+mv "$RPSTORE/labels.jsonl" "$RPSTORE/labels.saved"
+rpt
+assert_eq "report: a ranking whose label map is gone leaves its packet unranked" \
+  "> **Add the widget** (\`rp-c1\`) — code, handoff original, unranked: its ranking abcdefabcdef has no label map line" \
+  "$(pkline rp-c1)"
+assert_eq "report: ... and counted" "> ⚠️ 3 of 3 packet(s) unranked" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Ranking\*\*$/{n;p;}')"
+mv "$RPSTORE/labels.saved" "$RPSTORE/labels.jsonl"
+# Refusals: no stored selection, an unreadable records file, a malformed id.
+rpt bbbbbbbbbbbb
+assert_eq "report, no stored selection: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "report, no stored selection: named" "no stored selection" "$ERR"
+cp "$RPSTORE/records.jsonl" "$RPSTORE/records.saved"
+printf '{"experiment": \n' >> "$RPSTORE/records.jsonl"
+rpt
+assert_eq "report, an unreadable records file: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "report, an unreadable records file: named" "the records file is not readable JSONL" "$ERR"
+mv "$RPSTORE/records.saved" "$RPSTORE/records.jsonl"
+rpt not-an-id
+assert_eq "report, a malformed experiment id: exit 1" "1" "$RC"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -3369,6 +3495,7 @@ printf '\n== usage ==\n'
 "$COMPARE" run aaaaaaaaaaa1 --approve abc --bogus >/dev/null 2>&1; assert_eq "run with an unknown flag: exit 2" "2" "$?"
 "$COMPARE" rank-prepare aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank-prepare without a packet: exit 2" "2" "$?"
 "$COMPARE" rank aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank without a packet: exit 2" "2" "$?"
+"$COMPARE" report >/dev/null 2>&1; assert_eq "report without an experiment: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

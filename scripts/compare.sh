@@ -257,8 +257,84 @@
 #                     redacting it would change the work under review. On any
 #                     failure the half-built view is removed.
 #
+#   replay <replay>   run a prepared replay (its record, as for review-view)
+#                     through the `run-loop` §3 attempt, fix and review path,
+#                     with this script as the driver. Once per replay: a second
+#                     `replay` of the same id is refused (<replay>.steps exists).
+#                     Every agent step is one non-interactive session,
+#                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> -p <prompt>
+#                     with stdin from /dev/null, whose working directory is the
+#                     work clone (the varied role) or a review view (the
+#                     reviewer), and which is killed when it outlives
+#                     ${ORCH_COMPARE_STEP_TIMEOUT} seconds (the default is
+#                     _CMP_STEP_TIMEOUT_DEFAULT below). <harness> is the
+#                     checkout this script runs from: every agent, hook and
+#                     script a session uses is the harness's, never the
+#                     clone's own copy. The prompt tells the session to
+#                     dispatch the step's agent once, with the model
+#                     `<harness>/scripts/routing.sh --root <dir> resolve <agent>`
+#                     prints (omitted when it prints nothing), and to end its
+#                     output with the agent's status line, which is read as
+#                     the last non-empty line of the session's stdout. The
+#                     brief names the handoff, the run-state and the result
+#                     path in that directory (a cached handoff's own header
+#                     names another checkout's) and, on a fix round, the
+#                     latest review. The sequence:
+#                       1. `runstate.sh record-start <packet> <replay>` in the
+#                          clone.
+#                       2. the varied role's step. Its line goes through
+#                          `check-status`; a refused line (or none) gets ONE
+#                          re-dispatch carrying the reason, and a second
+#                          refusal ends the replay. A first token `continue` goes
+#                          through `route`: ACTION=continue runs `record-start
+#                          --continue` and `refresh-handoff`, then step 2 again;
+#                          ACTION=stop ends the replay. Any other token goes to
+#                          review.
+#                       3. a fresh `review-view` for every review, and a reviewer
+#                          session in it (same check-status rule). On a review
+#                          after a fix round, the previous review is copied to
+#                          the view's review path first and that path is in
+#                          the reviewer's brief, as §3.4 gives it. Its verdict
+#                          (pass, fix or escalate; anything else ends the
+#                          replay as refused) goes through `route` in the work
+#                          clone's run-state, and the view's review file is
+#                          copied to the clone's run directory for the next
+#                          attempt, unless the session left it as seeded (the
+#                          next attempt then gets no review; a failed copy is
+#                          an error). ACTION=attempt runs `refresh-handoff`,
+#                          then step 2 with that review; `packet_attempts` in
+#                          the clone's configuration bounds it through `route`.
+#                          ACTION=decider or stop ends the replay: the
+#                          escalation decider is never dispatched.
+#                       4. ACTION=land commits the packet's diff, and only it,
+#                          as ONE commit on the start, and moves the replay's
+#                          branch to it (a commit the agent made itself is
+#                          left unreachable): the work tree against the start,
+#                          with `.agents/metrics/`, `.agents/loop/`, the
+#                          run-state files, `.agents/roadmap.yaml` and `gspec/`
+#                          kept as the start holds them, and the replay's
+#                          `model_routing` change taken back out of
+#                          `.agents/project-overrides.yaml`: its
+#                          `model_routing` block is the start's again, and the
+#                          packet's own edits elsewhere in it are kept. No `check-task`, no
+#                          `complete-capabilities`, no roadmap edit. The message
+#                          carries the `[orch packet:<id>]` trailer; an empty
+#                          change makes no commit.
+#                     Output, each line also appended to
+#                     <store>/<experiment>/replays/<replay>.steps:
+#                       STEP n=<k> agent=<a> try=<1|2> exit=<code|timeout>
+#                            status=<ok|refused|none> [token=<first token>]
+#                       ROUTE agent=<a> token= action= attempts= limit=
+#                       REFRESH partial_work=<...> paths=<n>
+#                       VIEW=<review view path>
+#                       END=<land|decider|stop|refused|crashed|timed-out|error>
+#                       COMMIT=<sha|none>
+#                     `error` is a harness step that failed (exit 1).
+#                     `crashed` is a session exiting non-zero, `timed-out` one
+#                     killed at the limit; either ends the replay at once.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
-# prepared replay / a review view; 1 refused, no experiment id could be computed, the source
+# prepared replay / a review view / a replay that reached an END; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -266,8 +342,11 @@
 # or a clone, routing, run-state or handoff step that failed, or (review-view)
 # no single replay record, a work clone, source or selection that cannot be
 # read, a scratch root inside the source or naming a model, or a diff, clone,
-# commit, routing, run-state or redaction step that failed; 2 usage error,
-# or routing.sh / gspec-backlog.sh / runstate.sh missing beside this script.
+# commit, routing, run-state or redaction step that failed, or (replay) no
+# single replay record, a replay already run, a review view, route,
+# refresh-handoff or land commit that failed (an `END=error` line says which);
+# 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh missing beside
+# this script, or (replay) no session command or a malformed timeout.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
 # =============================================================================
@@ -304,7 +383,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -1976,6 +2055,358 @@ REVIEW=$vrev"
   printf '%s\n' "$out"
 }
 
+# --- replay --------------------------------------------------------------------------
+
+# How long one agent session may run, in seconds, when ORCH_COMPARE_STEP_TIMEOUT
+# is unset.
+_CMP_STEP_TIMEOUT_DEFAULT=3600
+
+# The verdicts a reviewer returns (templates/status-line.md). Anything else from
+# a review ends the replay rather than being routed.
+_CMP_REVIEW_TOKENS="pass fix escalate"
+
+# The paths a landed replay commit keeps as the start holds them: the loop's own
+# bookkeeping, which the live loop never commits as packet work, and the plan
+# and roadmap, which a replay never edits. The routing configuration is handled
+# on its own.
+_CMP_LAND_EXCLUDED=".agents/metrics .agents/loop .agents/run-state.yaml .agents/run-state-prev.yaml .agents/roadmap.yaml gspec"
+
+# run_session <dir> <prompt-file> <out> <err>: one non-interactive session in
+# <dir>, killed at the time limit. Sets STEP_EXIT to its exit code, or
+# `timeout`. Polled rather than watched by a second process, so no watchdog
+# outlives the step.
+run_session() {
+  local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
+  ( cd "$dir" && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
+  pid=$!
+  t0=$SECONDS
+  STEP_EXIT=""
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $((SECONDS - t0)) -ge "$_CMP_TIMEOUT" ]; then
+      kill -TERM "$pid" 2>/dev/null
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null
+      STEP_EXIT="timeout"
+      break
+    fi
+    sleep 0.2
+  done
+  wait "$pid" 2>/dev/null; rc=$?
+  [ -n "$STEP_EXIT" ] || STEP_EXIT="$rc"
+}
+
+# step_prompt <agent> <dir> <brief-file> <refusal-or-empty>: the session's prompt.
+# It names no model: the model is whatever routing.sh resolves in <dir>.
+step_prompt() {
+  printf 'You are running one step of a packet replay. The harness that launched you is the loop driver; you do this one step and nothing else.\n\n'
+  printf 'Dispatch the `%s` agent (the gaffer plugin'"'"'s agent of that name) exactly once. Set the dispatch'"'"'s model to what this command prints, and omit the model when it prints nothing; never choose a model yourself:\n\n' "$1"
+  printf '    %s/scripts/routing.sh --root %s resolve %s\n\n' "$_CMP_HARNESS" "$2" "$1"
+  printf 'Give the agent exactly this brief:\n\n'
+  cat "$3"
+  if [ -n "$4" ]; then
+    printf '\nThe previous dispatch of this step returned a status line that `runstate.sh check-status` refused, with this reason:\n    %s\nAdd that reason to the brief so the agent returns a line that passes.\n' "$4"
+  fi
+  printf '\nDo not edit, commit or run anything else yourself. When the agent returns, print its one status line exactly as it returned it, as the last line of your output, with nothing after it.\n'
+}
+
+# dispatch_step <agent> <dir> <brief-file>: the step, with check-status's one
+# re-dispatch. Sets D_LINE and D_TOKEN on success (return 0); D_EXIT on a
+# crashed or timed-out session (return 1); D_REASON on a second refusal
+# (return 2).
+dispatch_step() {
+  local agent="$1" dir="$2" brief="$3" try refusal="" chk rc
+  D_LINE=""; D_TOKEN=""; D_EXIT=""; D_REASON=""
+  for try in 1 2; do
+    STEPN=$((STEPN + 1))
+    step_prompt "$agent" "$dir" "$brief" "$refusal" > "$_CMP_TMP/prompt"
+    run_session "$dir" "$_CMP_TMP/prompt" "$_CMP_TMP/out" "$_CMP_TMP/err"
+    if [ "$STEP_EXIT" != 0 ]; then
+      emit "STEP n=$STEPN agent=$agent try=$try exit=$STEP_EXIT status=none"
+      D_EXIT="$STEP_EXIT"
+      return 1
+    fi
+    D_LINE="$(tr -d '\r' < "$_CMP_TMP/out" | awk 'NF { l = $0 } END { print l }')"
+    if [ -z "$D_LINE" ]; then
+      chk="the session returned no status line"; rc=1
+    else
+      chk="$(cd "$dir" && "$RUNSTATE" check-status --status "$D_LINE" 2>&1)"; rc=$?
+    fi
+    if [ "$rc" -eq 0 ]; then
+      D_TOKEN="${D_LINE%% · *}"
+      emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=ok token=$D_TOKEN"
+      return 0
+    fi
+    refusal="$(printf '%s\n' "$chk" | head -1)"
+    emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=refused"
+  done
+  D_REASON="$refusal"
+  return 2
+}
+
+# route_in_clone <agent> <token> <line>: `runstate.sh route` in the work clone.
+# Sets R_ACTION; emits the ROUTE line. Returns 1 when route fails.
+route_in_clone() {
+  local out a n l
+  out="$(cd "$_RP_CLONE" && CLAUDE_PROJECT_DIR="$_RP_CLONE" "$RUNSTATE" route "$_RP_RS" "$_RP_PKT" "$2" --status "$3" 2>"$_CMP_TMP/rs.err" | tr -d '\r')" \
+    || { R_ACTION=""; return 1; }
+  R_ACTION="$(printf '%s\n' "$out" | sed -n 's/^ACTION=//p' | head -1)"
+  a="$(printf '%s\n' "$out" | sed -n 's/^ATTEMPTS=//p' | head -1)"
+  n="$(printf '%s\n' "$out" | sed -n 's/^LIMIT=//p' | head -1)"
+  emit "ROUTE agent=$1 token=$2 action=$R_ACTION attempts=$a limit=$n"
+  [ -n "$R_ACTION" ]
+}
+
+# refresh_in_clone: `runstate.sh refresh-handoff` in the work clone, before a
+# continuation and before every fix/retry re-dispatch.
+refresh_in_clone() {
+  local out
+  out="$(cd "$_RP_CLONE" && CLAUDE_PROJECT_DIR="$_RP_CLONE" "$RUNSTATE" refresh-handoff "$_RP_RS" "$_RP_PKT" 2>"$_CMP_TMP/rs.err" | tr -d '\r')" \
+    || return 1
+  emit "REFRESH partial_work=$(printf '%s\n' "$out" | sed -n 's/^PARTIAL_WORK=//p' | head -1) paths=$(printf '%s\n' "$out" | sed -n 's/^PATHS=//p' | head -1)"
+}
+
+# unset_routing <current> <start> <out>: <current> with its top-level
+# `model_routing` block (the key line and the indented, non-blank lines
+# directly under it) replaced by <start>'s block, or removed when <start> has
+# none. Every other line of <current> is kept, so a packet's own edits to the
+# file survive while the replay's routing does not; a packet's own edit inside
+# the block is not kept (the review view reduces the block the same way).
+# Exit 3 when <current> holds a second `model_routing:` key.
+unset_routing() {
+  S="$2" awk '
+    BEGIN {
+      while ((getline l < ENVIRON["S"]) > 0) {
+        sub(/\r$/, "", l)
+        if (sdone) continue
+        if (sopen) { if (l ~ /^[[:space:]]+[^[:space:]]/) { sb[++ns] = l; continue } sdone = 1; continue }
+        if (l ~ /^model_routing:/) { sb[++ns] = l; sopen = 1 }
+      }
+    }
+    { sub(/\r$/, "") }
+    cin { if ($0 ~ /^[[:space:]]+[^[:space:]]/) next; cin = 0 }
+    /^model_routing:/ {
+      if (cdone) { bad = 1; next }
+      cin = 1; cdone = 1
+      for (i = 1; i <= ns; i++) print sb[i]
+      next
+    }
+    { print }
+    END { if (bad) exit 3 }' "$1" > "$3"
+}
+
+# land_commit: the packet's diff, and only it, as one commit on the start;
+# the replay's branch moved to it. Sets LAND_COMMIT (a sha, or `none` for an
+# empty change). Returns 1 on a git failure, 3 when the packet's own edit to
+# the routing configuration cannot be separated from the replay's.
+land_commit() {
+  local c="$_RP_CLONE" s="$_RP_START" idx="$_CMP_TMP/land.idx" ov=".agents/project-overrides.yaml" p blob tree commit
+  _gl() { GIT_INDEX_FILE="$idx" git -C "$c" "$@"; }
+  _gl read-tree "$s" 2>/dev/null || return 1
+  _gl add -A -- . 2>/dev/null || return 1
+  _restore() {  # _restore <path>: <path> as the start holds it (absent included)
+    _gl rm --cached -r -q --ignore-unmatch -- "$1" >/dev/null 2>&1 || return 1
+    git -C "$c" ls-tree -r "$s" -- "$1" > "$_CMP_TMP/keep" 2>/dev/null || return 1
+    _gl update-index --index-info < "$_CMP_TMP/keep" 2>/dev/null
+  }
+  for p in $_CMP_LAND_EXCLUDED; do _restore "$p" || return 1; done
+  # The routing configuration: what prepare wrote is the start's file with the
+  # replay's routing set, so an unchanged file is the start's; a file the packet
+  # also edited keeps those edits, with the start's model_routing block put back.
+  : > "$_CMP_TMP/ov.start"
+  if git -C "$c" cat-file -e "$s:$ov" 2>/dev/null; then
+    git -C "$c" show "$s:$ov" > "$_CMP_TMP/ov.start" 2>/dev/null || return 1
+    set_routing "$_CMP_TMP/ov.start" "$_CMP_TMP/ov.prepared" "$_RP_ROLE" "$_RP_MODEL" "$_RP_RMODEL" || return 3
+  else
+    set_routing /dev/null "$_CMP_TMP/ov.prepared" "$_RP_ROLE" "$_RP_MODEL" "$_RP_RMODEL" || return 3
+  fi
+  if [ ! -f "$c/$ov" ]; then
+    _gl rm --cached -q --ignore-unmatch -- "$ov" >/dev/null 2>&1 || return 1
+  elif cmp -s "$c/$ov" "$_CMP_TMP/ov.prepared"; then
+    _restore "$ov" || return 1
+  else
+    unset_routing "$c/$ov" "$_CMP_TMP/ov.start" "$_CMP_TMP/ov.land" || return 3
+    blob="$(git -C "$c" hash-object -w "$_CMP_TMP/ov.land" 2>/dev/null)" || return 1
+    _gl update-index --add --cacheinfo "100644,$blob,$ov" 2>/dev/null || return 1
+  fi
+  tree="$(_gl write-tree 2>/dev/null)" || return 1
+  if [ "$tree" = "$(git -C "$c" rev-parse "$s^{tree}" 2>/dev/null)" ]; then
+    LAND_COMMIT="none"
+    return 0
+  fi
+  commit="$(GIT_AUTHOR_NAME="$_CMP_VIEW_NAME" GIT_AUTHOR_EMAIL="$_CMP_VIEW_EMAIL" \
+            GIT_COMMITTER_NAME="$_CMP_VIEW_NAME" GIT_COMMITTER_EMAIL="$_CMP_VIEW_EMAIL" \
+            git -C "$c" -c commit.gpgsign=false commit-tree "$tree" -p "$s" \
+              -m "$(printf 'Replay of packet %s\n\n[orch packet:%s]' "$_RP_PKT" "$_RP_PKT")" 2>/dev/null)" \
+    && [ -n "$commit" ] || return 1
+  git -C "$c" update-ref "refs/heads/$_RP_BRANCH" "$commit" >/dev/null 2>&1 || return 1
+  # The clone's own index follows its branch; its work tree is left as it is.
+  git -C "$c" reset -q >/dev/null 2>&1 || return 1
+  LAND_COMMIT="$commit"
+}
+
+_RP_STEPS=""
+emit() {
+  printf '%s\n' "$1"
+  printf '%s\n' "$1" >> "$_RP_STEPS"
+}
+
+cmd_replay() {
+  [ $# -eq 1 ] || usage
+  local rid="$1"
+  case "$rid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "replay: not a replay id (12 hex, as \`prepare\` prints it): $rid" ;;
+  esac
+  [ -x "$ROUTING" ] || die "replay: routing.sh is missing or not executable: $ROUTING" 2
+  [ -x "$RUNSTATE" ] || die "replay: runstate.sh is missing or not executable: $RUNSTATE" 2
+  _CMP_CLAUDE="${ORCH_COMPARE_CLAUDE:-claude}"
+  command -v "$_CMP_CLAUDE" >/dev/null 2>&1 || die "replay: no session command: $_CMP_CLAUDE (set ORCH_COMPARE_CLAUDE)" 2
+  _CMP_TIMEOUT="${ORCH_COMPARE_STEP_TIMEOUT:-$_CMP_STEP_TIMEOUT_DEFAULT}"
+  case "$_CMP_TIMEOUT" in ''|0|*[!0-9]*) die "replay: ORCH_COMPARE_STEP_TIMEOUT is not a positive number of seconds: $_CMP_TIMEOUT" 2 ;; esac
+  _CMP_HARNESS="$(cd "$HERE/.." && pwd -P)"
+
+  # --- the replay's record, found in whichever experiment holds it --------------
+  local store env="" f n=0
+  store="$(store_root)"
+  set +f
+  for f in "$store"/*/replays/"$rid".env; do
+    if [ -f "$f" ]; then env="$f"; n=$((n + 1)); fi
+  done
+  set -f
+  [ "$n" -gt 0 ] || die "replay: no replay record for $rid under $store (run \`compare.sh prepare\` first)"
+  [ "$n" -eq 1 ] || die "replay: replay $rid is recorded in $n experiments under $store; refusing to guess"
+  local exp run_id handoff
+  exp="$(sed -n 's/^EXPERIMENT=//p' "$env" | head -1)"
+  _RP_PKT="$(sed -n 's/^PACKET=//p' "$env" | head -1)"
+  _RP_ROLE="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+  _RP_MODEL="$(sed -n 's/^MODEL=//p' "$env" | head -1)"
+  _RP_RMODEL="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+  _RP_START="$(sed -n 's/^START=//p' "$env" | head -1)"
+  _RP_CLONE="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+  _RP_BRANCH="$(sed -n 's/^BRANCH=//p' "$env" | head -1)"
+  _RP_RS="$(sed -n 's/^RUN_STATE=//p' "$env" | head -1)"
+  run_id="$(sed -n 's/^RUN_ID=//p' "$env" | head -1)"
+  handoff="$(sed -n 's/^HANDOFF=//p' "$env" | head -1)"
+  case "$_RP_PKT" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's packet is malformed: [$_RP_PKT]" ;; esac
+  case "$_RP_ROLE" in ''|*[!a-z-]*) die "replay: the replay record's role is malformed: [$_RP_ROLE]" ;; esac
+  case "$_RP_MODEL" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's model is malformed: [$_RP_MODEL]" ;; esac
+  case "$_RP_RMODEL" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's reviewer model is malformed: [$_RP_RMODEL]" ;; esac
+  case "$_RP_START" in ''|*[!0-9a-f]*) die "replay: the replay record's start is not a commit id: [$_RP_START]" ;; esac
+  case "$_RP_BRANCH" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's branch is malformed: [$_RP_BRANCH]" ;; esac
+  case "$run_id" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's run id is malformed: [$run_id]" ;; esac
+  [ -n "$_RP_CLONE" ] && git -C "$_RP_CLONE" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "replay: the replay's work clone is not a git repository: $_RP_CLONE"
+  [ -f "$_RP_RS" ] || die "replay: the replay's run-state is missing from its work clone: $_RP_RS"
+  [ -f "$handoff" ] || die "replay: the replay's handoff is missing from its work clone: $handoff"
+
+  # Once per replay: the clone has moved on from its prepared state after one.
+  _RP_STEPS="$(dirname "$env")/$rid.steps"
+  ( set -C; : > "$_RP_STEPS" ) 2>/dev/null \
+    || die "replay: replay $rid has already been run (or its step log cannot be created): $_RP_STEPS"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "replay: cannot create a temp root"
+  trap '[ -n "$_CMP_TMP" ] && rm -rf "$_CMP_TMP"; :' EXIT
+  local tmp="$_CMP_TMP"
+
+  local pktdir result review="" vout view vh vrev t ok
+  pktdir="$_RP_CLONE/.agents/loop/$run_id/$_RP_PKT"
+  result="$pktdir/$_RP_ROLE.md"
+  STEPN=0
+  LAND_COMMIT="none"
+
+  _end() {  # _end <end> [reason]: the replay's last two lines
+    emit "END=$1"
+    emit "COMMIT=$LAND_COMMIT"
+    if [ -n "${2:-}" ]; then printf 'compare.sh: replay: %s\n' "$2" >&2; fi
+  }
+  _fail() { _end error "$1"; exit 1; }
+
+  (cd "$_RP_CLONE" && CLAUDE_PROJECT_DIR="$_RP_CLONE" "$RUNSTATE" record-start "$_RP_PKT" "$rid") >/dev/null 2>"$tmp/rs.err" \
+    || _fail "runstate.sh record-start failed in the work clone: $(head -1 "$tmp/rs.err")"
+
+  while :; do
+    # --- the varied role's step, in the work clone ---------------------------
+    {
+      printf 'Handoff: %s\n' "$handoff"
+      printf 'run-state: %s\n' "$_RP_RS"
+      printf 'result: %s\n' "$result"
+      if [ -n "$review" ]; then printf 'review: %s\n' "$review"; fi
+      printf "The handoff's own run-state:, result: and review: header lines may name another checkout; use the paths above.\n"
+    } > "$tmp/brief"
+    dispatch_step "$_RP_ROLE" "$_RP_CLONE" "$tmp/brief"
+    case $? in
+      1) if [ "$D_EXIT" = timeout ]; then _end timed-out; else _end crashed; fi; return 0 ;;
+      2) _end refused "$_RP_ROLE's status line was refused twice: $D_REASON"; return 0 ;;
+    esac
+    if [ "$D_TOKEN" = continue ]; then
+      route_in_clone "$_RP_ROLE" continue "$D_LINE" \
+        || _fail "runstate.sh route failed in the work clone: $(head -1 "$tmp/rs.err")"
+      case "$R_ACTION" in
+        continue)
+          (cd "$_RP_CLONE" && CLAUDE_PROJECT_DIR="$_RP_CLONE" "$RUNSTATE" record-start "$_RP_PKT" --continue "$rid") >/dev/null 2>"$tmp/rs.err" \
+            || _fail "runstate.sh record-start --continue failed in the work clone: $(head -1 "$tmp/rs.err")"
+          refresh_in_clone || _fail "runstate.sh refresh-handoff failed in the work clone: $(head -1 "$tmp/rs.err")"
+          continue ;;
+        stop) _end stop; return 0 ;;
+        *) _fail "runstate.sh route mapped continue to an unexpected action: [$R_ACTION]" ;;
+      esac
+    fi
+
+    # --- the review, in a fresh blinded view ---------------------------------------
+    vout="$("$HERE/compare.sh" review-view "$rid" 2>"$tmp/view.err")" \
+      || _fail "review-view failed: $(head -1 "$tmp/view.err")"
+    view="$(printf '%s\n' "$vout" | sed -n 's/^VIEW=//p' | head -1)"
+    vh="$(printf '%s\n' "$vout" | sed -n 's/^HANDOFF=//p' | head -1)"
+    vrev="$(printf '%s\n' "$vout" | sed -n 's/^REVIEW=//p' | head -1)"
+    [ -d "$view" ] && [ -f "$vh" ] || _fail "review-view printed no usable view: $view"
+    emit "VIEW=$view"
+    # On a re-attempt the reviewer is given the review path as well (run-loop
+    # §3.4), holding the previous round's review: the blinded reviewer's own
+    # earlier output, so it names nothing the reviewed diff does not.
+    printf 'Handoff: %s\n' "$vh" > "$tmp/brief"
+    rm -f "$tmp/review.seed"
+    if [ -n "$review" ]; then
+      [ -n "$vrev" ] && mkdir -p "$(dirname "$vrev")" && cp "$review" "$vrev" && cp "$review" "$tmp/review.seed" \
+        || _fail "cannot copy the previous review into the review view: $vrev"
+      printf 'review: %s\n' "$vrev" >> "$tmp/brief"
+    fi
+    dispatch_step reviewer "$view" "$tmp/brief"
+    case $? in
+      1) if [ "$D_EXIT" = timeout ]; then _end timed-out; else _end crashed; fi; return 0 ;;
+      2) _end refused "the reviewer's status line was refused twice: $D_REASON"; return 0 ;;
+    esac
+    ok=0
+    for t in $_CMP_REVIEW_TOKENS; do [ "$t" = "$D_TOKEN" ] && ok=1; done
+    [ "$ok" -eq 1 ] || { _end refused "the reviewer returned [$D_TOKEN], not one of: $_CMP_REVIEW_TOKENS"; return 0; }
+    # The review, for the next attempt's brief: the view is the reviewer's
+    # checkout, so its review file is copied into the work clone's run directory.
+    # A review file this session left as it was seeded is the previous round's,
+    # not this one's, so the next attempt is briefed with no review then.
+    review=""
+    if [ -f "$vrev" ] && ! { [ -f "$tmp/review.seed" ] && cmp -s "$vrev" "$tmp/review.seed"; }; then
+      mkdir -p "$pktdir" && cp "$vrev" "$pktdir/review.md" \
+        || _fail "cannot copy the review into the work clone: $pktdir/review.md"
+      review="$pktdir/review.md"
+    fi
+    route_in_clone reviewer "$D_TOKEN" "$D_LINE" \
+      || _fail "runstate.sh route failed in the work clone: $(head -1 "$tmp/rs.err")"
+    case "$R_ACTION" in
+      land)
+        land_commit
+        case $? in
+          0) _end land; return 0 ;;
+          3) _fail "the work clone's .agents/project-overrides.yaml cannot be read (a second model_routing key), so the replay's routing cannot be taken out of the commit" ;;
+          *) _fail "the land commit could not be made in the work clone" ;;
+        esac ;;
+      attempt)
+        refresh_in_clone || _fail "runstate.sh refresh-handoff failed in the work clone: $(head -1 "$tmp/rs.err")"
+        continue ;;
+      decider|stop) _end "$R_ACTION"; return 0 ;;
+      *) _fail "runstate.sh route mapped $D_TOKEN to an unexpected action: [$R_ACTION]" ;;
+    esac
+  done
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -1985,6 +2416,7 @@ case "$SUB" in
   estimate)   cmd_estimate "$@" ;;
   prepare)    cmd_prepare "$@" ;;
   review-view) cmd_review_view "$@" ;;
+  replay)     cmd_replay "$@" ;;
   *) usage ;;
 esac
 exit 0

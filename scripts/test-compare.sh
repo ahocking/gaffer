@@ -67,6 +67,19 @@
 # no sweep reading none-required, a sweep past the time limit killed with the
 # process it started, a required sweep absent from the final diff failing as
 # not run, no ORCH_* setting reaching a sweep, and a replay with no END refused.
+# `record`: two real replays (routing check not passing) reading invalid, then
+# synthetic ended replays for each outcome in the PRD's order (a failed or
+# not-run routing check over a pass, a crash and a timeout reading invalid;
+# escalate with attempts left and a stop while an attempt remains reading
+# escalated; a past-limit retry stop and a past-limit fix reading
+# failed-at-limit; passed with 0 and 2 fix rounds), the first verdict, sweeps
+# stored null when not run, cost from the implementer's dispatch rows or
+# another role's by_agent_role row priced at the pinned id, a missing
+# transcript, no dispatch row and an unpriced pin reading null and never 0, the
+# record's exact key set with the settings carried, and refusals (no routing
+# check, not ended, routing records disagreeing with the step log, an unknown
+# END, a replay already recorded) appending nothing; `estimate --remaining`
+# counts what it appends.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -2300,6 +2313,319 @@ assert_eq "sweeps, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
 SW_TIMEOUT=0 sw_run "$SWR1"
 assert_eq "sweeps, a zero timeout: exit 2" "2" "$RC"
 
+printf '\n== record: an ended replay'"'"'s outcome, verdict, fix rounds, sweeps and cost ==\n'
+# Two real replays first: the sweeps fixture's landed sw-t1 and escalated sw-t2,
+# whose step logs and routing.jsonl the real `replay` and `runstate.sh route`
+# wrote. Their review views hold no event log, so the routing check does not
+# pass and both read invalid, whatever their verdict.
+RDOUT_STORE="$SWSTORE"
+rd_run() {  # rd_run <replay> [store]: OUT/ERR/RC for `compare.sh record`
+  OUT="$(ORCH_COMPARE_STORE="${2:-$RDSTORE}" ORCH_COMPARE_PRICES="${RD_PRICES_FILE:-$WORK/rd-prices.json}" \
+    "$COMPARE" record "$1" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+cat > "$WORK/rd-prices.json" <<'EOF'
+{"table_date": "2026-01-02", "prices": {"claude-opus-rd": {"input": 5, "output": 25, "cache_read": 0.5, "cache_write_5m": 6.25, "cache_write_1h": 10}}}
+EOF
+rd_run "$SWR1" "$RDOUT_STORE"
+assert_eq "record, no routing check yet: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "record, no routing check yet: named" "run \`compare.sh routing-check\` first" "$ERR"
+assert_eq "record, no routing check yet: nothing appended" "no" \
+  "$(if [ -e "$RDOUT_STORE/records.jsonl" ]; then echo yes; else echo no; fi)"
+for SWRX in "$SWR1" "$SWR2"; do
+  ORCH_COMPARE_STORE="$RDOUT_STORE" "$COMPARE" routing-check "$SWRX" >/dev/null 2>&1
+done
+rd_run "$SWR1" "$RDOUT_STORE"
+assert_eq "record, a real landed replay whose routing check did not pass: invalid, first verdict pass, sweeps pass" \
+  "0:invalid:pass:0:pass" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS):$(line SWEEPS)"
+rd_run "$SWR2" "$RDOUT_STORE"
+assert_eq "record, a real escalated replay whose routing check did not pass: invalid, first verdict escalate" \
+  "0:invalid:escalate" "$RC:$(line OUTCOME):$(line FIRST_VERDICT)"
+
+# Then synthetic ended replays: the files `prepare`, `replay`, `routing-check` and
+# `sweeps` leave (the replay record, the step log, the .routing and .sweeps
+# logs, the work clone's metrics packet, and its routing.jsonl in the shape
+# `runstate.sh route` appends), written directly so every outcome is reached.
+RDSTORE="$WORK/rdstore"
+RDEXP=ffffffffff10
+RDN=0
+mkdir -p "$RDSTORE/$RDEXP/replays"
+cat > "$RDSTORE/$RDEXP/selection.json" <<EOF
+{
+  "experiment": "$RDEXP",
+  "settings": {"role": "implementer", "models": ["opus"], "reviewer_model": "haiku", "model_ids": {"haiku": "claude-haiku-rd", "opus": "claude-opus-rd"}, "source_repo": "$WORK/rdsrc", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rd-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rd", "handoff": "original", "start": "0000000000000000000000000000000000000000", "commits": ["1111111111111111111111111111111111111111"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+# Two implementer dispatch rows: 1,000,000 input, 200,000 output, 200,000 cache
+# writes and 1,000,000 cache reads between them. At the fixture's rates that is
+# 5 + 5 + 0.5 + 1.25 = 11.75 dollars with writes at the 5-minute rate, 12.50 at
+# the 1-hour rate.
+RD_MEASURED='[{"kind": "initial", "tokens": {"input": 1000000, "output": 100000, "cache_creation": 200000, "cache_read": 400000}}, {"kind": "fix", "tokens": {"input": 0, "output": 100000, "cache_creation": 0, "cache_read": 600000}}]'
+RD_DISPATCHES="$RD_MEASURED"
+RD_ROLE=implementer
+RD_BYROLE='{}'
+# rd_replay <end> <routing-check|-> <sweeps|-> <route>...: an ended replay of
+# rd-t1 on opus; each <route> is `<agent> <token> <action> <attempts> <limit>`,
+# written as a ROUTE line and as a routing record (after one for another
+# packet, which must be ignored). `-` leaves that log unwritten. RD_TAIL, when
+# set, is step-log lines written after the routes and before END. Sets RDR.
+rd_replay() {
+  local end="$1" chk="$2" swp="$3" r rid d c rj k=0 ag tk ac at li
+  shift 3
+  RDN=$((RDN + 1)); rid="$(printf 'dddddddd%04d' "$RDN")"
+  c="$WORK/rdclone$RDN"; rj="$c/.agents/loop/20260102T000000-rd/routing.jsonl"
+  d="$RDSTORE/$RDEXP/replays"
+  mkdir -p "$(dirname "$rj")" "$d/$rid.metrics"
+  printf 'REPLAY=%s\nEXPERIMENT=%s\nPACKET=rd-t1\nMODEL=opus\nROLE=%s\nREVIEWER_MODEL=haiku\nSOURCE_REPO=%s\nSTART=0000000000000000000000000000000000000000\nCLONE=%s\nBRANCH=replay-rd\nRUN_STATE=%s/.agents/run-state.yaml\nRUN_ID=20260102T000000-rd\nHANDOFF=%s/handoff.md\nHANDOFF_SOURCE=original\nHANDOFF_CACHE=%s/cache.md\nHANDOFF_CACHED=written\n' \
+    "$rid" "$RDEXP" "$RD_ROLE" "$WORK/rdsrc" "$c" "$c" "$c" "$WORK" > "$d/$rid.env"
+  printf '{"ts":"2026-01-02T00:00:00Z","packet":"other-t9","token":"escalate","action":"decider","status":"escalate · other"}\n' > "$rj"
+  : > "$d/$rid.steps"
+  for r in "$@"; do
+    read -r ag tk ac at li <<EOF
+$r
+EOF
+    k=$((k + 1))
+    printf 'STEP n=%s agent=%s try=1 exit=0 status=ok token=%s\n' "$k" "$ag" "$tk" >> "$d/$rid.steps"
+    printf 'ROUTE agent=%s token=%s action=%s attempts=%s limit=%s\n' "$ag" "$tk" "$ac" "$at" "$li" >> "$d/$rid.steps"
+    printf '{"ts":"2026-01-02T00:00:0%sZ","packet":"rd-t1","token":"%s","action":"%s","status":"%s · round %s"}\n' "$k" "$tk" "$ac" "$tk" "$k" >> "$rj"
+  done
+  if [ -n "${RD_TAIL:-}" ]; then printf '%s\n' "$RD_TAIL" >> "$d/$rid.steps"; fi
+  printf 'END=%s\nCOMMIT=none\n' "$end" >> "$d/$rid.steps"
+  if [ "$chk" != - ]; then printf 'REPLAY=%s\nCHECK scope=work check=override-count result=pass value=0\nROUTING_CHECK=%s\n' "$rid" "$chk" > "$d/$rid.routing"; fi
+  if [ "$swp" != - ]; then printf 'REPLAY=%s\nREQUIRED=scripts/test-a.sh\nSWEEPS=%s\n' "$rid" "$swp" > "$d/$rid.sweeps"; fi
+  printf '{"packets": [{"id": "other-t9", "dispatches": null}, {"id": "rd-t1", "dispatches": %s}], "by_agent_role": %s}\n' \
+    "$RD_DISPATCHES" "$RD_BYROLE" > "$d/$rid.metrics/work.json"
+  RDR="$rid"
+}
+rd_rec() { awk -v r="\"replay\":\"$1\"" 'index($0, r)' "$RDSTORE/records.jsonl" 2>/dev/null; }
+rd_holds() {  # rd_holds <replay> <text>: yes when the replay's record holds <text>
+  local l; l="$(rd_rec "$1")"
+  case "$l" in *"$2"*) echo yes ;; *) echo no ;; esac
+}
+rd_count() { if [ -f "$RDSTORE/records.jsonl" ]; then wc -l < "$RDSTORE/records.jsonl" | tr -d ' '; else echo 0; fi; }
+# rd_keys: the top-level keys of one JSON line on stdin, space-separated, in order.
+rd_keys() {
+  awk '{ s = $0; d = 0; ins = 0; esc = 0; expect = 0; out = ""
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (ins) {
+        if (esc) { esc = 0; buf = buf c; continue }
+        if (c == "\\") { esc = 1; continue }
+        if (c == "\"") { ins = 0; if (d == 1 && expect) { out = out (out == "" ? "" : " ") buf; expect = 0 } continue }
+        buf = buf c; continue
+      }
+      if (c == "\"") { ins = 1; buf = ""; continue }
+      if (c == "{" || c == "[") { d++; if (d == 1) expect = 1; continue }
+      if (c == "}" || c == "]") { d--; continue }
+      if (c == "," && d == 1) expect = 1
+      if (c == ":" && d == 1) expect = 0
+    }
+    print out }'
+}
+
+# passed, fix rounds 0: the exact key set, the settings, the reviewer model and
+# handoff source carried, the cost from the dispatch rows, priced at the pin.
+rd_replay land pass pass "reviewer pass land 0 1"
+RDR1="$RDR"
+rd_run "$RDR1"
+assert_eq "record, pass first time: passed, first verdict pass, 0 fix rounds, sweeps pass" \
+  "0:passed:pass:0:pass" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS):$(line SWEEPS)"
+assert_eq "record, pass first time: tokens are the dispatch rows' sum, dollars priced at the pinned id" \
+  "2400000:11.750000:12.500000" "$(line TOKENS):$(line DOLLARS_MIN):$(line DOLLARS_MAX)"
+assert_eq "record: one line appended to <store>/records.jsonl" "1:$RDSTORE/records.jsonl" "$(rd_count):$(line RECORDS)"
+RDL="$(rd_rec "$RDR1")"
+assert_eq "record: the record's exact key set" \
+  "experiment replay packet model role reviewer_model handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
+  "$(printf '%s\n' "$RDL" | rd_keys)"
+assert_has "record: the experiment's settings are carried as stored" \
+  "\"settings\":{\"role\": \"implementer\", \"models\": [\"opus\"], \"reviewer_model\": \"haiku\", \"model_ids\": {\"haiku\": \"claude-haiku-rd\", \"opus\": \"claude-opus-rd\"}," "$RDL"
+assert_has "record: the model, reviewer model and handoff source" \
+  "\"model\":\"opus\",\"role\":\"implementer\",\"reviewer_model\":\"haiku\",\"handoff_source\":\"original\"," "$RDL"
+assert_has "record, pass first time: outcome, verdict, rounds, sweeps and routing check" \
+  "\"outcome\":\"passed\",\"outcome_reason\":\"the reviewer returned pass\",\"first_verdict\":\"pass\",\"fix_rounds\":0,\"sweeps\":\"pass\",\"routing_check\":\"pass\",\"end\":\"land\"," "$RDL"
+assert_has "record, pass first time: the cost" \
+  "\"tokens\":{\"input\":1000000,\"output\":200000,\"cache_creation\":200000,\"cache_read\":1000000},\"dollars_min\":11.750000,\"dollars_max\":12.500000,\"price\":\"claude-opus-rd\",\"price_table_date\":\"2026-01-02\",\"cost_source\":\"dispatches\",\"cost_note\":null," "$RDL"
+rd_run "$RDR1"
+assert_eq "record, a replay already recorded: exit 1, nothing appended" "1:1" "$RC:$(rd_count)"
+assert_has "record, a replay already recorded: named" "already has a record" "$ERR"
+
+# passed after two fix rounds; a continuation before the first review is no verdict.
+rd_replay land pass fail "implementer continue continue 0 2" "reviewer fix attempt 1 2" "reviewer fix attempt 2 2" "reviewer pass land 2 2"
+rd_run "$RDR"
+assert_eq "record, fix, fix, pass: passed, first verdict fix, 2 fix rounds, sweeps fail" \
+  "0:passed:fix:2:fail" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS):$(line SWEEPS)"
+
+# invalid: a failed routing check over a pass, a routing check not run in a
+# view, and a crash; each before any other reading.
+rd_replay land fail pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, a failed routing check over a pass: invalid" "0:invalid" "$RC:$(line OUTCOME)"
+assert_has "record, a failed routing check over a pass: the reason names the check" "the routing check read fail" "$(line REASON)"
+assert_eq "record, a failed routing check: tokens kept, dollars unmeasured (not shown to be the pinned model's)" \
+  "2400000:unmeasured:unmeasured" "$(line TOKENS):$(line DOLLARS_MIN):$(line DOLLARS_MAX)"
+assert_has "record, a failed routing check: dollars null, never 0" "\"dollars_min\":null,\"dollars_max\":null,\"price\":null," "$(rd_rec "$RDR")"
+rd_replay land not-run pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, a routing check not run over a pass: invalid" "0:invalid" "$RC:$(line OUTCOME)"
+rd_replay crashed pass - "reviewer fix attempt 1 2"
+rd_run "$RDR"
+assert_eq "record, a crashed step after a fix: invalid, first verdict fix, 1 fix round" \
+  "0:invalid:fix:1" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS)"
+assert_eq "record, sweeps never run: not-run, stored null" "not-run:yes" \
+  "$(line SWEEPS):$(rd_holds "$RDR" '"sweeps":null,')"
+rd_replay timed-out pass pass
+rd_run "$RDR"
+assert_eq "record, a timed-out first step: invalid, no verdict, 0 fix rounds" \
+  "0:invalid:none:0:yes" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS):$(rd_holds "$RDR" '"first_verdict":null,')"
+
+# escalated: the reviewer's escalate with attempts left, and a stop while an
+# attempt remains (a continuation past its cap).
+rd_replay decider pass pass "reviewer fix attempt 1 2" "reviewer escalate decider 1 2"
+rd_run "$RDR"
+assert_eq "record, escalate with attempts left: escalated, first verdict fix, 1 fix round" \
+  "0:escalated:fix:1" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS)"
+rd_replay stop pass pass "implementer continue stop 0 1"
+rd_run "$RDR"
+assert_eq "record, a stop while an attempt remains: escalated" "0:escalated" "$RC:$(line OUTCOME)"
+assert_has "record, a stop while an attempt remains: the reason" "with 0 of 1 attempts used, so an attempt remained" "$(line REASON)"
+rd_replay decider pass pass "reviewer fix attempt 1 1" "reviewer escalate decider 1 1"
+rd_run "$RDR"
+assert_eq "record, escalate with no attempt left: still escalated (the reviewer's escalate is tested first)" \
+  "0:escalated" "$RC:$(line OUTCOME)"
+rd_replay stop pass pass "reviewer fix attempt 1 1" "implementer continue stop 1 1"
+rd_run "$RDR"
+assert_eq "record, a stop with attempts exactly at the limit: failed-at-limit, not escalated" \
+  "0:failed-at-limit" "$RC:$(line OUTCOME)"
+
+# failed-at-limit: the loop's own past-limit routing, a retry's stop and a fix's decider.
+rd_replay stop pass pass "reviewer fix attempt 1 1" "reviewer retry stop 2 1"
+rd_run "$RDR"
+assert_eq "record, a past-limit retry stop: failed-at-limit, 1 fix round" "0:failed-at-limit:1" "$RC:$(line OUTCOME):$(line FIX_ROUNDS)"
+rd_replay decider pass pass "reviewer fix attempt 1 1" "reviewer fix decider 2 1"
+rd_run "$RDR"
+assert_eq "record, a fix past the limit: failed-at-limit, and the past-limit fix started no round" \
+  "0:failed-at-limit:1" "$RC:$(line OUTCOME):$(line FIX_ROUNDS)"
+
+# END=refused, scored by whose line was refused (the last STEP line's agent).
+# The varied role's own line refused twice counts against the model: escalated
+# while an attempt remains (none routed yet, or below the limit), failed-at-limit
+# when none does. A fixed role's (the reviewer's) twice-refused line or
+# out-of-vocabulary token is invalid, a harness fault.
+RD_VREF='STEP n=8 agent=implementer try=1 exit=0 status=refused
+STEP n=9 agent=implementer try=2 exit=0 status=refused'
+RD_TAIL="$RD_VREF"
+rd_replay refused pass pass
+rd_run "$RDR"
+assert_eq "record, the varied role's line refused before any route: escalated, no verdict" \
+  "0:escalated:none:0" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS)"
+assert_has "record, the varied role's line refused before any route: the reason" \
+  "the implementer's own line was refused with no attempt routed yet, so an attempt remained" "$(line REASON)"
+rd_replay refused pass pass "reviewer fix attempt 1 2"
+rd_run "$RDR"
+assert_eq "record, the varied role's line refused with an attempt left: escalated, 1 fix round" \
+  "0:escalated:fix:1" "$RC:$(line OUTCOME):$(line FIRST_VERDICT):$(line FIX_ROUNDS)"
+assert_has "record, the varied role's line refused with an attempt left: the reason" \
+  "with 1 of 2 attempts used, so an attempt remained" "$(line REASON)"
+rd_replay refused pass pass "reviewer fix attempt 1 1"
+rd_run "$RDR"
+assert_eq "record, the varied role's line refused on the last attempt: failed-at-limit" \
+  "0:failed-at-limit:yes" "$RC:$(line OUTCOME):$(rd_holds "$RDR" '"end":"refused",')"
+rd_replay refused fail pass "reviewer fix attempt 1 1"
+rd_run "$RDR"
+assert_eq "record, the varied role's line refused but the routing check failed: invalid (tested first)" \
+  "0:invalid" "$RC:$(line OUTCOME)"
+RD_TAIL='STEP n=1 agent=implementer try=1 exit=0 status=ok token=done
+STEP n=2 agent=reviewer try=1 exit=0 status=refused
+STEP n=3 agent=reviewer try=2 exit=0 status=refused'
+rd_replay refused pass pass
+rd_run "$RDR"
+assert_eq "record, the fixed reviewer's line refused twice: invalid" "0:invalid" "$RC:$(line OUTCOME)"
+assert_has "record, the fixed reviewer's line refused twice: the reason names the role" \
+  "refused on the reviewer's line, a role not under test" "$(line REASON)"
+RD_TAIL='STEP n=4 agent=implementer try=1 exit=0 status=ok token=done
+STEP n=5 agent=reviewer try=1 exit=0 status=ok token=done'
+rd_replay refused pass pass "reviewer fix attempt 1 1"
+rd_run "$RDR"
+assert_eq "record, the fixed reviewer's out-of-vocabulary token on the last attempt: invalid, not failed-at-limit" \
+  "0:invalid" "$RC:$(line OUTCOME)"
+RDC="$(rd_count)"
+RD_TAIL='VIEW=/nowhere'
+rd_replay refused pass pass
+rd_run "$RDR"
+assert_eq "record, refused with no STEP line to say whose: exit 1, nothing appended" "1:$RDC" "$RC:$(rd_count)"
+assert_has "record, refused with no STEP line to say whose: named" "names no readable agent" "$ERR"
+RD_TAIL=""
+
+# A missing transcript: a dispatch row with null tokens makes the cost null, never 0.
+RD_DISPATCHES='[{"kind": "initial", "tokens": {"input": 1000000, "output": 100000, "cache_creation": 200000, "cache_read": 400000}}, {"kind": "fix", "tokens": null}]'
+rd_replay land pass pass "reviewer pass land 0 1"
+rd_run "$RDR"
+RDL="$(rd_rec "$RDR")"
+assert_eq "record, a missing transcript: passed, tokens and dollars unmeasured" \
+  "0:passed:unmeasured:unmeasured:unmeasured" "$RC:$(line OUTCOME):$(line TOKENS):$(line DOLLARS_MIN):$(line DOLLARS_MAX)"
+assert_has "record, a missing transcript: tokens and dollars null, never a partial sum or 0" \
+  "\"tokens\":null,\"dollars_min\":null,\"dollars_max\":null,\"price\":null," "$RDL"
+assert_has "record, a missing transcript: the note says why" "tokens unmeasured: a dispatch row" "$RDL"
+RD_DISPATCHES='[]'
+rd_replay land pass pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, no dispatch row: tokens unmeasured" "passed:unmeasured" "$(line OUTCOME):$(line TOKENS)"
+RD_DISPATCHES="$RD_MEASURED"
+
+# Another role: its by_agent_role tokens (keyed as the plugin's gaffer:<role>),
+# never another role's and never the dispatch rows; absent reads unmeasured.
+RD_ROLE=architect
+RD_BYROLE='{"gaffer:architect": {"tokens": {"input": 1000000, "output": 0, "cache_creation": 0, "cache_read": 0}, "models": {"claude-opus-rd": {"input": 1000000, "output": 0, "cache_creation": 0, "cache_read": 0}}}, "gaffer:reviewer": {"tokens": {"input": 7, "output": 7, "cache_creation": 7, "cache_read": 7}}}'
+rd_replay land pass pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, an architect replay: by_agent_role.<role> tokens, priced" "1000000:5.000000:5.000000" \
+  "$(line TOKENS):$(line DOLLARS_MIN):$(line DOLLARS_MAX)"
+assert_has "record, an architect replay: the cost source" "\"cost_source\":\"by_agent_role\"" "$(rd_rec "$RDR")"
+RD_BYROLE='{"gaffer:reviewer": {"tokens": {"input": 7, "output": 7, "cache_creation": 7, "cache_read": 7}}}'
+rd_replay land pass pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, an architect replay with no by_agent_role row: unmeasured" "unmeasured:unmeasured" "$(line TOKENS):$(line DOLLARS_MIN)"
+RD_ROLE=implementer; RD_BYROLE='{}'
+
+# A pinned id with no price entry: tokens kept, dollars unmeasured.
+printf '{"table_date": "2026-01-02", "prices": {}}\n' > "$WORK/rd-prices-empty.json"
+rd_replay land pass pass "reviewer pass land 0 1"
+RD_PRICES_FILE="$WORK/rd-prices-empty.json" rd_run "$RDR"
+assert_eq "record, an unpriced pinned id: tokens kept, dollars unmeasured" "2400000:unmeasured" "$(line TOKENS):$(line DOLLARS_MIN)"
+
+# Refusals, each appending nothing: no routing check, not ended, routing records
+# that are not the step log's ROUTE lines, and an END a replay never writes.
+RDC="$(rd_count)"
+rd_replay land - pass "reviewer pass land 0 1"
+rd_run "$RDR"
+assert_eq "record, no routing check: exit 1, nothing appended" "1:$RDC" "$RC:$(rd_count)"
+rd_replay land pass pass "reviewer pass land 0 1"
+grep -v '^END=' "$RDSTORE/$RDEXP/replays/$RDR.steps" > "$WORK/rd.steps" && cp "$WORK/rd.steps" "$RDSTORE/$RDEXP/replays/$RDR.steps"
+rd_run "$RDR"
+assert_eq "record, a replay not ended: exit 1, nothing appended" "1:$RDC" "$RC:$(rd_count)"
+assert_has "record, a replay not ended: named" "has not ended" "$ERR"
+rd_replay land pass pass "reviewer fix attempt 1 2" "reviewer pass land 1 2"
+grep -v '"token":"fix"' "$WORK/rdclone$RDN/.agents/loop/20260102T000000-rd/routing.jsonl" > "$WORK/rd.rj"
+cp "$WORK/rd.rj" "$WORK/rdclone$RDN/.agents/loop/20260102T000000-rd/routing.jsonl"
+rd_run "$RDR"
+assert_eq "record, routing records disagreeing with the step log: exit 1, nothing appended" "1:$RDC" "$RC:$(rd_count)"
+assert_has "record, routing records disagreeing with the step log: named" "are not the step log's ROUTE lines" "$ERR"
+rd_replay paused pass pass
+rd_run "$RDR"
+assert_eq "record, an END a replay never writes: exit 1, nothing appended" "1:$RDC" "$RC:$(rd_count)"
+rd_run 0123456789ab
+assert_eq "record, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+
+# The records are the ones `estimate --remaining` counts: its reader parses them.
+OUT="$(ORCH_COMPARE_STORE="$RDSTORE" ORCH_COMPARE_PRICES="$WORK/rd-prices.json" "$COMPARE" estimate "$RDEXP" --remaining 2>"$WORK/err")"
+assert_eq "record: estimate --remaining reads the appended records (the one replay recorded)" "1:0" "$(line RECORDED):$(line REPLAYS)"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -2314,6 +2640,7 @@ printf '\n== usage ==\n'
 "$COMPARE" replay >/dev/null 2>&1; assert_eq "replay without a replay id: exit 2" "2" "$?"
 "$COMPARE" routing-check >/dev/null 2>&1; assert_eq "routing-check without a replay id: exit 2" "2" "$?"
 "$COMPARE" sweeps >/dev/null 2>&1; assert_eq "sweeps without a replay id: exit 2" "2" "$?"
+"$COMPARE" record >/dev/null 2>&1; assert_eq "record without a replay id: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

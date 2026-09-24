@@ -152,6 +152,14 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
     it to the decider or to a stop while an attempt remains; `failed-at-limit`
     when the attempt limit is reached without a `pass` verdict, including the
     loop's own past-limit routing; `passed` when the reviewer returns `pass`
+    - a replay that ends refused is scored by whose line was refused: the
+      varied role's own line refused twice (or, were the varied role the
+      reviewer, its token outside the routing vocabulary) counts against that
+      model as not passed, `escalated` while an attempt remains and
+      `failed-at-limit` when none does; a fixed role's line refused (the fixed
+      reviewer's twice-refused line or out-of-vocabulary token, or any other
+      role not under test) is `invalid`, a harness fault that is rerun and left
+      out of the pass rate
   - the record carries the first-attempt verdict in the loop's routing
     vocabulary (`pass`, `fix`, `retry`, `escalate`), the number of fix rounds
     the replay ran (for a `passed` replay, the rounds before `pass`), and whether the sweeps the handoff required pass on the

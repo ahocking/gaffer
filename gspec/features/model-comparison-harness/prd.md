@@ -205,7 +205,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     change and names the unmeasured cells as the reason
   - nothing in the repository's routing configuration changes as a result
 
-- [ ] **P1**: Stored results re-render and experiments accumulate
+- [x] **P1**: Stored results re-render and experiments accumulate
   - rendering the report twice from the same stored results produces identical
     output, and neither render runs a replay
   - a later experiment, whether on another role, another model or another

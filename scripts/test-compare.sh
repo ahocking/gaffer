@@ -138,7 +138,18 @@
 # (pass rate before rank and dollars, rank before dollars, dollars last, an
 # unmeasured rank the rule needs and a tie on all three each proposing
 # nothing); and the source repository's project-overrides.yaml byte-identical
-# after the reports, the harness repository's own unchanged.
+# after the reports, the harness repository's own unchanged. Stored results
+# re-render and accumulate: a store of experiments on one role, reviewer model
+# and source repository (one group, two model sets) beside one each on another
+# role, reviewer model and source repository: two renders byte-identical, the
+# logging session stub invoked 0 times and the store unchanged; the group line
+# naming exactly the group's experiments, a later experiment's model adding its
+# cells, a model in two of them pooling both, and no record from outside the
+# group in any cell; each of the other three reported as its own group, alone;
+# two ranking sets over different model sets giving a model one rank per set,
+# never their average, and named; the proposal's rank read only from the one
+# set that ranked every tied model (none: unmeasured; one: it decides, named;
+# two: the rule stops, naming both).
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -3692,6 +3703,174 @@ else
 fi
 assert_eq "proposal: the harness repository's project-overrides.yaml is unchanged after a report" \
   "$PX_HARNESS_SUM" "$(cksum < "$PX_HARNESS_OV" 2>/dev/null || printf absent)"
+
+printf '\n== report: stored results re-render, experiments accumulate in groups ==\n'
+# One store holding five experiments, each with a code packet gc1 and a prose
+# packet gp1. The group is the varied role, reviewer model and source repository:
+#   GRA implementer, reviewer haiku, /src-one, models fable, opus
+#       gc1: fable passed, opus passed; gp1: fable passed, opus escalated
+#       gc1 ranked {fable, opus}: opus 1, fable 2
+#   GRE implementer, reviewer haiku, /src-one, models haiku, opus   (GRA's group)
+#       gc1: haiku passed, opus passed; gp1: haiku passed, opus passed
+#       gc1 ranked {opus, haiku}: haiku 1, opus 2
+#   GRB architect   (another role)              fable escalated on gc1 and gp1
+#   GRC implementer, reviewer sonnet (another reviewer model)   fable escalated
+#   GRD implementer, /src-two (another source repository)       fable escalated
+# Pooled into GRA's group, any of GRB/GRC/GRD would pull fable's pass rate
+# below 1.00; averaged across its two ranking sets, opus's code rank would read
+# 1.50 (n=2) instead of 1.00 in one set and 2.00 in the other.
+GRSTORE="$WORK/grstore"
+GRA="a00000000001"; GRB="b00000000002"; GRC="c00000000003"; GRD="d00000000004"; GRE="e00000000005"
+gr_sel() {  # gr_sel <experiment> <role> <reviewer> <source> <models...>
+  local x="$1" r="$2" v="$3" s="$4" ms="" m
+  shift 4
+  for m in "$@"; do ms="$ms${ms:+, }\"$m\""; done
+  mkdir -p "$GRSTORE/$x"
+  cat > "$GRSTORE/$x/selection.json" <<EOF
+{
+  "experiment": "$x",
+  "settings": {"role": "$r", "models": [$ms], "reviewer_model": "$v", "effort": "high", "source_repo": "$s", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "gc1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "Group code", "handoff": "original", "start": "0000000", "commits": ["1111111"]},
+    {"packet": "gp1", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Group prose", "handoff": "original", "start": "0000000", "commits": ["2222222"]}
+  ],
+  "shortfalls": [], "excluded": [], "dropped": []
+}
+EOF
+}
+gr_rec() {  # gr_rec <experiment> <packet> <model> <outcome>
+  printf '{"experiment":"%s","replay":"r-%s-%s-%s","packet":"%s","model":"%s","role":"implementer","reviewer_model":"haiku","effort":"high","handoff_source":"original","settings":{"role":"implementer"},"outcome":"%s","outcome_reason":"x","first_verdict":null,"fix_rounds":0,"sweeps":null,"routing_check":"pass","end":"land","tokens":{"input":100,"output":0,"cache_creation":0,"cache_read":0},"dollars_min":0.10,"dollars_max":0.20,"price":null,"price_table_date":"2026-01-01","cost_source":"dispatches","cost_note":null,"recorded_at":"2026-01-01T00:00:00Z"}\n' \
+    "$1" "$1" "$2" "$3" "$2" "$3" "$4" >> "$GRSTORE/records.jsonl"
+}
+gr_rank() {  # gr_rank <experiment> <packet> <ranking-id> <model, best first>...
+  local x="$1" p="$2" id="$3" i=0 lab ls="" os="" m
+  shift 3
+  for m in "$@"; do
+    i=$((i + 1)); lab="$(printf 'ABC' | cut -c"$i")"
+    ls="$ls${ls:+,}{\"label\":\"$lab\",\"model\":\"$m\",\"replay\":\"r$i\"}"
+    os="$os${os:+,}{\"position\":$i,\"label\":\"$lab\",\"reason\":\"r\"}"
+  done
+  printf '{"experiment":"%s","packet":"%s","ranking":"%s","labels":[%s]}\n' "$x" "$p" "$id" "$ls" >> "$GRSTORE/labels.jsonl"
+  printf '{"experiment":"%s","packet":"%s","ranking":"%s","order":[%s]}\n' "$x" "$p" "$id" "$os" >> "$GRSTORE/rankings.jsonl"
+}
+gr_sel "$GRA" implementer haiku /src-one fable opus
+gr_sel "$GRB" architect haiku /src-one fable opus
+gr_sel "$GRC" implementer sonnet /src-one fable opus
+gr_sel "$GRD" implementer haiku /src-two fable opus
+gr_sel "$GRE" implementer haiku /src-one haiku opus
+gr_rec "$GRA" gc1 fable passed; gr_rec "$GRA" gc1 opus passed
+gr_rec "$GRA" gp1 fable passed; gr_rec "$GRA" gp1 opus escalated
+gr_rec "$GRE" gc1 haiku passed; gr_rec "$GRE" gc1 opus passed
+gr_rec "$GRE" gp1 haiku passed; gr_rec "$GRE" gp1 opus passed
+for GRX in "$GRB" "$GRC" "$GRD"; do gr_rec "$GRX" gc1 fable escalated; gr_rec "$GRX" gp1 fable escalated; done
+gr_rank "$GRA" gc1 bbbbbbbbbb01 opus fable
+gr_rank "$GRE" gc1 bbbbbbbbbb02 haiku opus
+# A session stub that logs every invocation: a render must start none.
+GRSTUB="$WORK/gr-stub"
+GRCALLS="$WORK/gr-calls.log"
+: > "$GRCALLS"
+printf '#!/bin/sh\necho "call $*" >> "%s"\nexit 0\n' "$GRCALLS" > "$GRSTUB"
+chmod +x "$GRSTUB"
+grr() {  # grr <experiment>: OUT/ERR/RC for `compare.sh report` on GRSTORE, through the logging stub
+  OUT="$(ORCH_COMPARE_STORE="$GRSTORE" ORCH_COMPARE_CLAUDE="$GRSTUB" "$COMPARE" report "$1" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+grcell() { printf '%s\n' "$OUT" | awk -v p="**$1, $2** — " 'index($0, p) { print; exit }'; }
+grgroup() { printf '%s\n' "$OUT" | awk 'index($0, "> Group: ") == 1 { print; exit }'; }
+gr_tree() { (cd "$GRSTORE" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; cksum < "$f"; done); }
+GR_TREE_BEFORE="$(gr_tree)"
+
+# Two renders of the same store: byte-identical, no session started, nothing written.
+grr "$GRA"
+assert_eq "accumulate: exit 0" "0" "$RC"
+GR_FIRST="$OUT"
+grr "$GRA"
+assert_eq "accumulate: a second render of the same stored results is byte-identical" "$GR_FIRST" "$OUT"
+assert_eq "accumulate: neither render started a session (the stub was invoked 0 times)" "0" "$(grep -c '^call' "$GRCALLS")"
+assert_eq "accumulate: neither render wrote to the store" "$GR_TREE_BEFORE" "$(gr_tree)"
+
+# The group: GRA with GRE (same role, reviewer and source), never GRB, GRC or GRD.
+assert_eq "accumulate: the group is every experiment with this role, reviewer model and source repository, and only those" \
+  "> Group: every stored experiment with this varied role, reviewer model and source repository, 2: \`$GRA\` (fable, opus, effort high) and \`$GRE\` (haiku, opus, effort high). No cell pools records from outside it." \
+  "$(grgroup)"
+assert_eq "accumulate: a later experiment on another model adds its model's cells beside the existing ones" \
+  "fable, code|fable, prose|opus, code|opus, prose|haiku, code|haiku, prose" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^> \(⚠️ \)\{0,1\}\*\*\([a-z]*, [a-z]*\)\*\* — .*/\2/p' | paste -sd'|' -)"
+assert_eq "accumulate: another role's, reviewer model's and source repository's records are never pooled (fable, code)" \
+  "> **fable, code** — pass rate 1.00 (1 passed, n=1) · fix rounds 0.00 (n=1) · rank 2.00 (n=1) in ranking set {fable, opus} · tokens 100 (n=1) · dollars 0.10–0.20 (n=1)" \
+  "$(grcell fable code)"
+assert_has "accumulate: ... (fable, prose)" "> **fable, prose** — pass rate 1.00 (1 passed, n=1) ·" "$(grcell fable prose)"
+assert_has "accumulate: a model in two experiments of the group pools both experiments' records (opus, prose)" \
+  "> **opus, prose** — pass rate 0.50 (1 passed, n=2) ·" "$(grcell opus prose)"
+case "$OUT" in
+  *"$GRB"*|*"$GRC"*|*"$GRD"*|*architect*|*src-two*) bad "accumulate: no experiment outside the group is named" "$OUT" ;;
+  *) ok "accumulate: no experiment outside the group is named" ;;
+esac
+assert_has "accumulate: the header names the source repository" "> Source repository: /src-one" "$OUT"
+
+# A second experiment on another role is its own group, reported by naming it.
+grr "$GRB"
+assert_eq "accumulate, another role: exit 0" "0" "$RC"
+assert_has "accumulate, another role: its header names its role" "> Varied role: architect, across fable, opus" "$OUT"
+assert_eq "accumulate, another role: its own group, alone" \
+  "> Group: every stored experiment with this varied role, reviewer model and source repository, 1: \`$GRB\` (fable, opus, effort high). No cell pools records from outside it." \
+  "$(grgroup)"
+assert_has "accumulate, another role: its cells hold only its own records (fable, code)" \
+  "> **fable, code** — pass rate 0.00 (0 passed, n=1) ·" "$(grcell fable code)"
+assert_eq "accumulate, another role: the implementer group's records never reach it (opus, code: none recorded)" \
+  "> ⚠️ **opus, code** — unmeasured: no scored replay (0 of 1 code packet(s) recorded, 0 invalid)" "$(grcell opus code)"
+# Another reviewer model and another source repository: each its own group too.
+grr "$GRC"
+assert_eq "accumulate, another reviewer model: its own group, alone" \
+  "> Group: every stored experiment with this varied role, reviewer model and source repository, 1: \`$GRC\` (fable, opus, effort high). No cell pools records from outside it." \
+  "$(grgroup)"
+assert_has "accumulate, another reviewer model: only its own records (fable, code)" \
+  "> **fable, code** — pass rate 0.00 (0 passed, n=1) ·" "$(grcell fable code)"
+grr "$GRD"
+assert_eq "accumulate, another source repository: its own group, alone" \
+  "> Group: every stored experiment with this varied role, reviewer model and source repository, 1: \`$GRD\` (fable, opus, effort high). No cell pools records from outside it." \
+  "$(grgroup)"
+assert_has "accumulate, another source repository: only its own records (fable, code)" \
+  "> **fable, code** — pass rate 0.00 (0 passed, n=1) ·" "$(grcell fable code)"
+
+# Two ranking sets over different model sets: never averaged together.
+grr "$GRA"
+assert_eq "ranking sets: a model ranked in two sets gets one rank per set, never their average (opus, code)" \
+  "> **opus, code** — pass rate 1.00 (2 passed, n=2) · fix rounds 0.00 (n=2) · rank 1.00 (n=1) in ranking set {fable, opus}; 2.00 (n=1) in ranking set {opus, haiku} · tokens 100 (n=2) · dollars 0.10–0.20 (n=2)" \
+  "$(grcell opus code)"
+assert_has "ranking sets: the ranking section names both sets" \
+  "> 2 ranking sets: {fable, opus}, {opus, haiku}. A rank is averaged only within the set that ranked those models together, never across sets." "$OUT"
+# The proposal: fable and haiku tie on pass rate (1.00 each; opus 0.75), and no
+# one ranking set ranked both, so the rank the rule needs is unmeasured.
+assert_has "ranking sets: tied models no one set ranked together leave the rank unmeasured, and nothing is proposed" \
+  "tied on pass rate, and the rule's next figure, mean rank, is unmeasured over both classes for fable, haiku: no one ranking set ranked them all together" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p')"
+# One set ranking both tied models: the rank decides, from that set only.
+GRF="f00000000006"
+gr_sel "$GRF" implementer haiku /src-one fable haiku
+gr_rec "$GRF" gc1 fable passed; gr_rec "$GRF" gc1 haiku passed
+gr_rec "$GRF" gp1 fable passed; gr_rec "$GRF" gp1 haiku passed
+gr_rank "$GRF" gc1 bbbbbbbbbb03 fable haiku
+grr "$GRA"
+assert_has "ranking sets: the one set that ranked every tied model decides, named" \
+  "> Decided by mean rank in ranking set {fable, haiku} over both classes: fable 1.00 (n=1) from **fable, code** 1.00 (n=1), **fable, prose** unmeasured (n=0) over haiku 2.00 (n=1)" \
+  "$OUT"
+# Two sets that each ranked both tied models: the rule stops rather than average them.
+GRG="a00000000007"
+gr_sel "$GRG" implementer haiku /src-one fable opus haiku
+gr_rec "$GRG" gc1 fable passed; gr_rec "$GRG" gc1 haiku passed; gr_rec "$GRG" gc1 opus escalated
+gr_rec "$GRG" gp1 fable passed; gr_rec "$GRG" gp1 haiku passed; gr_rec "$GRG" gp1 opus escalated
+gr_rank "$GRG" gc1 bbbbbbbbbb04 haiku fable opus
+grr "$GRA"
+assert_has "ranking sets: two sets each ranking the tied models stop the rule, naming both, never averaged" \
+  "tied on pass rate, and the rule's next figure, mean rank, comes from more than one ranking set ranking them together ({fable, opus, haiku}, {fable, haiku}), and ranks from different ranking sets are never averaged together" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p')"
+case "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p')" in
+  *'Proposed `model_routing`'*) bad "ranking sets: ... and no entry is proposed" "$OUT" ;;
+  *) ok "ranking sets: ... and no entry is proposed" ;;
+esac
+assert_has "ranking sets: the packets of a group of several experiments name their experiment" \
+  "> **Group code** (\`gc1\`) — code, handoff original, ranked, in experiment \`$GRG\`" "$OUT"
 
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"

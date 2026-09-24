@@ -444,10 +444,87 @@
 #                     `exit=not-run`: it was not run, and the requirement is
 #                     not met.
 #
+#   record <replay>   decide an ended replay's outcome and append its one record
+#                     to <store>/records.jsonl (its record, as for review-view).
+#                     Refused, with nothing appended, until the outcome can be
+#                     decided: the step log must carry an END= line and the
+#                     routing check must have printed its ROUTING_CHECK= line
+#                     (<replay>.routing), and the work clone's
+#                     <clone>/.agents/loop/<run_id>/routing.jsonl records for
+#                     the packet must be, in order, the (token, action) pairs of
+#                     the step log's ROUTE lines. A replay that already has a
+#                     line in records.jsonl is refused: a rerun is a new replay.
+#                     THE OUTCOME, tested in this order (the PRD's):
+#                       invalid          ROUTING_CHECK is not `pass`, or the
+#                                        replay ended without a verdict it
+#                                        could route (END=crashed, timed-out
+#                                        or error), or it ended refused on a
+#                                        fixed role's line: the agent of the
+#                                        step log's last STEP line is not the
+#                                        replay's role (the reviewer's line
+#                                        refused twice, or its token outside
+#                                        the review vocabulary). A harness
+#                                        fault, not the model's.
+#                       escalated        a routing record's token is `escalate`
+#                                        (the reviewer returned it), or the
+#                                        replay ended at the decider or a stop,
+#                                        or refused on the varied role's own
+#                                        line, while an attempt remained: the
+#                                        last ROUTE line's attempts below its
+#                                        limit, or no ROUTE line yet (0 used
+#                                        of a limit runstate.sh never reads
+#                                        below 1).
+#                       failed-at-limit  it ended at the decider or a stop, or
+#                                        refused on the varied role's own line,
+#                                        with no attempt left (attempts at or
+#                                        past the limit): a `fix` or `retry`
+#                                        routed past `packet_attempts` included.
+#                       passed           END=land on a `pass` routed to land.
+#                     The first verdict is the first routing record's token
+#                     among `pass`, `fix`, `retry` and `escalate` (null when no
+#                     review returned one). Fix rounds are the `fix` records
+#                     routed to `attempt`: each started one more round, and a
+#                     `fix` past the limit started none; for a passed replay
+#                     these are all before its `pass`. Sweeps are T9's SWEEPS=
+#                     value from <replay>.sweeps, null when `sweeps` has not
+#                     been run (not run, never a pass).
+#                     COST is the varied role's tokens, read from the work
+#                     clone's packet routing-check wrote (<replay>.metrics/
+#                     work.json): for `implementer`, the sum of the packet's
+#                     `packets[].dispatches[].tokens` rows; for any other role,
+#                     `by_agent_role.<role>.tokens` (and `gaffer:<role>`'s).
+#                     A missing packet, no dispatch row, or any row or field
+#                     that is null or not a count makes every token figure
+#                     null: never a partial sum, never 0. Dollars are priced
+#                     at the price table's entry for the id the experiment's
+#                     `model_ids` pins the replay's model to
+#                     (${ORCH_COMPARE_PRICES:-spend-prices.json beside this
+#                     script}); cache writes do not split by lifetime, so
+#                     dollars_min prices them at the 5-minute rate and
+#                     dollars_max at the 1-hour rate. Dollars are null when the
+#                     tokens are, when the pin has no complete price entry, and
+#                     when the routing check did not pass (the tokens are then
+#                     not shown to have been spent on the pinned model).
+#                     `cost_note` says why a figure is null (null when none is).
+#                     The record, one compact JSON line, has exactly the keys
+#                       experiment replay packet model role reviewer_model
+#                       handoff_source settings outcome outcome_reason
+#                       first_verdict fix_rounds sweeps routing_check end
+#                       tokens dollars_min dollars_max price price_table_date
+#                       cost_source cost_note recorded_at
+#                     where `settings` is the stored selection's settings
+#                     object as it stands and `tokens` is {input, output,
+#                     cache_creation, cache_read} or null. Output:
+#                       REPLAY= OUTCOME= REASON= FIRST_VERDICT=<v|none>
+#                       FIX_ROUNDS= SWEEPS=<v|not-run> TOKENS=<n|unmeasured>
+#                       DOLLARS_MIN=<x|unmeasured> DOLLARS_MAX=<x|unmeasured>
+#                       RECORDS=<path>
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
 # check that printed its ROUTING_CHECK= line (pass, fail or not-run) / a sweeps
-# run that printed its SWEEPS= line (pass, fail or none-required); 1 refused, no experiment id could be computed, the source
+# run that printed its SWEEPS= line (pass, fail or none-required) / a record
+# appended; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -464,7 +541,11 @@
 # written or lies inside a review view, or (sweeps) no single replay record, a
 # work clone or source that is not a git repository, a replay not run or not
 # ended, a missing handoff cache, a scratch root inside the source, or a tree,
-# diff, clone, apply or commit step that failed;
+# diff, clone, apply or commit step that failed, or (record) no single replay
+# record, a replay not run or not ended, no ROUTING_CHECK= line, routing records
+# that disagree with the step log, an END or ROUTE line it cannot read, a
+# replay already recorded, no stored selection, a price table that cannot be
+# read, or a record that cannot be appended;
 # 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
 # this script, or (replay) no session command, or (replay, sweeps) a malformed
 # timeout.
@@ -504,7 +585,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -3092,6 +3173,320 @@ cmd_sweeps() {
   fi
 }
 
+# --- record ----------------------------------------------------------------------------
+
+# rd_json_str <value>: <value> as a JSON string, `\` and `"` escaped and control
+# characters dropped.
+rd_json_str() {
+  V="$1" awk 'BEGIN {
+    s = ENVIRON["V"]; o = ""
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (c == "\\" || c == "\"") o = o "\\" c
+      else if (c !~ /[[:cntrl:]]/) o = o c
+    }
+    printf "\"%s\"", o
+  }'
+}
+
+# rd_route_pairs <routing.jsonl> <packet>: `<token>\t<action>` for each of the
+# packet's routing records, in append order (the fields `runstate.sh route`
+# writes); nothing when the file is absent.
+rd_route_pairs() {
+  [ -f "$1" ] || return 0
+  P="$2" awk '
+    function field(line, name,    pat, pos, rest, q) {
+      pat = "\"" name "\":\""
+      pos = index(line, pat)
+      if (pos == 0) return ""
+      rest = substr(line, pos + length(pat))
+      q = index(rest, "\"")
+      if (q == 0) return ""
+      return substr(rest, 1, q - 1)
+    }
+    { sub(/\r$/, ""); if (field($0, "packet") != ENVIRON["P"]) next
+      print field($0, "token") "\t" field($0, "action") }' "$1"
+}
+
+# rd_step_field <line> <name>: the value of a `name=value` word of a step-log line.
+rd_step_field() {
+  printf '%s\n' "$1" | awk -v n="$2=" '{ for (i = 1; i <= NF; i++) if (index($i, n) == 1) { print substr($i, length(n) + 1); exit } }'
+}
+
+# rd_cost <flat-packet> <role> <packet>: the varied role's tokens, one line:
+#   measured<TAB><input><TAB><output><TAB><cache_creation><TAB><cache_read>
+#   null<TAB><why>
+# `implementer`: the sum of the packet's packets[].dispatches[].tokens rows.
+# Any other role: by_agent_role.<role>.tokens plus by_agent_role.gaffer:<role>'s.
+# One null, absent or non-count figure anywhere makes the whole figure null.
+rd_cost() {
+  R="$2" P="$3" awk -F'\t' '
+    BEGIN { split("input output cache_creation cache_read", F, " ")
+            r1 = ".by_agent_role." ENVIRON["R"] "."; r2 = ".by_agent_role.gaffer:" ENVIRON["R"] "." }
+    function isf(f) { return f == "input" || f == "output" || f == "cache_creation" || f == "cache_read" }
+    match($2, /^\.packets\[[0-9]+\]/) {
+      i = substr($2, 10, RLENGTH - 10) + 0; rest = substr($2, RLENGTH + 1)
+      if (rest == ".id" && $3 == "s") { if ($4 == ENVIRON["P"]) want[i] = 1; next }
+      if (rest == ".dispatches") { if ($4 == "null") dnull[i] = 1; next }
+      if (match(rest, /^\.dispatches\[[0-9]+\]/)) {
+        j = substr(rest, 13, RLENGTH - 13) + 0; r = substr(rest, RLENGTH + 1)
+        d[i, j] = 1; if (j + 1 > nd[i]) nd[i] = j + 1
+        if (r == ".tokens") tnull[i, j] = 1
+        else if (index(r, ".tokens.") == 1 && isf(substr(r, 9))) {
+          if ($3 == "n" && $4 ~ /^[0-9]+$/) tok[i, j, substr(r, 9)] = $4; else tbad[i, j] = 1
+        }
+      }
+      next
+    }
+    {
+      k = ""
+      if (index($2, r1) == 1) k = "a"; else if (index($2, r2) == 1) k = "b"; else next
+      seen[k] = 1
+      r = substr($2, length(k == "a" ? r1 : r2) + 1)
+      if (index(r, "tokens.") == 1 && isf(substr(r, 8))) {
+        if ($3 == "n" && $4 ~ /^[0-9]+$/) rt[k, substr(r, 8)] = $4; else rbad[k] = 1
+      }
+    }
+    function out(why) { if (why != "") { printf "null\t%s\n", why; exit } }
+    END {
+      if (ENVIRON["R"] == "implementer") {
+        np = 0; ndisp = 0
+        for (i in want) {
+          np++
+          if (i in dnull) out("the packet row'"'"'s dispatches is null")
+          for (j = 0; j < nd[i]; j++) {
+            if (!((i, j) in d)) continue
+            ndisp++
+            if (((i, j) in tnull) || ((i, j) in tbad)) out("a dispatch row'"'"'s tokens are null or not counts (no transcript turn resolved to it)")
+            for (f = 1; f <= 4; f++) {
+              if (!((i, j, F[f]) in tok)) out("a dispatch row lacks tokens." F[f])
+              sum[F[f]] += tok[i, j, F[f]]
+            }
+          }
+        }
+        if (np == 0) out("the work clone'"'"'s packet has no row for " ENVIRON["P"])
+        if (ndisp == 0) out("the packet row has no dispatch row")
+      } else {
+        if (!("a" in seen) && !("b" in seen)) out("by_agent_role." ENVIRON["R"] " is absent from the work clone'"'"'s packet")
+        for (k in seen) {
+          if (k in rbad) out("by_agent_role tokens for " ENVIRON["R"] " are null or not counts")
+          for (f = 1; f <= 4; f++) {
+            if (!((k, F[f]) in rt)) out("by_agent_role tokens for " ENVIRON["R"] " lack " F[f])
+            sum[F[f]] += rt[k, F[f]]
+          }
+        }
+      }
+      printf "measured\t%.0f\t%.0f\t%.0f\t%.0f\n", sum["input"], sum["output"], sum["cache_creation"], sum["cache_read"]
+    }' "$1"
+}
+
+cmd_record() {
+  [ $# -eq 1 ] || usage
+  local rid="$1"
+  case "$rid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "record: not a replay id (12 hex, as \`prepare\` prints it): $rid" ;;
+  esac
+
+  # --- the replay's record, found in whichever experiment holds it --------------
+  local store env="" f n=0
+  store="$(store_root)"
+  set +f
+  for f in "$store"/*/replays/"$rid".env; do
+    if [ -f "$f" ]; then env="$f"; n=$((n + 1)); fi
+  done
+  set -f
+  [ "$n" -gt 0 ] || die "record: no replay record for $rid under $store (run \`compare.sh prepare\` first)"
+  [ "$n" -eq 1 ] || die "record: replay $rid is recorded in $n experiments under $store; refusing to guess"
+  local exp pkt role model rmodel clone run_id hsrc rdir
+  rdir="$(dirname "$env")"
+  exp="$(sed -n 's/^EXPERIMENT=//p' "$env" | head -1)"
+  pkt="$(sed -n 's/^PACKET=//p' "$env" | head -1)"
+  role="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+  model="$(sed -n 's/^MODEL=//p' "$env" | head -1)"
+  rmodel="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+  clone="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+  run_id="$(sed -n 's/^RUN_ID=//p' "$env" | head -1)"
+  hsrc="$(sed -n 's/^HANDOFF_SOURCE=//p' "$env" | head -1)"
+  case "$exp" in ''|*[!0-9a-f]*) die "record: the replay record's experiment is malformed: [$exp]" ;; esac
+  case "$pkt" in ''|*[!A-Za-z0-9._-]*) die "record: the replay record's packet is malformed: [$pkt]" ;; esac
+  case "$role" in ''|*[!a-z-]*) die "record: the replay record's role is malformed: [$role]" ;; esac
+  case "$model" in ''|*[!A-Za-z0-9._-]*) die "record: the replay record's model is malformed: [$model]" ;; esac
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "record: the replay record's reviewer model is malformed: [$rmodel]" ;; esac
+  case "$run_id" in ''|*[!A-Za-z0-9._-]*) die "record: the replay record's run id is malformed: [$run_id]" ;; esac
+  case "$hsrc" in original|rebuilt) ;; *) die "record: the replay record's handoff source is malformed: [$hsrc]" ;; esac
+  [ -n "$clone" ] && [ -d "$clone" ] || die "record: the replay's work clone is missing: $clone"
+
+  # --- only an ended, routing-checked replay: every input the outcome needs -----
+  local steps rcf end rcheck
+  steps="$rdir/$rid.steps"
+  rcf="$rdir/$rid.routing"
+  [ -f "$steps" ] || die "record: replay $rid has not been run (no step log): $steps"
+  end="$(sed -n 's/^END=//p' "$steps" | tail -1)"
+  [ -n "$end" ] || die "record: replay $rid has not ended (no END= line in its step log), so its outcome is not decided: $steps"
+  case "$end" in land|decider|stop|crashed|timed-out|refused|error) ;;
+    *) die "record: the step log's END= line is not one replay writes: [$end]" ;; esac
+  rcheck=""
+  if [ -f "$rcf" ]; then rcheck="$(sed -n 's/^ROUTING_CHECK=//p' "$rcf" | tail -1)"; fi
+  case "$rcheck" in pass|fail|not-run) ;;
+    *) die "record: replay $rid has no ROUTING_CHECK= line (run \`compare.sh routing-check\` first), so its outcome is not decided: $rcf" ;; esac
+
+  local records="$store/records.jsonl"
+  if [ -f "$records" ] && R="\"replay\":\"$rid\"" awk 'index($0, ENVIRON["R"]) { f = 1 } END { exit !f }' "$records"; then
+    die "record: replay $rid already has a record in $records (a rerun is a new replay)"
+  fi
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "record: cannot create a temp root"
+  trap '[ -n "$_CMP_TMP" ] && rm -rf "$_CMP_TMP"; :' EXIT
+  local tmp="$_CMP_TMP"
+
+  # The clone's routing records for the packet must be the step log's ROUTE lines.
+  local rj="$clone/.agents/loop/$run_id/routing.jsonl"
+  rd_route_pairs "$rj" "$pkt" > "$tmp/pairs" || die "record: cannot read the work clone's routing records: $rj"
+  awk '/^ROUTE / { t = ""; a = ""
+         for (i = 2; i <= NF; i++) { if (index($i, "token=") == 1) t = substr($i, 7); else if (index($i, "action=") == 1) a = substr($i, 8) }
+         print t "\t" a }' "$steps" > "$tmp/steps.pairs"
+  cmp -s "$tmp/pairs" "$tmp/steps.pairs" \
+    || die "record: the work clone's routing records for $pkt ($(wc -l < "$tmp/pairs" | tr -d ' ')) are not the step log's ROUTE lines ($(wc -l < "$tmp/steps.pairs" | tr -d ' ')): $rj"
+
+  # --- the outcome, in the PRD's order -----------------------------------------------
+  local outcome reason last ltok lact att lim whose=""
+  last="$(grep '^ROUTE ' "$steps" | tail -1)"
+  ltok="$(tail -1 "$tmp/pairs" | cut -f1)"
+  lact="$(tail -1 "$tmp/pairs" | cut -f2)"
+  # END=refused: whose line was refused is the agent of the step log's last STEP
+  # line, the step `replay` ended on (a second refusal, or a reviewer token
+  # outside the review vocabulary).
+  if [ "$end" = refused ]; then
+    whose="$(rd_step_field "$(grep '^STEP ' "$steps" | tail -1)" agent)"
+    case "$whose" in ''|*[!a-z:-]*) die "record: the replay ended refused, but its step log's last STEP line names no readable agent: $steps" ;; esac
+  fi
+  if [ "$rcheck" != pass ]; then
+    outcome=invalid; reason="the routing check read $rcheck"
+  elif case "$end" in crashed|timed-out|error) true ;; *) false ;; esac; then
+    outcome=invalid; reason="the replay ended $end without a verdict it could route"
+  elif [ "$end" = refused ] && [ "$whose" != "$role" ]; then
+    outcome=invalid; reason="the replay ended refused on the $whose's line, a role not under test (a harness fault)"
+  elif awk -F'\t' '$1 == "escalate" { f = 1 } END { exit !f }' "$tmp/pairs"; then
+    outcome=escalated; reason="the reviewer returned escalate"
+  elif [ "$end" = refused ]; then
+    # The varied role's own line refused: the loop's stop on it, scored against
+    # the model. Attempts are the last ROUTE line's; with none routed yet, 0 of a
+    # limit that is at least 1 (runstate.sh reads a missing or 0 packet_attempts
+    # as 1), so an attempt remained.
+    if [ -z "$last" ]; then
+      outcome=escalated; reason="the $role's own line was refused with no attempt routed yet, so an attempt remained"
+    else
+      att="$(rd_step_field "$last" attempts)"; lim="$(rd_step_field "$last" limit)"
+      case "$att" in ''|*[!0-9]*) die "record: the last ROUTE line carries no readable attempts=: [$last]" ;; esac
+      case "$lim" in ''|*[!0-9]*) die "record: the last ROUTE line carries no readable limit=: [$last]" ;; esac
+      if [ "$att" -lt "$lim" ]; then
+        outcome=escalated; reason="the $role's own line was refused with $att of $lim attempts used, so an attempt remained"
+      else
+        outcome=failed-at-limit; reason="the $role's own line was refused with $att of $lim attempts used: the attempt limit is reached"
+      fi
+    fi
+  elif [ "$end" = decider ] || [ "$end" = stop ]; then
+    [ "$lact" = "$end" ] || die "record: the replay ended $end, but its last routing record routed to [$lact]"
+    att="$(rd_step_field "$last" attempts)"; lim="$(rd_step_field "$last" limit)"
+    case "$att" in ''|*[!0-9]*) die "record: the last ROUTE line carries no readable attempts=: [$last]" ;; esac
+    case "$lim" in ''|*[!0-9]*) die "record: the last ROUTE line carries no readable limit=: [$last]" ;; esac
+    if [ "$att" -lt "$lim" ]; then
+      outcome=escalated; reason="$ltok routed to $end with $att of $lim attempts used, so an attempt remained"
+    else
+      outcome=failed-at-limit; reason="$ltok routed to $end with $att of $lim attempts used: the attempt limit is reached"
+    fi
+  else
+    [ "$ltok:$lact" = "pass:land" ] || die "record: the replay ended land, but its last routing record is [$ltok] routed to [$lact]"
+    outcome=passed; reason="the reviewer returned pass"
+  fi
+
+  local first fixr sweeps=""
+  first="$(awk -F'\t' '$1 == "pass" || $1 == "fix" || $1 == "retry" || $1 == "escalate" { print $1; exit }' "$tmp/pairs")"
+  fixr="$(awk -F'\t' '$1 == "fix" && $2 == "attempt" { n++ } END { print n + 0 }' "$tmp/pairs")"
+  if [ -f "$rdir/$rid.sweeps" ]; then sweeps="$(sed -n 's/^SWEEPS=//p' "$rdir/$rid.sweeps" | tail -1)"; fi
+  case "$sweeps" in pass|fail|none-required) ;; *) sweeps="" ;; esac
+
+  # --- the experiment's settings and the model's pinned id -------------------------------
+  local sel="$store/$exp/selection.json" settings pin
+  [ -f "$sel" ] || die "record: no stored selection for the replay's experiment $exp: $sel"
+  json_flat "$sel" > "$tmp/sel" || die "record: the stored selection is not readable JSON: $sel"
+  [ "$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")" = "$exp" ] \
+    || die "record: the stored selection does not name experiment $exp: $sel"
+  settings="$(awk 'index($0, "  \"settings\": {") == 1 { s = substr($0, 15); sub(/,[[:space:]]*$/, "", s); print s; exit }' "$sel" | tr -d '\r')"
+  printf '{"s": %s}\n' "$settings" > "$tmp/settings.json"
+  [ -n "$settings" ] && json_flat "$tmp/settings.json" > /dev/null 2>&1 \
+    || die "record: the stored selection's settings cannot be read as one JSON object: $sel"
+  pin="$(M="$model" awk -F'\t' '$2 == ".settings.model_ids." ENVIRON["M"] && $3 == "s" { print $4; exit }' "$tmp/sel")"
+
+  # --- the cost ------------------------------------------------------------------------------
+  local prices="${ORCH_COMPARE_PRICES:-$HERE/spend-prices.json}" tdate csrc="by_agent_role" note=""
+  [ "$role" = implementer ] && csrc="dispatches"
+  [ -f "$prices" ] || die "record: no price table: $prices"
+  json_flat "$prices" > "$tmp/prices" || die "record: the price table is not readable JSON: $prices"
+  tdate="$(awk -F'\t' '$2 == ".table_date" && $3 == "s" { print $4; exit }' "$tmp/prices")"
+  [ -n "$tdate" ] || die "record: the price table has no table_date: $prices"
+  local cost cstate ti to tc tr
+  if [ -f "$rdir/$rid.metrics/work.json" ] && json_flat "$rdir/$rid.metrics/work.json" > "$tmp/work" 2>/dev/null; then
+    cost="$(rd_cost "$tmp/work" "$role" "$pkt")"
+  else
+    cost="$(printf 'null\tthe work clone has no readable metrics packet (%s)' "$rdir/$rid.metrics/work.json")"
+  fi
+  cstate="$(printf '%s\n' "$cost" | cut -f1)"
+  local tokens_json="null" dmin="null" dmax="null" price="null"
+  if [ "$cstate" = measured ]; then
+    ti="$(printf '%s\n' "$cost" | cut -f2)"; to="$(printf '%s\n' "$cost" | cut -f3)"
+    tc="$(printf '%s\n' "$cost" | cut -f4)"; tr="$(printf '%s\n' "$cost" | cut -f5)"
+    tokens_json="{\"input\":$ti,\"output\":$to,\"cache_creation\":$tc,\"cache_read\":$tr}"
+    if [ "$rcheck" != pass ]; then
+      note="tokens not priced: the routing check read $rcheck, so they are not shown to have been spent on the pinned model"
+    elif [ -z "$pin" ]; then
+      note="tokens not priced: the experiment's model_ids pins no id for $model"
+    else
+      local rates
+      rates="$(K=".prices.$pin." awk -F'\t' '
+        index($2, ENVIRON["K"]) == 1 && $3 == "n" && $4 ~ /^[0-9.]+$/ { r[substr($2, length(ENVIRON["K"]) + 1)] = $4 }
+        END { if (("input" in r) && ("output" in r) && ("cache_read" in r) && ("cache_write_5m" in r) && ("cache_write_1h" in r))
+                print r["input"], r["output"], r["cache_read"], r["cache_write_5m"], r["cache_write_1h"] }' "$tmp/prices")"
+      if [ -z "$rates" ]; then
+        note="tokens not priced: the price table has no complete entry for $pin, the id model_ids pins $model to"
+      else
+        price="$(rd_json_str "$pin")"
+        dmin="$(printf '%s\n' "$rates" | awk -v i="$ti" -v o="$to" -v c="$tc" -v r="$tr" '{ printf "%.6f", (i * $1 + o * $2 + r * $3 + c * $4) / 1000000 }')"
+        dmax="$(printf '%s\n' "$rates" | awk -v i="$ti" -v o="$to" -v c="$tc" -v r="$tr" '{ printf "%.6f", (i * $1 + o * $2 + r * $3 + c * $5) / 1000000 }')"
+      fi
+    fi
+  else
+    note="tokens unmeasured: $(printf '%s\n' "$cost" | cut -f2-)"
+  fi
+
+  # --- the one record, appended only now that the outcome is decided ---------------------------
+  local js_first="null" js_sweeps="null" js_note="null" line
+  [ -n "$first" ] && js_first="$(rd_json_str "$first")"
+  [ -n "$sweeps" ] && js_sweeps="$(rd_json_str "$sweeps")"
+  [ -n "$note" ] && js_note="$(rd_json_str "$note")"
+  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
+    "$(rd_json_str "$exp")" "$(rd_json_str "$rid")" "$(rd_json_str "$pkt")" "$(rd_json_str "$model")" \
+    "$(rd_json_str "$role")" "$(rd_json_str "$rmodel")" "$(rd_json_str "$hsrc")" "$settings" \
+    "$(rd_json_str "$outcome")" "$(rd_json_str "$reason")" "$js_first" "$fixr" "$js_sweeps" \
+    "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$tokens_json" "$dmin" "$dmax" "$price" \
+    "$(rd_json_str "$tdate")" "$(rd_json_str "$csrc")" "$js_note" "$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"
+  printf '%s\n' "$line" > "$tmp/line.json"
+  json_flat "$tmp/line.json" > /dev/null 2>&1 || die "record: the record could not be built as one JSON line"
+  mkdir -p "$store" 2>/dev/null && printf '%s\n' "$line" >> "$records" \
+    || die "record: the record could not be appended: $records"
+
+  printf 'REPLAY=%s\nOUTCOME=%s\nREASON=%s\nFIRST_VERDICT=%s\nFIX_ROUNDS=%s\nSWEEPS=%s\n' \
+    "$rid" "$outcome" "$reason" "${first:-none}" "$fixr" "${sweeps:-not-run}"
+  if [ "$cstate" = measured ]; then
+    printf 'TOKENS=%s\n' "$(awk -v a="$ti" -v b="$to" -v c="$tc" -v d="$tr" 'BEGIN { printf "%.0f", a + b + c + d }')"
+  else
+    printf 'TOKENS=unmeasured\n'
+  fi
+  printf 'DOLLARS_MIN=%s\nDOLLARS_MAX=%s\nRECORDS=%s\n' \
+    "$( [ "$dmin" = null ] && echo unmeasured || echo "$dmin")" "$( [ "$dmax" = null ] && echo unmeasured || echo "$dmax")" "$records"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -3104,6 +3499,7 @@ case "$SUB" in
   replay)     cmd_replay "$@" ;;
   routing-check) cmd_routing_check "$@" ;;
   sweeps)     cmd_sweeps "$@" ;;
+  record)     cmd_record "$@" ;;
   *) usage ;;
 esac
 exit 0

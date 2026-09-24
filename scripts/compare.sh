@@ -200,13 +200,73 @@
 #                     run for an original, the first clone for a rebuild):
 #                     identical bytes mean those paths are not this clone's.
 #
+#   review-view <replay>
+#                     build the checkout a reviewer is given for a prepared
+#                     replay (its record, <store>/*/replays/<replay>.env, must
+#                     exist in exactly one experiment): a second opaque clone
+#                     that names none of the settings' models. Steps, in order:
+#                       1. the work clone's current diff against the start
+#                          (committed on its branch, staged, unstaged and
+#                          untracked-but-not-ignored alike) is taken as a tree,
+#                          through a temp index and a temp object directory, so
+#                          the work clone itself is only read. Everything under
+#                          `.agents/metrics/` and `.agents/loop/`, and the
+#                          run-state (`.agents/run-state.yaml`,
+#                          `.agents/run-state-prev.yaml`), stays as the start
+#                          holds it. `.agents/project-overrides.yaml` keeps the
+#                          packet's own edits but its `model_routing` is reduced
+#                          to the one `reviewer: <reviewer model>` entry (every
+#                          other entry dropped, the start's included), so the
+#                          replay's routing change is not in the view.
+#                       2. `git clone --shared --no-checkout` of the source at
+#                          the start into <scratch>/<16 hex>, on the one branch
+#                          `review-<16 hex>`, with no remote, as `prepare` does.
+#                          Refused when the scratch root's path names a model.
+#                       3. commit A (only when the start's own `model_routing`
+#                          is not already reviewer-only): the start with that
+#                          reduced configuration; commit B: A plus the change.
+#                          Both are made by `git commit-tree` (no hook, no
+#                          template, no trailer) with a fixed author, committer,
+#                          date and message: "Review configuration" and
+#                          "Changes under review", by compare
+#                          <compare@example.invalid> at 2000-01-01T00:00:00Z.
+#                          B's tree must equal the tree built in step 1, and
+#                          `routing.sh --root <view> resolve reviewer` must print
+#                          the reviewer model, or it is refused. The change under
+#                          review is BASE..HEAD.
+#                       4. a run-state (`last_green_commit` = BASE) and
+#                          `runstate.sh begin-run` in the view.
+#                       5. under <view>/.agents/loop/<run_id>/<packet>/: the work
+#                          clone's current handoff as `handoff.md`, and its result
+#                          file (<clone>/.agents/loop/<run_id>/<packet>/<role>.md)
+#                          as `<role>.md`, each with every word containing an
+#                          identifier of the settings' models (each model and
+#                          the reviewer's, as the settings name them, which is
+#                          also the routing alias; a resolved id such as
+#                          `claude-<alias>-5` contains its alias), matched
+#                          case-insensitively, replaced by `[model]` together
+#                          with a directly following version number. The
+#                          handoff header's `run-state:`, `result:` and
+#                          `review:` lines are pointed at the view's own paths.
+#                     Output (the view's path is also appended as a `VIEW=`
+#                     line to <store>/<experiment>/replays/<replay>.views):
+#                       REPLAY= VIEW= BRANCH= START= BASE= HEAD= RUN_STATE=
+#                       RUN_ID= HANDOFF= RESULT=<path|none> REVIEW=<path>
+#                     The reviewed change's own content is carried as it is:
+#                     a diff that itself names a model is not redacted, since
+#                     redacting it would change the work under review. On any
+#                     failure the half-built view is removed.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
-# prepared replay; 1 refused, no experiment id could be computed, the source
+# prepared replay / a review view; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
 # selection, a packet or model outside it, a scratch root inside the source,
-# or a clone, routing, run-state or handoff step that failed; 2 usage error,
+# or a clone, routing, run-state or handoff step that failed, or (review-view)
+# no single replay record, a work clone, source or selection that cannot be
+# read, a scratch root inside the source or naming a model, or a diff, clone,
+# commit, routing, run-state or redaction step that failed; 2 usage error,
 # or routing.sh / gspec-backlog.sh / runstate.sh missing beside this script.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
@@ -244,7 +304,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -1333,10 +1393,14 @@ opaque_name() {
 # a flow-form map is rewritten as a block; an absent key is appended. Exit 3
 # when the map cannot be read (a flow value that is not one `{...}`, or a
 # second `model_routing:` key, which routing.sh reads as unparseable anyway).
+# An EMPTY <role> is the review view's reviewer-only form: every entry of the
+# map is dropped (comment and blank lines in it are kept) and only `reviewer`
+# is written, so no other agent's model is named by the view's routing.
 set_routing() {
   local in="$1"
   [ -f "$in" ] || in=/dev/null
   ROLE="$3" MODEL="$4" RM="$5" awk '
+    BEGIN { only = (ENVIRON["ROLE"] == "") }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function keyof(s,   p) {
       s = trim(s); p = match(s, /:([[:space:]]|$)/); if (p == 0) return ""
@@ -1347,7 +1411,7 @@ set_routing() {
     function emit(   i, ind) {
       ind = (ei == "" ? "  " : ei)
       print "model_routing:"
-      print ind ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
+      if (!only) print ind ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
       print ind "reviewer: " ENVIRON["RM"]
       for (i = 1; i <= nb; i++) print buf[i]
       nb = 0; inb = 0; done = 1
@@ -1358,7 +1422,7 @@ set_routing() {
       if ($0 ~ /^[[:space:]]/) {
         if (ei == "") { match($0, /^[[:space:]]+/); ei = substr($0, 1, RLENGTH) }
         k = keyof($0)
-        if (k == ENVIRON["ROLE"] || k == "reviewer") next
+        if (only || k == ENVIRON["ROLE"] || k == "reviewer") next
         buf[++nb] = $0; next
       }
       emit()
@@ -1375,7 +1439,7 @@ set_routing() {
       for (i = 1; i <= n; i++) {
         pc = trim(pcs[i]); if (pc == "") continue
         k = keyof(pc); if (k == "") { bad = 1; continue }
-        if (k == ENVIRON["ROLE"] || k == "reviewer") continue
+        if (only || k == ENVIRON["ROLE"] || k == "reviewer") continue
         buf[++nb] = "  " pc
       }
       emit(); next
@@ -1385,7 +1449,7 @@ set_routing() {
       if (inb) emit()
       if (!done) {
         print "model_routing:"
-        print "  " ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
+        if (!only) print "  " ENVIRON["ROLE"] ": " ENVIRON["MODEL"]
         print "  reviewer: " ENVIRON["RM"]
       }
       if (bad) exit 3
@@ -1443,6 +1507,27 @@ first_dispatch() {
       return 3 ;;
   esac
   printf '%s' "$c" > "$2"
+}
+
+# opaque_clone <cmd> <src> <start> <dest> <branch> <tmp>: a `git clone --shared
+# --no-checkout` of <src> at <dest>, with <start> checked out on the new local
+# <branch>, every other local branch and the `origin` remote dropped, so its
+# refs are that one branch (and any tags) and nothing it does can reach <src>.
+# Dies, naming <cmd>, on any failure; the caller's EXIT trap removes <dest>.
+opaque_clone() {
+  local cmd="$1" src="$2" start="$3" dest="$4" bname="$5" tmp="$6" ref
+  git clone -q --shared --no-checkout "$src" "$dest" >/dev/null 2>"$tmp/git.err" \
+    || die "$cmd: git clone --shared failed: $(head -1 "$tmp/git.err")"
+  git -C "$dest" -c advice.detachedHead=false checkout -q -b "$bname" "$start" >/dev/null 2>"$tmp/git.err" \
+    || die "$cmd: cannot check out $start in the clone: $(head -1 "$tmp/git.err")"
+  git -C "$dest" for-each-ref --format='%(refname)' refs/heads/ > "$tmp/heads" 2>/dev/null
+  while IFS= read -r ref; do
+    [ -n "$ref" ] && [ "$ref" != "refs/heads/$bname" ] || continue
+    git -C "$dest" update-ref -d "$ref" >/dev/null 2>&1 || die "$cmd: cannot drop the clone's branch $ref"
+  done < "$tmp/heads"
+  if git -C "$dest" remote 2>/dev/null | grep -qx origin; then
+    git -C "$dest" remote remove origin >/dev/null 2>&1 || die "$cmd: cannot drop the clone's origin remote"
+  fi
 }
 
 # Globals, not locals: the EXIT trap below runs after cmd_prepare has returned
@@ -1535,19 +1620,7 @@ cmd_prepare() {
   clone="$scratch/$dname"
   [ ! -e "$clone" ] || die "prepare: the drawn clone path already exists: $clone"
   _CMP_CLONE="$clone"
-  git clone -q --shared --no-checkout "$src" "$clone" >/dev/null 2>"$tmp/git.err" \
-    || die "prepare: git clone --shared failed: $(head -1 "$tmp/git.err")"
-  git -C "$clone" -c advice.detachedHead=false checkout -q -b "$bname" "$start" >/dev/null 2>"$tmp/git.err" \
-    || die "prepare: cannot check out $start in the clone: $(head -1 "$tmp/git.err")"
-  local ref
-  git -C "$clone" for-each-ref --format='%(refname)' refs/heads/ > "$tmp/heads" 2>/dev/null
-  while IFS= read -r ref; do
-    [ -n "$ref" ] && [ "$ref" != "refs/heads/$bname" ] || continue
-    git -C "$clone" update-ref -d "$ref" >/dev/null 2>&1 || die "prepare: cannot drop the clone's branch $ref"
-  done < "$tmp/heads"
-  if git -C "$clone" remote 2>/dev/null | grep -qx origin; then
-    git -C "$clone" remote remove origin >/dev/null 2>&1 || die "prepare: cannot drop the clone's origin remote"
-  fi
+  opaque_clone prepare "$src" "$start" "$clone" "$bname" "$tmp"
 
   # --- 2. model_routing in the clone's own configuration ---------------------------
   local ov got_role got_rev
@@ -1643,6 +1716,266 @@ HANDOFF_CACHED=$cached"
   printf '%s\n' "$out"
 }
 
+# --- review-view ---------------------------------------------------------------------
+
+# The fixed, neutral identity and text of every commit a review view holds: the
+# same for every replay and every model, carrying no trailer of any kind.
+_CMP_VIEW_NAME="compare"
+_CMP_VIEW_EMAIL="compare@example.invalid"
+_CMP_VIEW_DATE="2000-01-01T00:00:00Z"
+_CMP_VIEW_BASE_MSG="Review configuration"
+_CMP_VIEW_HEAD_MSG="Changes under review"
+
+# The work clone's paths that never reach a view as changed: they stay as the
+# start commit holds them. The routing configuration is handled on its own.
+_CMP_VIEW_EXCLUDED=".agents/metrics .agents/loop .agents/run-state.yaml .agents/run-state-prev.yaml"
+
+# redact <ids-file> <in> <out>: <in> with every word (a maximal run of
+# [A-Za-z0-9_-], dots allowed only inside it, so a sentence's full stop is
+# kept) containing any identifier in <ids-file>, compared
+# case-insensitively, replaced whole by `[model]`, together with a version
+# number that directly follows it after spaces (`Opus 4.5`). A whole word, so
+# a resolved id such as `claude-sonnet-5` leaves no version or family behind.
+redact() {
+  awk '
+    NR == FNR { if ($0 != "") ids[++n] = tolower($0); next }
+    {
+      s = $0; out = ""
+      while (match(s, /[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)*/)) {
+        pre = substr(s, 1, RSTART - 1); tok = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+        lt = tolower(tok); hit = 0
+        for (i = 1; i <= n; i++) if (index(lt, ids[i])) { hit = 1; break }
+        if (hit) {
+          tok = "[model]"
+          if (match(s, /^[ ]+[0-9]+([.][0-9]+)*/)) s = substr(s, RLENGTH + 1)
+        }
+        out = out pre tok
+      }
+      print out s
+    }' "$1" "$2" > "$3"
+}
+
+# view_header <in> <out> <run-state> <result> <review>: <in> with its header's
+# `run-state:`, `result:` and `review:` lines (the first of each, before the
+# first `PACKET=` or `<!--` line) pointing into the view, so no header path
+# leads a reviewer back to the work clone or the source run.
+view_header() {
+  RS="$3" RES="$4" REV="$5" awk '
+    !body && (/^PACKET=/ || /^<!--/) { body = 1 }
+    !body && !rs  && /^run-state: / { print "run-state: " ENVIRON["RS"]; rs = 1; next }
+    !body && !res && /^result: /    { print "result: " ENVIRON["RES"]; res = 1; next }
+    !body && !rev && /^review: /    { print "review: " ENVIRON["REV"]; rev = 1; next }
+    { print }' "$1" > "$2"
+}
+
+_CMP_VIEW=""
+_cmp_view_cleanup() {
+  if [ -n "$_CMP_TMP" ]; then rm -rf "$_CMP_TMP"; fi
+  if [ -n "$_CMP_VIEW" ]; then rm -rf "$_CMP_VIEW"; fi
+  return 0
+}
+
+cmd_review_view() {
+  [ $# -eq 1 ] || usage
+  local rid="$1"
+  case "$rid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "review-view: not a replay id (12 hex, as \`prepare\` prints it): $rid" ;;
+  esac
+  [ -x "$ROUTING" ] || die "review-view: routing.sh is missing or not executable: $ROUTING" 2
+  [ -x "$RUNSTATE" ] || die "review-view: runstate.sh is missing or not executable: $RUNSTATE" 2
+
+  # --- the replay's record, found in whichever experiment holds it --------------
+  local store env="" f n=0
+  store="$(store_root)"
+  set +f
+  for f in "$store"/*/replays/"$rid".env; do
+    if [ -f "$f" ]; then env="$f"; n=$((n + 1)); fi
+  done
+  set -f
+  [ "$n" -gt 0 ] || die "review-view: no replay record for $rid under $store (run \`compare.sh prepare\` first)"
+  [ "$n" -eq 1 ] || die "review-view: replay $rid is recorded in $n experiments under $store; refusing to guess"
+  local exp pkt role rmodel src start clone run_id handoff
+  exp="$(sed -n 's/^EXPERIMENT=//p' "$env" | head -1)"
+  pkt="$(sed -n 's/^PACKET=//p' "$env" | head -1)"
+  role="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+  rmodel="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+  src="$(sed -n 's/^SOURCE_REPO=//p' "$env" | head -1)"
+  start="$(sed -n 's/^START=//p' "$env" | head -1)"
+  clone="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+  run_id="$(sed -n 's/^RUN_ID=//p' "$env" | head -1)"
+  handoff="$(sed -n 's/^HANDOFF=//p' "$env" | head -1)"
+  case "$pkt" in ''|*[!A-Za-z0-9._-]*) die "review-view: the replay record's packet is malformed: [$pkt]" ;; esac
+  case "$role" in ''|*[!a-z-]*) die "review-view: the replay record's role is malformed: [$role]" ;; esac
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "review-view: the replay record's reviewer model is malformed: [$rmodel]" ;; esac
+  case "$start" in ''|*[!0-9a-f]*) die "review-view: the replay record's start is not a commit id: [$start]" ;; esac
+  case "$run_id" in ''|*[!A-Za-z0-9._-]*) die "review-view: the replay record's run id is malformed: [$run_id]" ;; esac
+  [ -n "$clone" ] && git -C "$clone" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "review-view: the replay's work clone is not a git repository: $clone"
+  git -C "$clone" cat-file -e "${start}^{commit}" 2>/dev/null \
+    || die "review-view: the replay's start commit is not in its work clone: $start"
+
+  local sel="$store/$exp/selection.json"
+  [ -f "$sel" ] || die "review-view: no stored selection for the replay's experiment $exp: $sel"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "review-view: cannot create a temp root"
+  trap _cmp_view_cleanup EXIT
+  local tmp="$_CMP_TMP"
+
+  # Every identifier of the settings' models: each model as the settings name
+  # it (which is also its routing alias) and the reviewer's. A resolved id
+  # (`claude-<alias>-...`) contains its alias, so `redact` replaces it whole.
+  json_flat "$sel" > "$tmp/sel" || die "review-view: the stored selection is not readable JSON: $sel"
+  { awk -F'\t' '$2 ~ /^\.settings\.models\[[0-9]+\]$/ { print $4 }' "$tmp/sel"; printf '%s\n' "$rmodel"; } > "$tmp/ids"
+  if LC_ALL=C grep -q '[^A-Za-z0-9._-]' "$tmp/ids" 2>/dev/null || [ "$(grep -c . "$tmp/ids")" -lt 2 ]; then
+    die "review-view: the stored selection's models are malformed: $sel"
+  fi
+
+  # --- 1. the work clone's current diff, as a tree, built without touching it ----------
+  # A temp index and a temp object directory (the clone's own objects as an
+  # alternate): the clone's index, object store and refs are only read.
+  local cobj
+  cobj="$(cd "$clone" && cd "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null && pwd -P)" \
+    || die "review-view: cannot find the work clone's object store: $clone"
+  mkdir -p "$tmp/objects" || die "review-view: cannot create a temp object store"
+  _gw() { GIT_INDEX_FILE="$tmp/$1.idx" GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj" \
+            git -C "$clone" "${@:2}"; }
+  local ov=".agents/project-overrides.yaml" p blob tbase thead
+  # The routing configuration: the start's file and the work clone's current
+  # file, each with `model_routing` reduced to the reviewer's entry alone. So
+  # the reviewed change (base -> head) holds the packet's own edits to the file,
+  # never the replay's routing, and the view resolves only the reviewer.
+  if git -C "$clone" cat-file -e "$start:$ov" 2>/dev/null; then
+    git -C "$clone" show "$start:$ov" > "$tmp/ov.start" 2>/dev/null || die "review-view: cannot read the start's $ov"
+  fi
+  set_routing "$tmp/ov.start" "$tmp/ov.base" "" "" "$rmodel" \
+    || die "review-view: the start commit's model_routing cannot be read, so it cannot be reduced: $ov"
+  set_routing "$clone/$ov" "$tmp/ov.head" "" "" "$rmodel" \
+    || die "review-view: the work clone's model_routing cannot be read, so it cannot be reduced: $clone/$ov"
+  for p in base head; do
+    _gw "$p" read-tree "$start" 2>"$tmp/git.err" || die "review-view: cannot read the start tree: $(head -1 "$tmp/git.err")"
+  done
+  _gw head add -A -- . 2>"$tmp/git.err" || die "review-view: cannot stage the work clone's changes: $(head -1 "$tmp/git.err")"
+  for p in $_CMP_VIEW_EXCLUDED; do
+    _gw head rm --cached -r -q --ignore-unmatch -- "$p" >/dev/null 2>"$tmp/git.err" \
+      || die "review-view: cannot drop $p from the reviewed change: $(head -1 "$tmp/git.err")"
+    git -C "$clone" ls-tree -r "$start" -- "$p" > "$tmp/keep" 2>/dev/null
+    _gw head update-index --index-info < "$tmp/keep" 2>"$tmp/git.err" \
+      || die "review-view: cannot restore $p as the start holds it: $(head -1 "$tmp/git.err")"
+  done
+  for p in base head; do
+    blob="$(_gw "$p" hash-object -w "$tmp/ov.$p" 2>/dev/null)" || die "review-view: cannot store the reduced $ov"
+    _gw "$p" update-index --add --cacheinfo "100644,$blob,$ov" 2>"$tmp/git.err" \
+      || die "review-view: cannot stage the reduced $ov: $(head -1 "$tmp/git.err")"
+  done
+  tbase="$(_gw base write-tree 2>/dev/null)" || die "review-view: cannot write the view's base tree"
+  thead="$(_gw head write-tree 2>/dev/null)" || die "review-view: cannot write the view's reviewed tree"
+  _gw head diff --binary --no-renames "$tbase" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
+    || die "review-view: cannot diff the reviewed change: $(head -1 "$tmp/git.err")"
+
+  # --- 2. the view: a second opaque clone of the source at the start ------------------
+  local scratch dname bname view
+  [ -n "$src" ] && git -C "$src" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "review-view: the source repository is not a git repository: $src"
+  scratch="${ORCH_COMPARE_SCRATCH:-${TMPDIR:-/tmp}}"
+  mkdir -p "$scratch" 2>/dev/null || die "review-view: cannot create the scratch root: $scratch"
+  scratch="$(cd "$scratch" && pwd -P)" || die "review-view: cannot enter the scratch root: $scratch"
+  local srctop
+  srctop="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+  [ -n "$srctop" ] && srctop="$(cd "$srctop" && pwd -P)"
+  if [ -n "$srctop" ]; then
+    case "$scratch/" in
+      "$srctop/"*) die "review-view: the scratch root lies inside the source repository's working tree: $scratch" ;;
+    esac
+  fi
+  # The reviewer works in the view, so its whole path is something it reads.
+  if names_model "$scratch" "$tmp/ids"; then
+    die "review-view: the scratch root's path names a model, which the reviewer would read: $scratch"
+  fi
+  dname="$(opaque_name "" "$tmp/ids")" || die "review-view: no directory name free of every model identifier could be drawn"
+  bname="$(opaque_name "review-" "$tmp/ids")" || die "review-view: no branch name free of every model identifier could be drawn"
+  view="$scratch/$dname"
+  [ ! -e "$view" ] || die "review-view: the drawn view path already exists: $view"
+  _CMP_VIEW="$view"
+  opaque_clone review-view "$src" "$start" "$view" "$bname" "$tmp"
+
+  # --- 3. two commits, fixed and neutral: the reviewer's configuration, then the change -
+  _vc() {  # _vc <tree> <parent> <message> -> the new commit's id
+    GIT_AUTHOR_NAME="$_CMP_VIEW_NAME" GIT_AUTHOR_EMAIL="$_CMP_VIEW_EMAIL" GIT_AUTHOR_DATE="$_CMP_VIEW_DATE" \
+    GIT_COMMITTER_NAME="$_CMP_VIEW_NAME" GIT_COMMITTER_EMAIL="$_CMP_VIEW_EMAIL" GIT_COMMITTER_DATE="$_CMP_VIEW_DATE" \
+      git -C "$view" -c commit.gpgsign=false commit-tree "$1" -p "$2" -m "$3" 2>/dev/null
+  }
+  local base head got
+  mkdir -p "$view/.agents" || die "review-view: cannot create $view/.agents"
+  cp "$tmp/ov.base" "$view/$ov" || die "review-view: cannot write the view's $ov"
+  git -C "$view" add -f -- "$ov" >/dev/null 2>&1 || die "review-view: cannot stage the view's $ov"
+  got="$(git -C "$view" write-tree 2>/dev/null)"
+  [ "$got" = "$tbase" ] || die "review-view: the view's base tree [$got] is not the one built from the work clone [$tbase]"
+  if [ "$tbase" = "$(git -C "$view" rev-parse "$start^{tree}" 2>/dev/null)" ]; then
+    base="$start"
+  else
+    base="$(_vc "$tbase" "$start" "$_CMP_VIEW_BASE_MSG")" && [ -n "$base" ] || die "review-view: cannot commit the view's configuration"
+  fi
+  if [ -s "$tmp/change.patch" ]; then
+    git -C "$view" apply --index --binary "$tmp/change.patch" 2>"$tmp/git.err" \
+      || die "review-view: the work clone's change does not apply to the view: $(head -1 "$tmp/git.err")"
+  fi
+  got="$(git -C "$view" write-tree 2>/dev/null)"
+  [ "$got" = "$thead" ] || die "review-view: the view's reviewed tree [$got] is not the work clone's change [$thead]"
+  head="$(_vc "$thead" "$base" "$_CMP_VIEW_HEAD_MSG")" && [ -n "$head" ] || die "review-view: cannot commit the change under review"
+  git -C "$view" update-ref -m "$_CMP_VIEW_HEAD_MSG" "refs/heads/$bname" "$head" >/dev/null 2>&1 \
+    || die "review-view: cannot move the view's branch to the change under review"
+  got="$(git -C "$view" status --porcelain=v1 --untracked-files=no 2>/dev/null)"
+  [ -z "$got" ] || die "review-view: the view's tree is not clean at the change under review: $(printf '%s' "$got" | head -1)"
+  local r_rev
+  r_rev="$(ORCH_ROUTING_AGENTS_DIR="$AGENTS_DIR" "$ROUTING" --root "$view" resolve reviewer 2>/dev/null | tr -d '\r')"
+  [ "$r_rev" = "$rmodel" ] \
+    || die "review-view: routing.sh does not resolve the view's reviewer as set (reviewer -> [$r_rev], wanted $rmodel)"
+
+  # --- 4. the view's own run-state and run directory ---------------------------------
+  local rs bout vrun vdir
+  rs="$view/.agents/run-state.yaml"
+  printf "schema: 3\nstatus: 'running'\nbranch: '%s'\nlast_green_commit: '%s'\n" "$bname" "$base" \
+    | (cd "$view" && CLAUDE_PROJECT_DIR="$view" "$RUNSTATE" write "$rs") >/dev/null 2>"$tmp/rs.err" \
+    || die "review-view: runstate.sh write failed in the view: $(head -1 "$tmp/rs.err")"
+  bout="$(cd "$view" && CLAUDE_PROJECT_DIR="$view" "$RUNSTATE" begin-run "$rs" 2>"$tmp/rs.err" | tr -d '\r')" \
+    || die "review-view: runstate.sh begin-run failed in the view: $(head -1 "$tmp/rs.err")"
+  vrun="$(printf '%s\n' "$bout" | sed -n 's/^RUN_ID=//p' | head -1)"
+  [ -n "$vrun" ] || die "review-view: runstate.sh begin-run printed no RUN_ID in the view"
+
+  # --- 5. the handoff and result file, redacted --------------------------------------
+  local vh vres vrev wres
+  vdir="$view/.agents/loop/$vrun/$pkt"
+  vh="$vdir/handoff.md"; vres="$vdir/$role.md"; vrev="$vdir/review.md"
+  mkdir -p "$vdir" || die "review-view: cannot create $vdir"
+  [ -f "$handoff" ] || die "review-view: the replay's handoff is missing from its work clone: $handoff"
+  redact "$tmp/ids" "$handoff" "$tmp/handoff.red" || die "review-view: cannot redact the handoff"
+  view_header "$tmp/handoff.red" "$vh" "$rs" "$vres" "$vrev" || die "review-view: cannot write the view's handoff: $vh"
+  wres="$clone/.agents/loop/$run_id/$pkt/$role.md"
+  if [ -f "$wres" ]; then
+    redact "$tmp/ids" "$wres" "$vres" || die "review-view: cannot write the view's result file: $vres"
+  else
+    vres="none"
+  fi
+
+  local out
+  out="REPLAY=$rid
+VIEW=$view
+BRANCH=$bname
+START=$start
+BASE=$base
+HEAD=$head
+RUN_STATE=$rs
+RUN_ID=$vrun
+HANDOFF=$vh
+RESULT=$vres
+REVIEW=$vrev"
+  printf 'VIEW=%s\n' "$view" >> "$store/$exp/replays/$rid.views" \
+    || die "review-view: cannot record the view: $store/$exp/replays/$rid.views"
+  _CMP_VIEW=""
+  printf '%s\n' "$out"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -1651,6 +1984,7 @@ case "$SUB" in
   select)     cmd_select "$@" ;;
   estimate)   cmd_estimate "$@" ;;
   prepare)    cmd_prepare "$@" ;;
+  review-view) cmd_review_view "$@" ;;
   *) usage ;;
 esac
 exit 0

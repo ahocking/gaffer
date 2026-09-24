@@ -135,7 +135,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     show `dispatches_with_model_override` above 0, or a model other than the
     configured one in `by_agent_role.<role>.models`, fails the routing check
 
-- [ ] **P0**: The reviewer is fixed across the experiment and blind to the model
+- [x] **P0**: The reviewer is fixed across the experiment and blind to the model
   - every review, and every ranking in an experiment, runs on the one reviewer
     model the settings name, and each replay record stores that model
   - nothing the reviewer receives, or can read in the checkout it reviews,
@@ -146,7 +146,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     and for ranking exclude the routing-configuration change, and the routing
     check reads metrics collected outside the reviewed checkout
 
-- [ ] **P0**: Every replay is recorded with its outcome, sweeps and cost
+- [x] **P0**: Every replay is recorded with its outcome, sweeps and cost
   - each replay ends in exactly one outcome, tested in this order: `invalid`
     when it fails the routing check, or crashes or pauses without a verdict;
     `escalated` when the reviewer returns `escalate`, or the loop would route

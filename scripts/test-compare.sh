@@ -107,6 +107,17 @@
 # the work of the model the label map gives it, the work clones only read, no
 # model identifier anywhere in it beyond the start's, the label map only in the
 # store; and eight rounds over both packets showing independent, shuffled orders.
+# `rank`: each on a fresh ranking clone, through the stub session answering a
+# fixture ranking block: a tie, a missing label, a duplicated label and a
+# missing reason each refused naming its rule, and a valid ranking from a
+# session on the wrong model or at another effort refused by the reviewer
+# check, each with nothing on stdout, nothing appended and no label resolved;
+# a valid ranking: one reviewer session in the clone, started with `--effort`
+# at the setting and without CLAUDE_CODE_EFFORT_LEVEL, a brief naming no
+# compared model, the check passing, the record naming no compared model and
+# appended before any RESOLVED line, each label resolved to the model the map
+# gives it; the same ranking again refused with no session; and an append that
+# fails leaving every label unresolved.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -1904,10 +1915,16 @@ if [ -n "${STUB_SEED:-}" ]; then
     "$sid" "$sid" "$agent" > ".agents/metrics/events/$sid.jsonl"
   printf '{"ts":"2026-05-02T00:00:03Z","session_id":"%s","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:%s","model":"%s","routing_resolved":"%s","routing_table":{"%s":"%s"},"ok":true}\n' \
     "$sid" "$agent" "$mdl" "$mdl" "$agent" "$mdl" >> ".agents/metrics/events/$sid.jsonl"
-  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z","message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
-    "$sid" "$pin" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
+  # STUB_EFF=<level>: the transcript turn carries that effort (unset: none).
+  ef=""; [ -z "${STUB_EFF:-}" ] || ef=",\"effort\":\"$STUB_EFF\""
+  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z"%s,"message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$ef" "$sid" "$pin" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
 fi
-printf 'working on it\n%s\n' "$line"
+# `file:<path>`: the session's answer is that file's lines (a ranking block).
+case "$line" in
+  file:*) printf 'working on it\n'; cat "${line#file:}" ;;
+  *) printf 'working on it\n%s\n' "$line" ;;
+esac
 STUB
 chmod +x "$WORK/stub-claude"
 IMPL_DONE='done · did the work · result: no · /r/implementer.md'
@@ -3066,7 +3083,7 @@ mkdir -p "$RKSTORE/$RKEXP"
 cat > "$RKSTORE/$RKEXP/selection.json" <<EOF
 {
   "experiment": "$RKEXP",
-  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "haiku", "effort": "high", "source_repo": "$RK", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "haiku", "effort": "high", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5", "opus": "claude-opus-4-7", "sonnet": "claude-sonnet-4-6"}, "source_repo": "$RK", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["docs/"]},
   "selected": [
     {"packet": "rk-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rk one", "handoff": "original", "start": "$K0", "commits": ["$K1"]},
     {"packet": "rk-t2", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rk two", "handoff": "original", "start": "$K0", "commits": ["$K2"]}
@@ -3216,6 +3233,122 @@ else bad "rank-prepare: two packets receive independent orders" "the two packets
 if [ "$RK_UNSORTED" -gt 0 ]; then ok "rank-prepare: the order is shuffled, not the settings' ($RK_UNSORTED of 16 differ)"
 else bad "rank-prepare: the order is shuffled, not the settings'" "all 16 orders were the settings' model order"; fi
 
+printf '\n== rank: one reviewer session, a strict order, recorded before resolved ==\n'
+# Each case ranks a fresh ranking clone of rk-t1 (rank-prepare first; its three
+# labels are always A, B and C) through the stub session, whose answer is a
+# fixture ranking block. With STUB_SEED the stub leaves what the reviewer check
+# reads: the dispatch stamped with what routing.sh resolves in the clone, and a
+# transcript turn on the id STUB_PINS gives it (RK_PINS overrides the pin, RK_EFF
+# sets the turn's effort; the selection's effort is high).
+RKPROJ="$WORK/rkproj"
+rk_answer() {  # rk_answer <name> <line>...: a ranking block the stub prints, in $WORK/rank-<name>.txt
+  local f="$WORK/rank-$1.txt"; shift
+  printf '%s\n' RANKING "$@" > "$f"
+}
+rk_rank() {  # rk_rank <answer-name> [again]: rank rk-t1 through the stub; OUT/ERR/RC, SD, RKD
+  if [ "${2:-}" != again ]; then rkp rk-t1; RKD="$(line DIR)"; RKRANK="$(line RANKING)"; fi
+  run_stub "file:$WORK/rank-$1.txt"
+  RK_NB="$(rk_nranks)"
+  OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT=60 \
+    ORCH_COMPARE_STORE="$RKSTORE" ORCH_METRICS_PROJECTS_DIR="$RKPROJ" STUB_SEED="$RKPROJ" STUB_ROUTING="$ROUTING" \
+    STUB_PINS="${RK_PINS:-haiku=claude-haiku-4-5}" STUB_EFF="${RK_EFF:-}" \
+    "$COMPARE" rank "$RKEXP" rk-t1 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+rk_nranks() { if [ -f "$RKSTORE/rankings.jsonl" ]; then wc -l < "$RKSTORE/rankings.jsonl" | tr -d ' '; else echo 0; fi; }
+rk_answer valid 'RANK 1 B the cleanest change, with its test' 'RANK 2 A correct, but untested' 'RANK 3 C misses the extra script'
+rk_answer tie 'RANK 1 B the cleanest change' 'RANK 1 A just as clean' 'RANK 2 C misses the extra script'
+rk_answer missing 'RANK 1 B the cleanest change' 'RANK 2 A correct, but untested'
+rk_answer dup 'RANK 1 B the cleanest change' 'RANK 2 A correct, but untested' 'RANK 3 B named again'
+rk_answer noreason 'RANK 1 B the cleanest change' 'RANK 2 A' 'RANK 3 C misses the extra script'
+
+# Each broken rule: refused naming it, stdout empty, nothing appended, and no
+# label resolved.
+rk_refused() {  # rk_refused <label> <expected REFUSED line>
+  assert_eq "rank, $1: exit 1, nothing on stdout, nothing recorded" "1::$RK_NB" "$RC:$OUT:$(rk_nranks)"
+  assert_has "rank, $1: refused naming the rule" "$2" "$ERR"
+  case "$OUT$ERR" in *RESOLVED*) bad "rank, $1: no label is resolved" "$OUT$ERR" ;; *) ok "rank, $1: no label is resolved" ;; esac
+}
+rk_rank tie;      rk_refused "a tie" "REFUSED rule=tie position=1 label=A line=2"
+rk_rank missing;  rk_refused "a missing label" "REFUSED rule=missing-label label=C"
+rk_rank dup;      rk_refused "a duplicated label" "REFUSED rule=duplicate-label position=3 label=B line=3"
+rk_rank noreason; rk_refused "a missing reason" "REFUSED rule=missing-reason position=2 label=A line=2"
+
+# A valid ranking from a session on another model, or at another effort: refused
+# by the reviewer check, with the failing CHECK line named.
+RK_PINS="haiku=claude-sonnet-4-6" rk_rank valid
+rk_refused "a ranking session on the wrong model" "REFUSED rule=model-or-effort"
+assert_has "rank, a ranking session on the wrong model: the failing check is named" \
+  "CHECK scope=rank check=reviewer-models result=fail value=claude-sonnet-4-6" "$ERR"
+RK_EFF=low rk_rank valid
+rk_refused "a ranking session at another effort" "REFUSED rule=model-or-effort"
+assert_has "rank, a ranking session at another effort: the failing check is named" \
+  "CHECK scope=rank check=effort result=fail value=low" "$ERR"
+
+# A valid ranking, on the reviewer model at the setting's effort.
+rk_rank valid
+assert_eq "rank, a valid ranking: exit 0" "0" "$RC"
+assert_eq "rank: one session, the reviewer's, in the ranking clone, with the harness as plugin dir" \
+  "call=1 agent=reviewer cwd=$RKD plugin=$REPO" \
+  "$(sed -n 's/^\(call=[0-9]* agent=[a-z]*\) effort=[^ ]* effort_env=[^ ]* \(cwd=.*\)/\1 \2/p' "$SD/log")"
+assert_eq "rank: the session was started with --effort high and no CLAUDE_CODE_EFFORT_LEVEL" \
+  "effort=high effort_env=(unset)" "$(sed -n 's/.* \(effort=[^ ]* effort_env=[^ ]*\) .*/\1/p' "$SD/log")"
+RKPROMPT="$(cat "$SD/prompt.1")"
+assert_has "rank: the brief names each diff by its label" "C  $RKD/.agents/ranking/C.diff" "$RKPROMPT"
+case "$RKPROMPT" in
+  *fable*|*opus*|*sonnet*) bad "rank: the brief names no compared model" "$RKPROMPT" ;;
+  *) ok "rank: the brief names no compared model" ;;
+esac
+assert_eq "rank: the reviewer check passed on the ranking session" \
+  "CHECK scope=rank check=reviewer-resolved-id result=pass value=haiku|CHECK scope=rank check=effort result=pass value=none|CHECK scope=rank check=reviewer-models result=pass value=claude-haiku-4-5" \
+  "$(printf '%s\n' "$OUT" | grep '^CHECK ' | sed 's/ reason=.*//' | paste -sd'|' -)"
+assert_eq "rank: the order, best first, with each reason" \
+  "RANK position=1 label=B reason=the cleanest change, with its test|RANK position=2 label=A reason=correct, but untested|RANK position=3 label=C reason=misses the extra script" \
+  "$(printf '%s\n' "$OUT" | grep '^RANK ' | paste -sd'|' -)"
+assert_eq "rank: one ranking appended" "$((RK_NB + 1))" "$(rk_nranks)"
+RKREC="$(tail -1 "$RKSTORE/rankings.jsonl")"
+assert_has "rank: the record carries the ranking, the reviewer model and the effort" \
+  "\"packet\":\"rk-t1\",\"ranking\":\"$RKRANK\",\"dir\":\"$RKD\",\"start\":\"$K0\",\"reviewer_model\":\"haiku\",\"effort\":\"high\",\"routing_check\":\"pass\"" "$RKREC"
+assert_has "rank: the record carries the order and reasons" \
+  "\"order\":[{\"position\":1,\"label\":\"B\",\"reason\":\"the cleanest change, with its test\"},{\"position\":2,\"label\":\"A\",\"reason\":\"correct, but untested\"},{\"position\":3,\"label\":\"C\",\"reason\":\"misses the extra script\"}]" "$RKREC"
+case "$RKREC" in
+  *fable*|*opus*|*sonnet*) bad "rank: the record names no compared model" "$RKREC" ;;
+  *) ok "rank: the record names no compared model" ;;
+esac
+# Recorded before resolved: the RECORDED line precedes every RESOLVED line, and
+# each label resolves to the model the stored map gives it.
+RK_RECLN="$(printf '%s\n' "$OUT" | grep -n '^RECORDED=' | cut -d: -f1)"
+RK_RESLN="$(printf '%s\n' "$OUT" | grep -n '^RESOLVED ' | head -1 | cut -d: -f1)"
+if [ -n "$RK_RECLN" ] && [ -n "$RK_RESLN" ] && [ "$RK_RECLN" -lt "$RK_RESLN" ]; then
+  ok "rank: the ranking is recorded (line $RK_RECLN) before any label is resolved (line $RK_RESLN)"
+else
+  bad "rank: the ranking is recorded before any label is resolved" "RECORDED at [$RK_RECLN], first RESOLVED at [$RK_RESLN]"
+fi
+assert_eq "rank: RECORDED names the rankings file" "$RKSTORE/rankings.jsonl" "$(line RECORDED)"
+RKMAP="$(rk_map "$(awk -v r="\"ranking\":\"$RKRANK\"" 'index($0, r)' "$RKSTORE/labels.jsonl")" | paste -sd' ' -)"
+RK_WANT=""
+for L in B A C; do RK_WANT="$RK_WANT $L:$(printf '%s\n' $RKMAP | sed -n "s/^$L://p")"; done
+assert_eq "rank: each label resolves to the model the stored map gives it, in the ranked order" "$RK_WANT" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^RESOLVED position=[0-9]* label=\([A-Z]\) model=\([a-z]*\) replay=[0-9a-f]*$/\1:\2/p' | sed 's/^/ /' | tr -d '\n')"
+
+# The same ranking again: refused, since it is recorded; nothing appended.
+rk_rank valid again
+assert_eq "rank, a ranking already recorded: exit 1, nothing on stdout, nothing appended" "1::$RK_NB" "$RC:$OUT:$(rk_nranks)"
+assert_has "rank, a ranking already recorded: named" "is already recorded" "$ERR"
+assert_eq "rank, a ranking already recorded: no session started" "0" "$(run_calls)"
+
+# The append fails (the rankings file cannot be written): refused, and no label
+# is resolved, since resolution only follows the append.
+RK_SAVED="$RKSTORE/rankings.saved"
+mv "$RKSTORE/rankings.jsonl" "$RK_SAVED"
+mkdir "$RKSTORE/rankings.jsonl"
+rk_rank valid
+assert_eq "rank, an append that fails: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+case "$OUT$ERR" in *RESOLVED*|*fable*|*opus*|*sonnet*) bad "rank, an append that fails: no label is resolved" "$OUT$ERR" ;;
+  *) ok "rank, an append that fails: no label is resolved" ;; esac
+rmdir "$RKSTORE/rankings.jsonl"
+mv "$RK_SAVED" "$RKSTORE/rankings.jsonl"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -3235,6 +3368,7 @@ printf '\n== usage ==\n'
 "$COMPARE" run aaaaaaaaaaa1 --approve >/dev/null 2>&1; assert_eq "run with --approve and no token: exit 2" "2" "$?"
 "$COMPARE" run aaaaaaaaaaa1 --approve abc --bogus >/dev/null 2>&1; assert_eq "run with an unknown flag: exit 2" "2" "$?"
 "$COMPARE" rank-prepare aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank-prepare without a packet: exit 2" "2" "$?"
+"$COMPARE" rank aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank without a packet: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

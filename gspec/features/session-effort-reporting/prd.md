@@ -65,7 +65,7 @@ and measured per dispatch.
 
 ## Capabilities
 
-- [ ] **P0**: Driver-mode entry records the session's effort read from its own transcript
+- [x] **P0**: Driver-mode entry records the session's effort read from its own transcript
   - `run-loop` and `resume` pass driver-mode entry the effort carried by the
     latest row of the session's own main-thread transcript that carries one.
     They no longer pass a hard-coded `unknown`, and a search of both
@@ -84,7 +84,7 @@ and measured per dispatch.
     as their model accepts one
   - a sweep case pins the line for a recorded level and for `unknown`
 
-- [ ] **P0**: The kickoff warns when `CLAUDE_CODE_EFFORT_LEVEL` is set
+- [x] **P0**: The kickoff warns when `CLAUDE_CODE_EFFORT_LEVEL` is set
   - when it is set to a non-empty value at `run-loop` or `resume` entry, the
     kickoff carries a ⚠️ line saying it is set and overrides the session
     effort for the driver and every dispatched agent this run. The run

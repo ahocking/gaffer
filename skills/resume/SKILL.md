@@ -79,12 +79,19 @@ before reading anything else (ADR 0028):
 
 ```
 runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|unknown APPLIED=no
+runstate.sh session-effort      # EFFORT=<level|unknown> REASON=<why> EFFORT_ENV=set|unset
 runstate.sh driver-mode enter --model <this session's model> \
-  --effort unknown --threshold <unknown, or THRESHOLD per the rule below>
+  --effort <EFFORT, exactly as printed> --threshold <unknown, or THRESHOLD per the rule below>
 ```
 
-Pass `--effort unknown` unless the operator has explicitly stated their
-effort level this session — nothing records it automatically yet.
+Run `session-effort` just before `driver-mode enter` and pass its `EFFORT`
+to `--effort` exactly as printed — a level or `unknown` alike. It reads the
+level from this session's own transcript; it always exits 0, so driver-mode
+entry proceeds whatever it printed. **The effort is read, never inferred from
+the model** — never substitute a level you expect the model to run at, and
+never replace an `unknown` with a guess. Keep its `EFFORT_ENV` for the
+kickoff (§4): render shape C's `⚠️ **Effort override**` line only when it
+reads `set`, and no such line when it reads `unset`.
 `compact-threshold` is a pure reader — it never writes a settings file, so
 `APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
 `THRESHOLD` straight through to `driver-mode enter` and state that number in
@@ -96,7 +103,8 @@ printed, and state the absence in the kickoff in exactly these words —
 `autoCompactWindow` supplies one* — and never a number: the measurement should
 read unmeasured rather than flag a threshold nothing enforces, and silence
 would read as a measured run. **Never ask the
-operator to change either** — state what applies, as read, and move on. If
+operator to change the effort or the threshold** — state what applies, as
+read, and move on. If
 `driver-mode enter` refuses (no session id available, from neither an
 argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report
 saying so; never resume the loop unmarked. `Read`
@@ -463,7 +471,8 @@ rather than a second stop report, and its `enter` line gives the `▶ **Session*
 line (model/effort/threshold), exactly as a fresh run's kickoff does. Render
 `⚠️ **Routing config**` only when §1's `validate` printed something, and `▶
 **Routing**` only when §1's `table` printed something, exactly as run-loop §2
-does — empty output means no line. State what
+does — empty output means no line. Render `⚠️ **Effort override**` only when
+§0's `session-effort` printed `EFFORT_ENV=set`. State what
 is **left**, not what the original run set out to do: the remaining packets in plain
 words, what is expected to need a decision, and where this session will stop. The
 human may be days removed from the run and remembers none of the ids; the checkpoint

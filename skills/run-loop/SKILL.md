@@ -167,12 +167,19 @@ else here:**
 
 ```
 runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|unknown APPLIED=no
+runstate.sh session-effort      # EFFORT=<level|unknown> REASON=<why> EFFORT_ENV=set|unset
 runstate.sh driver-mode enter --model <this session's model, from SessionStart> \
-  --effort unknown --threshold <unknown, or THRESHOLD per the rule below>
+  --effort <EFFORT, exactly as printed> --threshold <unknown, or THRESHOLD per the rule below>
 ```
 
-Pass `--effort unknown` unless the operator has explicitly stated their
-effort level this session — nothing records it automatically yet.
+Run `session-effort` just before `driver-mode enter` and pass its `EFFORT`
+to `--effort` exactly as printed — a level or `unknown` alike. It reads the
+level from this session's own transcript; it always exits 0, so driver-mode
+entry proceeds whatever it printed. **The effort is read, never inferred from
+the model** — never substitute a level you expect the model to run at, and
+never replace an `unknown` with a guess. Keep its `EFFORT_ENV` for the
+kickoff: render shape C's `⚠️ **Effort override**` line only when it reads
+`set`, and no such line when it reads `unset`.
 `compact-threshold` is a pure reader — it never writes a settings file, so
 `APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
 `THRESHOLD` straight through to `driver-mode enter` and state that number in
@@ -184,7 +191,8 @@ printed, and state the absence in the kickoff in exactly these words —
 `autoCompactWindow` supplies one* — and never a number: the measurement should
 read unmeasured rather than flag a threshold nothing enforces, and silence
 would read as a measured run. **Never ask the
-operator to change either** — state what applies, as read, and move on.
+operator to change the effort or the threshold** — state what applies, as
+read, and move on.
 
 **If `enter` refuses** (no session id available, from neither an argument nor
 `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report saying so. Never
@@ -302,7 +310,9 @@ above, a file read moments old. Render `⚠️ **Routing config**` only when
 §1's `validate` printed something — one line, each `ROUTING-INVALID` entry's
 key and reason — and `▶ **Routing**` only when §1's `table` printed
 something — one line, each `<agent> <frontmatter> <alias>` row as `<agent>
-<frontmatter> → <alias>`; empty output means no line. State the one
+<frontmatter> → <alias>`; empty output means no line. Render `⚠️ **Effort
+override**` only when the `session-effort` you ran before `driver-mode enter`
+printed `EFFORT_ENV=set`. State the one
 assumption most likely to be wrong, which packets you expect will need a decision, the hard gates this
 backlog gets near, and where the run stops. Emit it
 **here**, after preflight and after the backlog resolves.

@@ -190,6 +190,29 @@ check "default price table not overridden" "false" "$(jq -r '.price_table.overri
 check "default price table date is the bundled one's" "$(jq -r '.table_date' "${HERE}/spend-prices.json")" \
   "$(jq -r '.price_table.date' "$OUT_DEFAULT")"
 
+# --- the bundled table prices claude-opus-5-5 (model-comparison-harness T20) --
+# One claude-opus-5-5 row with a DIFFERENT count in each of the five parts, run
+# against the bundled table (no --price-table), so every one of its five rates
+# is pinned by the one dollar total. Expected rates are the pricing page's own
+# cells for Claude Opus 5.5: input 4, 5m write 5, 1h write 8, cache hit 0.20,
+# output 20 ($/MTok). The page prices its cache hit at 0.05x input, so a
+# cache_read re-derived with the usual 0.1x rule (0.40) would read 44, and a
+# swapped 5m/1h pair would read 39 — both caught here.
+PROJ_O55_ROOT="$ROOT/projects-opus55"
+mkdir -p "$PROJ_O55_ROOT/proj-o55"
+cat > "$PROJ_O55_ROOT/proj-o55/SO55.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-09-11T10:00:00Z","effort":"high","message":{"id":"msg_opus55","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":10000000,"cache_creation_input_tokens":5000000,"cache_creation":{"ephemeral_5m_input_tokens":2000000,"ephemeral_1h_input_tokens":3000000}}}}
+JSON
+OUT_O55="$ROOT/out-opus55.json"
+"$SPEND" --projects-dir "$PROJ_O55_ROOT" \
+  --since "2026-09-11T00:00:00Z" --until "2026-09-11T23:59:59Z" > "$OUT_O55"
+check "bundled table: claude-opus-5-5 is priced" "true" \
+  "$(jq -r '.by_model["claude-opus-5-5"].priced' "$OUT_O55")"
+check "bundled table: claude-opus-5-5 row leaves no unpriced tokens" "0" \
+  "$(jq -r '.totals.unpriced_tokens' "$OUT_O55")"
+check "bundled table: claude-opus-5-5 dollars = (1e6*4 + 1e5*20 + 1e7*0.20 + 2e6*5 + 3e6*8)/1e6 = 42" "42" \
+  "$(jq -r '.totals.dollars' "$OUT_O55")"
+
 # =============================================================================
 # Error paths and defaults
 # =============================================================================

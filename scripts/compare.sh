@@ -12,12 +12,20 @@
 #                     templates/model-comparison.yaml), apply the defaults and
 #                     print the normalized settings, one `KEY=value` line each,
 #                     in this fixed order:
-#                       ROLE= MODELS= REVIEWER_MODEL= SOURCE_REPO= PER_CLASS=
-#                       CODE_FILES= PROSE_FILES=
+#                       ROLE= MODELS= REVIEWER_MODEL= MODEL_IDS= SOURCE_REPO=
+#                       PER_CLASS= CODE_FILES= PROSE_FILES=
 #                     then `EXPERIMENT=<12 hex>`, a digest of exactly those
-#                     seven lines. List values are sorted (LC_ALL=C), de-duped
+#                     eight lines. List values are sorted (LC_ALL=C), de-duped
 #                     and comma-joined, so settings that differ only in key
 #                     order, item order or repeats get the same id.
+#                     MODEL_IDS is the `model_ids:` map (a block of indented
+#                     `<alias>: <id>` lines) narrowed to the models and the
+#                     reviewer model, as `<alias>:<id>` items: each alias
+#                     pinned to the one concrete model id its transcripts must
+#                     show. A pinned id is part of the id, so changing one
+#                     starts a new experiment. Every model and the reviewer
+#                     model needs a non-empty pin, else it is refused naming
+#                     `model_ids` (reason `no-pinned-id(...)`, or `empty-id`).
 #
 #                     A setting that cannot be used is REFUSED: one line per
 #                     refusal on stderr,
@@ -333,8 +341,66 @@
 #                     `crashed` is a session exiting non-zero, `timed-out` one
 #                     killed at the limit; either ends the replay at once.
 #
+#   routing-check <replay>
+#                     show from run metrics that the replay ran on the
+#                     configured models (its record, as for review-view).
+#                     Refused until the replay has ended: its <replay>.steps
+#                     log must carry an END= line, written after the last
+#                     session it launched has returned or been killed, so no
+#                     review session is still running in any view. Then
+#                     `metrics.sh collect --all-sessions` (the one beside this
+#                     script) runs in the work clone and in each review view the
+#                     step log names (VIEW= lines, in order: view-1, view-2, ...)
+#                     whose reviewer session ran (a reviewer STEP line after its
+#                     VIEW= line). Every packet is written beside the replay's
+#                     record, <store>/<experiment>/replays/<replay>.metrics/
+#                     work.json and view-<k>.json, never inside a view, where a
+#                     reviewer could read it. The checks, each one line:
+#                       CHECK scope=<work|view-k> check=<name> result=<pass|fail|not-run>
+#                             value=<...> [reason=<why>]
+#                     scope=work, with <role> the replay's role and <model> its
+#                     model:
+#                       override-count      audit.dispatches_with_model_override
+#                                           is 0; above 0, null or absent fails
+#                                           (null is unmeasured, never clean).
+#                       <role>-resolved-id  every `Agent` dispatch of <role> (or
+#                                           `gaffer:<role>`) in the clone's event
+#                                           logs carries a `routing_resolved`
+#                                           stamp, all stamps are one value, and
+#                                           it is <model>; no dispatch, an
+#                                           unstamped one or an unreadable log
+#                                           fails as unmeasured.
+#                       <role>-models       by_agent_role.<role>.models (and
+#                                           `gaffer:<role>`'s) names the id the
+#                                           experiment's `model_ids` pins the
+#                                           resolved alias to (the stamp, else
+#                                           <model> when the stamps are
+#                                           unmeasured) and nothing else,
+#                                           compared exactly: a same-family model
+#                                           of another version fails, and so does
+#                                           a resolved alias with no pin. No
+#                                           model named fails as unmeasured.
+#                     scope=view-k: `reviewer-resolved-id` and `reviewer-models`,
+#                     the same two checks for the reviewer against the reviewer
+#                     model and its pinned id. The pins are read from the
+#                     experiment's stored selection.json; a selection that pins
+#                     no id for the replay's model or reviewer model is refused
+#                     (exit 1) before any check runs. A view with no reviewer session reads
+#                     `check=reviewer-models result=not-run`; a collect that
+#                     leaves no readable packet reads `check=collect
+#                     result=not-run` and its scope's checks not-run. Each
+#                     scope's packet path is a `METRICS scope= dir= packet=`
+#                     line. The last line is
+#                       ROUTING_CHECK=<fail|not-run|pass>
+#                     fail when any check failed, else not-run when any did not
+#                     run, else pass. The first line is REPLAY=<replay>; every
+#                     line is also written to
+#                     <store>/<experiment>/replays/<replay>.routing, replaced on
+#                     each run.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
-# prepared replay / a review view / a replay that reached an END; 1 refused, no experiment id could be computed, the source
+# prepared replay / a review view / a replay that reached an END / a routing
+# check that printed its ROUTING_CHECK= line (pass, fail or not-run); 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -344,8 +410,12 @@
 # read, a scratch root inside the source or naming a model, or a diff, clone,
 # commit, routing, run-state or redaction step that failed, or (replay) no
 # single replay record, a replay already run, a review view, route,
-# refresh-handoff or land commit that failed (an `END=error` line says which);
-# 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh missing beside
+# refresh-handoff or land commit that failed (an `END=error` line says which),
+# or (routing-check) no single replay record, a work clone that is not a git
+# repository, a replay not run or not ended, no stored selection or one pinning
+# no id for the replay's models in `model_ids`, or an output path that cannot be
+# written or lies inside a review view;
+# 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
 # this script, or (replay) no session command or a malformed timeout.
 #
 # Portability: awk + bash 3.2 (no associative arrays), no jq, no python3.
@@ -383,7 +453,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -399,10 +469,12 @@ digest() {
 # Emits tab-separated records, in file order:
 #   S <key> <value>     a scalar `key: value`
 #   L <key> <item>      one list item (flow `[a, b]` or block `- a`)
+#   P <key> <sub> <val> one block map entry (an indented `sub: val`; val may be empty)
 #   E <key>             a list key given no items (`key: []` or a bare `key:`)
 #   D <key>             a key seen a second time (its value is ignored)
 #   X <line-no>         a line that is not `key: value`, a list item or comment
-#   U <key>             a list the parser could not read
+#   U <key>             a list or map the parser could not read (a flow map
+#                       `{...}` included, or a block mixing items and entries)
 parse_settings() {
   awk '
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
@@ -419,7 +491,7 @@ parse_settings() {
       if (mode == "block" && nitems == 0) print "E\t" cur
       mode = ""
     }
-    BEGIN { mode = ""; cur = ""; nitems = 0 }
+    BEGIN { mode = ""; cur = ""; nitems = 0; bkind = "" }
     { sub(/\r$/, "") }
     {
       line = $0
@@ -429,7 +501,21 @@ parse_settings() {
         if (mode == "skip") next
         if (mode != "block") { print "X\t" NR; next }
         body = trim(uncomment(t))
-        if (body !~ /^-([[:space:]]|$)/) { print "U\t" cur; mode = "skip"; next }
+        if (body !~ /^-([[:space:]]|$)/) {
+          # A block map entry, `sub: value`; a block is all list items or all
+          # map entries, never a mix.
+          if (bkind == "list") { print "U\t" cur; mode = "skip"; next }
+          q = match(body, /:([[:space:]]|$)/)
+          if (q == 0) { print "U\t" cur; mode = "skip"; next }
+          sk = unquote(trim(substr(body, 1, q - 1)))
+          if (sk == "") { print "U\t" cur; mode = "skip"; next }
+          bkind = "map"
+          print "P\t" cur "\t" sk "\t" unquote(trim(substr(body, q + 1)))
+          nitems++
+          next
+        }
+        if (bkind == "map") { print "U\t" cur; mode = "skip"; next }
+        bkind = "list"
         sub(/^-[[:space:]]*/, "", body)
         item = unquote(trim(body))
         if (item == "") { print "U\t" cur; mode = "skip"; next }
@@ -445,7 +531,7 @@ parse_settings() {
       if (k in seen) { print "D\t" k; mode = "skip"; next }
       seen[k] = 1
       cur = k
-      if (rest == "") { mode = "block"; nitems = 0; next }
+      if (rest == "") { mode = "block"; nitems = 0; bkind = ""; next }
       if (rest ~ /^\[/) {
         if (rest !~ /\]$/) { print "U\t" k; next }
         inner = trim(substr(rest, 2, length(rest) - 2))
@@ -534,8 +620,13 @@ cmd_settings() {
   local role="" role_set=0 models="" models_set=0 reviewer="" reviewer_set=0
   local source="" source_set=0 per_class="" per_class_set=0
   local code="" code_set=0 prose="" prose_set=0
-  local parsed kind k v
+  # model_ids: one `<alias>\t<id>` line per entry, in file order.
+  local pins=""
+  pin_of() { printf '%s' "$pins" | A="$1" awk -F'\t' '$1 == ENVIRON["A"] { print $2; exit }'; }
+  local parsed kind k v w
   parsed="$(parse_settings "$file" | tr -d '\r')"
+  # Three fields for every record, so a scalar or list value keeps any tab it
+  # holds (and is refused for it below); a `P` record splits its own value.
   while IFS="$(printf '\t')" read -r kind k v; do
     [ -n "$kind" ] || continue
     case "$kind" in
@@ -572,8 +663,32 @@ cmd_settings() {
                code_files)  code_set=1 ;;
                prose_files) prose_set=1 ;;
              esac ;;
+          P) refuse "$k" "-" "expected-a-list" ;;
         esac ;;
-      *) refuse "$k" "-" "unknown-setting(known: role models reviewer_model source_repo per_class code_files prose_files)" ;;
+      model_ids)
+        # A map from model alias to the one concrete model id it is pinned to.
+        case "$kind" in
+          P)
+            # `<alias>\t<id>`, split at the first tab; a trailing empty id was
+            # stripped with the line's trailing tab by read, leaving no tab.
+            case "$v" in
+              *"	"*) w="${v#*	}"; v="${v%%	*}" ;;
+              *) w="" ;;
+            esac
+            case "$v" in ''|*[!A-Za-z0-9._-]*) refuse model_ids "$v" "invalid-model-token"; continue ;; esac
+            if [ -n "$(pin_of "$v")" ]; then
+              refuse model_ids "$v" "duplicate-alias"; continue
+            fi
+            case "$w" in
+              '') refuse model_ids "$v" "empty-id" ;;
+              *[!A-Za-z0-9._-]*) refuse model_ids "$v" "invalid-model-id($w)" ;;
+              *) pins="$pins$v	$w
+" ;;
+            esac ;;
+          E) ;;
+          *) refuse model_ids "-" "expected-a-map(one indented alias: id line per model)" ;;
+        esac ;;
+      *) refuse "$k" "-" "unknown-setting(known: role models reviewer_model model_ids source_repo per_class code_files prose_files)" ;;
     esac
   done <<EOF
 $parsed
@@ -610,6 +725,20 @@ EOF
   if [ "$reviewer_set" -eq 1 ]; then
     case "$reviewer" in
       ''|*[!A-Za-z0-9._-]*) refuse reviewer_model "$reviewer" "invalid-model-token" ;;
+    esac
+  fi
+
+  # model_ids: every model the experiment runs on is pinned to one concrete id
+  # (an entry refused above as empty or invalid pins nothing). The reviewer
+  # left to its default is checked once phase 2 has resolved it.
+  for m in $(norm_list "$models" | tr ',' ' '); do
+    case "$m" in *[!A-Za-z0-9._-]*) continue ;; esac
+    [ -n "$(pin_of "$m")" ] || refuse model_ids "$m" "no-pinned-id(named by models)"
+  done
+  if [ "$reviewer_set" -eq 1 ] && [ -n "$reviewer" ]; then
+    case "$reviewer" in
+      *[!A-Za-z0-9._-]*) ;;
+      *) [ -n "$(pin_of "$reviewer")" ] || refuse model_ids "$reviewer" "no-pinned-id(named by reviewer_model)" ;;
     esac
   fi
 
@@ -692,6 +821,12 @@ EOF2
     [ -n "$reviewer" ] || reviewer="$(frontmatter_model reviewer)"
     if [ -z "$reviewer" ]; then
       refuse reviewer_model "-" "no-default(the source repository routes no reviewer model and the reviewer agent names none; set reviewer_model)"
+    else
+      case "$reviewer" in
+        *[!A-Za-z0-9._-]*) ;;
+        *) [ -n "$(pin_of "$reviewer")" ] \
+             || refuse model_ids "$reviewer" "no-pinned-id(the reviewer_model default, resolved from the source repository)" ;;
+      esac
     fi
   fi
   if [ -n "$reviewer" ]; then
@@ -705,10 +840,17 @@ EOF2
   flush_refusals
 
   # --- normalized output -----------------------------------------------------
-  local body
+  # MODEL_IDS: `<alias>:<id>` for each model and the reviewer, sorted. An entry
+  # for any other alias pins nothing the experiment runs on, so it is left out
+  # and never moves the id.
+  local body ids=""
+  for m in $(norm_list "$models,$reviewer" | tr ',' ' '); do
+    ids="${ids:+$ids,}$m:$(pin_of "$m")"
+  done
   body="ROLE=$role
 MODELS=$models
 REVIEWER_MODEL=$reviewer
+MODEL_IDS=$ids
 SOURCE_REPO=$source
 PER_CLASS=$per_class
 CODE_FILES=$(norm_list "$code")
@@ -1084,6 +1226,14 @@ EOF
       for (i = 1; i <= n; i++) o = o (i > 1 ? ", " : "") esc(a[i])
       return "[" o "]"
     }
+    function pinmap(csv,    n, a, i, o, q) {
+      n = split(csv, a, ","); o = ""
+      for (i = 1; i <= n; i++) {
+        q = index(a[i], ":")
+        o = o (i > 1 ? ", " : "") esc(substr(a[i], 1, q - 1)) ": " esc(substr(a[i], q + 1))
+      }
+      return "{" o "}"
+    }
     FILENAME == ENVIRON["SETTINGS"] {
       p = index($0, "="); if (p) kv[substr($0, 1, p - 1)] = substr($0, p + 1); next
     }
@@ -1112,8 +1262,8 @@ EOF
     END {
       printf "{\n"
       printf "  \"experiment\": %s,\n", esc(kv["EXPERIMENT"])
-      printf "  \"settings\": {\"role\": %s, \"models\": %s, \"reviewer_model\": %s, \"source_repo\": %s, \"per_class\": %s, \"code_files\": %s, \"prose_files\": %s},\n", \
-        esc(kv["ROLE"]), arr(kv["MODELS"]), esc(kv["REVIEWER_MODEL"]), esc(ENVIRON["SRC"]), kv["PER_CLASS"] + 0, arr(kv["CODE_FILES"]), arr(kv["PROSE_FILES"])
+      printf "  \"settings\": {\"role\": %s, \"models\": %s, \"reviewer_model\": %s, \"model_ids\": %s, \"source_repo\": %s, \"per_class\": %s, \"code_files\": %s, \"prose_files\": %s},\n", \
+        esc(kv["ROLE"]), arr(kv["MODELS"]), esc(kv["REVIEWER_MODEL"]), pinmap(kv["MODEL_IDS"]), esc(ENVIRON["SRC"]), kv["PER_CLASS"] + 0, arr(kv["CODE_FILES"]), arr(kv["PROSE_FILES"])
       block("selected", S, ns, 0)
       block("shortfalls", F, nf, 0)
       block("excluded", X, nx, 0)
@@ -2407,6 +2557,241 @@ cmd_replay() {
   done
 }
 
+# --- routing-check -------------------------------------------------------------------
+
+# rc_flat_override <flat-packet>: the packet's audit.dispatches_with_model_override
+# as it stands: a number, `null`, or `absent` when the packet has no such field.
+rc_flat_override() {
+  awk -F'\t' '
+    $2 == ".audit.dispatches_with_model_override" { v = ($3 == "n") ? $4 : "?" $4; f = 1; exit }
+    END { if (!f) v = "absent"; print v }' "$1"
+}
+
+# rc_flat_models <flat-packet> <role>: the model keys of by_agent_role.<role>.models,
+# sorted and comma-joined (empty when there are none). An agent dispatched as the
+# plugin's `gaffer:<role>` is keyed so in the packet; routing.sh strips that one
+# prefix, so both keys are the role's.
+rc_flat_models() {
+  R="$2" awk -F'\t' '
+    BEGIN { p1 = ".by_agent_role." ENVIRON["R"] ".models."; p2 = ".by_agent_role.gaffer:" ENVIRON["R"] ".models." }
+    {
+      m = ""
+      if (index($2, p1) == 1) m = substr($2, length(p1) + 1)
+      else if (index($2, p2) == 1) m = substr($2, length(p2) + 1)
+      else next
+      sub(/\.[^.]*$/, "", m)
+      if (m != "" && !(m in s)) { s[m] = 1; print m }
+    }' "$1" | LC_ALL=C sort | paste -sd, -
+}
+
+# rc_stamps <events-dir> <role> <out>: one line per `Agent` dispatch of <role> (or
+# `gaffer:<role>`) in the directory's event logs, `stamped<TAB><routing_resolved>`
+# or `unstamped`. Returns 1 when a log cannot be read as JSON lines.
+rc_stamps() {
+  local f
+  : > "$3"
+  set +f
+  for f in "$1"/*.jsonl; do
+    [ -f "$f" ] || continue
+    json_flat "$f" > "$_CMP_TMP/ev.flat" 2>/dev/null || { set -f; return 1; }
+    R="$2" awk -F'\t' '
+      function flush() {
+        if (d != "" && tool == "Agent" && (st == ENVIRON["R"] || st == "gaffer:" ENVIRON["R"]))
+          print (hr ? "stamped\t" rr : "unstamped")
+      }
+      $1 != d { flush(); d = $1; tool = ""; st = ""; hr = 0; rr = "" }
+      $2 == ".tool" { tool = $4 }
+      $2 == ".subagent_type" { st = $4 }
+      $2 == ".routing_resolved" { hr = 1; rr = $4 }
+      END { flush() }' "$_CMP_TMP/ev.flat" >> "$3"
+  done
+  set -f
+}
+
+_RC_OUT=""
+_RC_PINS=""
+rc_emit() {
+  printf '%s\n' "$1"
+  printf '%s\n' "$1" >> "$_RC_OUT"
+  case "$1" in
+    *" result=fail"*) _RC_FAIL=1 ;;
+    *" result=not-run"*) _RC_NOTRUN=1 ;;
+  esac
+}
+
+# rc_scope <scope> <dir> <packet-out> <role> <configured-model> <with-override-check 0|1>:
+# collect the directory's metrics into <packet-out> and emit its CHECK lines.
+# Check names, as a failing line gives them: `override-count` (the work clone
+# only), `<role>-resolved-id`, `<role>-models`.
+rc_scope() {
+  local scope="$1" dir="$2" pout="$3" role="$4" want="$5" ovc="$6" err ov stamps n_un n_st ref models m pin bad=""
+  local flat="$_CMP_TMP/packet.flat"
+  if ! (cd "$dir" && "$METRICS" collect --all-sessions --main-root "$dir" --out "$pout") >/dev/null 2>"$_CMP_TMP/collect.err" \
+     || ! json_flat "$pout" > "$flat" 2>/dev/null; then
+    err="$(head -1 "$_CMP_TMP/collect.err" | tr -d '\r')"
+    rc_emit "CHECK scope=$scope check=collect result=not-run reason=metrics.sh collect produced no readable packet${err:+: $err}"
+    if [ "$ovc" = 1 ]; then rc_emit "CHECK scope=$scope check=override-count result=not-run value=unmeasured reason=no packet"; fi
+    rc_emit "CHECK scope=$scope check=$role-resolved-id result=not-run value=unmeasured reason=no packet"
+    rc_emit "CHECK scope=$scope check=$role-models result=not-run value=unmeasured reason=no packet"
+    return 0
+  fi
+  rc_emit "METRICS scope=$scope dir=$dir packet=$pout"
+
+  # override-count: measured 0, and nothing else, passes.
+  if [ "$ovc" = 1 ]; then
+    ov="$(rc_flat_override "$flat")"
+    case "$ov" in
+      0) rc_emit "CHECK scope=$scope check=override-count result=pass value=0" ;;
+      null|absent) rc_emit "CHECK scope=$scope check=override-count result=fail value=unmeasured reason=dispatches_with_model_override is $ov, so no override-free routing is shown" ;;
+      *[!0-9]*|'') rc_emit "CHECK scope=$scope check=override-count result=fail value=unmeasured reason=dispatches_with_model_override is not a count: [$ov]" ;;
+      *) rc_emit "CHECK scope=$scope check=override-count result=fail value=$ov reason=$ov dispatch(es) passed a model other than the one routing resolved" ;;
+    esac
+  fi
+
+  # <role>-resolved-id: every dispatch of the role stamped, all with one value,
+  # and that value the configured model.
+  ref="$want"
+  if ! rc_stamps "$dir/.agents/metrics/events" "$role" "$_CMP_TMP/stamps"; then
+    rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=unmeasured reason=an event log cannot be read, so the routing_resolved stamps are unmeasured"
+  else
+    n_un="$(grep -c '^unstamped$' "$_CMP_TMP/stamps")"
+    awk -F'\t' '$1 == "stamped" { print $2 }' "$_CMP_TMP/stamps" | LC_ALL=C sort -u > "$_CMP_TMP/stamps.u"
+    n_st="$(wc -l < "$_CMP_TMP/stamps.u" | tr -d ' ')"
+    stamps="$(cat "$_CMP_TMP/stamps.u")"
+    if [ ! -s "$_CMP_TMP/stamps" ]; then
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=unmeasured reason=no $role dispatch is in the event logs, so no routing_resolved stamp was recorded"
+    elif [ "$n_un" -gt 0 ]; then
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=unmeasured reason=$n_un $role dispatch(es) carry no routing_resolved stamp"
+    elif [ "$n_st" -ne 1 ]; then
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=$(printf '%s' "$stamps" | paste -sd, -) reason=$role dispatches were stamped with more than one resolved id"
+    elif [ -z "$stamps" ]; then
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=unresolved reason=every $role dispatch carries an empty routing_resolved stamp: routing resolved no model"
+    elif [ "$stamps" != "$want" ]; then
+      ref="$stamps"
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=fail value=$stamps reason=routing resolved [$stamps] at dispatch, not the configured $want"
+    else
+      rc_emit "CHECK scope=$scope check=$role-resolved-id result=pass value=$stamps"
+    fi
+  fi
+
+  # <role>-models: what the role actually ran on names the pinned id of the
+  # alias routing resolved and nothing else, compared exactly.
+  models="$(rc_flat_models "$flat" "$role")"
+  if [ -z "$models" ]; then
+    rc_emit "CHECK scope=$scope check=$role-models result=fail value=unmeasured reason=by_agent_role.$role.models names no model, so what the $role ran on is unmeasured"
+    return 0
+  fi
+  pin="$(A="$ref" awk -F'\t' '$1 == ENVIRON["A"] { print $2; exit }' "$_RC_PINS")"
+  if [ -z "$pin" ]; then
+    rc_emit "CHECK scope=$scope check=$role-models result=fail value=$models reason=routing resolved [$ref], which the experiment's model_ids pins to no id"
+    return 0
+  fi
+  for m in $(printf '%s' "$models" | tr ',' ' '); do [ "$m" = "$pin" ] || bad="$bad${bad:+,}$m"; done
+  if [ -n "$bad" ]; then
+    rc_emit "CHECK scope=$scope check=$role-models result=fail value=$models reason=by_agent_role.$role.models names $bad, not only $pin, the id model_ids pins $ref to"
+  else
+    rc_emit "CHECK scope=$scope check=$role-models result=pass value=$models"
+  fi
+}
+
+cmd_routing_check() {
+  [ $# -eq 1 ] || usage
+  local rid="$1"
+  case "$rid" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "routing-check: not a replay id (12 hex, as \`prepare\` prints it): $rid" ;;
+  esac
+  METRICS="$HERE/metrics.sh"
+  [ -x "$METRICS" ] || die "routing-check: metrics.sh is missing or not executable: $METRICS" 2
+
+  # --- the replay's record, found in whichever experiment holds it --------------
+  local store env="" f n=0
+  store="$(store_root)"
+  set +f
+  for f in "$store"/*/replays/"$rid".env; do
+    if [ -f "$f" ]; then env="$f"; n=$((n + 1)); fi
+  done
+  set -f
+  [ "$n" -gt 0 ] || die "routing-check: no replay record for $rid under $store (run \`compare.sh prepare\` first)"
+  [ "$n" -eq 1 ] || die "routing-check: replay $rid is recorded in $n experiments under $store; refusing to guess"
+  local role model rmodel clone steps exp
+  exp="$(sed -n 's/^EXPERIMENT=//p' "$env" | head -1)"
+  role="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+  model="$(sed -n 's/^MODEL=//p' "$env" | head -1)"
+  rmodel="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+  clone="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+  case "$role" in ''|*[!a-z-]*) die "routing-check: the replay record's role is malformed: [$role]" ;; esac
+  case "$model" in ''|*[!A-Za-z0-9._-]*) die "routing-check: the replay record's model is malformed: [$model]" ;; esac
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "routing-check: the replay record's reviewer model is malformed: [$rmodel]" ;; esac
+  [ -n "$clone" ] && git -C "$clone" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "routing-check: the replay's work clone is not a git repository: $clone"
+
+  # --- only once every session has ended: the replay's step log carries its END -----
+  steps="$(dirname "$env")/$rid.steps"
+  [ -f "$steps" ] || die "routing-check: replay $rid has not been run (no step log): $steps"
+  grep -q '^END=' "$steps" \
+    || die "routing-check: replay $rid has not ended (no END= line in its step log), so a session may still be running: $steps"
+
+  # Each review view of the replay, in order, with whether a reviewer session ran
+  # in it (a reviewer STEP line between its VIEW= line and the next VIEW= or END=).
+  local vlist
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "routing-check: cannot create a temp root"
+  trap '[ -n "$_CMP_TMP" ] && rm -rf "$_CMP_TMP"; :' EXIT
+
+  # The experiment's pins, `<alias>\t<id>` per line, from its stored selection:
+  # the replay's model and reviewer model must each have one.
+  local sel="$store/$exp/selection.json" a
+  case "$exp" in ''|*[!0-9a-f]*) die "routing-check: the replay record's experiment is malformed: [$exp]" ;; esac
+  [ -f "$sel" ] || die "routing-check: no stored selection for the replay's experiment $exp: $sel"
+  json_flat "$sel" > "$_CMP_TMP/sel" || die "routing-check: the stored selection is not readable JSON: $sel"
+  _RC_PINS="$_CMP_TMP/pins"
+  awk -F'\t' 'index($2, ".settings.model_ids.") == 1 && $3 == "s" && $4 != "" {
+      print substr($2, length(".settings.model_ids.") + 1) "\t" $4 }' "$_CMP_TMP/sel" > "$_RC_PINS"
+  for a in "$model" "$rmodel"; do
+    A="$a" awk -F'\t' '$1 == ENVIRON["A"] { f = 1 } END { exit !f }' "$_RC_PINS" \
+      || die "routing-check: experiment $exp's model_ids pins no id for $a: $sel"
+  done
+  vlist="$_CMP_TMP/views"
+  awk '
+    function flush() { if (v != "") print s "\t" v }
+    /^VIEW=/ { flush(); v = substr($0, 6); s = 0; next }
+    /^END=/ { flush(); v = ""; next }
+    /^STEP / && / agent=reviewer / { s = 1 }
+    END { flush() }' "$steps" > "$vlist"
+
+  # The packets go beside the replay's record, in the experiment's store: never
+  # inside a view, where a reviewer could read them.
+  local pdir k=0 sran view
+  pdir="$(dirname "$env")/$rid.metrics"
+  mkdir -p "$pdir" 2>/dev/null || die "routing-check: cannot create $pdir"
+  pdir="$(cd "$pdir" && pwd -P)" || die "routing-check: cannot enter $pdir"
+  while IFS='	' read -r sran view; do
+    [ -d "$view" ] || continue
+    view="$(cd "$view" && pwd -P)"
+    case "$pdir/" in "$view/"*) die "routing-check: the metrics output would lie inside a review view: $pdir" ;; esac
+  done < "$vlist"
+
+  _RC_OUT="$(dirname "$env")/$rid.routing"
+  : > "$_RC_OUT" 2>/dev/null || die "routing-check: cannot write $_RC_OUT"
+  _RC_FAIL=0; _RC_NOTRUN=0
+  rc_emit "REPLAY=$rid"
+  rc_scope work "$clone" "$pdir/work.json" "$role" "$model" 1
+  while IFS='	' read -r sran view; do
+    k=$((k + 1))
+    if [ "$sran" != 1 ]; then
+      rc_emit "CHECK scope=view-$k check=reviewer-models result=not-run value=unmeasured reason=no review session ran in this view: $view"
+    elif [ ! -d "$view" ]; then
+      rc_emit "CHECK scope=view-$k check=reviewer-models result=not-run value=unmeasured reason=the review view is gone: $view"
+    else
+      rc_scope "view-$k" "$view" "$pdir/view-$k.json" reviewer "$rmodel" 0
+    fi
+  done < "$vlist"
+  if [ "$_RC_FAIL" = 1 ]; then rc_emit "ROUTING_CHECK=fail"
+  elif [ "$_RC_NOTRUN" = 1 ]; then rc_emit "ROUTING_CHECK=not-run"
+  else rc_emit "ROUTING_CHECK=pass"
+  fi
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -2417,6 +2802,7 @@ case "$SUB" in
   prepare)    cmd_prepare "$@" ;;
   review-view) cmd_review_view "$@" ;;
   replay)     cmd_replay "$@" ;;
+  routing-check) cmd_routing_check "$@" ;;
   *) usage ;;
 esac
 exit 0

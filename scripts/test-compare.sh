@@ -6,7 +6,9 @@
 # defaults, the shipped template, each role refusal, model validation through
 # routing.sh (built-in aliases, the routing reason passed through, `extra_models`
 # read from the source repository), the other refusals, the id's invariance
-# under reordering, and that no refusal reads git. `candidates`: a fixture
+# under reordering, `model_ids` (printed, part of the id, every model and the
+# reviewer pinned to a non-empty id or refused naming it), and that no refusal
+# reads git. `candidates`: a fixture
 # source repository with a code, a prose, a checkbox-flip-only, a neither and a
 # multi-commit packet, original and rebuilt handoffs, and excluded packets.
 # `select`: the tier and fix-round mix chosen over newer packets, `unrecorded`
@@ -48,7 +50,15 @@
 # own edit to project-overrides.yaml kept); no chief-engineer session ever; the
 # harness checkout as every session's plugin dir and routing.sh, never the
 # clone's own agents/ or scripts/; a fresh view per review; and a second replay
-# of the same id refused.
+# of the same id refused. `routing-check`: the real metrics.sh collecting
+# fixture event logs and transcripts in a replay's work clone and review view
+# (aliases stamped at dispatch, full ids in transcripts, the experiment's
+# model_ids pinning one to the other): a clean replay passing, an override
+# count of 1, a null override count, a same-family different-version subject
+# model, a wrong reviewer model and an unpinned resolved alias each failing on a
+# line naming its check, an empty stamp read as unresolved, the packets written
+# outside the view, and a replay whose step log has no END or whose selection
+# pins no id for its model refused.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -96,12 +106,39 @@ mksrc() {
   if [ "$1" != "__MISSING__" ]; then printf '%s' "$1" > "$r/.agents/project-overrides.yaml"; fi
   printf '%s' "$r"
 }
-# mkset <yaml> -> prints a fresh settings file path.
-mkset() {
+# mkset <yaml> -> prints a fresh settings file path. A file that names no
+# `model_ids` gets PINS appended: the shipped template's own map plus a pin for
+# every other alias these cases name, so a case about another setting is never
+# refused for a missing pin. An entry for an alias the experiment does not run
+# on is left out of the settings, so the extra pins never move an id.
+# mkset_raw <yaml> writes the yaml alone.
+TEMPLATE_PINS="$(awk '/^model_ids:/ { on = 1; print; next } on && /^[[:space:]]/ { print; next } { on = 0 }' "$REPO/templates/model-comparison.yaml")"
+PINS="$TEMPLATE_PINS
+  haiku: claude-haiku-test
+  gpt9: gpt9-test
+  other-model: other-model-test
+  Opus: opus-capital-test"
+# pins_for <alias>... -> the MODEL_IDS value PINS gives those aliases (sorted).
+pins_for() {
+  local a out=""
+  for a in $(printf '%s\n' "$@" | LC_ALL=C sort -u); do
+    out="${out:+$out,}$a:$(printf '%s\n' "$PINS" | A="$a" awk '{ k = $1; sub(/:$/, "", k) } k == ENVIRON["A"] { print $2; exit }')"
+  done
+  printf '%s' "$out"
+}
+mkset_raw() {
   local f
   f="$(mktemp "$WORK/set.XXXXXX")"
   printf '%s' "$1" > "$f"
   printf '%s' "$f"
+}
+mkset() {
+  case "$1" in
+    *model_ids*) mkset_raw "$1" ;;
+    *) mkset_raw "$1${1:+
+}$PINS
+" ;;
+  esac
 }
 
 # cs <settings-file>: run `compare.sh settings` with the git shim first on PATH.
@@ -139,11 +176,16 @@ no_git "defaults"
 EXPECTED="ROLE=implementer
 MODELS=fable,opus,sonnet
 REVIEWER_MODEL=haiku
+MODEL_IDS=$(pins_for fable haiku opus sonnet)
 SOURCE_REPO=$SRC_ROUTED
 PER_CLASS=8
 CODE_FILES=hooks/,scripts/
 PROSE_FILES=CLAUDE.md,agents/,docs/,skills/,templates/"
-assert_eq "defaults: the seven normalized lines" "$EXPECTED" "$(printf '%s\n' "$OUT" | sed '$d')"
+assert_eq "defaults: the eight normalized lines (only the run's aliases pinned)" "$EXPECTED" "$(printf '%s\n' "$OUT" | sed '$d')"
+case "$(line MODEL_IDS)" in
+  *:,*|*:) bad "defaults: every printed pin is non-empty" "got [$(line MODEL_IDS)]" ;;
+  *) ok "defaults: every printed pin is non-empty" ;;
+esac
 ID="$(line EXPERIMENT)"
 case "$ID" in
   [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ok "defaults: EXPERIMENT is 12 hex" ;;
@@ -163,12 +205,12 @@ assert_eq "defaults, no routing: exit 0" "0" "$RC"
 FM="$(sed -n '2,/^---$/s/^model:[[:space:]]*//p' "$REPO/agents/reviewer.md" | head -1)"
 assert_eq "defaults, no routing: reviewer = frontmatter model" "$FM" "$(line REVIEWER_MODEL)"
 
-# An empty file takes every default, the source being this checkout.
+# A file of pins alone takes every other default, the source being this checkout.
 f="$(mkset '')"
 cs "$f"
-assert_eq "empty file: exit 0" "0" "$RC"
-assert_eq "empty file: source is this checkout" "$REPO" "$(line SOURCE_REPO)"
-no_git "empty file"
+assert_eq "pins only: exit 0" "0" "$RC"
+assert_eq "pins only: source is this checkout" "$REPO" "$(line SOURCE_REPO)"
+no_git "pins only"
 EMPTY_ID="$(line EXPERIMENT)"
 
 printf '\n== settings: the shipped template ==\n'
@@ -178,6 +220,10 @@ assert_eq "template: no stderr" "" "$ERR"
 assert_eq "template: role" "implementer" "$(line ROLE)"
 assert_eq "template: models" "fable,opus,sonnet" "$(line MODELS)"
 assert_eq "template: per_class" "8" "$(line PER_CLASS)"
+case "$(line MODEL_IDS)" in
+  fable:?*,opus:?*,sonnet:?*) ok "template: model_ids pins each of its models" ;;
+  *) bad "template: model_ids pins each of its models" "got [$(line MODEL_IDS)]" ;;
+esac
 assert_eq "template: same experiment as the defaults" "$EMPTY_ID" "$(line EXPERIMENT)"
 
 printf '\n== settings: role refusals ==\n'
@@ -375,6 +421,135 @@ source_repo: $SRC_ROUTED
 ")"
 cs "$C"
 assert_ne "changed role: different EXPERIMENT id" "$ID_A" "$(line EXPERIMENT)"
+
+printf '\n== settings: model_ids pins each alias to one id ==\n'
+# Two settings differing only in one pinned id are two experiments.
+P1="$(mkset_raw "models: [opus, sonnet]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+  sonnet: claude-sonnet-5
+")"
+P2="$(mkset_raw "models: [opus, sonnet]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5
+  sonnet: claude-sonnet-5
+")"
+cs "$P1"; ID_P1="$(line EXPERIMENT)"; RC_P1="$RC"; IDS_P1="$(line MODEL_IDS)"
+cs "$P2"; ID_P2="$(line EXPERIMENT)"; RC_P2="$RC"
+assert_eq "model_ids: both accepted" "0:0" "$RC_P1:$RC_P2"
+assert_eq "model_ids: printed as alias:id items, sorted" "opus:claude-opus-5-5,sonnet:claude-sonnet-5" "$IDS_P1"
+assert_ne "model_ids: settings differing only in one pinned id get different EXPERIMENT ids" "$ID_P1" "$ID_P2"
+# A pin for an alias the experiment does not run on is left out, id unmoved.
+P3="$(mkset_raw "models: [opus, sonnet]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  sonnet: 'claude-sonnet-5'   # quoted, with a comment
+  haiku: claude-haiku-4-5
+  opus: \"claude-opus-5-5\"
+")"
+cs "$P3"
+assert_eq "model_ids: an unused pin, quoting and entry order leave the id unmoved" "0:$ID_P1" "$RC:$(line EXPERIMENT)"
+# A model or the reviewer with no pin, or an empty pin, is refused naming model_ids,
+# before any git read.
+refused_raw() {  # refused_raw <label> <yaml> <expected-stderr-fragment>
+  local f
+  f="$(mkset_raw "$2")"
+  cs "$f"
+  assert_eq "$1: exit 1" "1" "$RC"
+  assert_eq "$1: nothing on stdout" "" "$OUT"
+  assert_has "$1: refusal" "$3" "$ERR"
+  no_git "$1"
+}
+refused_raw "model_ids: a model with no pinned id" "models: [opus, sonnet]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+" "REFUSED setting=model_ids value=sonnet reason=no-pinned-id(named by models)"
+refused_raw "model_ids: an explicit reviewer model with no pinned id" "models: [opus]
+reviewer_model: haiku
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+" "REFUSED setting=model_ids value=haiku reason=no-pinned-id(named by reviewer_model)"
+refused_raw "model_ids: the defaulted reviewer model with no pinned id" "models: [opus]
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+" "REFUSED setting=model_ids value=haiku reason=no-pinned-id(the reviewer_model default"
+refused_raw "model_ids: an empty pinned id" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: ''
+" "REFUSED setting=model_ids value=opus reason=empty-id"
+refused_raw "model_ids: a bare alias with no id" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus:
+" "REFUSED setting=model_ids value=opus reason=empty-id"
+refused_raw "model_ids: absent altogether" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+" "REFUSED setting=model_ids value=opus reason=no-pinned-id(named by models)"
+refused_raw "model_ids: an empty file (no pins by default)" "" \
+  "REFUSED setting=model_ids value=fable reason=no-pinned-id(named by models)"
+refused_raw "model_ids: a list, not a map" "models: [opus]
+reviewer_model: opus
+model_ids: [claude-opus-5-5]
+" "REFUSED setting=model_ids value=- reason=expected-a-map("
+refused_raw "model_ids: a duplicate alias" "models: [opus]
+reviewer_model: opus
+model_ids:
+  opus: claude-opus-5-5
+  opus: claude-opus-5
+" "REFUSED setting=model_ids value=opus reason=duplicate-alias"
+refused_raw "model_ids: an id with a space" "models: [opus]
+reviewer_model: opus
+model_ids:
+  opus: claude opus
+" "REFUSED setting=model_ids value=opus reason=invalid-model-id(claude opus)"
+refused_raw "model_ids: a block mixing entries and items" "models: [opus]
+reviewer_model: opus
+model_ids:
+  opus: claude-opus-5-5
+  - claude-opus-5
+" "REFUSED setting=model_ids value=- reason=unparseable-list"
+# A value holding a literal tab keeps it: the settings records are tab-separated,
+# so a reader splitting every record into one field more than a scalar or list
+# item has would drop everything after the tab and accept the truncated value.
+TAB="$(printf '\t')"
+refused_raw "a scalar with an embedded tab (role)" "role: \"implementer${TAB}junk\"
+models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+" "REFUSED setting=role value=implementer${TAB}junk reason=not-replay-dispatchable"
+refused_raw "a list item with an embedded tab (models)" "models: [opus, \"sonnet${TAB}haiku\"]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: claude-opus-5-5
+  sonnet: claude-sonnet-5
+" "REFUSED setting=models value=sonnet${TAB}haiku reason=whitespace-in-item"
+refused_raw "model_ids: an id with an embedded tab" "models: [opus]
+reviewer_model: opus
+source_repo: $SRC_ROUTED
+model_ids:
+  opus: \"claude-opus-5-5${TAB}claude-opus-5\"
+" "REFUSED setting=model_ids value=opus reason=invalid-model-id(claude-opus-5-5${TAB}claude-opus-5)"
+refused_raw "a map under a list key" "models:
+  opus: claude-opus-5-5
+model_ids:
+  opus: claude-opus-5-5
+" "REFUSED setting=models value=- reason=expected-a-list"
 
 printf '\n== settings: the id is produced, or nothing is printed ==\n'
 # A PATH holding only the tools compare.sh and routing.sh use, never a sha256
@@ -625,6 +800,9 @@ assert_eq "select: the selection is written to <store>/<experiment>/selection.js
   "compare.sh: selection written: $STORE1/$SEL_ID/selection.json" "$ERR"
 assert_eq "select: stdout is the stored selection" "$(cat "$STORE1/$SEL_ID/selection.json")" "$OUT"
 assert_has "select: the selection names its experiment" "\"experiment\": \"$SEL_ID\"" "$OUT"
+SEL_PINS="$(printf '%s\n' "$OUT" | jq -r '.settings.model_ids | to_entries | map("\(.key):\(.value)") | join(",")')"
+assert_eq "select: the stored settings carry model_ids, as settings printed them" \
+  "$(cs "$SSET"; line MODEL_IDS)" "$SEL_PINS"
 # The mix is preferred over newer packets: c1 (the only fix round) and c2 (the
 # only second tier) are chosen over the newer c4 and c3.
 assert_eq "select: the fix-round and tier mix beats newest-first (code)" "sel-c5 sel-c2 sel-c1" "$(chosen code)"
@@ -1753,6 +1931,194 @@ assert_eq "replay, a line refused twice: ends refused after two dispatches" "0:r
   "$RC:$(line END):$RPAGENTS"
 rp_commits "replay, a line refused twice" 0
 
+printf '\n== routing-check: run metrics from the work clone and each review view ==\n'
+# A replay prepared on model aliases, as the first experiment names them, each
+# pinned by the experiment's model_ids to one full id, run through the stub (implementer done, reviewer pass), then given fixture event
+# logs and transcripts in the work clone and its one review view: what the
+# metrics hook and the harness would have left there: the routing stamp an
+# alias, the transcript a full id. The real metrics.sh collects them; each case
+# rewrites the fixtures and runs the check again.
+RC="$WORK/rcsrc"
+mkdir -p "$RC/scripts" "$RC/.agents" "$RC/gspec/features/rp"
+git -C "$RC" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n.agents/metrics/\n' > "$RC/.gitignore"
+printf 'echo a\n' > "$RC/scripts/a.sh"
+printf -- '- [ ] **T1** rc work\n' > "$RC/gspec/features/rp/tasks.md"
+printf 'packet_attempts: 1\n' > "$RC/.agents/project-overrides.yaml"
+git -C "$RC" add -A >/dev/null
+GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$RC" -c user.name=fixture \
+  -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m base >/dev/null
+RC0="$(git -C "$RC" rev-parse HEAD)"
+printf 'echo landed\n' >> "$RC/scripts/a.sh"
+git -C "$RC" add -A >/dev/null
+GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$RC" -c user.name=fixture \
+  -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+  commit -q -m "$(printf 'rc\n\n[orch packet:rc-t1]')" >/dev/null
+RC1="$(git -C "$RC" rev-parse HEAD)"
+mkdir -p "$RC/.agents/loop/20260501T000000-bb/rc-t1"
+printf '# rc-t1: the original\n\ntier: integration\nagent: implementer\nrun-state: /elsewhere/run-state.yaml\nresult: /elsewhere/implementer.md\nreview: /elsewhere/review.md\n\nPACKET=rc-t1\nFILES=scripts/a.sh\n' \
+  > "$RC/.agents/loop/20260501T000000-bb/rc-t1/handoff.md"
+RCEXP=ddddddddddd7
+RCSTORE="$WORK/rcstore"
+mkdir -p "$RCSTORE/$RCEXP"
+cat > "$RCSTORE/$RCEXP/selection.json" <<EOF
+{
+  "experiment": "$RCEXP",
+  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$RC", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rc-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rc", "handoff": "original", "start": "$RC0", "commits": ["$RC1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+SD="$WORK/stubrc"; mkdir -p "$SD"; : > "$SD/log"
+printf '%s\n' "$IMPL_DONE" "$REV_PASS" > "$SD/script"
+OUT="$(ORCH_COMPARE_STORE="$RCSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" prepare "$RCEXP" rc-t1 fable 2>"$WORK/err")"
+assert_eq "routing-check fixture: prepared on an alias" "fable" "$(line MODEL)"
+RCC="$(line CLONE)"; RCR="$(line REPLAY)"
+OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT=60 \
+  ORCH_COMPARE_STORE="$RCSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" replay "$RCR" 2>"$WORK/err")"
+assert_eq "routing-check fixture: the replay landed" "land" "$(line END)"
+RCV="$(line VIEW)"
+RCPROJ="$WORK/rcproj"
+RCREPLAYS="$RCSTORE/$RCEXP/replays"
+
+# rc_seed <dir> <sid> <agent> <passed-model|-> <stamp|-> <transcript-model> [nook]:
+# one dispatch of gaffer:<agent> from a session's main thread, the subagent's own
+# tool event, and its transcript turn. `-` leaves the field off the Agent event;
+# `nook` leaves `ok` off every event (a run before the ok capture).
+rc_seed() {
+  local ev="$1/.agents/metrics/events/$2.jsonl" ok=',"ok":true' mf="" st=""
+  [ "${7:-}" = nook ] && ok=""
+  [ "$4" = - ] || mf=",\"model\":\"$4\""
+  [ "$5" = - ] || st=",\"routing_resolved\":\"$5\",\"routing_table\":{\"$3\":\"$5\"}"
+  mkdir -p "$(dirname "$ev")" "$RCPROJ/p/$2/subagents"
+  printf '{"ts":"2026-05-02T00:00:02Z","session_id":"%s","agent_id":"%sa","agent_type":"gaffer:%s","tool":"Edit"%s}\n' "$2" "$2" "$3" "$ok" > "$ev"
+  printf '{"ts":"2026-05-02T00:00:03Z","session_id":"%s","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:%s"%s%s%s}\n' \
+    "$2" "$3" "$mf" "$st" "$ok" >> "$ev"
+  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z","message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$2" "$6" > "$RCPROJ/p/$2/subagents/agent-$2a.jsonl"
+}
+rc_reset() { rm -rf "$RCC/.agents/metrics/events" "$RCV/.agents/metrics/events" "$RCPROJ"; }
+rc_run() {  # rc_run: OUT/ERR/RC for `compare.sh routing-check` on the fixture replay
+  OUT="$(ORCH_METRICS_PROJECTS_DIR="$RCPROJ" ORCH_COMPARE_STORE="$RCSTORE" "$COMPARE" routing-check "$RCR" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+chk() { printf '%s\n' "$OUT" | awk -v p="CHECK scope=$1 check=$2 " 'index($0, p) == 1'; }
+
+# A clean replay.
+rc_reset
+rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+RCVFILES="$(find "$RCV" -type f | LC_ALL=C sort)"
+rc_run
+assert_eq "routing-check, a clean replay: exit 0, passes" "0:pass" "$RC:$(line ROUTING_CHECK)"
+assert_eq "routing-check, a clean replay: override count 0" "CHECK scope=work check=override-count result=pass value=0" "$(chk work override-count)"
+assert_eq "routing-check, a clean replay: the implementer's resolved id" \
+  "CHECK scope=work check=implementer-resolved-id result=pass value=fable" "$(chk work implementer-resolved-id)"
+assert_eq "routing-check, a clean replay: the implementer ran on it" \
+  "CHECK scope=work check=implementer-models result=pass value=claude-fable-5-1" "$(chk work implementer-models)"
+assert_eq "routing-check, a clean replay: the reviewer's resolved id" \
+  "CHECK scope=view-1 check=reviewer-resolved-id result=pass value=haiku" "$(chk view-1 reviewer-resolved-id)"
+assert_eq "routing-check, a clean replay: the reviewer ran on it" \
+  "CHECK scope=view-1 check=reviewer-models result=pass value=claude-haiku-4-5" "$(chk view-1 reviewer-models)"
+assert_eq "routing-check, a clean replay: no line fails" "0" "$(printf '%s\n' "$OUT" | grep -c 'result=fail')"
+assert_eq "routing-check: the packets are written beside the replay's record" \
+  "$RCREPLAYS/$RCR.metrics/work.json|$RCREPLAYS/$RCR.metrics/view-1.json" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^METRICS scope=work .* packet=//p')|$(printf '%s\n' "$OUT" | sed -n 's/^METRICS scope=view-1 .* packet=//p')"
+assert_eq "routing-check: the collect in the view was the view's own" "$RCV" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^METRICS scope=view-1 dir=\([^ ]*\) .*/\1/p')"
+assert_eq "routing-check: nothing is written inside the review view" "$RCVFILES" "$(find "$RCV" -type f | LC_ALL=C sort)"
+assert_eq "routing-check: the lines are stored as <replay>.routing" "$OUT" "$(cat "$RCREPLAYS/$RCR.routing")"
+
+# An override count of 1: the implementer was passed a model routing did not resolve.
+rc_reset
+rc_seed "$RCC" W1 implementer opus fable claude-fable-5-1
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, an override count of 1: the packet's own count is 1" "1" \
+  "$(jq -r '.audit.dispatches_with_model_override' "$RCREPLAYS/$RCR.metrics/work.json")"
+assert_eq "routing-check, an override count of 1: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_has "routing-check, an override count of 1: the failing line names override-count" \
+  "CHECK scope=work check=override-count result=fail value=1 " "$(chk work override-count)"
+
+# A null override count: no event carries `ok`, so the collector cannot count.
+rc_reset
+rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1 nook
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, a null override count: the packet's own count is null" "null" \
+  "$(jq -r '.audit.dispatches_with_model_override' "$RCREPLAYS/$RCR.metrics/work.json")"
+assert_eq "routing-check, a null override count: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_has "routing-check, a null override count: the failing line names override-count, unmeasured, never 0" \
+  "CHECK scope=work check=override-count result=fail value=unmeasured " "$(chk work override-count)"
+
+# A same-family, different-version subject model: claude-fable-5 where fable is
+# pinned to claude-fable-5-1.
+rc_reset
+rc_seed "$RCC" W1 implementer fable fable claude-fable-5
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, a same-family different-version model: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_eq "routing-check, a same-family different-version model: override count still 0" \
+  "CHECK scope=work check=override-count result=pass value=0" "$(chk work override-count)"
+assert_has "routing-check, a same-family different-version model: the failing line names implementer-models" \
+  "CHECK scope=work check=implementer-models result=fail value=claude-fable-5 " "$(chk work implementer-models)"
+
+# A wrong reviewer model in the view.
+rc_reset
+rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+rc_seed "$RCV" V1 reviewer haiku haiku claude-sonnet-5
+rc_run
+assert_eq "routing-check, a wrong reviewer model: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_eq "routing-check, a wrong reviewer model: the work clone passes" "0" \
+  "$(printf '%s\n' "$OUT" | grep '^CHECK scope=work ' | grep -c 'result=fail')"
+assert_has "routing-check, a wrong reviewer model: the failing line names reviewer-models" \
+  "CHECK scope=view-1 check=reviewer-models result=fail value=claude-sonnet-5 " "$(chk view-1 reviewer-models)"
+
+# Routing resolved an alias the experiment does not pin: its transcript id has
+# nothing to be checked against, so the models check fails too.
+rc_reset
+rc_seed "$RCC" W1 implementer opus opus claude-opus-5-5
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_eq "routing-check, an unpinned resolved alias: exit 0, fails" "0:fail" "$RC:$(line ROUTING_CHECK)"
+assert_has "routing-check, an unpinned resolved alias: the resolved-id line names opus" \
+  "CHECK scope=work check=implementer-resolved-id result=fail value=opus " "$(chk work implementer-resolved-id)"
+assert_has "routing-check, an unpinned resolved alias: the models line says it has no pin" \
+  "reason=routing resolved [opus], which the experiment's model_ids pins to no id" "$(chk work implementer-models)"
+
+# An empty routing stamp reads as unresolved, never as an empty value.
+rc_reset
+rc_seed "$RCC" W1 implementer - "" claude-fable-5-1
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_run
+assert_has "routing-check, an empty stamp: the resolved-id line reads unresolved" \
+  "CHECK scope=work check=implementer-resolved-id result=fail value=unresolved " "$(chk work implementer-resolved-id)"
+
+# A stored selection that pins no id for the replay's model is refused before any check.
+cp "$RCSTORE/$RCEXP/selection.json" "$WORK/rc.sel"
+sed 's/"fable": "claude-fable-5-1", //' "$WORK/rc.sel" > "$RCSTORE/$RCEXP/selection.json"
+rm -f "$RCREPLAYS/$RCR.routing"
+rc_run
+cp "$WORK/rc.sel" "$RCSTORE/$RCEXP/selection.json"
+assert_eq "routing-check, a selection with no pin for the model: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "routing-check, a selection with no pin for the model: names model_ids and the alias" \
+  "model_ids pins no id for fable" "$ERR"
+
+# Only after the review session has ended: a step log with no END is refused.
+cp "$RCREPLAYS/$RCR.steps" "$WORK/rc.steps"
+grep -v '^END=' "$WORK/rc.steps" > "$RCREPLAYS/$RCR.steps"
+rm -f "$RCREPLAYS/$RCR.routing"
+rc_run
+cp "$WORK/rc.steps" "$RCREPLAYS/$RCR.steps"
+assert_eq "routing-check, a replay that has not ended: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "routing-check, a replay that has not ended: named" "has not ended" "$ERR"
+assert_eq "routing-check, a replay that has not ended: nothing is recorded" "no" \
+  "$(if [ -e "$RCREPLAYS/$RCR.routing" ]; then echo yes; else echo no; fi)"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -1765,6 +2131,7 @@ printf '\n== usage ==\n'
 "$COMPARE" prepare aaaaaaaaaaa1 est-e1 >/dev/null 2>&1; assert_eq "prepare without a model: exit 2" "2" "$?"
 "$COMPARE" review-view >/dev/null 2>&1; assert_eq "review-view without a replay: exit 2" "2" "$?"
 "$COMPARE" replay >/dev/null 2>&1; assert_eq "replay without a replay id: exit 2" "2" "$?"
+"$COMPARE" routing-check >/dev/null 2>&1; assert_eq "routing-check without a replay id: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

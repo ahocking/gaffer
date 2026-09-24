@@ -127,7 +127,18 @@
 # handoff source (a rebuilt one stated), the unranked count (and a ranking
 # whose label map is gone counted unranked), no table, a second render
 # byte-identical, and refusals (no selection, an unreadable records file, a
-# malformed id).
+# malformed id). The report's proposal: that store's unmeasured cells
+# suppressing it and named; an agreeing experiment (one `role: model` entry,
+# the deciding cells cited, both classes favouring it); a diverging one saying
+# so, naming each class's favourite, and stating the per-tier split's pass-rate,
+# dollar and token difference against the single value; both classes favouring
+# one model while the pooled rule picks another (uneven n), proposing the
+# pooled value, never claiming agreement, and stating the split against it;
+# the tie-break order
+# (pass rate before rank and dollars, rank before dollars, dollars last, an
+# unmeasured rank the rule needs and a tie on all three each proposing
+# nothing); and the source repository's project-overrides.yaml byte-identical
+# after the reports, the harness repository's own unchanged.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -3474,6 +3485,213 @@ assert_has "report, an unreadable records file: named" "the records file is not 
 mv "$RPSTORE/records.saved" "$RPSTORE/records.jsonl"
 rpt not-an-id
 assert_eq "report, a malformed experiment id: exit 1" "1" "$RC"
+
+printf '\n== report: the proposal under the plan'"'"'s rule ==\n'
+# The fixture store above has two unmeasured cells, so it proposes nothing.
+rpt
+assert_eq "proposal, an unmeasured cell: no change proposed, the unmeasured cells named" \
+  "> ⚠️ No change proposed: unmeasured cells **opus, prose**, **sonnet, prose**" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p' | sed -n '3p')"
+case "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p' | sed '1,2d')" in
+  *'Proposed `model_routing`'*|*'favour'*) bad "proposal, an unmeasured cell: nothing proposed and no class favour stated" "$OUT" ;;
+  *) ok "proposal, an unmeasured cell: nothing proposed and no class favour stated" ;;
+esac
+# Fresh stores over two code and two prose packets. The source repository has a
+# project-overrides.yaml naming a routing the proposals disagree with; each
+# report runs from inside it, and it is compared byte for byte at the end.
+PXSRC="$WORK/px-source"
+mkdir -p "$PXSRC/.agents"
+printf 'model_routing:\n  implementer: sonnet\n  reviewer: opus\n' > "$PXSRC/.agents/project-overrides.yaml"
+cp "$PXSRC/.agents/project-overrides.yaml" "$WORK/px-overrides.before"
+PX_HARNESS_OV="$REPO/.agents/project-overrides.yaml"
+PX_HARNESS_SUM="$(cksum < "$PX_HARNESS_OV" 2>/dev/null || printf absent)"
+PXEXP="fedcba987654"
+px_store() {  # px_store <name> <models...>: a fresh store holding only the selection
+  PXSTORE="$WORK/px-$1"; shift
+  mkdir -p "$PXSTORE/$PXEXP"
+  local ms="" m
+  for m in "$@"; do ms="$ms${ms:+, }\"$m\""; done
+  cat > "$PXSTORE/$PXEXP/selection.json" <<EOF
+{
+  "experiment": "$PXEXP",
+  "settings": {"role": "implementer", "models": [$ms], "reviewer_model": "haiku", "effort": "high", "source_repo": "$PXSRC", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "pc1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "Code one", "handoff": "original", "start": "0000000", "commits": ["1111111"]},
+    {"packet": "pc2", "class": "code", "tier": "mechanical", "fix_rounds": 0, "title": "Code two", "handoff": "original", "start": "0000000", "commits": ["2222222"]},
+    {"packet": "pp1", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Prose one", "handoff": "original", "start": "0000000", "commits": ["3333333"]},
+    {"packet": "pp2", "class": "prose", "tier": "integration", "fix_rounds": 0, "title": "Prose two", "handoff": "original", "start": "0000000", "commits": ["4444444"]}
+  ],
+  "shortfalls": [], "excluded": [], "dropped": []
+}
+EOF
+}
+px_rec() {  # px_rec <packet> <model> <outcome> <tokens> <dmin> <dmax>
+  printf '{"experiment":"%s","replay":"r-%s-%s","packet":"%s","model":"%s","role":"implementer","reviewer_model":"haiku","effort":"high","handoff_source":"original","settings":{"role":"implementer"},"outcome":"%s","outcome_reason":"x","first_verdict":null,"fix_rounds":0,"sweeps":null,"routing_check":"pass","end":"land","tokens":{"input":%s,"output":0,"cache_creation":0,"cache_read":0},"dollars_min":%s,"dollars_max":%s,"price":null,"price_table_date":"2026-01-01","cost_source":"dispatches","cost_note":null,"recorded_at":"2026-01-01T00:00:00Z"}\n' \
+    "$PXEXP" "$1" "$2" "$1" "$2" "$3" "$4" "$5" "$6" >> "$PXSTORE/records.jsonl"
+}
+px_all() {  # px_all <model> <pc1> <pc2> <pp1> <pp2> <tokens> <dmin> <dmax>: one record per packet
+  px_rec pc1 "$1" "$2" "$6" "$7" "$8"; px_rec pc2 "$1" "$3" "$6" "$7" "$8"
+  px_rec pp1 "$1" "$4" "$6" "$7" "$8"; px_rec pp2 "$1" "$5" "$6" "$7" "$8"
+}
+px_rank() {  # px_rank <packet> <ranking-id> <model, best first>...: a ranking and its label map
+  local p="$1" id="$2" i=0 lab ls="" os="" m
+  shift 2
+  for m in "$@"; do
+    i=$((i + 1)); lab="$(printf 'ABC' | cut -c"$i")"
+    ls="$ls${ls:+,}{\"label\":\"$lab\",\"model\":\"$m\",\"replay\":\"r$i\"}"
+    os="$os${os:+,}{\"position\":$i,\"label\":\"$lab\",\"reason\":\"r\"}"
+  done
+  printf '{"experiment":"%s","packet":"%s","ranking":"%s","labels":[%s]}\n' "$PXEXP" "$p" "$id" "$ls" >> "$PXSTORE/labels.jsonl"
+  printf '{"experiment":"%s","packet":"%s","ranking":"%s","order":[%s]}\n' "$PXEXP" "$p" "$id" "$os" >> "$PXSTORE/rankings.jsonl"
+}
+pxr() {  # pxr: OUT/ERR/RC for `compare.sh report` on PXSTORE, run from inside the source repository
+  OUT="$(cd "$PXSRC" && ORCH_COMPARE_STORE="$PXSTORE" "$COMPARE" report "$PXEXP" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+prop() { printf '%s\n' "$OUT" | sed -n '/^\*\*Proposal\*\*$/,$p' | sed '1,2d'; }  # the lines after the rule
+px_entry() { printf '> 🔀 Proposed `model_routing` entry: `implementer: %s`, for you to apply by hand or not. This report changes no routing configuration.' "$1"; }
+
+# An agreeing experiment: opus passes everything, so it leads both classes.
+px_store agree fable opus sonnet
+px_all opus passed passed passed passed 1000 1.00 1.20
+px_all fable passed escalated passed escalated 200 0.20 0.30
+px_all sonnet failed-at-limit failed-at-limit failed-at-limit failed-at-limit 500 0.50 0.60
+pxr
+assert_eq "proposal, agreeing: exit 0" "0" "$RC"
+assert_eq "proposal, agreeing: one model in model_routing's one-model-per-agent shape, the deciding cells cited, the classes agreeing" \
+  "$(px_entry opus)
+> Decided by pass rate over both classes: opus 1.00 (4 passed, n=4) from **opus, code** 1.00 (2 passed, n=2), **opus, prose** 1.00 (2 passed, n=2) over fable 0.50 (2 passed, n=4) from **fable, code** 0.50 (1 passed, n=2), **fable, prose** 0.50 (1 passed, n=2); sonnet 0.00 (0 passed, n=4) from **sonnet, code** 0.00 (0 passed, n=2), **sonnet, prose** 0.00 (0 passed, n=2)
+> The code and prose cells agree: each favours opus" \
+  "$(prop)"
+
+# A diverging experiment: opus leads code and overall, fable leads prose.
+px_store diverge fable opus
+px_all opus passed passed passed escalated 1000 1.00 1.20
+px_all fable escalated escalated passed passed 200 0.20 0.30
+pxr
+assert_eq "proposal, diverging: the single value is the overall leader" "$(px_entry opus)" "$(prop | sed -n 1p)"
+assert_eq "proposal, diverging: says the classes favour different models, and which" \
+  "> ⚠️ The code and prose cells favour different models
+> Code favours opus, by pass rate in code: opus 1.00 (2 passed, n=2) over fable 0.00 (0 passed, n=2)
+> Prose favours fable, by pass rate in prose: fable 1.00 (2 passed, n=2) over opus 0.50 (1 passed, n=2)" \
+  "$(prop | sed -n '3,5p')"
+assert_eq "proposal, diverging: the per-tier split's pass-rate and cost difference against the single value" \
+  "> A per-tier split (code: opus, prose: fable) against \`implementer: opus\` for both: pass rate 1.00 (4 passed, n=4) against 0.75 (3 passed, n=4), difference +0.25 · dollars 0.60–0.75 (n=4) against 1.00–1.20 (n=4) per replay, difference -0.40 min, -0.45 max · tokens 600 (n=4) against 1000 (n=4) per replay, difference -400" \
+  "$(prop | sed -n 6p)"
+assert_eq "proposal, diverging: every line is a flush-left heading, a quote-bar fact or a blank" "" \
+  "$(printf '%s\n' "$OUT" | grep -v -e '^$' -e '^> ' -e '^\*\*[A-Z][A-Za-z ]*\*\*' )"
+
+# Both classes favour one model while the pooled rule picks another: the
+# classes' n differ (uneven invalid replays), so pooling reverses the per-class
+# order. Four packets per class. opus: code 1 passed + 3 invalid (1.00, n=1),
+# prose 1 passed + 3 escalated (0.25, n=4). fable: code 3 passed + 1 escalated
+# (0.75, n=4), prose 1 escalated + 3 invalid (0.00, n=1). Pooled: fable 3/5,
+# opus 2/5. The report must propose fable and never claim the classes agree.
+px_store simpson fable opus
+cat > "$PXSTORE/$PXEXP/selection.json" <<EOF
+{
+  "experiment": "$PXEXP",
+  "settings": {"role": "implementer", "models": ["fable", "opus"], "reviewer_model": "haiku", "effort": "high", "source_repo": "$PXSRC", "per_class": 4, "code_files": ["scripts/"], "prose_files": ["agents/"]},
+  "selected": [
+    {"packet": "pc1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "Code one", "handoff": "original", "start": "0000000", "commits": ["1111111"]},
+    {"packet": "pc2", "class": "code", "tier": "mechanical", "fix_rounds": 0, "title": "Code two", "handoff": "original", "start": "0000000", "commits": ["2222222"]},
+    {"packet": "pc3", "class": "code", "tier": "mechanical", "fix_rounds": 0, "title": "Code three", "handoff": "original", "start": "0000000", "commits": ["5555555"]},
+    {"packet": "pc4", "class": "code", "tier": "mechanical", "fix_rounds": 0, "title": "Code four", "handoff": "original", "start": "0000000", "commits": ["6666666"]},
+    {"packet": "pp1", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Prose one", "handoff": "original", "start": "0000000", "commits": ["3333333"]},
+    {"packet": "pp2", "class": "prose", "tier": "integration", "fix_rounds": 0, "title": "Prose two", "handoff": "original", "start": "0000000", "commits": ["4444444"]},
+    {"packet": "pp3", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Prose three", "handoff": "original", "start": "0000000", "commits": ["7777777"]},
+    {"packet": "pp4", "class": "prose", "tier": "docs", "fix_rounds": 0, "title": "Prose four", "handoff": "original", "start": "0000000", "commits": ["8888888"]}
+  ],
+  "shortfalls": [], "excluded": [], "dropped": []
+}
+EOF
+px_rec pc1 opus passed 1000 1.00 1.20; px_rec pc2 opus invalid 1000 1.00 1.20
+px_rec pc3 opus invalid 1000 1.00 1.20; px_rec pc4 opus invalid 1000 1.00 1.20
+px_rec pp1 opus passed 1000 1.00 1.20; px_rec pp2 opus escalated 1000 1.00 1.20
+px_rec pp3 opus escalated 1000 1.00 1.20; px_rec pp4 opus escalated 1000 1.00 1.20
+px_rec pc1 fable passed 200 0.20 0.30; px_rec pc2 fable passed 200 0.20 0.30
+px_rec pc3 fable passed 200 0.20 0.30; px_rec pc4 fable escalated 200 0.20 0.30
+px_rec pp1 fable escalated 200 0.20 0.30; px_rec pp2 fable invalid 200 0.20 0.30
+px_rec pp3 fable invalid 200 0.20 0.30; px_rec pp4 fable invalid 200 0.20 0.30
+pxr
+assert_eq "proposal, classes agree against the pooled value: exit 0" "0" "$RC"
+assert_eq "proposal, classes agree against the pooled value: the proposed entry is the pooled value" \
+  "$(px_entry fable)" "$(prop | sed -n 1p)"
+case "$(prop)" in
+  *'agree'*) bad "proposal, classes agree against the pooled value: no line claims the classes agree with the proposal" "$(prop)" ;;
+  *) ok "proposal, classes agree against the pooled value: no line claims the classes agree with the proposal" ;;
+esac
+assert_eq "proposal, classes agree against the pooled value: says both favour another model than the pooled pick, and which" \
+  "> ⚠️ Both classes favour opus, but pooled over both the rule picks fable
+> Code favours opus, by pass rate in code: opus 1.00 (1 passed, n=1) over fable 0.75 (3 passed, n=4)
+> Prose favours opus, by pass rate in prose: opus 0.25 (1 passed, n=4) over fable 0.00 (0 passed, n=1)" \
+  "$(prop | sed -n '3,5p')"
+assert_eq "proposal, classes agree against the pooled value: the split against the single value is stated" \
+  "> A per-tier split (code: opus, prose: opus) against \`implementer: fable\` for both: pass rate 0.40 (2 passed, n=5) against 0.60 (3 passed, n=5), difference -0.20 · dollars 1.00–1.20 (n=5) against 0.20–0.30 (n=5) per replay, difference +0.80 min, +0.90 max · tokens 1000 (n=5) against 200 (n=5) per replay, difference +800" \
+  "$(prop | sed -n 6p)"
+
+# The tie-break order: pass rate, then mean rank, then mean dollars.
+# Pass rate outranks rank and dollars: opus passes more, fable ranks better and costs less.
+px_store tb-pass fable opus
+px_all opus passed passed passed passed 1000 1.00 1.20
+px_all fable passed passed passed escalated 200 0.20 0.30
+px_rank pc1 aaaaaaaaaa01 fable opus; px_rank pp1 aaaaaaaaaa02 fable opus
+pxr
+assert_eq "proposal, tie-break: pass rate decides before rank and dollars" "$(px_entry opus)" "$(prop | sed -n 1p)"
+assert_has "proposal, tie-break: ... cited as pass rate" "> Decided by pass rate over both classes: opus 1.00 (4 passed, n=4)" "$(prop | sed -n 2p)"
+# Tied on pass rate, rank decides before dollars: opus ranks better, fable costs less.
+px_store tb-rank fable opus
+px_all opus passed passed passed passed 1000 1.00 1.20
+px_all fable passed passed passed passed 200 0.20 0.30
+px_rank pc1 aaaaaaaaaa03 opus fable; px_rank pp1 aaaaaaaaaa04 opus fable
+pxr
+assert_eq "proposal, tie-break: on a pass-rate tie, mean rank decides before dollars" "$(px_entry opus)" "$(prop | sed -n 1p)"
+assert_eq "proposal, tie-break: ... cited as mean rank, after the pass-rate tie" \
+  "> Decided by mean rank over both classes: opus 1.00 (n=2) from **opus, code** 1.00 (n=1), **opus, prose** 1.00 (n=1) over fable 2.00 (n=2) from **fable, code** 2.00 (n=1), **fable, prose** 2.00 (n=1), after fable 1.00 (4 passed, n=4) from **fable, code** 1.00 (2 passed, n=2), **fable, prose** 1.00 (2 passed, n=2) and opus 1.00 (4 passed, n=4) from **opus, code** 1.00 (2 passed, n=2), **opus, prose** 1.00 (2 passed, n=2) tied on pass rate" \
+  "$(prop | sed -n 2p)"
+# Tied on pass rate and on rank, dollars decide.
+px_store tb-dollars fable opus
+px_all opus passed passed passed passed 1000 1.00 1.20
+px_all fable passed passed passed passed 200 0.20 0.30
+px_rank pc1 aaaaaaaaaa05 opus fable; px_rank pp1 aaaaaaaaaa06 fable opus
+pxr
+assert_eq "proposal, tie-break: on a pass-rate and rank tie, mean dollars decide" "$(px_entry fable)" "$(prop | sed -n 1p)"
+assert_has "proposal, tie-break: ... cited as mean dollars" \
+  "> Decided by mean dollars over both classes: fable 0.20–0.30 (n=4) from **fable, code** 0.20–0.30 (n=2), **fable, prose** 0.20–0.30 (n=2) over opus 1.00–1.20 (n=4)" \
+  "$(prop | sed -n 2p)"
+# A pass-rate tie the rule would break on rank, with no ranking: unmeasured stops it, never read as 0.
+px_store tb-unranked fable opus
+px_all opus passed passed passed passed 1000 1.00 1.20
+px_all fable passed passed passed passed 200 0.20 0.30
+pxr
+assert_has "proposal, tie-break: a rank the rule needs but nobody measured proposes nothing, naming it" \
+  "> ⚠️ No change proposed: fable 1.00 (4 passed, n=4)" "$(prop | sed -n 1p)"
+assert_has "proposal, tie-break: ... and why" \
+  "tied on pass rate, and the rule's next figure, mean rank, is unmeasured over both classes for fable, opus" "$(prop | sed -n 1p)"
+# A tie on all three figures proposes nothing.
+px_store tb-full fable opus
+px_all opus passed passed passed passed 500 0.50 0.60
+px_all fable passed passed passed passed 500 0.50 0.60
+px_rank pc1 aaaaaaaaaa07 opus fable; px_rank pp1 aaaaaaaaaa08 fable opus
+pxr
+assert_has "proposal, tie-break: a tie on all three figures proposes nothing" \
+  "tied on mean dollars, and the rule separates them no further" "$(prop | sed -n 1p)"
+case "$(prop)" in
+  *'Proposed `model_routing`'*) bad "proposal, tie-break: ... and no entry is proposed" "$(prop)" ;;
+  *) ok "proposal, tie-break: ... and no entry is proposed" ;;
+esac
+
+# Nothing in routing configuration changes: the source repository's
+# project-overrides.yaml, and the harness repository's own, byte-identical
+# after every report above.
+if cmp -s "$WORK/px-overrides.before" "$PXSRC/.agents/project-overrides.yaml"; then
+  ok "proposal: the source repository's project-overrides.yaml is byte-identical after a report"
+else
+  bad "proposal: the source repository's project-overrides.yaml is byte-identical after a report" \
+    "$(diff "$WORK/px-overrides.before" "$PXSRC/.agents/project-overrides.yaml")"
+fi
+assert_eq "proposal: the harness repository's project-overrides.yaml is unchanged after a report" \
+  "$PX_HARNESS_SUM" "$(cksum < "$PX_HARNESS_OV" 2>/dev/null || printf absent)"
 
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"

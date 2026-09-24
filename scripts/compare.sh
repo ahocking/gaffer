@@ -785,6 +785,41 @@
 #                                    line carrying the same ranking id; one with
 #                                    no ranking, or whose labels do not resolve,
 #                                    is unranked.
+#                       Proposal     computed by THE PROPOSAL RULE, never
+#                                    written by a model: the highest pass rate
+#                                    over both classes (pooled: passed over
+#                                    scored, not a mean of the two rates), then
+#                                    the lowest mean rank, then the lowest mean
+#                                    dollars (the midpoint of the mean range),
+#                                    each deciding only among the models tied
+#                                    on every figure before it. It prints one
+#                                    `<role>: <model>` entry, the
+#                                    one-model-per-agent shape of
+#                                    `model_routing`, and the deciding figure
+#                                    for every model compared, citing each cell
+#                                    it pools. A class favours a model by the
+#                                    same rule inside that class: when both
+#                                    classes favour the proposed model it says
+#                                    they agree. When they favour different
+#                                    ones it says so, and when both favour one
+#                                    model the pooled rule did not pick (the
+#                                    classes' n differ) it says that instead,
+#                                    never claiming agreement. Either way it
+#                                    states a per-tier split (each class
+#                                    routed to the model it favours) against
+#                                    the single value, over both classes: its
+#                                    pass rate, mean dollars and mean tokens
+#                                    per replay and their difference. A cost
+#                                    figure unmeasured in any cell the split
+#                                    needs reads unmeasured, naming the cells.
+#                                    No change is proposed, and the reason
+#                                    named, when any model has an unmeasured
+#                                    cell (every one is named), when the rule
+#                                    reaches a figure that is unmeasured for a
+#                                    tied model (never read as 0), or when the
+#                                    models tie on all three figures. The
+#                                    proposal is text: nothing writes routing
+#                                    configuration.
 #
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
@@ -4614,6 +4649,97 @@ cmd_report() {
     function ix(path, pre,   s) { s = substr(path, length(pre) + 1); sub(/\].*$/, "", s); return s + 0 }
     function leaf(path,   s) { s = path; sub(/^.*\./, "", s); return s }
     function mean(s, n, fmt) { return n > 0 ? sprintf(fmt, s / n) : "unmeasured" }
+    # agg <model> <classes>: the model'"'"'s cells over the space-separated classes,
+    # pooled into the A* globals (sums and their n, never a mean of means).
+    function agg(m, cl,   n, k, a) {
+      n = split(cl, a, " ")
+      Asc = 0; Apa = 0; Ars = 0; Arn = 0; Atk = 0; Atn = 0; Alo = 0; Ahi = 0; Adn = 0
+      for (k = 1; k <= n; k++) {
+        Asc += Csc[m, a[k]]; Apa += Cpa[m, a[k]]; Ars += Crs[m, a[k]]; Arn += Crn[m, a[k]]
+        Atk += Ctk[m, a[k]]; Atn += Ctn[m, a[k]]; Alo += Clo[m, a[k]]; Ahi += Chi[m, a[k]]; Adn += Cdn[m, a[k]]
+      }
+    }
+    function fig(crit, m, cl) {
+      agg(m, cl)
+      if (crit == "pass") return sprintf("%.2f (%d passed, n=%d)", Apa / Asc, Apa, Asc)
+      if (crit == "rank") return mean(Ars, Arn, "%.2f") " (n=" Arn ")"
+      return (Adn > 0 ? sprintf("%.2f–%.2f", Alo / Adn, Ahi / Adn) : "unmeasured") " (n=" Adn ")"
+    }
+    # cite: the model'"'"'s figure over the classes and, over more than one, each
+    # cell it is pooled from.
+    function cite(crit, m, cl,   n, k, a, s) {
+      s = m " " fig(crit, m, cl)
+      n = split(cl, a, " ")
+      if (n > 1) { s = s " from"; for (k = 1; k <= n; k++) s = s (k > 1 ? "," : "") " **" m ", " a[k] "** " fig(crit, m, a[k]) }
+      return s
+    }
+    function scope(cl) { return (cl == "code prose" ? "over both classes" : "in " cl) }
+    function signed(x, fmt,   s) { s = sprintf(fmt, x); if (s ~ /^-0(\.0*)?$/) s = substr(s, 2); return (s ~ /^-/ ? s : "+" s) }
+    # THE PROPOSAL RULE, applied over <classes>: the highest pass rate, then the
+    # lowest mean rank, then the lowest mean dollars (the midpoint of the mean
+    # range), each deciding only among the models tied on every figure before
+    # it. Sets DEC (the model) and DBY (the cited reason), or DEC="" and DWHY:
+    # a figure the rule reaches that is unmeasured for a tied model stops it
+    # (never read as 0), as does a tie on all three.
+    function decide(cl,   ci, crit, i, nc, nk, bv, v, s, lead, um) {
+      nc = 0; for (i = 1; i <= nm; i++) DC[++nc] = mod[i]
+      lead = ""
+      for (ci = 1; ci <= 3; ci++) {
+        crit = CRIT[ci]; um = ""
+        for (i = 1; i <= nc; i++) {
+          agg(DC[i], cl)
+          if ((crit == "rank" && Arn == 0) || (crit == "dollars" && Adn == 0)) { um = um (um == "" ? "" : ", ") DC[i]; continue }
+          v = (crit == "pass" ? -Apa / Asc : (crit == "rank" ? Ars / Arn : (Alo + Ahi) / (2 * Adn)))
+          DV[i] = sprintf("%.6f", v) + 0
+        }
+        if (um != "") { DEC = ""; DWHY = lead ", and the rule'"'"'s next figure, " CNAME[crit] ", is unmeasured " scope(cl) " for " um; return }
+        bv = DV[1]; for (i = 2; i <= nc; i++) if (DV[i] < bv) bv = DV[i]
+        nk = 0; for (i = 1; i <= nc; i++) if (DV[i] == bv) DK[++nk] = DC[i]
+        if (nk == 1) {
+          DEC = DK[1]; s = ""
+          for (i = 1; i <= nc; i++) if (DC[i] != DEC) s = s (s == "" ? " over " : "; ") cite(crit, DC[i], cl)
+          DBY = CNAME[crit] " " scope(cl) ": " cite(crit, DEC, cl) s (lead == "" ? "" : ", after " lead)
+          return
+        }
+        s = ""; for (i = 1; i <= nk; i++) s = s (i > 1 ? " and " : "") cite(crit, DK[i], cl)
+        lead = lead (lead == "" ? "" : "; then ") s " tied on " CNAME[crit]
+        nc = nk; for (i = 1; i <= nk; i++) DC[i] = DK[i]
+      }
+      DEC = ""; DWHY = lead ", and the rule separates them no further"
+    }
+    # split_line <single> <code model> <prose model>: what routing each class to
+    # its favoured model would change against the single value, pooled over both
+    # classes. A cost figure unmeasured in any cell it needs reads unmeasured,
+    # naming the cells.
+    function split_line(W, A, B,   sp, ss, s, um, lo, hi, dn, tk, tn) {
+      agg(W, "code prose")
+      sp = Cpa[A, "code"] + Cpa[B, "prose"]; ss = Csc[A, "code"] + Csc[B, "prose"]
+      s = sprintf("> A per-tier split (code: %s, prose: %s) against `%s: %s` for both: pass rate %.2f (%d passed, n=%d) against %.2f (%d passed, n=%d), difference %s", \
+        A, B, role, W, sp / ss, sp, ss, Apa / Asc, Apa, Asc, signed(sp / ss - Apa / Asc, "%.2f"))
+      um = ""
+      if (Cdn[A, "code"] == 0) um = um ", **" A ", code**"
+      if (Cdn[B, "prose"] == 0) um = um ", **" B ", prose**"
+      if (Cdn[W, "code"] == 0) um = um ", **" W ", code**"
+      if (Cdn[W, "prose"] == 0) um = um ", **" W ", prose**"
+      if (um != "") s = s " · dollars unmeasured (no measured dollars in " substr(um, 3) ")"
+      else {
+        lo = Clo[A, "code"] + Clo[B, "prose"]; hi = Chi[A, "code"] + Chi[B, "prose"]; dn = Cdn[A, "code"] + Cdn[B, "prose"]
+        s = s sprintf(" · dollars %.2f–%.2f (n=%d) against %.2f–%.2f (n=%d) per replay, difference %s min, %s max", \
+          lo / dn, hi / dn, dn, Alo / Adn, Ahi / Adn, Adn, signed(lo / dn - Alo / Adn, "%.2f"), signed(hi / dn - Ahi / Adn, "%.2f"))
+      }
+      um = ""
+      if (Ctn[A, "code"] == 0) um = um ", **" A ", code**"
+      if (Ctn[B, "prose"] == 0) um = um ", **" B ", prose**"
+      if (Ctn[W, "code"] == 0) um = um ", **" W ", code**"
+      if (Ctn[W, "prose"] == 0) um = um ", **" W ", prose**"
+      if (um != "") s = s " · tokens unmeasured (no measured tokens in " substr(um, 3) ")"
+      else {
+        tk = Ctk[A, "code"] + Ctk[B, "prose"]; tn = Ctn[A, "code"] + Ctn[B, "prose"]
+        s = s sprintf(" · tokens %.0f (n=%d) against %.0f (n=%d) per replay, difference %s", tk / tn, tn, Atk / Atn, Atn, signed(tk / tn - Atk / Atn, "%.0f"))
+      }
+      return s
+    }
+    BEGIN { split("pass rank dollars", CRIT, " "); CNAME["pass"] = "pass rate"; CNAME["rank"] = "mean rank"; CNAME["dollars"] = "mean dollars" }
     FILENAME == ENVIRON["SEL"] {
       if ($2 == ".settings.role" && $3 == "s") role = $4
       else if ($2 == ".settings.reviewer_model" && $3 == "s") rev = $4
@@ -4702,10 +4828,13 @@ cmd_report() {
           if (rtn[d] == 4) { tks += rt[d]; tkn++ }
           if ((d in rdl) && (d in rdh)) { lo += rdl[d]; hi += rdh[d]; dn++ }
         }
+        Csc[m, c] = scored; Cpa[m, c] = passed; Crs[m, c] = rks; Crn[m, c] = rkn
+        Ctk[m, c] = tks; Ctn[m, c] = tkn; Clo[m, c] = lo; Chi[m, c] = hi; Cdn[m, c] = dn
         if (scored == 0) {
           if (npk == 0) r = "no " c " packet is selected"
           else r = rec " of " npk " " c " packet(s) recorded, " inval " invalid"
           printf "> ⚠️ **%s, %s** — unmeasured: no scored replay (%s)\n", m, c, r
+          unm = unm (unm == "" ? "" : ", ") "**" m ", " c "**"
           continue
         }
         printf "> **%s, %s** — pass rate %.2f (%d passed, n=%d%s)", m, c, passed / scored, passed, scored, \
@@ -4725,6 +4854,29 @@ cmd_report() {
 
       printf "\n**Ranking**\n"
       printf "> %s%d of %d packet(s) unranked\n", (unranked > 0 ? "⚠️ " : ""), unranked, np
+
+      # The proposal: computed by THE PROPOSAL RULE, never written by a model,
+      # and text only: nothing here writes routing configuration.
+      printf "\n**Proposal**\n"
+      printf "> The rule: the highest pass rate over both classes, then the lowest mean rank, then the lowest mean dollars (the midpoint of the range). A class favours a model by the same rule inside it.\n"
+      if (unm != "") { printf "> ⚠️ No change proposed: unmeasured cells %s\n", unm; exit 0 }
+      decide("code prose")
+      if (DEC == "") { printf "> ⚠️ No change proposed: %s\n", DWHY; exit 0 }
+      W = DEC
+      printf "> 🔀 Proposed `model_routing` entry: `%s: %s`, for you to apply by hand or not. This report changes no routing configuration.\n", role, W
+      printf "> Decided by %s\n", DBY
+      decide("code"); FC = DEC; FCBY = DBY; FCWHY = DWHY
+      decide("prose"); FP = DEC; FPBY = DBY; FPWHY = DWHY
+      if (FC != "" && FC == FP && FC == W) { printf "> The code and prose cells agree: each favours %s\n", FC; exit 0 }
+      # Both classes can favour one model while the pooled rule picks another
+      # (uneven n across the classes): never claim agreement with the proposal.
+      if (FC != "" && FC == FP) printf "> ⚠️ Both classes favour %s, but pooled over both the rule picks %s\n", FC, W
+      else if (FC != "" && FP != "") printf "> ⚠️ The code and prose cells favour different models\n"
+      if (FC != "") printf "> Code favours %s, by %s\n", FC, FCBY
+      else printf "> ⚠️ The code cells favour no single model: %s\n", FCWHY
+      if (FP != "") printf "> Prose favours %s, by %s\n", FP, FPBY
+      else printf "> ⚠️ The prose cells favour no single model: %s\n", FPWHY
+      if (FC != "" && FP != "") print split_line(W, FC, FP)
     }' "$tmp/sel" "$tmp/records" "$tmp/rankings" "$tmp/labels" > "$tmp/out" \
     || die "report: the report could not be rendered"
   cat "$tmp/out"

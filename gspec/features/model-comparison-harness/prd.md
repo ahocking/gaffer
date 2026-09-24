@@ -179,7 +179,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     with no stored record, and re-running an `invalid` replay stores a new
     record that ranking and the report use in its place
 
-- [ ] **P0**: The fixed reviewer ranks each packet's final diffs side by side
+- [x] **P0**: The fixed reviewer ranks each packet's final diffs side by side
   - a packet is ranked once every model in the set has a `passed`, `escalated`
     or `failed-at-limit` replay for it. The reviewer receives all of those
     final diffs together, unlabelled, in an order randomized per packet, and

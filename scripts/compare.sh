@@ -617,11 +617,65 @@
 #                       LOG=<path>
 #                       RUN=<complete|paused|error>
 #
+#   rank-prepare <experiment> <packet>
+#                     build the blinded ranking clone for one selected packet.
+#                     Refused (exit 1, nothing built, nothing written) unless
+#                     every one of the settings' models has a latest record for
+#                     the packet (THE LATEST-RECORD RULE) whose outcome is
+#                     `passed`, `escalated` or `failed-at-limit`; each model
+#                     that does not is named on stderr, one line each:
+#                       UNRANKABLE packet=<id> model=<m> reason=missing
+#                       UNRANKABLE packet=<id> model=<m> reason=invalid replay=<r>
+#                       UNRANKABLE packet=<id> model=<m> reason=outcome(<o>) replay=<r>
+#                     An `invalid` replay is re-run (`run --rerun`) first. Then:
+#                       1. each model's final diff: the tree `sweeps` tests
+#                          (land_tree: metrics, run directory, run-state,
+#                          roadmap and plan paths as the start holds them, the
+#                          replay's model_routing taken back out), built from
+#                          the replay's work clone through a temp index and a
+#                          temp object directory (the work clone only read),
+#                          as `git diff` text against the start. Each replay's
+#                          record must name the packet's stored start and the
+#                          selection's reviewer model.
+#                       2. an order drawn for this packet alone: one fresh
+#                          random key per diff on every call, sorted. No order
+#                          is shared between packets or taken from the
+#                          settings' model order.
+#                       3. `git clone --shared --no-checkout` of the source at
+#                          the start into <scratch>/<16 hex>, on the one branch
+#                          `rank-<16 hex>`, with no remote, as `review-view`
+#                          builds its view (the same scratch-root refusals).
+#                          Its `.agents/project-overrides.yaml` carries the
+#                          view's reviewer-only `model_routing` (every entry
+#                          dropped, `reviewer: <reviewer model>` alone),
+#                          committed as the view's "Review configuration"
+#                          commit when that changes the start's tree; then
+#                          `routing.sh --root <clone> resolve reviewer` must
+#                          print the reviewer model, or it is refused.
+#                       4. the diffs, in the drawn order, as
+#                          <clone>/.agents/ranking/A.diff, B.diff, ... (letters
+#                          only; untracked). A start that already holds
+#                          `.agents/ranking` is refused.
+#                       5. the label-to-model map, one line appended to
+#                          <store>/labels.jsonl and written nowhere in the clone:
+#                            {"experiment", "packet", "ranking": <12 hex>,
+#                             "dir": <clone>, "start", "reviewer_model",
+#                             "labels": [{"label", "model", "replay"}, ...],
+#                             "prepared_at"}
+#                          Append-only; every call draws a new ranking.
+#                     Output (no model is named on it):
+#                       EXPERIMENT= PACKET= RANKING= DIR= BRANCH= START= BASE=
+#                       DIFF label=<L> path=<file>        one per label, A first
+#                       LABELS=<A,B,...> LABELS_FILE=<path>
+#                     A diff that itself names a model is carried as it is, as
+#                     `review-view` carries the reviewed change. On any failure
+#                     the half-built clone is removed.
+#
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
 # check that printed its ROUTING_CHECK= line (pass, fail or not-run) / a sweeps
 # run that printed its SWEEPS= line (pass, fail or none-required) / a record
-# appended; 1 refused, no experiment id could be computed, the source
+# appended / a ranking clone built; 1 refused, no experiment id could be computed, the source
 # repository is not a git repository, the selection could not be written, or
 # (estimate) no stored selection, an unreadable selection, records file or
 # price table, or the token could not be stored, or (prepare) no stored
@@ -647,7 +701,11 @@
 # read, or a record that cannot be appended, or (run) a missing, spent,
 # superseded or malformed token, an approvals file that cannot be read, a lock
 # already held, a --rerun replay not admitted, or a step that stopped the run
-# (RUN=error); a run that completed or paused exits 0;
+# (RUN=error); a run that completed or paused exits 0, or (rank-prepare) no
+# stored selection, a packet outside it, a model with no rankable latest record,
+# an unreadable records file, a replay record or work clone that cannot be read
+# or disagrees with the selection, a scratch root inside the source or naming a
+# model, or a diff, clone, commit, routing or label-map step that failed;
 # 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
 # this script, or (replay) no session command, or (replay, sweeps) a malformed
 # timeout.
@@ -693,7 +751,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>]\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>] | rank-prepare <experiment> <packet>\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -3949,6 +4007,239 @@ cmd_run() {
   [ "$state" != error ] || exit 1
 }
 
+# --- rank-prepare --------------------------------------------------------------------
+
+# The outcomes a packet is ranked with: each one the replayed model's own work
+# decided. `invalid` is a harness fault, so that replay is re-run first.
+_CMP_RANKABLE="passed escalated failed-at-limit"
+# Where a ranking clone holds its letter-labelled final diffs, and the labels.
+_CMP_RANK_DIR=".agents/ranking"
+_CMP_RANK_LETTERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z"
+
+_CMP_RANK=""
+_cmp_rank_cleanup() {
+  if [ -n "$_CMP_TMP" ]; then rm -rf "$_CMP_TMP"; fi
+  if [ -n "$_CMP_RANK" ]; then rm -rf "$_CMP_RANK"; fi
+  return 0
+}
+
+cmd_rank_prepare() {
+  [ $# -eq 2 ] || usage
+  local exp="$1" pkt="$2"
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "rank-prepare: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  case "$pkt" in ''|*[!A-Za-z0-9._-]*) die "rank-prepare: not a packet id: $pkt" ;; esac
+  [ -x "$ROUTING" ] || die "rank-prepare: routing.sh is missing or not executable: $ROUTING" 2
+
+  local store dir sel records
+  store="$(store_root)"
+  dir="$store/$exp"
+  sel="$dir/selection.json"
+  records="$store/records.jsonl"
+  [ -f "$sel" ] || die "rank-prepare: no stored selection for experiment $exp (run \`compare.sh select\` first): $sel"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "rank-prepare: cannot create a temp root"
+  trap _cmp_rank_cleanup EXIT
+  local tmp="$_CMP_TMP"
+
+  # --- the stored selection: the models, the reviewer and this packet's start -------
+  json_flat "$sel" > "$tmp/sel" || die "rank-prepare: the stored selection is not readable JSON: $sel"
+  local sexp src rmodel idx start nmod
+  sexp="$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")"
+  [ "$sexp" = "$exp" ] || die "rank-prepare: the stored selection names experiment [$sexp], not $exp: $sel"
+  src="$(awk -F'\t' '$2 == ".settings.source_repo" { print $4; exit }' "$tmp/sel")"
+  rmodel="$(awk -F'\t' '$2 == ".settings.reviewer_model" { print $4; exit }' "$tmp/sel")"
+  awk -F'\t' '$2 ~ /^\.settings\.models\[[0-9]+\]$/ { print $4 }' "$tmp/sel" > "$tmp/models"
+  case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "rank-prepare: the stored selection's reviewer model is malformed: [$rmodel]" ;; esac
+  if LC_ALL=C grep -q '[^A-Za-z0-9._-]' "$tmp/models" 2>/dev/null || [ ! -s "$tmp/models" ]; then
+    die "rank-prepare: the stored selection's models are malformed: $sel"
+  fi
+  nmod="$(grep -c . "$tmp/models")"
+  [ "$nmod" -le 26 ] || die "rank-prepare: $nmod models is more than the 26 letters a ranking labels them with"
+  { cat "$tmp/models"; printf '%s\n' "$rmodel"; } > "$tmp/ids"
+  idx="$(P="$pkt" awk -F'\t' '$2 ~ /^\.selected\[[0-9]+\]\.packet$/ && $4 == ENVIRON["P"] { i = $2; sub(/^\.selected\[/, "", i); sub(/\].*$/, "", i); print i; exit }' "$tmp/sel")"
+  [ -n "$idx" ] || die "rank-prepare: packet $pkt is not in experiment $exp's selection: $sel"
+  start="$(I=".selected[$idx].start" awk -F'\t' '$2 == ENVIRON["I"] { print $4; exit }' "$tmp/sel")"
+  case "$start" in ''|*[!0-9a-f]*) die "rank-prepare: packet $pkt's stored start is not a commit id: [$start]" ;; esac
+
+  # --- every model's latest record for the packet: passed, escalated or failed-at-limit
+  # THE LATEST-RECORD RULE: the last records.jsonl line naming the experiment,
+  # packet and model. Each model that has none, or whose latest is `invalid` or
+  # anything else, is named, and nothing is built.
+  : > "$tmp/recs"
+  if [ -f "$records" ]; then
+    run_records "$records" "$exp" > "$tmp/recs" \
+      || die "rank-prepare: the records file is not readable JSONL, so which replays are recorded cannot be read: $records"
+  fi
+  local m latest lrep lout nbad=0
+  : > "$tmp/ranked"
+  while IFS= read -r m; do
+    latest="$(P="$pkt" M="$m" awk -F'\t' '$3 == ENVIRON["P"] && $4 == ENVIRON["M"]' "$tmp/recs" | tail -1)"
+    if [ -z "$latest" ]; then
+      printf 'UNRANKABLE packet=%s model=%s reason=missing\n' "$pkt" "$m" >&2
+      nbad=$((nbad + 1)); continue
+    fi
+    lrep="$(printf '%s\n' "$latest" | cut -f2)"
+    lout="$(printf '%s\n' "$latest" | cut -f5)"
+    case " $_CMP_RANKABLE " in
+      *" $lout "*) printf '%s\t%s\n' "$m" "$lrep" >> "$tmp/ranked" ;;
+      *)
+        if [ "$lout" = invalid ]; then
+          printf 'UNRANKABLE packet=%s model=%s reason=invalid replay=%s\n' "$pkt" "$m" "$lrep" >&2
+        else
+          printf 'UNRANKABLE packet=%s model=%s reason=outcome(%s) replay=%s\n' "$pkt" "$m" "${lout:-unreadable}" "$lrep" >&2
+        fi
+        nbad=$((nbad + 1)) ;;
+    esac
+  done < "$tmp/models"
+  [ "$nbad" -eq 0 ] \
+    || die "rank-prepare: packet $pkt is not ranked until every model's latest record is passed, escalated or failed-at-limit; $nbad of $nmod models' are not (an invalid replay is re-run first, through \`compare.sh run --rerun\`)"
+
+  # --- each model's final diff: the tree `sweeps` tests, the work clone only read -------
+  # land_tree's tree: _CMP_LAND_EXCLUDED (metrics, run directory, run-state,
+  # roadmap, plan) as the start holds them and the replay's model_routing taken
+  # back out, built through a temp index and a temp object directory.
+  local k=0 rid env cobj tstart rc
+  while IFS="$(printf '\t')" read -r m rid; do
+    k=$((k + 1))
+    env="$dir/replays/$rid.env"
+    [ -f "$env" ] || die "rank-prepare: model $m's latest record names replay $rid, which experiment $exp holds no record of: $env"
+    _RP_CLONE="$(sed -n 's/^CLONE=//p' "$env" | head -1)"
+    _RP_START="$(sed -n 's/^START=//p' "$env" | head -1)"
+    _RP_ROLE="$(sed -n 's/^ROLE=//p' "$env" | head -1)"
+    _RP_MODEL="$(sed -n 's/^MODEL=//p' "$env" | head -1)"
+    _RP_RMODEL="$(sed -n 's/^REVIEWER_MODEL=//p' "$env" | head -1)"
+    [ "$_RP_MODEL" = "$m" ] || die "rank-prepare: replay $rid's record names model [$_RP_MODEL], not $m: $env"
+    [ "$_RP_START" = "$start" ] || die "rank-prepare: replay $rid started at [$_RP_START], not packet $pkt's stored start $start: $env"
+    [ "$_RP_RMODEL" = "$rmodel" ] || die "rank-prepare: replay $rid's reviewer model is [$_RP_RMODEL], not the selection's $rmodel: $env"
+    case "$_RP_ROLE" in ''|*[!a-z-]*) die "rank-prepare: replay $rid's role is malformed: [$_RP_ROLE]" ;; esac
+    [ -n "$_RP_CLONE" ] && git -C "$_RP_CLONE" rev-parse --git-dir >/dev/null 2>&1 \
+      || die "rank-prepare: replay $rid's work clone is not a git repository: $_RP_CLONE"
+    git -C "$_RP_CLONE" cat-file -e "${start}^{commit}" 2>/dev/null \
+      || die "rank-prepare: replay $rid's start commit is not in its work clone: $start"
+    cobj="$(cd "$_RP_CLONE" && cd "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null && pwd -P)" \
+      || die "rank-prepare: cannot find replay $rid's work clone object store: $_RP_CLONE"
+    tstart="$(git -C "$_RP_CLONE" rev-parse "${start}^{tree}" 2>/dev/null)" || die "rank-prepare: cannot read the start's tree"
+    rm -rf "$tmp/objects" && mkdir -p "$tmp/objects" || die "rank-prepare: cannot create a temp object store"
+    ( export GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj"
+      land_tree || exit $?
+      git -C "$_RP_CLONE" diff --no-color --no-ext-diff --no-renames "$tstart" "$LAND_TREE" > "$tmp/diff.$k" 2>"$tmp/git.err" || exit 1
+    ); rc=$?
+    case "$rc" in
+      0) ;;
+      3) die "rank-prepare: replay $rid's .agents/project-overrides.yaml cannot be read (a second model_routing key), so its routing cannot be taken out of the final diff" ;;
+      *) die "rank-prepare: cannot build replay $rid's final diff from its work clone: $(head -1 "$tmp/git.err" 2>/dev/null)" ;;
+    esac
+  done < "$tmp/ranked"
+
+  # --- the order: shuffled for this packet alone -----------------------------------------
+  # One fresh random key per diff, drawn on every call, sorted: no order is
+  # shared with another packet or derived from the settings' model order.
+  local j
+  : > "$tmp/keys"
+  j=0
+  while [ "$j" -lt "$k" ]; do
+    j=$((j + 1))
+    printf '%s\t%s\n' "$(new_token)" "$j" >> "$tmp/keys"
+  done
+  LC_ALL=C sort -t "$(printf '\t')" -k1,1 "$tmp/keys" | cut -f2 > "$tmp/order"
+  [ "$(grep -c . "$tmp/order")" -eq "$k" ] || die "rank-prepare: cannot draw the order"
+
+  # --- the ranking clone: opaque, at the start, reviewer-only routing --------------------
+  local scratch srctop dname bname rkid rclone
+  [ -n "$src" ] && git -C "$src" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "rank-prepare: the source repository is not a git repository: $src"
+  git -C "$src" cat-file -e "${start}^{commit}" 2>/dev/null \
+    || die "rank-prepare: packet $pkt's start commit is not in the source repository: $start"
+  scratch="${ORCH_COMPARE_SCRATCH:-${TMPDIR:-/tmp}}"
+  mkdir -p "$scratch" 2>/dev/null || die "rank-prepare: cannot create the scratch root: $scratch"
+  scratch="$(cd "$scratch" && pwd -P)" || die "rank-prepare: cannot enter the scratch root: $scratch"
+  srctop="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+  [ -n "$srctop" ] && srctop="$(cd "$srctop" && pwd -P)"
+  if [ -n "$srctop" ]; then
+    case "$scratch/" in
+      "$srctop/"*) die "rank-prepare: the scratch root lies inside the source repository's working tree: $scratch" ;;
+    esac
+  fi
+  # The ranking session works in the clone, so its whole path is something it reads.
+  if names_model "$scratch" "$tmp/ids"; then
+    die "rank-prepare: the scratch root's path names a model, which the ranking reviewer would read: $scratch"
+  fi
+  dname="$(opaque_name "" "$tmp/ids")" || die "rank-prepare: no directory name free of every model identifier could be drawn"
+  bname="$(opaque_name "rank-" "$tmp/ids")" || die "rank-prepare: no branch name free of every model identifier could be drawn"
+  rkid="$(opaque_name "" "$tmp/ids" | cut -c1-12)"
+  [ "${#rkid}" -eq 12 ] || die "rank-prepare: no ranking id could be drawn"
+  rclone="$scratch/$dname"
+  [ ! -e "$rclone" ] || die "rank-prepare: the drawn ranking clone path already exists: $rclone"
+  _CMP_RANK="$rclone"
+  opaque_clone rank-prepare "$src" "$start" "$rclone" "$bname" "$tmp"
+  if git -C "$rclone" cat-file -e "$start:$_CMP_RANK_DIR" 2>/dev/null || [ -e "$rclone/$_CMP_RANK_DIR" ]; then
+    die "rank-prepare: the start already holds $_CMP_RANK_DIR, where the ranking's diffs go"
+  fi
+
+  # The reviewer-only model_routing the review view carries: every entry of the
+  # start's map dropped, `reviewer: <reviewer model>` alone written, committed
+  # with the view's fixed identity when it changes the start's tree.
+  local ov=".agents/project-overrides.yaml" tbase base got r_rev
+  : > "$tmp/ov.start"
+  if git -C "$rclone" cat-file -e "$start:$ov" 2>/dev/null; then
+    git -C "$rclone" show "$start:$ov" > "$tmp/ov.start" 2>/dev/null || die "rank-prepare: cannot read the start's $ov"
+  else
+    rm -f "$tmp/ov.start"
+  fi
+  set_routing "$tmp/ov.start" "$tmp/ov.base" "" "" "$rmodel" \
+    || die "rank-prepare: the start commit's model_routing cannot be read, so it cannot be reduced: $ov"
+  mkdir -p "$rclone/.agents" || die "rank-prepare: cannot create $rclone/.agents"
+  cp "$tmp/ov.base" "$rclone/$ov" || die "rank-prepare: cannot write the ranking clone's $ov"
+  git -C "$rclone" add -f -- "$ov" >/dev/null 2>&1 || die "rank-prepare: cannot stage the ranking clone's $ov"
+  tbase="$(git -C "$rclone" write-tree 2>/dev/null)" || die "rank-prepare: cannot write the ranking clone's tree"
+  if [ "$tbase" = "$(git -C "$rclone" rev-parse "$start^{tree}" 2>/dev/null)" ]; then
+    base="$start"
+  else
+    base="$(GIT_AUTHOR_NAME="$_CMP_VIEW_NAME" GIT_AUTHOR_EMAIL="$_CMP_VIEW_EMAIL" GIT_AUTHOR_DATE="$_CMP_VIEW_DATE" \
+            GIT_COMMITTER_NAME="$_CMP_VIEW_NAME" GIT_COMMITTER_EMAIL="$_CMP_VIEW_EMAIL" GIT_COMMITTER_DATE="$_CMP_VIEW_DATE" \
+            git -C "$rclone" -c commit.gpgsign=false commit-tree "$tbase" -p "$start" -m "$_CMP_VIEW_BASE_MSG" 2>/dev/null)" \
+      && [ -n "$base" ] || die "rank-prepare: cannot commit the ranking clone's configuration"
+    git -C "$rclone" update-ref -m "$_CMP_VIEW_BASE_MSG" "refs/heads/$bname" "$base" >/dev/null 2>&1 \
+      || die "rank-prepare: cannot move the ranking clone's branch to its configuration"
+  fi
+  got="$(git -C "$rclone" status --porcelain=v1 --untracked-files=no 2>/dev/null)"
+  [ -z "$got" ] || die "rank-prepare: the ranking clone's tree is not clean at its configuration: $(printf '%s' "$got" | head -1)"
+  r_rev="$(ORCH_ROUTING_AGENTS_DIR="$AGENTS_DIR" "$ROUTING" --root "$rclone" resolve reviewer 2>/dev/null | tr -d '\r')"
+  [ "$r_rev" = "$rmodel" ] \
+    || die "rank-prepare: routing.sh does not resolve the ranking clone's reviewer as set (reviewer -> [$r_rev], wanted $rmodel)"
+
+  # --- the diffs, letter-labelled in the drawn order; the map kept outside ----------------
+  local L lab labels="" jl="" om orid
+  set -- $_CMP_RANK_LETTERS
+  mkdir -p "$rclone/$_CMP_RANK_DIR" || die "rank-prepare: cannot create $rclone/$_CMP_RANK_DIR"
+  while IFS= read -r j; do
+    L="$1"; shift
+    om="$(sed -n "${j}p" "$tmp/ranked" | cut -f1)"
+    orid="$(sed -n "${j}p" "$tmp/ranked" | cut -f2)"
+    cp "$tmp/diff.$j" "$rclone/$_CMP_RANK_DIR/$L.diff" || die "rank-prepare: cannot write $rclone/$_CMP_RANK_DIR/$L.diff"
+    labels="$labels${labels:+,}$L"
+    lab="{\"label\":$(rd_json_str "$L"),\"model\":$(rd_json_str "$om"),\"replay\":$(rd_json_str "$orid")}"
+    jl="$jl${jl:+,}$lab"
+  done < "$tmp/order"
+  local line
+  line="{\"experiment\":$(rd_json_str "$exp"),\"packet\":$(rd_json_str "$pkt"),\"ranking\":$(rd_json_str "$rkid"),\"dir\":$(rd_json_str "$rclone"),\"start\":$(rd_json_str "$start"),\"reviewer_model\":$(rd_json_str "$rmodel"),\"labels\":[$jl],\"prepared_at\":$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")}"
+  printf '%s\n' "$line" > "$tmp/line.json"
+  json_flat "$tmp/line.json" > /dev/null 2>&1 || die "rank-prepare: the label map could not be built as one JSON line"
+  mkdir -p "$store" 2>/dev/null && printf '%s\n' "$line" >> "$store/labels.jsonl" \
+    || die "rank-prepare: the label map could not be appended: $store/labels.jsonl"
+
+  _CMP_RANK=""
+  printf 'EXPERIMENT=%s\nPACKET=%s\nRANKING=%s\nDIR=%s\nBRANCH=%s\nSTART=%s\nBASE=%s\n' \
+    "$exp" "$pkt" "$rkid" "$rclone" "$bname" "$start" "$base"
+  for L in $(printf '%s' "$labels" | tr ',' ' '); do
+    printf 'DIFF label=%s path=%s\n' "$L" "$rclone/$_CMP_RANK_DIR/$L.diff"
+  done
+  printf 'LABELS=%s\nLABELS_FILE=%s\n' "$labels" "$store/labels.jsonl"
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -3963,6 +4254,7 @@ case "$SUB" in
   sweeps)     cmd_sweeps "$@" ;;
   record)     cmd_record "$@" ;;
   run)        cmd_run "$@" ;;
+  rank-prepare) cmd_rank_prepare "$@" ;;
   *) usage ;;
 esac
 exit 0

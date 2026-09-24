@@ -99,6 +99,14 @@
 # unrecorded one; `--rerun` refused for a passed and an unknown replay, admitted
 # for the invalid one, whose new record then reads as the latest, so a second
 # `--rerun` of the old id is refused; the pause sentinel always a fixture file.
+# `rank-prepare`: two packets on three models, refused naming a model with no
+# record and each model whose latest record is invalid (one after an escalated
+# record), building nothing; then the ranking clone: opaque, reviewer-only
+# routing resolved by routing.sh, one letter-labelled final diff per model
+# (routing, metrics, run directory and run-state paths out), each label's diff
+# the work of the model the label map gives it, the work clones only read, no
+# model identifier anywhere in it beyond the start's, the label map only in the
+# store; and eight rounds over both packets showing independent, shuffled orders.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -3022,6 +3030,192 @@ assert_eq "run --rerun, the superseded invalid replay: exit 1, nothing run" "1:0
 assert_has "run --rerun, the superseded invalid replay: refused, the rerun's record read in its place" \
   "its record is not the latest for packet rp-t1 on fable: replay $RUN_R3's (outcome passed) is" "$ERR"
 
+printf '\n== rank-prepare: the blinded ranking clone ==\n'
+# Two packets, three models, a reviewer outside the compared set. Each model's
+# replay does work that differs only by a number (fable 1, opus 2, sonnet 3), so
+# which diff is whose is read from the diff alone, and leaves metrics, a run
+# directory file and a previous run-state naming its model beside it. Records
+# are appended by hand: rank-prepare reads only the experiment, replay, packet,
+# model and outcome of each line, as `run` does.
+RK="$WORK/rksrc"
+mkdir -p "$RK/scripts" "$RK/docs" "$RK/.agents"
+git -C "$RK" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n' > "$RK/.gitignore"
+printf 'echo a\n' > "$RK/scripts/a.sh"
+printf 'Tuned on sonnet once.\n' > "$RK/docs/notes.md"
+printf 'project:\n  name: rk\nmodel_routing:\n  implementer: sonnet\n  architect: haiku\n' > "$RK/.agents/project-overrides.yaml"
+rk_commit() {
+  git -C "$RK" add -A >/dev/null
+  GIT_AUTHOR_DATE=2026-06-01T00:00:00Z GIT_COMMITTER_DATE=2026-06-01T00:00:00Z git -C "$RK" -c user.name=fixture \
+    -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$RK" rev-parse HEAD
+}
+K0="$(rk_commit base)"
+printf 'echo one\n' >> "$RK/scripts/a.sh"
+K1="$(rk_commit "$(printf 'rk one\n\n[orch packet:rk-t1]')")"
+printf 'echo two\n' >> "$RK/scripts/a.sh"
+K2="$(rk_commit "$(printf 'rk two\n\n[orch packet:rk-t2]')")"
+for p in rk-t1 rk-t2; do
+  mkdir -p "$RK/.agents/loop/20260601T000000-aa/$p"
+  printf '# %s\n\ntier: integration\nagent: implementer\n\nPACKET=%s\n' "$p" "$p" > "$RK/.agents/loop/20260601T000000-aa/$p/handoff.md"
+done
+RKEXP=ccccccccccc9
+RKSTORE="$WORK/rkstore"
+RKSCRATCH="$WORK/rkscratch"
+mkdir -p "$RKSTORE/$RKEXP"
+cat > "$RKSTORE/$RKEXP/selection.json" <<EOF
+{
+  "experiment": "$RKEXP",
+  "settings": {"role": "implementer", "models": ["fable", "opus", "sonnet"], "reviewer_model": "haiku", "effort": "high", "source_repo": "$RK", "per_class": 2, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rk-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rk one", "handoff": "original", "start": "$K0", "commits": ["$K1"]},
+    {"packet": "rk-t2", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rk two", "handoff": "original", "start": "$K0", "commits": ["$K2"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+rk_num() { case "$1" in fable) echo 1 ;; opus) echo 2 ;; sonnet) echo 3 ;; esac; }
+for p in rk-t1 rk-t2; do
+  for m in fable opus sonnet; do
+    OUT="$(ORCH_COMPARE_STORE="$RKSTORE" ORCH_COMPARE_SCRATCH="$RKSCRATCH" "$COMPARE" prepare "$RKEXP" "$p" "$m" 2>/dev/null)"
+    c="$(line CLONE)"; run="$(line RUN_ID)"; n="$(rk_num "$m")"
+    eval "RKR_${p#rk-}_$m=\$(line REPLAY)"
+    [ -n "$c" ] || continue
+    printf 'echo work-%s\n' "$n" >> "$c/scripts/a.sh"
+    printf 'echo extra-%s\n' "$n" > "$c/scripts/extra.sh"
+    mkdir -p "$c/.agents/metrics/x"
+    printf '{"model":"claude-%s-5"}\n' "$m" > "$c/.agents/metrics/x/events.jsonl"
+    printf '{"model":"%s"}\n' "$m" > "$c/.agents/loop/$run/routing.jsonl"
+    printf "schema: 3\nnote: 'ran on %s'\n" "$m" > "$c/.agents/run-state-prev.yaml"
+  done
+done
+assert_ne "rank-prepare fixture: all six replays prepared" "" \
+  "$RKR_t1_fable$RKR_t1_opus$RKR_t1_sonnet$RKR_t2_fable$RKR_t2_opus$RKR_t2_sonnet"
+rk_rec() {  # rk_rec <packet> <model> <replay> <outcome>: one record line, as `record` names its fields
+  printf '{"experiment":"%s","replay":"%s","packet":"%s","model":"%s","role":"implementer","outcome":"%s"}\n' \
+    "$RKEXP" "$3" "$1" "$2" "$4" >> "$RKSTORE/records.jsonl"
+}
+rkp() {  # rkp <packet>: OUT/ERR/RC for `compare.sh rank-prepare`
+  OUT="$(ORCH_COMPARE_STORE="$RKSTORE" ORCH_COMPARE_SCRATCH="$RKSCRATCH" "$COMPARE" rank-prepare "$RKEXP" "$1" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+rk_nclones() { ls "$RKSCRATCH" | wc -l | tr -d ' '; }
+rk_nlabels() { if [ -f "$RKSTORE/labels.jsonl" ]; then wc -l < "$RKSTORE/labels.jsonl" | tr -d ' '; else echo 0; fi; }
+
+# Refused on a missing model: sonnet has no record for rk-t1 yet.
+rk_rec rk-t1 fable "$RKR_t1_fable" passed
+rk_rec rk-t1 opus "$RKR_t1_opus" escalated
+RK_N0="$(rk_nclones)"
+rkp rk-t1
+assert_eq "rank-prepare, a model with no record: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "rank-prepare, a model with no record: the model is named as missing" \
+  "UNRANKABLE packet=rk-t1 model=sonnet reason=missing" "$ERR"
+case "$ERR" in
+  *"model=fable"*|*"model=opus"*) bad "rank-prepare, a model with no record: the rankable models are not named" "$ERR" ;;
+  *) ok "rank-prepare, a model with no record: the rankable models are not named" ;;
+esac
+assert_eq "rank-prepare, a model with no record: no clone built, no label map written" "$RK_N0:0" "$(rk_nclones):$(rk_nlabels)"
+
+# Refused on an invalid replay: sonnet's latest record is invalid, and so is a
+# later opus record that follows its escalated one (the latest record rules).
+rk_rec rk-t1 sonnet "$RKR_t1_sonnet" invalid
+rk_rec rk-t1 opus "$RKR_t1_opus" invalid
+rkp rk-t1
+assert_eq "rank-prepare, invalid replays: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "rank-prepare, an invalid replay: named with its replay" \
+  "UNRANKABLE packet=rk-t1 model=sonnet reason=invalid replay=$RKR_t1_sonnet" "$ERR"
+assert_has "rank-prepare, an invalid record after an escalated one: the latest is read, and named" \
+  "UNRANKABLE packet=rk-t1 model=opus reason=invalid replay=$RKR_t1_opus" "$ERR"
+assert_has "rank-prepare, invalid replays: the refusal says to re-run them" "compare.sh run --rerun" "$ERR"
+assert_eq "rank-prepare, invalid replays: no clone built, no label map written" "$RK_N0:0" "$(rk_nclones):$(rk_nlabels)"
+
+# The reruns' records follow (the same work clones stand in for them): every
+# model's latest is now rankable, one of each outcome.
+rk_rec rk-t1 sonnet "$RKR_t1_sonnet" failed-at-limit
+rk_rec rk-t1 opus "$RKR_t1_opus" passed
+for m in fable opus sonnet; do eval "rk_rec rk-t2 $m \"\$RKR_t2_$m\" passed"; done
+RKC_BEFORE="$(clone_state "$(sed -n 's/^CLONE=//p' "$RKSTORE/$RKEXP/replays/$RKR_t1_fable.env")")"
+rkp rk-t1
+assert_eq "rank-prepare: exit 0" "0" "$RC"
+RKD="$(line DIR)"; RKB="$(line BASE)"; RKBR="$(line BRANCH)"
+assert_eq "rank-prepare: each work clone is only read" "$RKC_BEFORE" \
+  "$(clone_state "$(sed -n 's/^CLONE=//p' "$RKSTORE/$RKEXP/replays/$RKR_t1_fable.env")")"
+assert_eq "rank-prepare: the ranking clone is under the scratch root" "$RKSCRATCH" "$(dirname "$RKD")"
+assert_eq "rank-prepare: the ranking clone is on its one opaque branch at its configuration, with no remote" \
+  "refs/heads/$RKBR|refs/heads/$RKBR|$RKB|" \
+  "$(git -C "$RKD" symbolic-ref HEAD 2>/dev/null)|$(git -C "$RKD" for-each-ref --format='%(refname)' refs/heads/ | paste -sd' ' -)|$(git -C "$RKD" rev-parse HEAD 2>/dev/null)|$(git -C "$RKD" remote)"
+assert_eq "rank-prepare: the configuration commit sits on the start, fixed and neutral" \
+  "$RKB $K0|compare <compare@example.invalid>|Review configuration" \
+  "$(git -C "$RKD" rev-list --parents -n1 "$RKB")|$(git -C "$RKD" log -1 --format='%an <%ae>' "$RKB")|$(git -C "$RKD" log -1 --format=%B "$RKB" | sed '/^$/d')"
+assert_eq "rank-prepare: routing.sh --root <ranking clone> resolve reviewer prints the reviewer model" \
+  "haiku" "$("$ROUTING" --root "$RKD" resolve reviewer)"
+assert_eq "rank-prepare: the ranking clone's routing names no other agent (implementer, architect unresolved)" \
+  ":" "$("$ROUTING" --root "$RKD" resolve implementer):$("$ROUTING" --root "$RKD" resolve architect)"
+assert_eq "rank-prepare: three letter labels, one diff file each, nothing else in the ranking directory" \
+  "A,B,C|A.diff B.diff C.diff" "$(line LABELS)|$(ls "$RKD/.agents/ranking" | paste -sd' ' -)"
+assert_eq "rank-prepare: the DIFF lines name the files" \
+  "DIFF label=A path=$RKD/.agents/ranking/A.diff|DIFF label=B path=$RKD/.agents/ranking/B.diff|DIFF label=C path=$RKD/.agents/ranking/C.diff" \
+  "$(printf '%s\n' "$OUT" | grep '^DIFF ' | paste -sd'|' -)"
+assert_eq "rank-prepare: the label map is in the store" "$RKSTORE/labels.jsonl:1" "$(line LABELS_FILE):$(rk_nlabels)"
+case "$OUT" in
+  *fable*|*opus*|*sonnet*) bad "rank-prepare: stdout names no compared model" "$OUT" ;;
+  *) ok "rank-prepare: stdout names no compared model" ;;
+esac
+
+# The map, and each diff read against it: the diff a label holds is the work of
+# the model the map gives it, and nothing but the packet's own paths.
+RKL="$(tail -1 "$RKSTORE/labels.jsonl")"
+rk_map() { printf '%s\n' "$1" | grep -o '"label":"[A-Z]","model":"[a-z]*"' | sed 's/"label":"\([A-Z]\)","model":"\([a-z]*\)"/\1:\2/'; }
+RKMAP="$(rk_map "$RKL" | paste -sd' ' -)"
+assert_has "rank-prepare: the label map names the packet and the ranking clone" \
+  "\"packet\":\"rk-t1\",\"ranking\":\"$(line RANKING)\",\"dir\":\"$RKD\"" "$RKL"
+RK_WANT=""; RK_GOT=""
+for lm in $RKMAP; do
+  L="${lm%%:*}"; m="${lm#*:}"
+  RK_WANT="$RK_WANT $L:work-$(rk_num "$m")"
+  RK_GOT="$RK_GOT $L:$(grep -o '^+echo work-[0-9]' "$RKD/.agents/ranking/$L.diff" | sed 's/^+echo //' | paste -sd, -)"
+done
+assert_eq "rank-prepare: each label's diff is the work of the model the map gives it" "$RK_WANT" "$RK_GOT"
+assert_eq "rank-prepare: the map gives the three models once each" "fable opus sonnet" \
+  "$(printf '%s\n' $RKMAP | cut -d: -f2 | LC_ALL=C sort | paste -sd' ' -)"
+RKA="$(cat "$RKD/.agents/ranking/A.diff")"
+assert_eq "rank-prepare: a diff's paths are the packet's own (no routing, metrics, run directory or run-state)" \
+  "scripts/a.sh scripts/extra.sh" \
+  "$(printf '%s\n' "$RKA" | sed -n 's|^diff --git a/\([^ ]*\) .*|\1|p' | paste -sd' ' -)"
+assert_has "rank-prepare: the untracked work is in the diff" "+echo extra-" "$RKA"
+
+# The search: every identifier of the compared models, in every file of the
+# ranking directory (.git included except packed objects), its git log, refs
+# and paths, beyond what the start already held; and the label map nowhere.
+RV_IDS_SAVED="$RV_IDS"
+RV_IDS="fable opus sonnet $(grep -o '"claude-[A-Za-z0-9._-]*"' "$HERE/spend-prices.json" | tr -d '"' | grep -iE 'fable|opus|sonnet' | LC_ALL=C sort -u | paste -sd' ' -)"
+assert_eq "rank-prepare: no model identifier anywhere in the ranking directory beyond the start's" "" "$(view_leaks "$RKD" "$K0")"
+RV_IDS="$RV_IDS_SAVED"
+assert_eq "rank-prepare fixture: the search reads the start's own mention as held, not missed" "1" \
+  "$(grep -ic sonnet "$RKD/docs/notes.md")"
+assert_eq "rank-prepare: no label-map line or file in the ranking directory" "" \
+  "$(cd "$RKD" && { find . -name 'labels*' ! -path './.git/objects/*'; grep -rl '"label":' . 2>/dev/null | grep -v '^\./\.git/objects/'; })"
+
+# Independent orders: each call draws its own. Eight rounds over both packets;
+# a shared order (one per experiment, or the settings' own) never differs between
+# the two, and a draw of 3! orders matches across a round 1 time in 6.
+RK_DIFFER=0; RK_UNSORTED=0; RK_OK=0
+for i in 1 2 3 4 5 6 7 8; do
+  rkp rk-t1; o1="$(rk_map "$(tail -1 "$RKSTORE/labels.jsonl")" | cut -d: -f2 | paste -sd, -)"; r1="$RC"
+  rkp rk-t2; o2="$(rk_map "$(tail -1 "$RKSTORE/labels.jsonl")" | cut -d: -f2 | paste -sd, -)"; r2="$RC"
+  [ "$r1:$r2" = "0:0" ] && RK_OK=$((RK_OK + 1))
+  [ "$o1" != "$o2" ] && RK_DIFFER=$((RK_DIFFER + 1))
+  [ "$o1" != "fable,opus,sonnet" ] && RK_UNSORTED=$((RK_UNSORTED + 1))
+  [ "$o2" != "fable,opus,sonnet" ] && RK_UNSORTED=$((RK_UNSORTED + 1))
+done
+assert_eq "rank-prepare, eight rounds over two packets: every call built its ranking" "8:17" "$RK_OK:$(rk_nlabels)"
+if [ "$RK_DIFFER" -gt 0 ]; then ok "rank-prepare: two packets receive independent orders ($RK_DIFFER of 8 rounds differ)"
+else bad "rank-prepare: two packets receive independent orders" "the two packets' orders matched in all 8 rounds"; fi
+if [ "$RK_UNSORTED" -gt 0 ]; then ok "rank-prepare: the order is shuffled, not the settings' ($RK_UNSORTED of 16 differ)"
+else bad "rank-prepare: the order is shuffled, not the settings'" "all 16 orders were the settings' model order"; fi
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -3040,6 +3234,7 @@ printf '\n== usage ==\n'
 "$COMPARE" run aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "run without --approve: exit 2" "2" "$?"
 "$COMPARE" run aaaaaaaaaaa1 --approve >/dev/null 2>&1; assert_eq "run with --approve and no token: exit 2" "2" "$?"
 "$COMPARE" run aaaaaaaaaaa1 --approve abc --bogus >/dev/null 2>&1; assert_eq "run with an unknown flag: exit 2" "2" "$?"
+"$COMPARE" rank-prepare aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank-prepare without a packet: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

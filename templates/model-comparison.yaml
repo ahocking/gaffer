@@ -50,12 +50,26 @@ models:
 # `model_ids`. An entry for any other alias is left out of the experiment and
 # of its id. The pins are part of the experiment: changing one starts a new
 # experiment.
+# Each of those pins must also have a complete entry (all five rates) in the
+# price table, `scripts/spend-prices.json`, else the file is refused naming
+# `model_ids`, so no arm's cost can read unpriced.
 # No default: set each pin to the id the alias resolves to when the experiment
 # runs. The values below are the first experiment's.
 model_ids:
   fable: claude-fable-5-1
   opus: claude-opus-5-5
   sonnet: claude-sonnet-5
+
+# The one reasoning effort every session the experiment starts runs at: each
+# replay session, varied role and reviewer alike, is started with `--effort`
+# set to it and with CLAUDE_CODE_EFFORT_LEVEL removed from its environment
+# (that variable outranks `--effort`). One of the levels `scripts/compare.sh`
+# states once as EFFORT_LEVELS (the levels `claude --effort` accepts).
+# `compare.sh routing-check` fails a replay whose transcripts show any other
+# effort. The effort is part of the experiment: changing it starts a new one.
+# Required, no default: a session given no effort runs at its own model's
+# default, which differs between models, so the arms would not be comparable.
+effort: high
 
 # The repository whose landed packets are replayed. A relative path is read
 # from this file's directory. Left out, it is the checkout compare.sh runs

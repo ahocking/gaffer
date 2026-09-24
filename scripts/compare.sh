@@ -12,10 +12,10 @@
 #                     templates/model-comparison.yaml), apply the defaults and
 #                     print the normalized settings, one `KEY=value` line each,
 #                     in this fixed order:
-#                       ROLE= MODELS= REVIEWER_MODEL= MODEL_IDS= SOURCE_REPO=
-#                       PER_CLASS= CODE_FILES= PROSE_FILES=
+#                       ROLE= MODELS= REVIEWER_MODEL= MODEL_IDS= EFFORT=
+#                       SOURCE_REPO= PER_CLASS= CODE_FILES= PROSE_FILES=
 #                     then `EXPERIMENT=<12 hex>`, a digest of exactly those
-#                     eight lines. List values are sorted (LC_ALL=C), de-duped
+#                     nine lines. List values are sorted (LC_ALL=C), de-duped
 #                     and comma-joined, so settings that differ only in key
 #                     order, item order or repeats get the same id.
 #                     MODEL_IDS is the `model_ids:` map (a block of indented
@@ -25,7 +25,18 @@
 #                     show. A pinned id is part of the id, so changing one
 #                     starts a new experiment. Every model and the reviewer
 #                     model needs a non-empty pin, else it is refused naming
-#                     `model_ids` (reason `no-pinned-id(...)`, or `empty-id`).
+#                     `model_ids` (reason `no-pinned-id(...)`, or `empty-id`),
+#                     and each of those pins needs a complete entry (all five
+#                     rates) in the price table
+#                     (${ORCH_COMPARE_PRICES:-spend-prices.json beside this
+#                     script}), else it is refused naming `model_ids` (reason
+#                     `unpriced(...)`), so no arm's cost can read unpriced.
+#                     EFFORT is the required `effort:` scalar, one of
+#                     EFFORT_LEVELS below: the one reasoning effort every
+#                     session the experiment starts runs at. Absent, or any
+#                     other value, is refused naming `effort`; it has no
+#                     default, since a session given none runs at its model's
+#                     own default, which differs between models.
 #
 #                     A setting that cannot be used is REFUSED: one line per
 #                     refusal on stderr,
@@ -35,8 +46,9 @@
 #                     role) reads nothing but the settings file. Phase 2 (each
 #                     `models` / `reviewer_model` entry) additionally reads the
 #                     source repository's `.agents/project-overrides.yaml` and
-#                     runs routing.sh against a temp root. Neither phase runs
-#                     git: every refusal happens before any git read.
+#                     the price table, and runs routing.sh against a temp root.
+#                     Neither phase runs git: every refusal happens before any
+#                     git read.
 #
 #   candidates <file> read the settings exactly as `settings` does (the same
 #                     refusals, before any git read), then list every packet
@@ -270,7 +282,12 @@
 #                     with this script as the driver. Once per replay: a second
 #                     `replay` of the same id is refused (<replay>.steps exists).
 #                     Every agent step is one non-interactive session,
-#                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> -p <prompt>
+#                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> --effort <effort> -p <prompt>
+#                     where <effort> is the stored selection's settings
+#                     `effort` (a selection naming none, or one outside
+#                     EFFORT_LEVELS, is refused before any session starts),
+#                     with CLAUDE_CODE_EFFORT_LEVEL removed from the session's
+#                     environment, since that variable outranks `--effort`,
 #                     with stdin from /dev/null, whose working directory is the
 #                     work clone (the varied role) or a review view (the
 #                     reviewer), and which is killed when it outlives
@@ -380,12 +397,22 @@
 #                                           of another version fails, and so does
 #                                           a resolved alias with no pin. No
 #                                           model named fails as unmeasured.
-#                     scope=view-k: `reviewer-resolved-id` and `reviewer-models`,
-#                     the same two checks for the reviewer against the reviewer
-#                     model and its pinned id. The pins are read from the
+#                       effort              totals.by_effort names no level but
+#                                           the experiment's `effort` setting
+#                                           (value= the levels it names,
+#                                           comma-joined). A level other than the
+#                                           setting fails. None named passes
+#                                           (value=none): a model that takes no
+#                                           effort carries none.
+#                     scope=view-k: `reviewer-resolved-id`, `reviewer-models`
+#                     and `effort`, the same three checks for the reviewer
+#                     against the reviewer model, its pinned id and the
+#                     setting. The pins and the setting are read from the
 #                     experiment's stored selection.json; a selection that pins
-#                     no id for the replay's model or reviewer model is refused
-#                     (exit 1) before any check runs. A view with no reviewer session reads
+#                     no id for the replay's model or reviewer model, or names
+#                     no effort in EFFORT_LEVELS, is refused (exit 1) before
+#                     any check runs. The line after REPLAY= is
+#                     EFFORT=<the setting>. A view with no reviewer session reads
 #                     `check=reviewer-models result=not-run`; a collect that
 #                     leaves no readable packet reads `check=collect
 #                     result=not-run` and its scope's checks not-run. Each
@@ -508,12 +535,13 @@
 #                     `cost_note` says why a figure is null (null when none is).
 #                     The record, one compact JSON line, has exactly the keys
 #                       experiment replay packet model role reviewer_model
-#                       handoff_source settings outcome outcome_reason
+#                       effort handoff_source settings outcome outcome_reason
 #                       first_verdict fix_rounds sweeps routing_check end
 #                       tokens dollars_min dollars_max price price_table_date
 #                       cost_source cost_note recorded_at
 #                     where `settings` is the stored selection's settings
-#                     object as it stands and `tokens` is {input, output,
+#                     object as it stands, `effort` its `effort` setting (null
+#                     when the selection names none) and `tokens` is {input, output,
 #                     cache_creation, cache_read} or null. Output:
 #                       REPLAY= OUTCOME= REASON= FIRST_VERDICT=<v|none>
 #                       FIX_ROUNDS= SWEEPS=<v|not-run> TOKENS=<n|unmeasured>
@@ -533,11 +561,13 @@
 # no single replay record, a work clone, source or selection that cannot be
 # read, a scratch root inside the source or naming a model, or a diff, clone,
 # commit, routing, run-state or redaction step that failed, or (replay) no
-# single replay record, a replay already run, a review view, route,
+# single replay record, a replay already run, no stored selection or one naming
+# no effort in EFFORT_LEVELS, a review view, route,
 # refresh-handoff or land commit that failed (an `END=error` line says which),
 # or (routing-check) no single replay record, a work clone that is not a git
 # repository, a replay not run or not ended, no stored selection or one pinning
-# no id for the replay's models in `model_ids`, or an output path that cannot be
+# no id for the replay's models in `model_ids` or naming no effort in
+# EFFORT_LEVELS, or an output path that cannot be
 # written or lies inside a review view, or (sweeps) no single replay record, a
 # work clone or source that is not a git repository, a replay not run or not
 # ended, a missing handoff cache, a scratch root inside the source, or a tree,
@@ -572,6 +602,12 @@ AGENTS_DIR="${ORCH_ROUTING_AGENTS_DIR:-$HERE/../agents}"
 #   chief-engineer  the escalation decider, which never runs inside a replay,
 #                   so varying its model would measure nothing.
 REPLAYABLE_ROLES=(implementer architect ux-designer doc-writer)
+
+# --- EFFORT_LEVELS: the reasoning efforts an experiment may hold fixed ---------
+# Stated once, here: the levels `claude --effort` accepts. Every session an
+# experiment starts is given one of them, so no arm runs at its model's own
+# default effort.
+EFFORT_LEVELS=(low medium high xhigh max)
 
 # --- the defaults (model-comparison-harness PRD, first experiment) ------------
 # SOURCE_REPO defaults to the checkout this script runs from ("this
@@ -708,6 +744,32 @@ role_is_replayable() {
   return 1
 }
 
+# effort_is_level <effort>
+effort_is_level() {
+  local e
+  for e in "${EFFORT_LEVELS[@]}"; do
+    [ "$e" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# sel_effort: the `effort` setting of a stored selection flattened by json_flat
+# on stdin (empty when it names none). Reads all of stdin, so no writer upstream
+# is cut off mid-pipe.
+sel_effort() {
+  awk -F'\t' '!f && $2 == ".settings.effort" && $3 == "s" { v = $4; f = 1 } END { print v }'
+}
+
+# price_rates <flat-price-table> <id>: the id's five rates, `input output
+# cache_read cache_write_5m cache_write_1h`, when its entry holds all five as
+# numbers; nothing otherwise. A complete entry is what `record` prices at.
+price_rates() {
+  K=".prices.$2." awk -F'\t' '
+    index($2, ENVIRON["K"]) == 1 && $3 == "n" && $4 ~ /^[0-9.]+$/ { r[substr($2, length(ENVIRON["K"]) + 1)] = $4 }
+    END { if (("input" in r) && ("output" in r) && ("cache_read" in r) && ("cache_write_5m" in r) && ("cache_write_1h" in r))
+            print r["input"], r["output"], r["cache_read"], r["cache_write_5m"], r["cache_write_1h"] }' "$1"
+}
+
 # frontmatter_model <agent> -> the `model:` inside the leading `---` block.
 frontmatter_model() {
   local f="$AGENTS_DIR/$1.md"
@@ -751,7 +813,7 @@ cmd_settings() {
   # --- phase 1: the file, the scalars and the role (no git, no source read) ---
   local role="" role_set=0 models="" models_set=0 reviewer="" reviewer_set=0
   local source="" source_set=0 per_class="" per_class_set=0
-  local code="" code_set=0 prose="" prose_set=0
+  local code="" code_set=0 prose="" prose_set=0 effort="" effort_set=0
   # model_ids: one `<alias>\t<id>` line per entry, in file order.
   local pins=""
   pin_of() { printf '%s' "$pins" | A="$1" awk -F'\t' '$1 == ENVIRON["A"] { print $2; exit }'; }
@@ -767,13 +829,14 @@ cmd_settings() {
       U) refuse "$k" "-" "unparseable-list"; continue ;;
     esac
     case "$k" in
-      role|reviewer_model|source_repo|per_class)
+      role|reviewer_model|source_repo|per_class|effort)
         case "$kind" in
           S) case "$k" in
                role)           role="$v";      role_set=1 ;;
                reviewer_model) reviewer="$v";  reviewer_set=1 ;;
                source_repo)    source="$v";    source_set=1 ;;
                per_class)      per_class="$v"; per_class_set=1 ;;
+               effort)         effort="$v";    effort_set=1 ;;
              esac ;;
           *) refuse "$k" "-" "expected-a-single-value" ;;
         esac ;;
@@ -820,7 +883,7 @@ cmd_settings() {
           E) ;;
           *) refuse model_ids "-" "expected-a-map(one indented alias: id line per model)" ;;
         esac ;;
-      *) refuse "$k" "-" "unknown-setting(known: role models reviewer_model model_ids source_repo per_class code_files prose_files)" ;;
+      *) refuse "$k" "-" "unknown-setting(known: role models reviewer_model model_ids effort source_repo per_class code_files prose_files)" ;;
     esac
   done <<EOF
 $parsed
@@ -840,6 +903,14 @@ EOF
          refuse role "$role" "not-replay-dispatchable(replayable: ${REPLAYABLE_ROLES[*]})"
        fi ;;
   esac
+
+  # effort: required, and one of EFFORT_LEVELS. No default: a session given no
+  # effort runs at its model's own default, which differs between models.
+  if [ "$effort_set" -eq 0 ]; then
+    refuse effort "-" "required(one of: ${EFFORT_LEVELS[*]})"
+  elif ! effort_is_level "$effort"; then
+    refuse effort "$effort" "not-an-effort-level(one of: ${EFFORT_LEVELS[*]})"
+  fi
 
   # per_class: a positive integer, normalized (08 -> 8).
   case "$per_class" in
@@ -967,6 +1038,21 @@ EOF2
       *) validate_model reviewer_model reviewer "$reviewer" ;;
     esac
   fi
+
+  # model_ids: every pin the experiment runs on has a complete price entry, so
+  # no arm's cost can read unpriced. A model with no pin was refused above.
+  local prices="${ORCH_COMPARE_PRICES:-$HERE/spend-prices.json}" pin
+  if json_flat "$prices" > "$tmp/prices" 2>/dev/null; then
+    for m in $(norm_list "$models,$reviewer" | tr ',' ' '); do
+      case "$m" in *[!A-Za-z0-9._-]*) continue ;; esac
+      pin="$(pin_of "$m")"
+      [ -n "$pin" ] || continue
+      [ -n "$(price_rates "$tmp/prices" "$pin")" ] \
+        || refuse model_ids "$m" "unpriced(the price table has no complete entry for $pin: $prices)"
+    done
+  else
+    refuse model_ids "-" "price-table-unreadable($prices)"
+  fi
   rm -rf "$tmp"
 
   flush_refusals
@@ -983,6 +1069,7 @@ EOF2
 MODELS=$models
 REVIEWER_MODEL=$reviewer
 MODEL_IDS=$ids
+EFFORT=$effort
 SOURCE_REPO=$source
 PER_CLASS=$per_class
 CODE_FILES=$(norm_list "$code")
@@ -1394,8 +1481,8 @@ EOF
     END {
       printf "{\n"
       printf "  \"experiment\": %s,\n", esc(kv["EXPERIMENT"])
-      printf "  \"settings\": {\"role\": %s, \"models\": %s, \"reviewer_model\": %s, \"model_ids\": %s, \"source_repo\": %s, \"per_class\": %s, \"code_files\": %s, \"prose_files\": %s},\n", \
-        esc(kv["ROLE"]), arr(kv["MODELS"]), esc(kv["REVIEWER_MODEL"]), pinmap(kv["MODEL_IDS"]), esc(ENVIRON["SRC"]), kv["PER_CLASS"] + 0, arr(kv["CODE_FILES"]), arr(kv["PROSE_FILES"])
+      printf "  \"settings\": {\"role\": %s, \"models\": %s, \"reviewer_model\": %s, \"model_ids\": %s, \"effort\": %s, \"source_repo\": %s, \"per_class\": %s, \"code_files\": %s, \"prose_files\": %s},\n", \
+        esc(kv["ROLE"]), arr(kv["MODELS"]), esc(kv["REVIEWER_MODEL"]), pinmap(kv["MODEL_IDS"]), esc(kv["EFFORT"]), esc(ENVIRON["SRC"]), kv["PER_CLASS"] + 0, arr(kv["CODE_FILES"]), arr(kv["PROSE_FILES"])
       block("selected", S, ns, 0)
       block("shortfalls", F, nf, 0)
       block("excluded", X, nx, 0)
@@ -2354,12 +2441,14 @@ _CMP_REVIEW_TOKENS="pass fix escalate"
 _CMP_LAND_EXCLUDED=".agents/metrics .agents/loop .agents/run-state.yaml .agents/run-state-prev.yaml .agents/roadmap.yaml gspec"
 
 # run_session <dir> <prompt-file> <out> <err>: one non-interactive session in
-# <dir>, killed at the time limit. Sets STEP_EXIT to its exit code, or
-# `timeout`. Polled rather than watched by a second process, so no watchdog
-# outlives the step.
+# <dir>, at the experiment's effort, killed at the time limit. Sets STEP_EXIT to
+# its exit code, or `timeout`. Polled rather than watched by a second process,
+# so no watchdog outlives the step. CLAUDE_CODE_EFFORT_LEVEL outranks
+# `--effort`, so it is removed from the session's environment.
 run_session() {
   local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
-  ( cd "$dir" && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
+  ( cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL \
+      && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
   pid=$!
   t0=$SECONDS
   STEP_EXIT=""
@@ -2595,6 +2684,16 @@ cmd_replay() {
   [ -f "$_RP_RS" ] || die "replay: the replay's run-state is missing from its work clone: $_RP_RS"
   [ -f "$handoff" ] || die "replay: the replay's handoff is missing from its work clone: $handoff"
 
+  # The one reasoning effort every session of the replay runs at: the stored
+  # selection's `effort` setting, read before anything is started.
+  local sel="$store/$exp/selection.json"
+  case "$exp" in ''|*[!0-9a-f]*) die "replay: the replay record's experiment is malformed: [$exp]" ;; esac
+  [ -f "$sel" ] || die "replay: no stored selection for the replay's experiment $exp: $sel"
+  _CMP_EFFORT="$(json_flat "$sel" 2>/dev/null | sel_effort)" \
+    || die "replay: the stored selection is not readable JSON: $sel"
+  effort_is_level "$_CMP_EFFORT" \
+    || die "replay: experiment $exp's stored settings name no effort in: ${EFFORT_LEVELS[*]} (got [$_CMP_EFFORT]): $sel"
+
   # Once per replay: the clone has moved on from its prepared state after one.
   _RP_STEPS="$(dirname "$env")/$rid.steps"
   ( set -C; : > "$_RP_STEPS" ) 2>/dev/null \
@@ -2754,8 +2853,38 @@ rc_stamps() {
   set -f
 }
 
+# rc_flat_efforts <flat-packet>: the levels totals.by_effort names, sorted and
+# comma-joined (empty when it names none).
+rc_flat_efforts() {
+  awk -F'\t' '
+    BEGIN { p = ".totals.by_effort." }
+    index($2, p) == 1 {
+      l = substr($2, length(p) + 1); sub(/\..*$/, "", l)
+      if (l != "" && !(l in s)) { s[l] = 1; print l }
+    }' "$1" | LC_ALL=C sort | paste -sd, -
+}
+
+# rc_effort <scope> <flat-packet>: the `effort` check. Every level the packet's
+# totals.by_effort names must be the experiment's setting (_RC_EFFORT); a packet
+# naming none passes, since a model that takes no effort carries none.
+rc_effort() {
+  local levels l bad=""
+  levels="$(rc_flat_efforts "$2")"
+  if [ -z "$levels" ]; then
+    rc_emit "CHECK scope=$1 check=effort result=pass value=none reason=totals.by_effort names no level (a model that takes no effort carries none, and so does a transcript from before the per-turn effort field, so none is not proof that no effort was taken)"
+    return 0
+  fi
+  for l in $(printf '%s' "$levels" | tr ',' ' '); do [ "$l" = "$_RC_EFFORT" ] || bad="$bad${bad:+,}$l"; done
+  if [ -n "$bad" ]; then
+    rc_emit "CHECK scope=$1 check=effort result=fail value=$levels reason=totals.by_effort names $bad, not only $_RC_EFFORT, the experiment's effort"
+  else
+    rc_emit "CHECK scope=$1 check=effort result=pass value=$levels"
+  fi
+}
+
 _RC_OUT=""
 _RC_PINS=""
+_RC_EFFORT=""
 rc_emit() {
   printf '%s\n' "$1"
   printf '%s\n' "$1" >> "$_RC_OUT"
@@ -2779,6 +2908,7 @@ rc_scope() {
     if [ "$ovc" = 1 ]; then rc_emit "CHECK scope=$scope check=override-count result=not-run value=unmeasured reason=no packet"; fi
     rc_emit "CHECK scope=$scope check=$role-resolved-id result=not-run value=unmeasured reason=no packet"
     rc_emit "CHECK scope=$scope check=$role-models result=not-run value=unmeasured reason=no packet"
+    rc_emit "CHECK scope=$scope check=effort result=not-run value=unmeasured reason=no packet"
     return 0
   fi
   rc_emit "METRICS scope=$scope dir=$dir packet=$pout"
@@ -2819,6 +2949,8 @@ rc_scope() {
       rc_emit "CHECK scope=$scope check=$role-resolved-id result=pass value=$stamps"
     fi
   fi
+
+  rc_effort "$scope" "$flat"
 
   # <role>-models: what the role actually ran on names the pinned id of the
   # alias routing resolved and nothing else, compared exactly.
@@ -2897,6 +3029,9 @@ cmd_routing_check() {
     A="$a" awk -F'\t' '$1 == ENVIRON["A"] { f = 1 } END { exit !f }' "$_RC_PINS" \
       || die "routing-check: experiment $exp's model_ids pins no id for $a: $sel"
   done
+  _RC_EFFORT="$(sel_effort < "$_CMP_TMP/sel")"
+  effort_is_level "$_RC_EFFORT" \
+    || die "routing-check: experiment $exp's stored settings name no effort in: ${EFFORT_LEVELS[*]} (got [$_RC_EFFORT]): $sel"
   vlist="$_CMP_TMP/views"
   awk '
     function flush() { if (v != "") print s "\t" v }
@@ -2921,6 +3056,7 @@ cmd_routing_check() {
   : > "$_RC_OUT" 2>/dev/null || die "routing-check: cannot write $_RC_OUT"
   _RC_FAIL=0; _RC_NOTRUN=0
   rc_emit "REPLAY=$rid"
+  rc_emit "EFFORT=$_RC_EFFORT"
   rc_scope work "$clone" "$pdir/work.json" "$role" "$model" 1
   while IFS='	' read -r sran view; do
     k=$((k + 1))
@@ -3418,6 +3554,9 @@ cmd_record() {
   [ -n "$settings" ] && json_flat "$tmp/settings.json" > /dev/null 2>&1 \
     || die "record: the stored selection's settings cannot be read as one JSON object: $sel"
   pin="$(M="$model" awk -F'\t' '$2 == ".settings.model_ids." ENVIRON["M"] && $3 == "s" { print $4; exit }' "$tmp/sel")"
+  local effort js_effort="null"
+  effort="$(sel_effort < "$tmp/sel")"
+  [ -n "$effort" ] && js_effort="$(rd_json_str "$effort")"
 
   # --- the cost ------------------------------------------------------------------------------
   local prices="${ORCH_COMPARE_PRICES:-$HERE/spend-prices.json}" tdate csrc="by_agent_role" note=""
@@ -3444,10 +3583,7 @@ cmd_record() {
       note="tokens not priced: the experiment's model_ids pins no id for $model"
     else
       local rates
-      rates="$(K=".prices.$pin." awk -F'\t' '
-        index($2, ENVIRON["K"]) == 1 && $3 == "n" && $4 ~ /^[0-9.]+$/ { r[substr($2, length(ENVIRON["K"]) + 1)] = $4 }
-        END { if (("input" in r) && ("output" in r) && ("cache_read" in r) && ("cache_write_5m" in r) && ("cache_write_1h" in r))
-                print r["input"], r["output"], r["cache_read"], r["cache_write_5m"], r["cache_write_1h"] }' "$tmp/prices")"
+      rates="$(price_rates "$tmp/prices" "$pin")"
       if [ -z "$rates" ]; then
         note="tokens not priced: the price table has no complete entry for $pin, the id model_ids pins $model to"
       else
@@ -3465,9 +3601,9 @@ cmd_record() {
   [ -n "$first" ] && js_first="$(rd_json_str "$first")"
   [ -n "$sweeps" ] && js_sweeps="$(rd_json_str "$sweeps")"
   [ -n "$note" ] && js_note="$(rd_json_str "$note")"
-  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
+  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"effort":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
     "$(rd_json_str "$exp")" "$(rd_json_str "$rid")" "$(rd_json_str "$pkt")" "$(rd_json_str "$model")" \
-    "$(rd_json_str "$role")" "$(rd_json_str "$rmodel")" "$(rd_json_str "$hsrc")" "$settings" \
+    "$(rd_json_str "$role")" "$(rd_json_str "$rmodel")" "$js_effort" "$(rd_json_str "$hsrc")" "$settings" \
     "$(rd_json_str "$outcome")" "$(rd_json_str "$reason")" "$js_first" "$fixr" "$js_sweeps" \
     "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$tokens_json" "$dmin" "$dmax" "$price" \
     "$(rd_json_str "$tdate")" "$(rd_json_str "$csrc")" "$js_note" "$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"

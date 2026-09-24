@@ -208,6 +208,16 @@ derived-done `run-metrics`; no existing field changes meaning.
     `write-result`, byte for byte, so a line the check accepted in the result
     file is never refused on return
 
+- [ ] **P1**: ADR 0019 v3.6 states what T13 and T14 shipped
+  - added 2026-09-23 on the operator's call: the ADR's v3.6 section predates T13
+    and T14, so it is reopened here rather than filed as a separate feature
+  - ADR 0019's v3.6 null rules (§4) state that `totals.dispatch_waste.over_threshold`
+    (count and share) reads null, with a `notes[]` reason naming the unresolved
+    dispatch, whenever a counted implementer dispatch is unresolved (T13)
+  - its threshold stamp (§5) states that the implementer turn budget is read by one
+    shared strict reader used by both `metrics.sh` and `runstate.sh` (T14)
+  - nothing in the ADR outside those two sections changes
+
 ## Dependencies
 
 - `run-metrics` — the parent: the collector, the trailer window, `message.id`

@@ -255,6 +255,20 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   entry), even though `runstate.sh` and hook edits apply mid-run; the first run under
   the change is the next `/gaffer:run-loop`.
 
+### Model-comparison harness (ADR 0030)
+
+- **`scripts/compare.sh replay` copies `run-loop` §3's sequence; amend both in the
+  same change**, with a `test-compare.sh` case. Replays run in a `git clone
+  --shared`, **never a worktree** (`--git-common-dir` would resolve to the main
+  checkout). Each step is a **headless session in the clone**, pinned to the harness
+  checkout by `--plugin-dir` (from the operator's session, a dispatch counts as a
+  model override). Every session gets the `effort` setting **with
+  `CLAUDE_CODE_EFFORT_LEVEL` unset**. The reviewer sees only a redacted view.
+  Results live in `.agents/metrics/comparisons/`, **never `.agents/loop/`**
+  (`begin-run` prunes it). `run` needs a single-use `estimate` token. The required
+  sweeps are every `scripts/test-*.sh` path the handoff names. **The proposal is
+  computed, never written by a model, and never written to routing config.**
+
 ### Reports (ADR 0023)
 
 - Split by reader: `status-line.md` (loop agents), `check-in.md` (Chief Engineer
@@ -338,6 +352,7 @@ scripts/test-migrate.sh        # consumer-repo retrofit: moves, conversion, reti
                                 # the packet-count check, and the CLAUDE.md conventions stamp
 scripts/test-report-conventions.sh  # ADR 0023 report-format delivery: hook envelope validity, L2-suppresses-L3, fail-open, no drift between the three copies
 scripts/test-routing.sh        # per-agent-model-routing lookup: resolve/validate/table, every fallback and report reason, VALID_MODELS pin
+scripts/test-compare.sh        # ADR 0030 model-comparison harness: settings, selection, estimate/token, clones, replay, routing check, sweeps, record, ranking, report
 ```
 
 When adding a new risky pattern to `guard.sh`, add a matching allow/deny pair to

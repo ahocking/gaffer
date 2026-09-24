@@ -99,7 +99,7 @@ feature: model-comparison-harness
   - covers: A report per cell proposes a `model_routing` change · The fixed reviewer ranks each packet's final diffs side by side
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh
-- [ ] **T15** **P0** End the report with the proposal under the plan's rule: one model for the varied role in `model_routing`'s one-model-per-agent shape, citing the cells that decided it. When the prose and code cells favour different models, it says so and states the cost and pass-rate difference of a per-tier split against the single value. When any model has an unmeasured cell, it proposes nothing and names those cells. `scripts/test-compare.sh` gains cases for an agreeing experiment, a diverging one stating the split's delta, an unmeasured cell suppressing the proposal, the tie-break order, and the source repository's `project-overrides.yaml` byte-identical after a report.
+- [x] **T15** **P0** End the report with the proposal under the plan's rule: one model for the varied role in `model_routing`'s one-model-per-agent shape, citing the cells that decided it. When the prose and code cells favour different models, it says so and states the cost and pass-rate difference of a per-tier split against the single value. When any model has an unmeasured cell, it proposes nothing and names those cells. `scripts/test-compare.sh` gains cases for an agreeing experiment, a diverging one stating the split's delta, an unmeasured cell suppressing the proposal, the tie-break order, and the source repository's `project-overrides.yaml` byte-identical after a report.
   - deps: T14
   - covers: A report per cell proposes a `model_routing` change
   - arch: —

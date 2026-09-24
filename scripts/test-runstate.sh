@@ -7034,6 +7034,148 @@ assert_true "the injection really landed inside the attempt counter (so the proo
 assert_true "the same scan counts the private copy when one is planted back" \
   "[ \"\$(rf_priv_defs '$RF_INJECTED')\" = 1 ]"
 
+# =============================================================================
+# session-effort (session-effort-reporting T1)
+# =============================================================================
+# The reader driver-mode entry passes to `--effort`. Every fixture lives under
+# its own ORCH_METRICS_PROJECTS_DIR, and every call runs with the two session
+# variables unset unless a case sets one, so the operator's real session and
+# real ~/.claude/projects can never leak into an answer.
+SE_PROJ="$(mktemp -d)"
+mkdir -p "$SE_PROJ/-proj-a" "$SE_PROJ/-proj-b"
+SE_A="$SE_PROJ/-proj-a"
+# A user row carries no effort; the assistant row after it does.
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"go"}}' \
+  '{"type":"assistant","effort":"xhigh","message":{"id":"m1","model":"claude-opus-5-5"}}' \
+  > "$SE_A/sess-xhigh.jsonl"
+# A subagent file under the same session carrying a DIFFERENT, later level:
+# the reader must never see it (main-thread transcript only).
+mkdir -p "$SE_A/sess-xhigh/subagents"
+printf '%s\n' '{"type":"assistant","effort":"max","message":{"id":"s1"}}' \
+  > "$SE_A/sess-xhigh/subagents/agent-1.jsonl"
+# Two levels: the later non-null one wins, and a later null or absent effort
+# does not erase it.
+printf '%s\n' \
+  '{"type":"assistant","effort":"xhigh","message":{"id":"m1"}}' \
+  '{"type":"assistant","effort":"low","message":{"id":"m2"}}' \
+  '{"type":"user","message":{"role":"user","content":"more"}}' \
+  '{"type":"assistant","effort":null,"message":{"id":"m3"}}' \
+  > "$SE_A/sess-two.jsonl"
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"a"}}' \
+  '{"type":"user","message":{"role":"user","content":"b"}}' \
+  > "$SE_A/sess-user-only.jsonl"
+# A model that takes no effort: assistant rows with no `.effort` at all.
+printf '%s\n' \
+  '{"type":"user","message":{"role":"user","content":"a"}}' \
+  '{"type":"assistant","message":{"id":"h1","model":"claude-haiku-4-5"}}' \
+  '{"type":"assistant","message":{"id":"h2","model":"claude-haiku-4-5"}}' \
+  > "$SE_A/sess-no-effort-model.jsonl"
+printf '%s\n' '{"type":"assistant","effort":"x high","message":{"id":"m1"}}' \
+  > "$SE_A/sess-space.jsonl"
+# A level ending in a JSON-escaped CR (the file holds backslash-r, jq decodes
+# it to a real CR): it fails the charset on every host, and no strip of a
+# trailing CR may launder it into "high".
+printf '%s\n' '{"type":"assistant","effort":"high\r","message":{"id":"m1"}}' \
+  > "$SE_A/sess-cr.jsonl"
+# The same class through the bytes bash's command substitution drops: a
+# trailing JSON-escaped LF (stripped by `$(...)`) and an embedded JSON-escaped
+# NUL (dropped by bash). A charset check run on the captured value would read
+# both as "high"; it must be judged on the decoded value.
+printf '%s\n' '{"type":"assistant","effort":"high\n","message":{"id":"m1"}}' \
+  > "$SE_A/sess-lf.jsonl"
+printf '%s\n' '{"type":"assistant","effort":"hi\u0000gh","message":{"id":"m1"}}' \
+  > "$SE_A/sess-nul.jsonl"
+printf '%s\n' '{"type":"assistant","effort":"high","message":{"id":"m1"}}' 'not json at all' \
+  > "$SE_A/sess-malformed.jsonl"
+printf '%s\n' '{"type":"assistant","effort":"high","message":{"id":"m1"}}' \
+  > "$SE_A/sess-unreadable.jsonl"
+# Ambiguous: the same session id under two project directories.
+printf '%s\n' '{"type":"assistant","effort":"high","message":{"id":"m1"}}' > "$SE_A/sess-dup.jsonl"
+printf '%s\n' '{"type":"assistant","effort":"low","message":{"id":"m1"}}'  > "$SE_PROJ/-proj-b/sess-dup.jsonl"
+
+# se_case <label> <want-effort> <want-reason> -- <env assignments...> -- [args...]
+# Asserts EFFORT, REASON and exit 0 as three separate lines, so a case that
+# gets the level right for the wrong reason still fails.
+SE_OUT=""; SE_RC=0
+se_run() {
+  # $1..: env assignments up to `--`, then the runstate.sh arguments.
+  local envs=()
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
+  [ "${1:-}" = -- ] && shift
+  SE_OUT="$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_EFFORT_LEVEL \
+    ORCH_METRICS_PROJECTS_DIR="$SE_PROJ" ${envs[@]+"${envs[@]}"} \
+    "$RUNSTATE" session-effort "$@" 2>/dev/null)"; SE_RC=$?
+}
+se_field() { printf '%s\n' "$SE_OUT" | awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }'; }
+se_case() {
+  local label="$1" want_e="$2" want_r="$3"; shift 3
+  se_run "$@"
+  if [ "$(se_field EFFORT)" = "$want_e" ]; then ok "session-effort: $label -> EFFORT=$want_e"
+  else bad "session-effort: $label -> EFFORT=$want_e" "got: $(printf '%s' "$SE_OUT" | tr '\n' ' ')"; fi
+  if [ "$(se_field REASON)" = "$want_r" ]; then ok "session-effort: $label -> REASON=$want_r"
+  else bad "session-effort: $label -> REASON=$want_r" "got: $(printf '%s' "$SE_OUT" | tr '\n' ' ')"; fi
+  if [ "$SE_RC" -eq 0 ]; then ok "session-effort: $label exits 0"
+  else bad "session-effort: $label exits 0" "rc=$SE_RC"; fi
+}
+
+se_case "a row carrying xhigh"                 xhigh   transcript    -- sess-xhigh
+se_case "two levels, the later row wins"       low     transcript    -- sess-two
+se_case "user rows only"                       unknown no-effort-row -- sess-user-only
+se_case "assistant rows from a model with no .effort" unknown no-effort-row -- sess-no-effort-model
+se_case "a missing transcript"                 unknown no-transcript -- sess-nowhere
+se_case "a transcript that does not parse"     unknown unreadable    -- sess-malformed
+se_case "a level containing a space"           unknown unreadable    -- sess-space
+assert_true "session-effort: the CR fixture holds a JSON-escaped CR (backslash-r), not a raw one" \
+  "grep -qF 'high\\r\"' '$SE_A/sess-cr.jsonl' && ! grep -q \$'\\r' '$SE_A/sess-cr.jsonl'"
+se_case "a level ending in a JSON-escaped CR"   unknown unreadable    -- sess-cr
+assert_true "session-effort: the LF fixture holds a JSON-escaped LF (backslash-n) and is one line, no raw LF in the value" \
+  "grep -qF 'high\\n\"' '$SE_A/sess-lf.jsonl' && [ \$(wc -l < '$SE_A/sess-lf.jsonl') -eq 1 ]"
+se_case "a level ending in a JSON-escaped LF"   unknown unreadable    -- sess-lf
+assert_true "session-effort: the NUL fixture holds a JSON-escaped NUL (backslash-u0000), not a raw one" \
+  "grep -qF 'hi\\u0000gh' '$SE_A/sess-nul.jsonl' && tr -d '\\000' < '$SE_A/sess-nul.jsonl' | cmp -s - '$SE_A/sess-nul.jsonl'"
+se_case "a level holding a JSON-escaped NUL"    unknown unreadable    -- sess-nul
+se_case "an invalid session id (traversal)"    unknown no-session    -- ../sess-xhigh
+se_case "an invalid session id (a space)"      unknown no-session    -- 'sess xhigh'
+se_case "an unset session id"                  unknown no-session    --
+se_case "two matching transcripts"             unknown ambiguous     -- sess-dup
+se_case "the id from CLAUDE_CODE_SESSION_ID"   xhigh   transcript    CLAUDE_CODE_SESSION_ID=sess-xhigh --
+se_case "an argument over CLAUDE_CODE_SESSION_ID" low  transcript    CLAUDE_CODE_SESSION_ID=sess-xhigh -- sess-two
+
+chmod 000 "$SE_A/sess-unreadable.jsonl"
+if ! cat "$SE_A/sess-unreadable.jsonl" >/dev/null 2>&1; then
+  se_case "an unreadable transcript (mode 000)" unknown unreadable -- sess-unreadable
+else
+  # NOT RUN, and said so rather than passed quietly: as uid 0 a mode-000 file
+  # is still readable. The does-not-parse case above covers the same REASON.
+  printf 'note this host reads a mode-000 file (uid %s) — the unreadable-transcript session-effort case was NOT run; the does-not-parse case was\n' "$(id -u)"
+fi
+chmod 644 "$SE_A/sess-unreadable.jsonl"
+
+# jq unusable, two ways: the sweep's exit-127 stubs shadowing it on PATH (a
+# `command -v` probe would call that "present"), and jq genuinely absent from
+# a PATH that holds only what runstate.sh's top level needs.
+SE_NOJQ="$(mktemp -d)"
+ln -s "$(command -v dirname)" "$SE_NOJQ/dirname"
+ln -s "$(command -v bash)" "$SE_NOJQ/bash"      # runstate.sh's `#!/usr/bin/env bash`
+se_case "jq shadowed by a failing stub on PATH" unknown no-parser PATH="$NOTOOLS:$PATH" -- sess-xhigh
+se_case "jq absent from PATH"                  unknown no-parser PATH="$SE_NOJQ" -- sess-xhigh
+assert_true "session-effort: the no-jq PATH really has no jq on it (so the case is not vacuous)" \
+  "! env PATH='$SE_NOJQ' '$BASH' -c 'command -v jq'"
+
+# EFFORT_ENV: set only when CLAUDE_CODE_EFFORT_LEVEL is non-empty.
+se_run CLAUDE_CODE_EFFORT_LEVEL=max -- sess-xhigh
+assert_true "session-effort: CLAUDE_CODE_EFFORT_LEVEL=max reads EFFORT_ENV=set (exit 0)" "[ '$(se_field EFFORT_ENV)' = set ] && [ $SE_RC -eq 0 ]"
+assert_true "session-effort:   and EFFORT is still the transcript's, not the variable's" "[ '$(se_field EFFORT)' = xhigh ]"
+se_run CLAUDE_CODE_EFFORT_LEVEL= -- sess-xhigh
+assert_true "session-effort: CLAUDE_CODE_EFFORT_LEVEL set to empty reads EFFORT_ENV=unset (exit 0)" "[ '$(se_field EFFORT_ENV)' = unset ] && [ $SE_RC -eq 0 ]"
+se_run -- sess-xhigh
+assert_true "session-effort: CLAUDE_CODE_EFFORT_LEVEL unset reads EFFORT_ENV=unset (exit 0)" "[ '$(se_field EFFORT_ENV)' = unset ] && [ $SE_RC -eq 0 ]"
+se_run CLAUDE_CODE_EFFORT_LEVEL=high --
+assert_true "session-effort: EFFORT_ENV is still reported when there is no session (exit 0)" \
+  "[ '$(se_field REASON)' = no-session ] && [ '$(se_field EFFORT_ENV)' = set ] && [ $SE_RC -eq 0 ]"
+
 echo
 echo "-----------------------------------------"
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then

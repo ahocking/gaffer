@@ -547,6 +547,75 @@
 #                       FIX_ROUNDS= SWEEPS=<v|not-run> TOKENS=<n|unmeasured>
 #                       DOLLARS_MIN=<x|unmeasured> DOLLARS_MAX=<x|unmeasured>
 #                       RECORDS=<path>
+#                     THE LATEST-RECORD RULE: records.jsonl is append-only, and
+#                     for one experiment, packet and model the record every
+#                     later reader uses is the LAST line naming all three. A
+#                     rerun (`run --rerun`) is a new replay whose record is
+#                     appended after the `invalid` one, so it takes its place;
+#                     the `invalid` line is kept, never rewritten.
+#
+#   run <experiment> --approve <token> [--rerun <replay>]
+#                     run the replays an `estimate` token approved. The token is
+#                     read from <store>/<experiment>/approvals.jsonl and REFUSED
+#                     (exit 1, nothing run, nothing written) when it is
+#                       missing     no line of that file carries it;
+#                       spent       a `consumed` line for it exists;
+#                       superseded  a `pending` line for another token comes
+#                                   after its own (the newest estimate wins);
+#                     or when its stored `replays` do not digest to its stored
+#                     `set`. A pause requested before the token is consumed
+#                     stops the run there (RUN=paused) and leaves the token
+#                     pending. Otherwise the token is CONSUMED, one line
+#                       {"token", "state": "consumed", "experiment",
+#                        "consumed_at", "rerun": <replay|null>}
+#                     appended under a lock directory (approvals.lock beside it)
+#                     BEFORE any replay starts, so it is single-use even when
+#                     the run stops early. Then, for each replay of the token's
+#                     set, in its stored order (the selection's packet order,
+#                     then the settings' model order, as `estimate` wrote it):
+#                       a replay that already has a record for this experiment,
+#                       packet and model is skipped (`SKIP`), so a resumed
+#                       experiment runs only the replays with no stored record;
+#                       before every replay but the first one started, the
+#                       pause sentinel is read through `runstate.sh
+#                       pause-status` (the sentinel is ${ORCH_PAUSE_FILE}, else
+#                       `.agents/pause` in the main checkout of the repository
+#                       this script runs from, never the source repository's or
+#                       a clone's); a pause stops the run there, cleanly: the
+#                       replays not yet started are not prepared, and have no
+#                       record;
+#                       otherwise `prepare` -> `replay` -> `routing-check` ->
+#                       `sweeps` -> `record`, each this script's own subcommand,
+#                       its output appended to <store>/<experiment>/runs/<token>.log.
+#                     Once a replay starts it runs to its record: the pause is
+#                     honoured only between replays, since stopping inside one
+#                     would leave an ended replay with no record. A `prepare`
+#                     that fails, a `replay` that leaves no END= line, or a
+#                     `routing-check` or `record` that fails stops the run
+#                     (RUN=error, exit 1) with that replay unrecorded. A `sweeps`
+#                     that fails does not: the record then stores `sweeps` null
+#                     (not run), as it does for any replay never swept.
+#                     --rerun <replay> runs that one replay's packet and model
+#                     again as a new replay, and nothing else of the token's set.
+#                     It is admitted only when <replay> belongs to <experiment>,
+#                     has a record, that record is the latest for its packet
+#                     and model (THE LATEST-RECORD RULE), its outcome is
+#                     `invalid`, and the token's set holds its packet and model
+#                     (the spend was approved for it). The new record is
+#                     appended after the `invalid` one and takes its place.
+#                     Output:
+#                       RUN experiment= token= scope= replays=<in the set> [rerun=<replay>]
+#                       APPROVED token=<t> state=consumed
+#                       SKIP packet= model= reason=recorded
+#                       START packet= model=
+#                       STEP packet= model= replay=<id|none> step=<name> exit=<code>
+#                            [end=|routing_check=|sweeps=|outcome=]
+#                       DONE packet= model= replay= outcome=
+#                       PAUSED packet= model= reason=<the pause's reason>
+#                                               (the replay not started)
+#                       RAN=<n> SKIPPED=<n> REMAINING=<n not started>
+#                       LOG=<path>
+#                       RUN=<complete|paused|error>
 #
 # Exit status: 0 printed settings / candidates / a selection / an estimate / a
 # prepared replay / a review view / a replay that reached an END / a routing
@@ -575,7 +644,10 @@
 # record, a replay not run or not ended, no ROUTING_CHECK= line, routing records
 # that disagree with the step log, an END or ROUTE line it cannot read, a
 # replay already recorded, no stored selection, a price table that cannot be
-# read, or a record that cannot be appended;
+# read, or a record that cannot be appended, or (run) a missing, spent,
+# superseded or malformed token, an approvals file that cannot be read, a lock
+# already held, a --rerun replay not admitted, or a step that stopped the run
+# (RUN=error); a run that completed or paused exits 0;
 # 2 usage error, routing.sh / gspec-backlog.sh / runstate.sh / metrics.sh missing beside
 # this script, or (replay) no session command, or (replay, sweeps) a malformed
 # timeout.
@@ -621,7 +693,7 @@ DEFAULT_CODE_FILES="scripts/,hooks/"
 DEFAULT_PROSE_FILES="agents/,skills/,templates/,docs/,CLAUDE.md"
 
 die()   { printf 'compare.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
-usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay>\n' >&2; exit 2; }
+usage() { printf 'usage: compare.sh {settings|candidates|select} <file> | estimate <experiment> [--remaining] | prepare <experiment> <packet> <model> | review-view <replay> | replay <replay> | routing-check <replay> | sweeps <replay> | record <replay> | run <experiment> --approve <token> [--rerun <replay>]\n' >&2; exit 2; }
 
 # --- digest: 12 hex of sha256 over stdin, probed by execution ------------------
 digest() {
@@ -1271,6 +1343,13 @@ EOF
 # script's own parent directory when that is not a git checkout.
 store_root() {
   if [ -n "${ORCH_COMPARE_STORE:-}" ]; then printf '%s' "$ORCH_COMPARE_STORE"; return 0; fi
+  printf '%s/.agents/metrics/comparisons' "$(main_checkout)"
+}
+
+# main_checkout: the main checkout of the repository this script runs from (the
+# harness's), through `git rev-parse --git-common-dir`, as the pause sentinel
+# and the store find it; the checkout above this script when git cannot say.
+main_checkout() {
   local top common
   top="$(cd "$HERE/.." && pwd -P)"
   common="$(git -C "$top" rev-parse --git-common-dir 2>/dev/null | tr -d '\r')"
@@ -1278,7 +1357,7 @@ store_root() {
     case "$common" in /*) ;; *) common="$top/$common" ;; esac
     if [ -d "$common" ]; then top="$(cd "$common/.." && pwd -P)"; fi
   fi
-  printf '%s/.agents/metrics/comparisons' "$top"
+  printf '%s' "$top"
 }
 
 # fix_round_rows <src>: one `<packet>\t<fix-count>` row for every packet that
@@ -3623,6 +3702,253 @@ cmd_record() {
     "$( [ "$dmin" = null ] && echo unmeasured || echo "$dmin")" "$( [ "$dmax" = null ] && echo unmeasured || echo "$dmax")" "$records"
 }
 
+# --- run ---------------------------------------------------------------------------
+
+# run_records <records.jsonl> <experiment>: one
+# `<line>\t<replay>\t<packet>\t<model>\t<outcome>` row per record of that
+# experiment, in file order, so the last row for a packet and model is its
+# latest record (THE LATEST-RECORD RULE). Exit 1 on a file it cannot read.
+run_records() {
+  local flat
+  flat="$(json_flat "$1")" || return 1
+  printf '%s\n' "$flat" | EXP="$2" awk -F'\t' '
+    $1 + 0 > n { n = $1 + 0 }
+    $2 == ".experiment" && $3 == "s" { e[$1] = $4 }
+    $2 == ".replay"     && $3 == "s" { r[$1] = $4 }
+    $2 == ".packet"     && $3 == "s" { p[$1] = $4 }
+    $2 == ".model"      && $3 == "s" { m[$1] = $4 }
+    $2 == ".outcome"    && $3 == "s" { o[$1] = $4 }
+    END { for (d = 1; d <= n; d++) if ((d in e) && e[d] == ENVIRON["EXP"] && (d in p) && (d in m)) print d "\t" r[d] "\t" p[d] "\t" m[d] "\t" o[d] }'
+}
+
+# run_pause: is a pause requested? Returns 0 and prints the reason when it is.
+# The sentinel is read only through `runstate.sh pause-status`. Anything but
+# its `PAUSE=0` answer reads as a pause: an unreadable answer stops the run
+# rather than spending on.
+run_pause() {
+  local pf out
+  pf="${ORCH_PAUSE_FILE:-$(main_checkout)/.agents/pause}"
+  out="$("$RUNSTATE" pause-status "$pf" 2>/dev/null | tr -d '\r' | head -1)"
+  case "$out" in
+    PAUSE=0) return 1 ;;
+    'PAUSE=1 reason='*) printf '%s' "${out#PAUSE=1 reason=}" ;;
+    *) printf 'pause-status gave no answer it reads (%s), so the run stops' "${out:-nothing}" ;;
+  esac
+  return 0
+}
+
+# run_step <step> <args...>: this script's own subcommand, stdin from
+# /dev/null, its stdout in $_CMP_TMP/step.out and both streams appended to the
+# run's log under a header. Sets RS_RC.
+run_step() {
+  printf '== %s ==\n' "$*" >> "$RUN_LOG"
+  "$RUN_SELF" "$@" < /dev/null > "$_CMP_TMP/step.out" 2>> "$RUN_LOG"; RS_RC=$?
+  cat "$_CMP_TMP/step.out" >> "$RUN_LOG"
+  printf -- '-- exit %s\n' "$RS_RC" >> "$RUN_LOG"
+}
+
+# run_one <experiment> <packet> <model>: prepare -> replay -> routing-check ->
+# sweeps -> record for one replay. Returns 1 at a step that stops the run.
+run_one() {
+  local exp="$1" p="$2" m="$3" rid end v
+  run_step prepare "$exp" "$p" "$m"
+  rid="$(sed -n 's/^REPLAY=//p' "$_CMP_TMP/step.out" | head -1)"
+  case "$rid" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) rid="" ;; esac
+  printf 'STEP packet=%s model=%s replay=%s step=prepare exit=%s\n' "$p" "$m" "${rid:-none}" "$RS_RC"
+  [ "$RS_RC" -eq 0 ] && [ -n "$rid" ] || return 1
+
+  run_step replay "$rid"
+  end=""
+  if [ -f "$RUN_DIR/replays/$rid.steps" ]; then end="$(sed -n 's/^END=//p' "$RUN_DIR/replays/$rid.steps" | tail -1)"; fi
+  printf 'STEP packet=%s model=%s replay=%s step=replay exit=%s end=%s\n' "$p" "$m" "$rid" "$RS_RC" "${end:-none}"
+  # An END= line is what `record` decides from, `error` included; a replay
+  # refused before it started leaves none, and nothing can be recorded.
+  [ -n "$end" ] || return 1
+
+  run_step routing-check "$rid"
+  v="$(sed -n 's/^ROUTING_CHECK=//p' "$_CMP_TMP/step.out" | tail -1)"
+  printf 'STEP packet=%s model=%s replay=%s step=routing-check exit=%s routing_check=%s\n' "$p" "$m" "$rid" "$RS_RC" "${v:-none}"
+  [ "$RS_RC" -eq 0 ] && [ -n "$v" ] || return 1
+
+  run_step sweeps "$rid"
+  v="$(sed -n 's/^SWEEPS=//p' "$_CMP_TMP/step.out" | tail -1)"
+  [ "$RS_RC" -eq 0 ] || v=""
+  printf 'STEP packet=%s model=%s replay=%s step=sweeps exit=%s sweeps=%s\n' "$p" "$m" "$rid" "$RS_RC" "${v:-not-run}"
+
+  run_step record "$rid"
+  v="$(sed -n 's/^OUTCOME=//p' "$_CMP_TMP/step.out" | head -1)"
+  printf 'STEP packet=%s model=%s replay=%s step=record exit=%s outcome=%s\n' "$p" "$m" "$rid" "$RS_RC" "${v:-none}"
+  [ "$RS_RC" -eq 0 ] && [ -n "$v" ] || return 1
+  printf 'DONE packet=%s model=%s replay=%s outcome=%s\n' "$p" "$m" "$rid" "$v"
+}
+
+cmd_run() {
+  local exp="" tok="" rerun=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --approve) [ $# -ge 2 ] || usage; tok="$2"; shift 2 ;;
+      --rerun)   [ $# -ge 2 ] || usage; rerun="$2"; shift 2 ;;
+      -*) usage ;;
+      *) [ -z "$exp" ] || usage; exp="$1"; shift ;;
+    esac
+  done
+  [ -n "$exp" ] && [ -n "$tok" ] || usage
+  case "$exp" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) die "run: not an experiment id (12 hex, as \`settings\` prints it): $exp" ;;
+  esac
+  case "$tok" in
+    *[!0-9a-f]*) die "run: not an approval token (hex, as \`estimate\` prints it on its APPROVAL= line): $tok" ;;
+  esac
+  if [ -n "$rerun" ]; then
+    case "$rerun" in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+      *) die "run: --rerun: not a replay id (12 hex, as \`prepare\` prints it): $rerun" ;;
+    esac
+  fi
+  [ -x "$RUNSTATE" ] || die "run: runstate.sh is missing or not executable: $RUNSTATE" 2
+
+  local store appr records
+  store="$(store_root)"
+  RUN_DIR="$store/$exp"
+  RUN_SELF="$HERE/$(basename "$0")"
+  appr="$RUN_DIR/approvals.jsonl"
+  records="$store/records.jsonl"
+  [ -f "$RUN_DIR/selection.json" ] || die "run: no stored selection for experiment $exp (run \`compare.sh select\` first): $RUN_DIR/selection.json"
+
+  _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "run: cannot create a temp root"
+  _CMP_LOCK=""
+  trap '[ -n "$_CMP_LOCK" ] && rmdir "$_CMP_LOCK" 2>/dev/null; [ -n "$_CMP_TMP" ] && rm -rf "$_CMP_TMP"; :' EXIT
+  local tmp="$_CMP_TMP"
+
+  # --- the lock: held from reading the token to consuming it, so two runs never
+  # both find it pending -------------------------------------------------------------
+  mkdir "$RUN_DIR/approvals.lock" 2>/dev/null \
+    || die "run: the approvals lock is held, by another run consuming a token or one that stopped while it did (remove it only when no run is active): $RUN_DIR/approvals.lock"
+  _CMP_LOCK="$RUN_DIR/approvals.lock"
+
+  # --- the token: missing, spent, superseded or valid ----------------------------------
+  [ -f "$appr" ] || die "run: token $tok is missing: no approval has been issued for experiment $exp (run \`compare.sh estimate\`): $appr"
+  json_flat "$appr" > "$tmp/appr" || die "run: the approvals file is not readable JSONL, so no token in it can be checked: $appr"
+  awk -F'\t' '
+    $1 + 0 > n { n = $1 + 0 }
+    $2 == ".token" && $3 == "s" { t[$1] = $4 }
+    $2 == ".state" && $3 == "s" { s[$1] = $4 }
+    END { for (d = 1; d <= n; d++) print d "\t" t[d] "\t" s[d] }' "$tmp/appr" > "$tmp/lines"
+  local mine spent newer
+  mine="$(TOK="$tok" awk -F'\t' '$2 == ENVIRON["TOK"] && $3 == "pending" { d = $1 } END { print d }' "$tmp/lines")"
+  spent="$(TOK="$tok" awk -F'\t' '$2 == ENVIRON["TOK"] && $3 == "consumed" { f = 1 } END { print f + 0 }' "$tmp/lines")"
+  [ "$spent" = 0 ] || die "run: token $tok is spent: a run has already consumed it (run \`compare.sh estimate --remaining\` for a new one): $appr"
+  [ -n "$mine" ] || die "run: token $tok is missing: no estimate for experiment $exp issued it (run \`compare.sh estimate\`): $appr"
+  newer="$(TOK="$tok" MINE="$mine" awk -F'\t' '$1 + 0 > ENVIRON["MINE"] + 0 && $3 == "pending" && $2 != ENVIRON["TOK"] { print $2; exit }' "$tmp/lines")"
+  [ -z "$newer" ] || die "run: token $tok is superseded: a later estimate issued token $newer, and only the newest pending token runs: $appr"
+
+  local scope setd
+  scope="$(MINE="$mine" awk -F'\t' '$1 == ENVIRON["MINE"] && $2 == ".scope" && $3 == "s" { print $4; exit }' "$tmp/appr")"
+  setd="$(MINE="$mine" awk -F'\t' '$1 == ENVIRON["MINE"] && $2 == ".set" && $3 == "s" { print $4; exit }' "$tmp/appr")"
+  MINE="$mine" awk -F'\t' '
+    $1 == ENVIRON["MINE"] && $2 ~ /^\.replays\[[0-9]+\]\.(packet|model)$/ && $3 == "s" {
+      i = $2; sub(/^\.replays\[/, "", i); sub(/\].*$/, "", i); i += 0; if (i + 1 > n) n = i + 1
+      if ($2 ~ /packet$/) p[i] = $4; else m[i] = $4
+    }
+    END { for (i = 0; i < n; i++) print p[i] "\t" m[i] }' "$tmp/appr" > "$tmp/set"
+  if [ ! -s "$tmp/set" ] || LC_ALL=C grep -q -v '^[A-Za-z0-9._-][A-Za-z0-9._-]*	[A-Za-z0-9._-][A-Za-z0-9._-]*$' "$tmp/set"; then
+    die "run: token $tok's stored replay set is empty or malformed: $appr"
+  fi
+  # The set it was issued for, byte for byte: the digest `estimate` stored.
+  [ "$(awk -F'\t' '{ printf "REPLAY packet=%s model=%s\n", $1, $2 }' "$tmp/set" | digest)" = "$setd" ] \
+    || die "run: token $tok's stored replays do not digest to its stored set [$setd], so they are not the set it approved: $appr"
+
+  # --- the records: which replays are recorded, and each pair's latest ----------------
+  : > "$tmp/recs"
+  if [ -f "$records" ]; then
+    run_records "$records" "$exp" > "$tmp/recs" \
+      || die "run: the records file is not readable JSONL, so which replays are recorded cannot be read: $records"
+  fi
+
+  # --- --rerun: only an invalid replay whose record is its pair's latest ---------------
+  local rpkt="" rmod=""
+  if [ -n "$rerun" ]; then
+    local renv="$RUN_DIR/replays/$rerun.env" rrow latest lrep lout
+    [ -f "$renv" ] || die "run: --rerun $rerun: experiment $exp holds no replay of that id: $renv"
+    rpkt="$(sed -n 's/^PACKET=//p' "$renv" | head -1)"
+    rmod="$(sed -n 's/^MODEL=//p' "$renv" | head -1)"
+    case "$rpkt:$rmod" in :*|*:|*[!A-Za-z0-9._:-]*) die "run: --rerun $rerun: the replay record's packet or model is malformed: [$rpkt] [$rmod]" ;; esac
+    rrow="$(R="$rerun" awk -F'\t' '$2 == ENVIRON["R"]' "$tmp/recs" | tail -1)"
+    [ -n "$rrow" ] || die "run: --rerun $rerun: the replay has no record, so it has no invalid outcome to rerun"
+    latest="$(P="$rpkt" M="$rmod" awk -F'\t' '$3 == ENVIRON["P"] && $4 == ENVIRON["M"]' "$tmp/recs" | tail -1)"
+    lrep="$(printf '%s\n' "$latest" | cut -f2)"
+    lout="$(printf '%s\n' "$latest" | cut -f5)"
+    [ "$lrep" = "$rerun" ] \
+      || die "run: --rerun $rerun: its record is not the latest for packet $rpkt on $rmod: replay $lrep's (outcome ${lout:-unreadable}) is, and later readers use that one"
+    [ "$lout" = invalid ] \
+      || die "run: --rerun $rerun: its latest record's outcome is ${lout:-unreadable}, not invalid; only an invalid replay is rerun"
+    P="$rpkt" M="$rmod" awk -F'\t' '$1 == ENVIRON["P"] && $2 == ENVIRON["M"] { f = 1 } END { exit !f }' "$tmp/set" \
+      || die "run: --rerun $rerun: token $tok did not approve a replay of packet $rpkt on $rmod (run \`compare.sh estimate\` for a token whose set holds it)"
+  fi
+
+  # --- the plan: each pair of the set, to run or skip (already recorded) ---------------
+  local p m k nrun=0
+  : > "$tmp/plan"
+  while IFS="$(printf '\t')" read -r p m; do
+    if [ -n "$rerun" ]; then
+      [ "$p:$m" = "$rpkt:$rmod" ] || continue
+      k=run
+    elif P="$p" M="$m" awk -F'\t' '$3 == ENVIRON["P"] && $4 == ENVIRON["M"] { f = 1 } END { exit !f }' "$tmp/recs"; then
+      k=skip
+    else
+      k=run
+    fi
+    [ "$k" = run ] && nrun=$((nrun + 1))
+    printf '%s\t%s\t%s\n' "$k" "$p" "$m" >> "$tmp/plan"
+  done < "$tmp/set"
+
+  printf 'RUN experiment=%s token=%s scope=%s replays=%s%s\n' "$exp" "$tok" "${scope:-unknown}" \
+    "$(grep -c . "$tmp/set")" "${rerun:+ rerun=$rerun}"
+
+  # --- a pause already requested: stop before the token is spent ----------------------
+  local preason first
+  if [ "$nrun" -gt 0 ] && preason="$(run_pause)"; then
+    first="$(awk -F'\t' '$1 == "run" { print "packet=" $2 " model=" $3; exit }' "$tmp/plan")"
+    printf 'PAUSED %s reason=%s\n' "$first" "$preason"
+    printf 'RAN=0 SKIPPED=0 REMAINING=%s\nLOG=none\nRUN=paused\n' "$nrun"
+    return 0
+  fi
+
+  # --- consume the token, then release the lock ---------------------------------------
+  local js_rerun=null
+  [ -n "$rerun" ] && js_rerun="\"$rerun\""
+  printf '{"token":"%s","state":"consumed","experiment":"%s","consumed_at":"%s","rerun":%s}\n' \
+    "$tok" "$exp" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$js_rerun" >> "$appr" \
+    || die "run: token $tok could not be consumed, so no replay runs: $appr"
+  rmdir "$_CMP_LOCK" 2>/dev/null; _CMP_LOCK=""
+  printf 'APPROVED token=%s state=consumed\n' "$tok"
+
+  # --- the replays, in the set's order --------------------------------------------------
+  mkdir -p "$RUN_DIR/runs" 2>/dev/null || die "run: the run log directory could not be made: $RUN_DIR/runs"
+  RUN_LOG="$RUN_DIR/runs/$tok.log"
+  local state=complete started=0 ran=0 skipped=0 remaining=0
+  while IFS="$(printf '\t')" read -r k p m; do
+    if [ "$state" != complete ]; then
+      [ "$k" = run ] && remaining=$((remaining + 1))
+      continue
+    fi
+    if [ "$k" = skip ]; then
+      printf 'SKIP packet=%s model=%s reason=recorded\n' "$p" "$m"; skipped=$((skipped + 1)); continue
+    fi
+    if [ "$started" -eq 1 ] && preason="$(run_pause)"; then
+      printf 'PAUSED packet=%s model=%s reason=%s\n' "$p" "$m" "$preason"
+      state=paused; remaining=$((remaining + 1)); continue
+    fi
+    started=1
+    printf 'START packet=%s model=%s\n' "$p" "$m"
+    if run_one "$exp" "$p" "$m"; then ran=$((ran + 1)); else state=error; fi
+  done < "$tmp/plan"
+
+  printf 'RAN=%s SKIPPED=%s REMAINING=%s\nLOG=%s\nRUN=%s\n' "$ran" "$skipped" "$remaining" "$RUN_LOG" "$state"
+  [ "$state" != error ] || exit 1
+}
+
 [ $# -ge 1 ] || usage
 SUB="$1"; shift
 case "$SUB" in
@@ -3636,6 +3962,7 @@ case "$SUB" in
   routing-check) cmd_routing_check "$@" ;;
   sweeps)     cmd_sweeps "$@" ;;
   record)     cmd_record "$@" ;;
+  run)        cmd_run "$@" ;;
   *) usage ;;
 esac
 exit 0

@@ -1258,6 +1258,52 @@ grep -qF "effort xhigh, $SE_INHERIT" "$LD/c-effort-xhigh.md" \
 sed 's/^⚠️ \*\*Effort override\*\*/⚠️ ✅ **Effort override**/' "$LD/c-effort-override.md" > "$LD/v-effort-two.md"
 fires 'two-glyphs: a ⚠️ Effort override line carrying a second glyph is named' two-glyphs "$(_lint C "$LD/v-effort-two.md" "$LD/digest-empty")"
 
+# session-effort-reporting T5: both loop entry points read the session's effort with
+# `runstate.sh session-effort` just before `driver-mode enter` and pass its EFFORT
+# through, instead of a hard-coded `--effort unknown` justified by "nothing records it
+# automatically". Each file is guarded non-empty before the absence checks run over
+# it, and the entry block is the same fenced span `_extract_ct_block` pins above, so a
+# moved block fails the ordering check rather than passing an empty scan.
+for se_skill in run-loop resume; do
+  se_file="$ROOT/skills/$se_skill/SKILL.md"
+  se_body="$(cat "$se_file" 2>/dev/null)"
+  if [ -z "$se_body" ]; then
+    bad "$se_skill SKILL.md is readable for the session-effort checks" "empty or missing: $se_file"
+    continue
+  fi
+  has "$se_skill SKILL.md names runstate.sh session-effort" 'runstate.sh session-effort' "$se_body"
+  if grep -qF 'nothing records it automatically' "$se_file"; then
+    bad "$se_skill SKILL.md no longer says the effort is recorded by nothing" \
+      "found: $(grep -nF 'nothing records it automatically' "$se_file" | head -1)"
+  else
+    ok "$se_skill SKILL.md no longer says the effort is recorded by nothing"
+  fi
+  if grep -qF -- '--effort unknown' "$se_file"; then
+    bad "$se_skill SKILL.md passes no literal --effort unknown" \
+      "found: $(grep -nF -- '--effort unknown' "$se_file" | head -1)"
+  else
+    ok "$se_skill SKILL.md passes no literal --effort unknown"
+  fi
+  # In the entry block: session-effort is invoked, then driver-mode enter, and
+  # --effort takes the printed EFFORT.
+  se_block="$(_extract_ct_block "$se_file")"
+  se_order="$(printf '%s\n' "$se_block" | tr -d '\r' | awk '/^runstate\.sh /{printf "%s ", $2}')"
+  case "$se_order" in
+    *'session-effort driver-mode '*) \
+      ok "$se_skill entry block runs session-effort just before driver-mode enter" ;;
+    *) bad "$se_skill entry block runs session-effort just before driver-mode enter" "invocation order: [$se_order]" ;;
+  esac
+  has "$se_skill entry block passes the printed EFFORT to --effort" \
+    '--effort <EFFORT, exactly as printed>' "$se_block"
+  se_prose="$(_squeeze "$se_file")"
+  has "$se_skill SKILL.md says the effort is read, never inferred from the model" \
+    'The effort is read, never inferred from the model' "$se_prose"
+  has "$se_skill SKILL.md never asks the operator to change the effort" \
+    'Never ask the operator to change the effort' "$se_prose"
+  has "$se_skill SKILL.md renders ⚠️ Effort override only on EFFORT_ENV=set" \
+    'printed `EFFORT_ENV=set`' "$se_prose"
+done
+
 # The shape-defined constructs, one assertion each, against the rule each would
 # otherwise trip -- so an exemption that silently widens or vanishes shows here.
 b_ok="$(_lint B "$LD/b-ok.md" "$LD/digest")"

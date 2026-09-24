@@ -142,6 +142,23 @@ The model cannot read a hook payload itself, so the kickoff's effort must come f
 value a PreToolUse hook records for the session. With one, "effort unknown" is the
 fallback, not the norm.
 
+**Amendment (2026-09-24, `session-effort-reporting`) — the effort comes from the
+session's transcript, not from a hook.** No PreToolUse hook ever recorded
+`effort.level`, and none is added: until this change `run-loop` §2 and `resume` §0
+passed `--effort unknown` unless the operator had stated a level. They now run `runstate.sh session-effort` just
+before `driver-mode enter` and pass its `EFFORT` to `--effort` exactly as printed.
+That reader takes the top-level `.effort` of the last row carrying one in the session's
+own main-thread transcript (`<projects dir>/*/<session-id>.jsonl`, never a `subagents/`
+file). The level is read, never inferred from the model. It is `unknown` when no
+main-thread row carries one — as on a model that takes no effort — or when the
+transcript cannot be found, parsed or trusted. The reader always exits 0, so entry
+proceeds either way. The same call prints `EFFORT_ENV`, `set` only when
+`CLAUDE_CODE_EFFORT_LEVEL` is non-empty; the kickoff renders shape C's `⚠️ **Effort
+override**` line on `set` alone. The PreToolUse finding above stands as a record of
+what the payloads carry; it is no longer the source of the recorded effort, and the
+"Consequences for the plan" bullet for T3/T16 below describes the design as first
+planned, not as built.
+
 ## Consequences for the plan
 
 - **T3/T16:** `driver-mode enter --effort` reads a hook-recorded PreToolUse `effort.level`

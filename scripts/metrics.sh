@@ -1244,6 +1244,20 @@ EOF
      # id already counted once by the section 4 dedup.
      | ($turns | map(select(.role != "main")) | group_by(.aid)
         | map({key: .[0].aid, value: (map(.tok)|sumtok(.))}) | from_entries) as $aid_tok
+     # Per-agent_id effort (session-effort-reporting T3), from the SAME deduped,
+     # run-window-bounded subagent turns as $aid_tok. One level -> that string; a
+     # level changed mid-dispatch -> the distinct levels in first-seen order (turns
+     # sorted by ts; a ts-less turn sorts first). Any turn with a null effort nulls
+     # the whole agent_id: a partial read is unmeasured, never the levels the other
+     # turns happened to carry. A legacy transcript (no `.effort` anywhere) and a
+     # model that takes no effort both land here as null.
+     | ($turns | map(select(.role != "main")) | group_by(.aid)
+        | map({key: .[0].aid,
+               value: (if any(.[]; .effort == null) then null
+                       else (sort_by(.ts // "") | map(.effort)
+                             | reduce .[] as $e ([]; if any(.[]; . == $e) then . else . + [$e] end)
+                             | if length == 1 then .[0] else . end)
+                       end)}) | from_entries) as $aid_eff
      # DISPATCH KIND (dispatch-progress-metrics T3). The latest start or routing
      # record for the packet strictly before the dispatch Agent event decides:
      # a start (with or without --continue) -> initial, a `continue` routing record
@@ -1355,12 +1369,18 @@ EOF
                 # packet tokens are null, the dispatch is unresolved, or no turn
                 # resolves to its agent_id (a missing transcript).
                 | (if ($ts_ok and $dres != null) then ($aid_tok[$dres.key] // null) else null end) as $dtok
-                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null, progress: null}
+                # effort (session-effort-reporting T3): the resolved agent_id own
+                # turns ($aid_eff). Null when the dispatch is unresolved or no turn
+                # resolves to its agent_id; not gated on $ts_ok, since attribution
+                # is by agent_id, not by time.
+                | (if $dres != null then ($aid_eff[$dres.key] // null) else null end) as $deff
+                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null, effort: null, progress: null}
                   else ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length) as $dedits
                     | {kind: $kind, tool_calls: ($devs|length),
                         duration_ms: ($devs|map(.duration_ms//0)|add),
                         edits: $dedits,
                         tokens: $dtok,
+                        effort: $deff,
                         progress: (if ($trailer_unmeasured or $kjn.legacy) then null
                                    elif $j == $landed_i then "landed"
                                    elif $dedits > 0 then "advanced"

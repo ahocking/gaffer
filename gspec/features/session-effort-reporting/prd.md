@@ -79,7 +79,7 @@ and measured per dispatch.
     transcript, asserting the level in the first case and `unknown` in the
     other three
 
-- [ ] **P0**: The kickoff's Session line states the session's effort and that dispatched agents inherit it
+- [x] **P0**: The kickoff's Session line states the session's effort and that dispatched agents inherit it
   - shape C's Session line says dispatched agents inherit that effort, as far
     as their model accepts one
   - a sweep case pins the line for a recorded level and for `unknown`

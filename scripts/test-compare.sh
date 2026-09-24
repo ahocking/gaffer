@@ -29,7 +29,17 @@
 # `runstate.sh refresh-handoff` and `amend-handoff`, installed as the plain
 # first-dispatch handoff for all three models from the earliest run, with the
 # store inside the source's `.agents/metrics/comparisons` leaving everything
-# outside the experiment's own store unchanged.
+# outside the experiment's own store unchanged. `review-view`: two replays (two
+# subject models, a third as reviewer) doing identical work, each work clone
+# left byte-identical; the view on one opaque branch with two fixed, neutral,
+# trailer-free commits; the reviewed change holding the committed, unstaged and
+# untracked work and the packet's own config edit but no routing, metrics or
+# run-state path (those un-ignored in the fixture, so the exclusion is what
+# keeps them out); `routing.sh --root <view>` resolving only the reviewer; a
+# search of files, log, refs and paths for every model identifier finding
+# nothing the start did not hold; the result file and handoff redacted in every
+# form, header paths pointed into the view; the two models' views identical;
+# and refusals (unknown replay, a scratch root naming a model) leaving no view.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -1198,6 +1208,237 @@ assert_eq "prepare, a stray closing splice marker: exit 1, nothing on stdout" "1
 assert_has "prepare, a stray closing splice marker: named" "first-dispatch bytes are unknown" "$ERR"
 cp "$WORK/splice-keep.md" "$SH"
 
+printf '\n== review-view: a fixture source, two replays doing identical work ==\n'
+# The subject models are fable and sonnet; the reviewer is haiku, a third model,
+# so every subject identifier the view holds is one it must not. The start
+# commit already names sonnet twice (a doc line and its own model_routing
+# entry), which the search must not count against the view. Each work clone
+# gets the same change, done the way an implementer leaves it: one commit on
+# the opaque branch whose message and trailer name the model, further unstaged
+# and untracked edits, a real edit to project-overrides.yaml beside the
+# replay's routing, metrics and routing-log files naming the model, and a
+# result file naming it in every form (display name with version, resolved id,
+# alias).
+RV="$WORK/rvsrc"
+mkdir -p "$RV/scripts" "$RV/docs" "$RV/.agents"
+git -C "$RV" init -q
+# .agents/metrics/ and the previous run-state are deliberately NOT ignored, as in
+# a repository that never listed them: `git add -A` would pick them up, so only
+# the review view's own exclusion keeps them out of the reviewed change.
+printf '.agents/loop/\n.agents/run-state.yaml\n' > "$RV/.gitignore"
+printf 'echo a\n' > "$RV/scripts/a.sh"
+printf 'Tuned on sonnet once.\n' > "$RV/docs/notes.md"
+printf 'project:\n  name: rv\nmodel_routing:\n  implementer: sonnet\n  architect: haiku\nimplementer_turn_budget: 77\n' \
+  > "$RV/.agents/project-overrides.yaml"
+rv_commit() {
+  git -C "$RV" add -A >/dev/null
+  GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$RV" -c user.name=fixture \
+    -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$RV" rev-parse HEAD
+}
+R0="$(rv_commit base)"
+printf 'echo landed\n' >> "$RV/scripts/a.sh"
+R1="$(rv_commit "$(printf 'rv\n\n[orch packet:rv-t1]')")"
+mkdir -p "$RV/.agents/loop/20260501T000000-aa/rv-t1"
+printf '# rv-t1: the original\n\ntier: integration\nagent: implementer\nrun-state: /elsewhere/run-state.yaml\nresult: /elsewhere/implementer.md\nreview: /elsewhere/review.md\n\nPACKET=rv-t1\nPrefer Sonnet 4.6 wording; FABLE is fine.\nresult: not a header line\n' \
+  > "$RV/.agents/loop/20260501T000000-aa/rv-t1/handoff.md"
+RVEXP=ccccccccccc5
+RVSTORE="$WORK/rvstore"
+RVSCRATCH="$WORK/rvscratch"
+mkdir -p "$RVSTORE/$RVEXP"
+cat > "$RVSTORE/$RVEXP/selection.json" <<EOF
+{
+  "experiment": "$RVEXP",
+  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "source_repo": "$RV", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rv-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rv", "handoff": "original", "start": "$R0", "commits": ["$R1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+rvv() {  # rvv <args...>: OUT/ERR/RC for `compare.sh review-view`
+  OUT="$(ORCH_COMPARE_STORE="$RVSTORE" ORCH_COMPARE_SCRATCH="$RVSCRATCH" "$COMPARE" review-view "$@" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+# rv_work <clone> <run_id> <model>: the implementer's change, identical for every model
+# except where it names the model itself.
+rv_work() {
+  local c="$1" run="$2" m="$3"
+  printf 'echo t1\n' >> "$c/scripts/a.sh"
+  # A file only the commit touches, so a change built from the uncommitted
+  # edits alone would miss it.
+  printf 'echo committed\n' > "$c/scripts/committed.sh"
+  git -C "$c" add scripts/a.sh scripts/committed.sh
+  GIT_AUTHOR_DATE=2026-05-02T00:00:00Z GIT_COMMITTER_DATE=2026-05-02T00:00:00Z git -C "$c" -c user.name="$m-bot" \
+    -c user.email="$m@example.invalid" -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+    commit -q -m "$(printf 'work by claude-%s-5\n\n[orch packet:rv-t1]\nCo-Authored-By: Claude %s <noreply@example.invalid>' "$m" "$m")" >/dev/null
+  printf 'echo t1 again\n' >> "$c/scripts/a.sh"
+  printf 'echo new\n' > "$c/scripts/new.sh"
+  sed 's/^implementer_turn_budget: 77$/implementer_turn_budget: 88/' "$c/.agents/project-overrides.yaml" > "$c/ov.tmp" \
+    && mv "$c/ov.tmp" "$c/.agents/project-overrides.yaml"
+  mkdir -p "$c/.agents/metrics/x"
+  printf '{"model":"claude-%s-5"}\n' "$m" > "$c/.agents/metrics/x/events.jsonl"
+  printf '{"model":"%s"}\n' "$m" > "$c/.agents/loop/$run/routing.jsonl"
+  printf "schema: 3\nnote: 'ran on %s'\n" "$m" > "$c/.agents/run-state-prev.yaml"
+  printf "continue model=%s\n\nDone by Claude %s 5 (claude-%s-5-1), model=%s.\nThe diff is in scripts/.\n" "$m" "$m" "$m" "$m" \
+    > "$c/.agents/loop/$run/rv-t1/implementer.md"
+}
+for m in fable sonnet; do
+  prep_out="$(ORCH_COMPARE_STORE="$RVSTORE" ORCH_COMPARE_SCRATCH="$RVSCRATCH" "$COMPARE" prepare "$RVEXP" rv-t1 "$m" 2>/dev/null)"
+  OUT="$prep_out"
+  eval "RVC_$m=\$(line CLONE); RVR_$m=\$(line REPLAY); RVRUN_$m=\$(line RUN_ID)"
+done
+assert_ne "review-view fixture: both replays prepared" "" "$RVC_fable$RVC_sonnet"
+rv_work "$RVC_fable" "$RVRUN_fable" fable
+rv_work "$RVC_sonnet" "$RVRUN_sonnet" sonnet
+RVST="$(git -C "$RVC_fable" status --porcelain=v1 --untracked-files=all)"
+assert_has "review-view fixture: the work clone's metrics file is untracked, not ignored" "?? .agents/metrics/x/events.jsonl" "$RVST"
+assert_has "review-view fixture: the work clone's previous run-state is untracked, not ignored" "?? .agents/run-state-prev.yaml" "$RVST"
+# The work clone is only read: its status, refs, index and object store.
+clone_state() {
+  printf '%s\n' "$(git -C "$1" status --porcelain=v1 --untracked-files=all --ignored)" \
+    "$(git -C "$1" for-each-ref)" "$(cksum < "$1/.git/index")" "$(cd "$1/.git/objects" && find . | LC_ALL=C sort | cksum)"
+}
+RVC_BEFORE="$(clone_state "$RVC_fable")"
+rvv "$RVR_fable"
+assert_eq "review-view fable: exit 0" "0" "$RC"
+V="$(line VIEW)"; VB="$(line BASE)"; VH="$(line HEAD)"; VBR="$(line BRANCH)"
+RVOUT_fable="$OUT"
+assert_eq "review-view: the work clone's status, refs, index and objects are byte-identical" "$RVC_BEFORE" "$(clone_state "$RVC_fable")"
+assert_eq "review-view: the view is under the scratch root, not the work clone" "$RVSCRATCH:no" \
+  "$(dirname "$V"):$(if [ "$V" = "$RVC_fable" ]; then echo yes; else echo no; fi)"
+assert_eq "review-view: the view is on its one opaque branch, at the change under review" \
+  "refs/heads/$VBR:refs/heads/$VBR:$VH" \
+  "$(git -C "$V" symbolic-ref HEAD 2>/dev/null):$(git -C "$V" for-each-ref --format='%(refname)' refs/heads/ | paste -sd' ' -):$(git -C "$V" rev-parse HEAD 2>/dev/null)"
+assert_eq "review-view: the view has no remote" "" "$(git -C "$V" remote)"
+assert_eq "review-view: the view's commits are the configuration then the change, on the start" \
+  "$VH $VB|$VB $R0" "$(git -C "$V" rev-list --parents -n1 "$VH")|$(git -C "$V" rev-list --parents -n1 "$VB")"
+assert_eq "review-view: the view's working tree is clean at the change" "" \
+  "$(git -C "$V" status --porcelain=v1 --untracked-files=no)"
+assert_eq "review-view: the view's run-state reviews from BASE" "$VB" \
+  "$("$HERE/runstate.sh" get "$(line RUN_STATE)" last_green_commit)"
+assert_eq "review-view: the view is recorded for the replay" "VIEW=$V" \
+  "$(cat "$RVSTORE/$RVEXP/replays/$RVR_fable.views" 2>/dev/null)"
+
+# routing.sh in the view resolves the reviewer and nothing else.
+assert_eq "review-view: routing.sh --root <view> resolve reviewer prints the reviewer model" \
+  "haiku" "$("$ROUTING" --root "$V" resolve reviewer)"
+assert_eq "review-view: the view's routing names no other agent (implementer, architect unresolved)" \
+  ":" "$("$ROUTING" --root "$V" resolve implementer):$("$ROUTING" --root "$V" resolve architect)"
+
+# The reviewed change: the work, committed and not, with no routing, metrics,
+# run-state or run-directory path in it.
+assert_eq "review-view: the reviewed change's paths are the packet's own" \
+  ".agents/project-overrides.yaml scripts/a.sh scripts/committed.sh scripts/new.sh" \
+  "$(git -C "$V" diff --name-only "$VB" "$VH" | paste -sd' ' -)"
+VDIFF="$(git -C "$V" diff "$VB" "$VH")"
+# Changed lines only: the reduced routing map may sit in a hunk's context.
+VCHG="$(printf '%s\n' "$VDIFF" | awk '/^[+-]/ && !/^(\+\+\+|---) /')"
+assert_has "review-view: the committed edit is in the change" "+echo committed" "$VDIFF"
+assert_has "review-view: the unstaged edit is in the change" "+echo t1 again" "$VDIFF"
+assert_has "review-view: the untracked file is in the change" "+echo new" "$VDIFF"
+assert_has "review-view: the packet's own edit to project-overrides.yaml is kept" "+implementer_turn_budget: 88" "$VDIFF"
+case "$VCHG" in
+  *model_routing*|*"reviewer:"*|*"implementer:"*|*fable*) bad "review-view: the routing change is absent from the view's diff" "$VCHG" ;;
+  *) ok "review-view: the routing change is absent from the view's diff" ;;
+esac
+case "$(git -C "$V" diff "$R0" "$VH" -- .agents/project-overrides.yaml)" in
+  *fable*) bad "review-view: the replay's model is in no routing change since the start" ;;
+  *) ok "review-view: the replay's model is in no routing change since the start" ;;
+esac
+
+# The search: every identifier of the settings' models (alias, which is also
+# the settings label, and every resolved id the price table lists for it) in
+# the view's files (every file, .git included except packed objects), git log,
+# refs and paths, beyond what the start commit already held.
+RV_IDS="fable sonnet $(grep -o '"claude-[A-Za-z0-9._-]*"' "$HERE/spend-prices.json" | tr -d '"' | grep -iE 'fable|sonnet' | LC_ALL=C sort -u | paste -sd' ' -)"
+assert_has "review-view fixture: the resolved ids come from the price table" "claude-sonnet-5" "$RV_IDS"
+view_leaks() {  # view_leaks <view> <start>: one line per identifier the view holds beyond <start>
+  local v="$1" s="$2" p id nv ns
+  (cd "$v" && find . -type f ! -path './.git/objects/*' | sed 's|^\./||' | LC_ALL=C sort) > "$WORK/vfiles"
+  while IFS= read -r p; do
+    for id in $RV_IDS; do
+      nv="$(grep -ic -- "$id" "$v/$p" 2>/dev/null)"; nv="${nv:-0}"
+      [ "$nv" -gt 0 ] || continue
+      ns="$(git -C "$v" show "$s:$p" 2>/dev/null | grep -ic -- "$id")"; ns="${ns:-0}"
+      [ "$nv" -le "$ns" ] || printf 'file %s: %s\n' "$p" "$id"
+    done
+  done < "$WORK/vfiles"
+  for id in $RV_IDS; do
+    case "$(git -C "$v" log --format='%an%n%ae%n%cn%n%ce%n%B' "$s..HEAD" | tr 'A-Z' 'a-z')" in *"$id"*) printf 'log: %s\n' "$id" ;; esac
+    case "$(git -C "$v" for-each-ref --format='%(refname) %(symref)' | tr 'A-Z' 'a-z')" in *"$id"*) printf 'ref: %s\n' "$id" ;; esac
+    case "$(cd "$v" && find . ! -path './.git/objects/*' | tr 'A-Z' 'a-z')" in *"$id"*) printf 'path: %s\n' "$id" ;; esac
+    case "$(printf '%s' "$v" | tr 'A-Z' 'a-z')" in *"$id"*) printf 'view path: %s\n' "$id" ;; esac
+  done
+}
+assert_eq "review-view: no model identifier in the view's files, git log, refs or paths beyond the start's" \
+  "" "$(view_leaks "$V" "$R0")"
+# The search itself finds what the start holds (so an empty result is not a blind search).
+assert_eq "review-view fixture: the search reads the start's own mention as held, not missed" "1" \
+  "$(grep -ic sonnet "$V/docs/notes.md")"
+assert_eq "review-view: the view's commits carry the fixed author and messages, no trailer" \
+  "compare <compare@example.invalid> 2000-01-01T00:00:00Z|Changes under review||compare <compare@example.invalid> 2000-01-01T00:00:00Z|Review configuration|" \
+  "$(TZ=UTC git -C "$V" log --format='%an <%ae> %cd|%B' --date=format-local:%Y-%m-%dT%H:%M:%SZ "$R0..$VH" | paste -sd'|' -)"
+case "$(git -C "$V" log --format=%B "$R0..$VH")" in
+  *Co-Authored-By*|*"[orch "*) bad "review-view: no trailer or Co-Authored-By in the view's commits" ;;
+  *) ok "review-view: no trailer or Co-Authored-By in the view's commits" ;;
+esac
+
+# The result file naming its model is redacted, every form of it; the handoff too.
+assert_eq "review-view: a result file naming its model is redacted in every form" \
+"continue model=[model]
+
+Done by Claude [model] ([model]), model=[model].
+The diff is in scripts/." "$(cat "$(line RESULT)" 2>/dev/null)"
+assert_eq "review-view: the result copy sits in the view's run directory" \
+  "$V/.agents/loop/$(line RUN_ID)/rv-t1/implementer.md" "$(line RESULT)"
+VHO="$(cat "$(line HANDOFF)" 2>/dev/null)"
+assert_has "review-view: the handoff's model mentions are redacted" "Prefer [model] wording; [model] is fine." "$VHO"
+assert_has "review-view: the handoff's header result path points into the view" "result: $(line RESULT)" "$VHO"
+assert_has "review-view: the handoff's header review path points into the view" "review: $(line REVIEW)" "$VHO"
+assert_has "review-view: the handoff's header run-state path points into the view" "run-state: $(line RUN_STATE)" "$VHO"
+assert_has "review-view: a body line shaped like a header is left alone" "result: not a header line" "$VHO"
+
+# Blindness across models: the sonnet replay's view of the same work is the
+# fable one's, byte for byte, wherever the reviewer reads.
+rvv "$RVR_sonnet"
+assert_eq "review-view sonnet: exit 0" "0" "$RC"
+V2="$(line VIEW)"
+assert_eq "review-view: two models' views of identical work have the same commits" "$VB $VH" "$(line BASE) $(line HEAD)"
+if cmp -s "$(line RESULT)" "$V/.agents/loop/$(printf '%s\n' "$RVOUT_fable" | sed -n 's/^RUN_ID=//p')/rv-t1/implementer.md"; then
+  ok "review-view: two models' redacted result files are byte-identical"
+else bad "review-view: two models' redacted result files are byte-identical"; fi
+assert_eq "review-view sonnet: no model identifier in the view beyond the start's" "" "$(view_leaks "$V2" "$R0")"
+assert_ne "review-view: each view is its own clone" "$V" "$V2"
+
+printf '\n== review-view: refusals ==\n'
+N_VIEWS="$(ls "$RVSCRATCH" | wc -l | tr -d ' ')"
+rvv abcdefabcdef
+assert_eq "review-view, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "review-view, an unknown replay: says to run prepare" "run \`compare.sh prepare\` first" "$ERR"
+rvv ../etc
+assert_eq "review-view, not a replay id: exit 1" "1" "$RC"
+OUT="$(ORCH_COMPARE_STORE="$RVSTORE" ORCH_COMPARE_SCRATCH="$WORK/Fable-scratch" "$COMPARE" review-view "$RVR_fable" 2>"$WORK/err")"; RC=$?; ERR="$(cat "$WORK/err")"
+assert_eq "review-view, a scratch root naming a model: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "review-view, a scratch root naming a model: named" "scratch root's path names a model" "$ERR"
+assert_eq "review-view, a scratch root naming a model: no view left behind" "" "$(ls "$WORK/Fable-scratch" 2>/dev/null)"
+# A refusal after the view is cloned and committed: the replay's handoff is
+# moved aside, so the build fails at its copy step with the view already on disk.
+RVHO="$(sed -n 's/^HANDOFF=//p' "$RVSTORE/$RVEXP/replays/$RVR_fable.env" | head -1)"
+RVVIEWS_BEFORE="$(cat "$RVSTORE/$RVEXP/replays/$RVR_fable.views" 2>/dev/null)"
+mv "$RVHO" "$RVHO.aside"
+rvv "$RVR_fable"
+mv "$RVHO.aside" "$RVHO"
+assert_eq "review-view, the replay's handoff missing: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "review-view, the replay's handoff missing: named" "handoff is missing" "$ERR"
+assert_eq "review-view, a refusal after the view is built: the half-built view is removed" \
+  "$N_VIEWS" "$(ls "$RVSCRATCH" | wc -l | tr -d ' ')"
+assert_eq "review-view, a refusal after the view is built: no view is recorded" \
+  "$RVVIEWS_BEFORE" "$(cat "$RVSTORE/$RVEXP/replays/$RVR_fable.views" 2>/dev/null)"
+assert_eq "review-view: no refused review-view leaves a view behind" "$N_VIEWS" "$(ls "$RVSCRATCH" | wc -l | tr -d ' ')"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -1208,6 +1449,7 @@ printf '\n== usage ==\n'
 "$COMPARE" estimate >/dev/null 2>&1; assert_eq "estimate without an experiment: exit 2" "2" "$?"
 "$COMPARE" estimate aaaaaaaaaaa1 --bogus >/dev/null 2>&1; assert_eq "estimate with an unknown flag: exit 2" "2" "$?"
 "$COMPARE" prepare aaaaaaaaaaa1 est-e1 >/dev/null 2>&1; assert_eq "prepare without a model: exit 2" "2" "$?"
+"$COMPARE" review-view >/dev/null 2>&1; assert_eq "review-view without a replay: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

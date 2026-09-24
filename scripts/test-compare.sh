@@ -87,7 +87,18 @@
 # record's exact key set with the settings and the effort setting carried, and refusals (no routing
 # check, not ended, routing records disagreeing with the step log, an unknown
 # END, a replay already recorded) appending nothing; `estimate --remaining`
-# counts what it appends.
+# counts what it appends. `run`: every step real, the stub sessions optionally
+# leaving what a clean routing check reads; each token refusal (none ever
+# issued, one no estimate issued, superseded by a later estimate, spent, a
+# malformed one, a stored set that no longer digests) running nothing,
+# consuming nothing and leaving no lock; a pause requested during the first
+# replay stopping the run before the second, which has no record and was never
+# prepared; the token consumed before any replay; the set's stored order and
+# the five steps in order; a pause already requested stopping the run with the
+# token left pending; the resume skipping the recorded replay and running the
+# unrecorded one; `--rerun` refused for a passed and an unknown replay, admitted
+# for the invalid one, whose new record then reads as the latest, so a second
+# `--rerun` of the old id is refused; the pause sentinel always a fixture file.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -1869,6 +1880,25 @@ else
         commit -q -m "the agent's own commit" >/dev/null 2>&1 ;;
   esac
 fi
+# `run` cases only. STUB_PAUSE_AT=<call>: that call requests a pause (writes the
+# sentinel STUB_PAUSE_FILE names), as an operator would while a replay runs.
+# STUB_SEED=<projects dir>: the session leaves what a real one would for the
+# routing check: the metrics hook's events in its working directory (the
+# dispatch stamped with what routing.sh resolves there) and the subagent's
+# transcript turn on the id STUB_PINS (`alias=id ...`) pins that alias to.
+if [ -n "${STUB_PAUSE_AT:-}" ] && [ "$n" = "$STUB_PAUSE_AT" ]; then printf 'reason: stub\n' > "$STUB_PAUSE_FILE"; fi
+if [ -n "${STUB_SEED:-}" ]; then
+  mdl="$("$STUB_ROUTING" --root "$(pwd -P)" resolve "$agent")"
+  pin="$(printf '%s\n' $STUB_PINS | sed -n "s/^$mdl=//p" | head -1)"
+  sid="s$(basename "$d")c$n"
+  mkdir -p .agents/metrics/events "$STUB_SEED/p/$sid/subagents"
+  printf '{"ts":"2026-05-02T00:00:02Z","session_id":"%s","agent_id":"%sa","agent_type":"gaffer:%s","tool":"Edit","ok":true}\n' \
+    "$sid" "$sid" "$agent" > ".agents/metrics/events/$sid.jsonl"
+  printf '{"ts":"2026-05-02T00:00:03Z","session_id":"%s","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:%s","model":"%s","routing_resolved":"%s","routing_table":{"%s":"%s"},"ok":true}\n' \
+    "$sid" "$agent" "$mdl" "$mdl" "$agent" "$mdl" >> ".agents/metrics/events/$sid.jsonl"
+  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z","message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$sid" "$pin" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
+fi
 printf 'working on it\n%s\n' "$line"
 STUB
 chmod +x "$WORK/stub-claude"
@@ -2823,6 +2853,175 @@ assert_eq "record, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
 OUT="$(ORCH_COMPARE_STORE="$RDSTORE" ORCH_COMPARE_PRICES="$WORK/rd-prices.json" "$COMPARE" estimate "$RDEXP" --remaining 2>"$WORK/err")"
 assert_eq "record: estimate --remaining reads the appended records (the one replay recorded)" "1:0" "$(line RECORDED):$(line REPLAYS)"
 
+printf '\n== run: an approved set, replayed in order to its records ==\n'
+# The replay fixture's packet on two models, every step real (prepare, replay
+# through the stub, routing-check with the real metrics.sh, sweeps, record).
+# A stub session with STUB_SEED leaves the events and transcript a clean
+# routing check reads, so its replay can pass; without it the routing check
+# does not pass and the replay reads invalid. The pause sentinel is a fixture
+# file (ORCH_PAUSE_FILE), never this checkout's own.
+RUNEXP=eeeeeeeeee11
+RUNSTORE="$WORK/runstore"
+RUNPAUSE="$WORK/run-pause"
+RUNPROJ="$WORK/runproj"
+mkdir -p "$RUNSTORE/$RUNEXP"
+cat > "$RUNSTORE/$RUNEXP/selection.json" <<EOF
+{
+  "experiment": "$RUNEXP",
+  "settings": {"role": "implementer", "models": ["fable", "sonnet"], "reviewer_model": "haiku", "effort": "high", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5", "sonnet": "claude-sonnet-4-6"}, "source_repo": "$RP", "per_class": 1, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+    {"packet": "rp-t1", "class": "code", "tier": "integration", "fix_rounds": 0, "title": "rp", "handoff": "original", "start": "$RP0", "commits": ["$RP1"]}
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+run_est() {  # run_est [--remaining]: a fresh token in RUNTOK
+  OUT="$(ORCH_COMPARE_STORE="$RUNSTORE" "$COMPARE" estimate "$RUNEXP" "$@" 2>/dev/null)"
+  RUNTOK="$(line APPROVAL)"
+}
+run_stub() {  # run_stub <script lines...>: a fresh stub directory in SD
+  RPN=$((RPN + 1)); SD="$WORK/stub$RPN"; mkdir -p "$SD"; : > "$SD/log"
+  printf '%s\n' "$@" > "$SD/script"
+}
+run_run() {  # run_run <run args...>: OUT/ERR/RC for `compare.sh run`, through the stub in SD
+  OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT=60 \
+    ORCH_COMPARE_STORE="$RUNSTORE" ORCH_COMPARE_SCRATCH="$RPSCRATCH" ORCH_PAUSE_FILE="$RUNPAUSE" \
+    ORCH_METRICS_PROJECTS_DIR="$RUNPROJ" STUB_PAUSE_FILE="$RUNPAUSE" STUB_ROUTING="$ROUTING" \
+    STUB_PINS="fable=claude-fable-5-1 sonnet=claude-sonnet-4-6 haiku=claude-haiku-4-5" \
+    "$COMPARE" run "$@" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+run_calls() { grep -c '^call=' "$SD/log"; }
+run_recs() { if [ -f "$RUNSTORE/records.jsonl" ]; then wc -l < "$RUNSTORE/records.jsonl" | tr -d ' '; else echo 0; fi; }
+run_envs() { ls "$RUNSTORE/$RUNEXP/replays" 2>/dev/null | grep -c '\.env$'; }
+# run_latest <model>: `<replay> <outcome>` of the last record naming rp-t1 on <model>.
+run_latest() {
+  awk -v m="\"model\":\"$1\"" 'index($0, "\"packet\":\"rp-t1\"") && index($0, m) { r = $0 }
+    END { if (match(r, /"replay":"[0-9a-f]*"/)) rp = substr(r, RSTART + 10, RLENGTH - 11)
+          if (match(r, /"outcome":"[a-z-]*"/)) o = substr(r, RSTART + 11, RLENGTH - 12)
+          print rp " " o }' "$RUNSTORE/records.jsonl" 2>/dev/null
+}
+run_state() {  # run_state <token>: the states the approvals file records for it, in order
+  awk -v t="{\"token\":\"$1\",\"state\":\"" 'index($0, t) == 1 { s = substr($0, length(t) + 1); sub(/".*/, "", s); o = o (o == "" ? "" : " ") s } END { print o }' \
+    "$RUNSTORE/$RUNEXP/approvals.jsonl" 2>/dev/null
+}
+rm -f "$RUNPAUSE"
+
+# Token refusals, each running nothing and consuming nothing.
+run_stub "$IMPL_DONE" "$REV_PASS"
+run_run "$RUNEXP" --approve 0123456789abcdef0123456789abcdef
+assert_eq "run, no token ever issued: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run, no token ever issued: refused as missing" "is missing" "$ERR"
+run_est
+RUNTOK1="$RUNTOK"
+run_est
+RUNTOK2="$RUNTOK"
+assert_eq "run fixture: estimate issues a token for the two replays" "2" "$(line REPLAYS)"
+run_run "$RUNEXP" --approve 0123456789abcdef0123456789abcdef
+assert_eq "run, a token no estimate issued: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run, a token no estimate issued: refused as missing" "token 0123456789abcdef0123456789abcdef is missing" "$ERR"
+run_run "$RUNEXP" --approve "$RUNTOK1"
+assert_eq "run, a superseded token: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run, a superseded token: refused naming the newer token" "token $RUNTOK1 is superseded: a later estimate issued token $RUNTOK2" "$ERR"
+for RUNBAD in not-a-token 'ab/../cd' 'ab"cd'; do
+  run_run "$RUNEXP" --approve "$RUNBAD"
+  assert_eq "run, a malformed token [$RUNBAD]: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+  assert_has "run, a malformed token [$RUNBAD]: refused as malformed, not looked up" "not an approval token" "$ERR"
+done
+cp "$RUNSTORE/$RUNEXP/approvals.jsonl" "$WORK/run-appr"
+sed "s/\"model\":\"sonnet\"/\"model\":\"opus\"/" "$WORK/run-appr" > "$RUNSTORE/$RUNEXP/approvals.jsonl"
+run_run "$RUNEXP" --approve "$RUNTOK2"
+cp "$WORK/run-appr" "$RUNSTORE/$RUNEXP/approvals.jsonl"
+assert_eq "run, a token whose stored set was altered: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run, a token whose stored set was altered: refused" "do not digest to its stored set" "$ERR"
+assert_eq "run, every token refusal: no session, no replay prepared, no record, no token consumed" \
+  "0:0:0:pending:pending" "$(run_calls):$(run_envs):$(run_recs):$(run_state "$RUNTOK1"):$(run_state "$RUNTOK2")"
+assert_eq "run, every token refusal: no lock left behind" "no" \
+  "$(if [ -e "$RUNSTORE/$RUNEXP/approvals.lock" ]; then echo yes; else echo no; fi)"
+
+# A pause requested during the first replay: that replay runs to its record, the
+# second is never started, and has no record, no clone and no replay files.
+run_stub "$IMPL_DONE" "$REV_PASS"
+STUB_PAUSE_AT=1 run_run "$RUNEXP" --approve "$RUNTOK2"
+assert_eq "run, a pause during the first replay: exit 0, stops paused" "0:paused" "$RC:$(line RUN)"
+assert_eq "run: the token is consumed before any replay starts" "pending consumed" "$(run_state "$RUNTOK2")"
+assert_eq "run: replays start in the set's stored order, and the pause is honoured between replays" \
+  "START packet=rp-t1 model=fable|PAUSED packet=rp-t1 model=sonnet reason=stub" \
+  "$(printf '%s\n' "$OUT" | grep '^START \|^PAUSED ' | paste -sd'|' -)"
+assert_eq "run: the first replay went prepare, replay, routing-check, sweeps, record" \
+  "prepare replay routing-check sweeps record" \
+  "$(printf '%s\n' "$OUT" | sed -n 's/^STEP .* step=\([a-z-]*\) .*/\1/p' | paste -sd' ' -)"
+RUN_R1="$(printf '%s\n' "$OUT" | sed -n 's/^DONE packet=rp-t1 model=fable replay=\([0-9a-f]*\) .*/\1/p')"
+assert_eq "run, unseeded sessions: the first replay's routing check does not pass, so it is recorded invalid" \
+  "$RUN_R1 invalid" "$(run_latest fable)"
+assert_eq "run, a pause between replays: one record, one replay prepared, two sessions, one left to run" \
+  "1:1:2:RAN=1 SKIPPED=0 REMAINING=1" "$(run_recs):$(run_envs):$(run_calls):$(printf '%s\n' "$OUT" | grep '^RAN=')"
+assert_eq "run, a pause between replays: no partial record for the replay not started" "" "$(run_latest sonnet | tr -d ' ')"
+assert_has "run: each step's output is kept in the run's log" "== record $RUN_R1 ==" "$(cat "$(line LOG)")"
+
+# The spent token, then a pause already requested: the run stops before
+# spending the new token, which stays pending.
+run_stub "$IMPL_DONE" "$REV_PASS"
+run_run "$RUNEXP" --approve "$RUNTOK2"
+assert_eq "run, a spent token: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run, a spent token: refused as spent" "token $RUNTOK2 is spent" "$ERR"
+run_est
+RUNTOK3="$RUNTOK"
+assert_eq "run fixture: an estimate of the whole set after one record" "2" "$(line REPLAYS)"
+run_run "$RUNEXP" --approve "$RUNTOK3"
+assert_eq "run, a pause requested before it starts: exit 0, paused, nothing run" "0:paused:0:1" \
+  "$RC:$(line RUN):$(run_calls):$(run_recs)"
+assert_eq "run, a pause requested before it starts: the token stays pending" "pending" "$(run_state "$RUNTOK3")"
+
+# The resume: only the replay with no stored record runs; the recorded one is skipped.
+rm -f "$RUNPAUSE"
+run_stub "$IMPL_DONE" "$REV_PASS"
+STUB_SEED="$RUNPROJ" run_run "$RUNEXP" --approve "$RUNTOK3"
+assert_eq "run, resumed: exit 0, complete" "0:complete" "$RC:$(line RUN)"
+assert_eq "run, resumed: the recorded replay is skipped, the unrecorded one runs" \
+  "SKIP packet=rp-t1 model=fable reason=recorded|START packet=rp-t1 model=sonnet" \
+  "$(printf '%s\n' "$OUT" | grep '^SKIP \|^START ' | paste -sd'|' -)"
+assert_eq "run, resumed: two sessions, one new record, the fable record untouched" \
+  "2:2:$RUN_R1 invalid" "$(run_calls):$(run_recs):$(run_latest fable)"
+RUN_R2="$(printf '%s\n' "$OUT" | sed -n 's/^DONE packet=rp-t1 model=sonnet replay=\([0-9a-f]*\) .*/\1/p')"
+assert_eq "run, seeded sessions: the routing check passes and the replay is recorded passed" \
+  "$RUN_R2 passed" "$(run_latest sonnet)"
+run_est --remaining
+assert_eq "run, resumed: nothing remains to estimate" "0:none" "$(line REPLAYS):$(line APPROVAL)"
+
+# --rerun: refused for a replay whose latest record is not invalid, admitted for
+# the invalid one, whose new record then takes its place.
+run_est
+RUNTOK4="$RUNTOK"
+run_stub "$IMPL_DONE" "$REV_PASS"
+run_run "$RUNEXP" --approve "$RUNTOK4" --rerun "$RUN_R2"
+assert_eq "run --rerun, a passed replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run --rerun, a passed replay: refused naming its outcome" "its latest record's outcome is passed, not invalid" "$ERR"
+run_run "$RUNEXP" --approve "$RUNTOK4" --rerun 0123456789ab
+assert_eq "run --rerun, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "run --rerun, an unknown replay: refused as unknown" "holds no replay of that id" "$ERR"
+assert_eq "run --rerun refusals: no session, no record, the token still pending" "0:2:pending" \
+  "$(run_calls):$(run_recs):$(run_state "$RUNTOK4")"
+STUB_SEED="$RUNPROJ" run_run "$RUNEXP" --approve "$RUNTOK4" --rerun "$RUN_R1"
+assert_eq "run --rerun, the invalid replay: exit 0, one replay run, complete" "0:complete:RAN=1 SKIPPED=0 REMAINING=0" \
+  "$RC:$(line RUN):$(printf '%s\n' "$OUT" | grep '^RAN=')"
+RUN_R3="$(printf '%s\n' "$OUT" | sed -n 's/^DONE packet=rp-t1 model=fable replay=\([0-9a-f]*\) .*/\1/p')"
+assert_ne "run --rerun: the rerun is a new replay" "$RUN_R1" "$RUN_R3"
+assert_eq "run --rerun: a new record appended, the invalid one kept" "3:yes" \
+  "$(run_recs):$(if grep -q "\"replay\":\"$RUN_R1\".*\"outcome\":\"invalid\"" "$RUNSTORE/records.jsonl"; then echo yes; else echo no; fi)"
+assert_eq "run --rerun: the rerun's record is the latest for its packet and model" "$RUN_R3 passed" "$(run_latest fable)"
+RUN_LAST_APPR="$(tail -1 "$RUNSTORE/$RUNEXP/approvals.jsonl")"
+assert_eq "run --rerun: the token is consumed, its line naming the rerun" "pending consumed:\"rerun\":\"$RUN_R1\"}" \
+  "$(run_state "$RUNTOK4"):${RUN_LAST_APPR##*,}"
+run_est
+run_stub "$IMPL_DONE" "$REV_PASS"
+run_run "$RUNEXP" --approve "$RUNTOK" --rerun "$RUN_R1"
+assert_eq "run --rerun, the superseded invalid replay: exit 1, nothing run" "1:0" "$RC:$(run_calls)"
+assert_has "run --rerun, the superseded invalid replay: refused, the rerun's record read in its place" \
+  "its record is not the latest for packet rp-t1 on fable: replay $RUN_R3's (outcome passed) is" "$ERR"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -2838,6 +3037,9 @@ printf '\n== usage ==\n'
 "$COMPARE" routing-check >/dev/null 2>&1; assert_eq "routing-check without a replay id: exit 2" "2" "$?"
 "$COMPARE" sweeps >/dev/null 2>&1; assert_eq "sweeps without a replay id: exit 2" "2" "$?"
 "$COMPARE" record >/dev/null 2>&1; assert_eq "record without a replay id: exit 2" "2" "$?"
+"$COMPARE" run aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "run without --approve: exit 2" "2" "$?"
+"$COMPARE" run aaaaaaaaaaa1 --approve >/dev/null 2>&1; assert_eq "run with --approve and no token: exit 2" "2" "$?"
+"$COMPARE" run aaaaaaaaaaa1 --approve abc --bogus >/dev/null 2>&1; assert_eq "run with an unknown flag: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

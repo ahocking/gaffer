@@ -740,14 +740,33 @@
 #                     thing, no table). It reads only the store: the stored
 #                     selection (`select` first), records.jsonl, rankings.jsonl
 #                     and labels.jsonl; it runs nothing, writes nothing, and
-#                     prints no timestamp. Sections, in order:
-#                       the header   the varied role and models, the reviewer
-#                                    and effort, and one line saying what each
-#                                    figure is over.
-#                       Cells        one line per model x class (the settings'
-#                                    model order; code, then prose). A cell is
-#                                    every selected packet of the class, each
-#                                    read through THE LATEST-RECORD RULE. A
+#                     prints no timestamp, so two renders of the same store
+#                     are byte-identical.
+#                     THE GROUP: the experiment is reported together with
+#                     every other stored experiment (<store>/<id>/selection.json)
+#                     whose settings name the same varied role, reviewer model
+#                     and source repository, the named experiment first, the
+#                     rest in id order; an experiment missing any of the three
+#                     is a group alone. Every figure is over the group's
+#                     records and never pools anything outside it: a later
+#                     experiment on another role, reviewer model or source
+#                     repository is its own group, reported by naming one of
+#                     its experiments. Every stored selection is read, and an
+#                     unreadable one refuses the report. Sections, in order:
+#                       the header   the varied role and the group's models, the
+#                                    reviewer and effort(s), the source
+#                                    repository, the group's experiments (each
+#                                    with its models and effort), and one line
+#                                    saying what each figure is over.
+#                       Cells        one line per model x class (the group's
+#                                    model order: the settings' order, then
+#                                    each later experiment's new models; code,
+#                                    then prose). A cell is every selected
+#                                    packet of the class in each group
+#                                    experiment whose models include the model
+#                                    (a packet two experiments selected counts
+#                                    once per experiment), each read through
+#                                    THE LATEST-RECORD RULE per experiment. A
 #                                    replay is SCORED when its latest record is
 #                                    not `invalid`; `invalid` is a harness
 #                                    fault and is left out of every figure
@@ -760,7 +779,16 @@
 #                                                  over the passed replays;
 #                                      rank        the mean position (1 best)
 #                                                  over the class's ranked
-#                                                  packets;
+#                                                  packets, within one
+#                                                  RANKING SET: the models a
+#                                                  ranking ranked together.
+#                                                  Ranks from different sets
+#                                                  are never averaged: when
+#                                                  the group holds more than
+#                                                  one set, the cell gives one
+#                                                  rank per set that ranked
+#                                                  the model, each naming its
+#                                                  set;
 #                                      tokens      the mean of the four token
 #                                                  fields' sum, and dollars the
 #                                                  mean dollars_min-dollars_max,
@@ -777,14 +805,17 @@
 #                                    class, handoff source (`original` or
 #                                    `rebuilt`, as the selection stored it and
 #                                    `prepare` installed it), and ranked or
-#                                    unranked with why.
+#                                    unranked with why; in a group of more than
+#                                    one experiment, also the experiment.
 #                       Ranking      the count of selected packets left
 #                                    unranked. A packet is ranked by its last
-#                                    rankings.jsonl line for the experiment,
+#                                    rankings.jsonl line for its experiment,
 #                                    resolved to models through the labels.jsonl
 #                                    line carrying the same ranking id; one with
-#                                    no ranking, or whose labels do not resolve,
-#                                    is unranked.
+#                                    no ranking, or whose labels do not resolve
+#                                    to the group's models, is unranked. A group
+#                                    holding more than one ranking set names
+#                                    them.
 #                       Proposal     computed by THE PROPOSAL RULE, never
 #                                    written by a model: the highest pass rate
 #                                    over both classes (pooled: passed over
@@ -792,7 +823,12 @@
 #                                    the lowest mean rank, then the lowest mean
 #                                    dollars (the midpoint of the mean range),
 #                                    each deciding only among the models tied
-#                                    on every figure before it. It prints one
+#                                    on every figure before it. The mean rank is
+#                                    read from the one ranking set that ranked
+#                                    every tied model together: none leaves it
+#                                    unmeasured, and more than one stops the
+#                                    rule, naming the sets, since ranks from
+#                                    different sets are never averaged. It prints one
 #                                    `<role>: <model>` entry, the
 #                                    one-model-per-agent shape of
 #                                    `model_routing`, and the deciding figure
@@ -4644,18 +4680,38 @@ cmd_report() {
       json_flat "$f" > "$tmp/$name" || die "report: the $name file is not readable JSONL: $f"
     fi
   done
+  # Every stored experiment's selection, this one's included, each flattened with
+  # its experiment id as the first column: THE GROUP is read from their settings.
+  # An unreadable one is refused rather than skipped, since skipping it could
+  # drop a group member's records unseen.
+  local x
+  : > "$tmp/sels"
+  while IFS= read -r f; do
+    x="${f%/selection.json}"; x="${x##*/}"
+    case "$x" in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+      *) continue ;;
+    esac
+    json_flat "$f" > "$tmp/one" || die "report: the stored selection is not readable JSON: $f"
+    [ "$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/one")" = "$x" ] \
+      || die "report: the stored selection does not name experiment $x: $f"
+    X="$x" awk -F'\t' 'BEGIN { OFS = "\t" } { $1 = ENVIRON["X"]; print }' "$tmp/one" >> "$tmp/sels" \
+      || die "report: cannot read the stored selection: $f"
+  done < <(find "$store" -mindepth 2 -maxdepth 2 -type f -name selection.json 2>/dev/null | LC_ALL=C sort)
 
-  EXP="$exp" SEL="$tmp/sel" RECS="$tmp/records" RANKS="$tmp/rankings" LABELS="$tmp/labels" awk -F'\t' '
+  EXP="$exp" SELS="$tmp/sels" RECS="$tmp/records" RANKS="$tmp/rankings" LABELS="$tmp/labels" awk -F'\t' '
     function ix(path, pre,   s) { s = substr(path, length(pre) + 1); sub(/\].*$/, "", s); return s + 0 }
     function leaf(path,   s) { s = path; sub(/^.*\./, "", s); return s }
     function mean(s, n, fmt) { return n > 0 ? sprintf(fmt, s / n) : "unmeasured" }
     # agg <model> <classes>: the model'"'"'s cells over the space-separated classes,
-    # pooled into the A* globals (sums and their n, never a mean of means).
+    # pooled into the A* globals (sums and their n, never a mean of means). Its
+    # rank is read from the one ranking set RSET only (0: none, so unmeasured):
+    # ranks from different ranking sets are never averaged together.
     function agg(m, cl,   n, k, a) {
       n = split(cl, a, " ")
       Asc = 0; Apa = 0; Ars = 0; Arn = 0; Atk = 0; Atn = 0; Alo = 0; Ahi = 0; Adn = 0
       for (k = 1; k <= n; k++) {
-        Asc += Csc[m, a[k]]; Apa += Cpa[m, a[k]]; Ars += Crs[m, a[k]]; Arn += Crn[m, a[k]]
+        Asc += Csc[m, a[k]]; Apa += Cpa[m, a[k]]; Ars += Rs[m, a[k], RSET]; Arn += Rn[m, a[k], RSET]
         Atk += Ctk[m, a[k]]; Atn += Ctn[m, a[k]]; Alo += Clo[m, a[k]]; Ahi += Chi[m, a[k]]; Adn += Cdn[m, a[k]]
       }
     }
@@ -4680,29 +4736,46 @@ cmd_report() {
     # range), each deciding only among the models tied on every figure before
     # it. Sets DEC (the model) and DBY (the cited reason), or DEC="" and DWHY:
     # a figure the rule reaches that is unmeasured for a tied model stops it
-    # (never read as 0), as does a tie on all three.
-    function decide(cl,   ci, crit, i, nc, nk, bv, v, s, lead, um) {
+    # (never read as 0), as does a tie on all three. Rank is read from the one
+    # ranking set that ranked every tied model; none leaves it unmeasured, and
+    # more than one stops the rule, since ranks from different ranking sets are
+    # never averaged together.
+    function decide(cl,   ci, crit, cn, i, nc, nk, bv, v, s, lead, um, t, all, ns, sl) {
       nc = 0; for (i = 1; i <= nm; i++) DC[++nc] = mod[i]
-      lead = ""
+      lead = ""; RSET = 0
       for (ci = 1; ci <= 3; ci++) {
-        crit = CRIT[ci]; um = ""
+        crit = CRIT[ci]; um = ""; cn = CNAME[crit]
+        if (crit == "rank") {
+          ns = 0; sl = ""
+          for (t = 1; t <= nset; t++) {
+            all = 1; for (i = 1; i <= nc; i++) if (!((t, DC[i]) in SETHAS)) all = 0
+            if (all) { ns++; RSET = t; sl = sl (sl == "" ? "" : ", ") SETNAME[t] }
+          }
+          if (ns > 1) { DEC = ""; DWHY = lead ", and the rule'"'"'s next figure, " cn ", comes from more than one ranking set ranking them together (" sl "), and ranks from different ranking sets are never averaged together"; return }
+          if (ns == 0) RSET = 0
+          else if (nset > 1) cn = cn " in ranking set " SETNAME[RSET]
+        }
         for (i = 1; i <= nc; i++) {
           agg(DC[i], cl)
           if ((crit == "rank" && Arn == 0) || (crit == "dollars" && Adn == 0)) { um = um (um == "" ? "" : ", ") DC[i]; continue }
           v = (crit == "pass" ? -Apa / Asc : (crit == "rank" ? Ars / Arn : (Alo + Ahi) / (2 * Adn)))
           DV[i] = sprintf("%.6f", v) + 0
         }
-        if (um != "") { DEC = ""; DWHY = lead ", and the rule'"'"'s next figure, " CNAME[crit] ", is unmeasured " scope(cl) " for " um; return }
+        if (um != "") {
+          DEC = ""; DWHY = lead ", and the rule'"'"'s next figure, " cn ", is unmeasured " scope(cl) " for " um
+          if (crit == "rank" && RSET == 0 && nset > 0) DWHY = DWHY ": no one ranking set ranked them all together"
+          return
+        }
         bv = DV[1]; for (i = 2; i <= nc; i++) if (DV[i] < bv) bv = DV[i]
         nk = 0; for (i = 1; i <= nc; i++) if (DV[i] == bv) DK[++nk] = DC[i]
         if (nk == 1) {
           DEC = DK[1]; s = ""
           for (i = 1; i <= nc; i++) if (DC[i] != DEC) s = s (s == "" ? " over " : "; ") cite(crit, DC[i], cl)
-          DBY = CNAME[crit] " " scope(cl) ": " cite(crit, DEC, cl) s (lead == "" ? "" : ", after " lead)
+          DBY = cn " " scope(cl) ": " cite(crit, DEC, cl) s (lead == "" ? "" : ", after " lead)
           return
         }
         s = ""; for (i = 1; i <= nk; i++) s = s (i > 1 ? " and " : "") cite(crit, DK[i], cl)
-        lead = lead (lead == "" ? "" : "; then ") s " tied on " CNAME[crit]
+        lead = lead (lead == "" ? "" : "; then ") s " tied on " cn
         nc = nk; for (i = 1; i <= nk; i++) DC[i] = DK[i]
       }
       DEC = ""; DWHY = lead ", and the rule separates them no further"
@@ -4740,13 +4813,17 @@ cmd_report() {
       return s
     }
     BEGIN { split("pass rank dollars", CRIT, " "); CNAME["pass"] = "pass rate"; CNAME["rank"] = "mean rank"; CNAME["dollars"] = "mean dollars" }
-    FILENAME == ENVIRON["SEL"] {
-      if ($2 == ".settings.role" && $3 == "s") role = $4
-      else if ($2 == ".settings.reviewer_model" && $3 == "s") rev = $4
-      else if ($2 == ".settings.effort" && $3 == "s") eff = $4
-      else if ($2 ~ /^\.settings\.models\[[0-9]+\]$/ && $3 == "s") { nm++; mod[nm] = $4 }
+    # Every stored selection, keyed by its experiment id (the first column).
+    FILENAME == ENVIRON["SELS"] {
+      x = $1
+      if (!(x in XSEEN)) { XSEEN[x] = 1; XL[++nx] = x }
+      if ($2 == ".settings.role" && $3 == "s") Xrole[x] = $4
+      else if ($2 == ".settings.reviewer_model" && $3 == "s") Xrev[x] = $4
+      else if ($2 == ".settings.source_repo" && $3 == "s") Xsrc[x] = $4
+      else if ($2 == ".settings.effort" && $3 == "s") Xeff[x] = $4
+      else if ($2 ~ /^\.settings\.models\[[0-9]+\]$/ && $3 == "s") { Xnm[x]++; Xmod[x, Xnm[x]] = $4; XHAS[x, $4] = 1 }
       else if ($2 ~ /^\.selected\[[0-9]+\]\.(packet|class|title|handoff)$/) {
-        i = ix($2, ".selected["); S[i, leaf($2)] = $4; if (i + 1 > np) np = i + 1
+        i = ix($2, ".selected["); XS[x, i, leaf($2)] = $4; if (i + 1 > Xnp[x]) Xnp[x] = i + 1
       }
       next
     }
@@ -4782,32 +4859,74 @@ cmd_report() {
     }
     END {
       E = ENVIRON["EXP"]
+      # THE GROUP: every stored experiment whose settings name the same varied
+      # role, reviewer model and source repository as this one, this one first,
+      # then the rest in id order. Cells pool the group'"'"'s records and never
+      # anything outside it; an experiment missing any of the three is alone.
+      role = Xrole[E]; rev = Xrev[E]; src = Xsrc[E]
+      ng = 1; G[1] = E; ING[E] = 1
+      for (k = 1; k <= nx; k++) {
+        x = XL[k]
+        if (x == E || role == "" || rev == "" || src == "") continue
+        if (Xrole[x] == role && Xrev[x] == rev && Xsrc[x] == src) { G[++ng] = x; ING[x] = 1 }
+      }
+      # The group'"'"'s models, in its experiments'"'"' order, and its selected packets,
+      # one per experiment and packet (a packet two experiments selected is two).
+      nm = 0; np = 0
+      for (g = 1; g <= ng; g++) {
+        x = G[g]
+        for (k = 1; k <= Xnm[x]; k++) if (!(Xmod[x, k] in INM)) { INM[Xmod[x, k]] = 1; mod[++nm] = Xmod[x, k] }
+        for (j = 0; j < Xnp[x]; j++) {
+          Sx[np] = x
+          S[np, "packet"] = XS[x, j, "packet"]; S[np, "class"] = XS[x, j, "class"]
+          S[np, "title"] = XS[x, j, "title"]; S[np, "handoff"] = XS[x, j, "handoff"]
+          np++
+        }
+      }
       # THE LATEST-RECORD RULE: the last record naming the experiment, packet and model.
-      for (d = 1; d <= nr; d++) if ((d in re) && re[d] == E && (d in rp) && (d in rmod)) latest[rp[d], rmod[d]] = d
-      # A packet'"'"'s ranking is its last recorded one; its labels resolve through the
-      # label map line carrying the same ranking id.
-      for (d = 1; d <= nk; d++) if ((d in ke) && ke[d] == E && (d in kp) && (d in kr)) lastrank[kp[d]] = d
+      for (d = 1; d <= nr; d++) if ((d in re) && (re[d] in ING) && (d in rp) && (d in rmod)) latest[re[d], rp[d], rmod[d]] = d
+      # A packet'"'"'s ranking is its last recorded one in its experiment; its labels
+      # resolve through the label map line carrying the same ranking id. Its
+      # RANKING SET is the models it ranked together, in the group'"'"'s model
+      # order; ranks are averaged only within one set.
+      for (d = 1; d <= nk; d++) if ((d in ke) && (ke[d] in ING) && (d in kp) && (d in kr)) lastrank[ke[d], kp[d]] = d
       for (d = 1; d <= nl; d++) if (d in lr) lmap[lr[d]] = d
-      unranked = 0
+      unranked = 0; nset = 0
       for (j = 0; j < np; j++) {
-        p = S[j, "packet"]
-        if (!(p in lastrank)) { why[p] = "no ranking recorded"; unranked++; continue }
-        d = lastrank[p]
-        if (!(kr[d] in lmap)) { why[p] = "its ranking " kr[d] " has no label map line"; unranked++; continue }
+        x = Sx[j]; p = S[j, "packet"]
+        if (!((x, p) in lastrank)) { why[j] = "no ranking recorded"; unranked++; continue }
+        d = lastrank[x, p]
+        if (!(kr[d] in lmap)) { why[j] = "its ranking " kr[d] " has no label map line"; unranked++; continue }
         ld = lmap[kr[d]]; good = (ko[d] > 0)
         for (i = 0; i < ko[d]; i++) {
           mm[i] = ""
           for (k = 0; k < lbn[ld]; k++) if (LB[ld, k, "label"] == KO[d, i, "label"]) mm[i] = LB[ld, k, "model"]
-          if (mm[i] == "" || KO[d, i, "position"] !~ /^[0-9]+$/) good = 0
+          if (mm[i] == "" || !(mm[i] in INM) || KO[d, i, "position"] !~ /^[0-9]+$/) good = 0
         }
-        if (!good) { why[p] = "its ranking " kr[d] " does not resolve to models"; unranked++; continue }
-        for (i = 0; i < ko[d]; i++) rankpos[p, mm[i]] = KO[d, i, "position"] + 0
+        if (!good) { why[j] = "its ranking " kr[d] " does not resolve to models"; unranked++; continue }
+        for (i = 0; i < ko[d]; i++) { rankpos[j, mm[i]] = KO[d, i, "position"] + 0; inrk[j, mm[i]] = 1 }
+        sk = ""; for (i = 1; i <= nm; i++) if ((j, mod[i]) in inrk) sk = sk (sk == "" ? "" : ", ") mod[i]
+        sk = "{" sk "}"
+        if (!(sk in SETIX)) {
+          SETIX[sk] = ++nset; SETNAME[nset] = sk
+          for (i = 1; i <= nm; i++) if ((j, mod[i]) in inrk) SETHAS[nset, mod[i]] = 1
+        }
+        kset[j] = SETIX[sk]
       }
 
       ml = ""; for (i = 1; i <= nm; i++) ml = ml (i > 1 ? ", " : "") mod[i]
+      el = ""; gl = ""
+      for (g = 1; g <= ng; g++) {
+        x = G[g]; e = (Xeff[x] == "" ? "unrecorded" : Xeff[x])
+        if (index(", " el ", ", ", " e ", ") == 0) el = el (el == "" ? "" : ", ") e
+        s = ""; for (k = 1; k <= Xnm[x]; k++) s = s (k > 1 ? ", " : "") Xmod[x, k]
+        gl = gl (g == 1 ? "" : (g == ng ? " and " : ", ")) "`" x "` (" s ", effort " e ")"
+      }
       printf "**Model comparison** (experiment `%s`)\n", E
       printf "> Varied role: %s, across %s\n", role, ml
-      printf "> Reviewer: %s, at effort %s\n", rev, (eff == "" ? "unrecorded" : eff)
+      printf "> Reviewer: %s, at effort %s\n", rev, el
+      printf "> Source repository: %s\n", (src == "" ? "unrecorded" : src)
+      printf "> Group: every stored experiment with this varied role, reviewer model and source repository, %d: %s. No cell pools records from outside it.\n", ng, gl
       printf "> Pass rate is passed over replays not invalid. Fix rounds are over passed replays. Rank is 1 for best, over ranked packets. Tokens and dollars are means over replays not invalid with a measured figure. n is what each figure is over.\n"
 
       printf "\n**Cells**\n"
@@ -4815,20 +4934,20 @@ cmd_report() {
       for (mi = 1; mi <= nm; mi++) for (ci = 1; ci <= 2; ci++) {
         m = mod[mi]; c = cls[ci]
         npk = 0; rec = 0; inval = 0; scored = 0; passed = 0
-        frs = 0; frn = 0; rks = 0; rkn = 0; tks = 0; tkn = 0; lo = 0; hi = 0; dn = 0
+        frs = 0; frn = 0; tks = 0; tkn = 0; lo = 0; hi = 0; dn = 0
         for (j = 0; j < np; j++) {
-          if (S[j, "class"] != c) continue
+          if (S[j, "class"] != c || !((Sx[j], m) in XHAS)) continue
           p = S[j, "packet"]; npk++
-          if ((p, m) in rankpos) { rks += rankpos[p, m]; rkn++ }
-          if (!((p, m) in latest)) continue
-          d = latest[p, m]; rec++
+          if ((j, m) in rankpos) { Rs[m, c, kset[j]] += rankpos[j, m]; Rn[m, c, kset[j]]++ }
+          if (!((Sx[j], p, m) in latest)) continue
+          d = latest[Sx[j], p, m]; rec++
           if (ro[d] == "invalid") { inval++; continue }
           scored++
           if (ro[d] == "passed") { passed++; if (d in rf) { frs += rf[d]; frn++ } }
           if (rtn[d] == 4) { tks += rt[d]; tkn++ }
           if ((d in rdl) && (d in rdh)) { lo += rdl[d]; hi += rdh[d]; dn++ }
         }
-        Csc[m, c] = scored; Cpa[m, c] = passed; Crs[m, c] = rks; Crn[m, c] = rkn
+        Csc[m, c] = scored; Cpa[m, c] = passed
         Ctk[m, c] = tks; Ctn[m, c] = tkn; Clo[m, c] = lo; Chi[m, c] = hi; Cdn[m, c] = dn
         if (scored == 0) {
           if (npk == 0) r = "no " c " packet is selected"
@@ -4840,7 +4959,15 @@ cmd_report() {
         printf "> **%s, %s** — pass rate %.2f (%d passed, n=%d%s)", m, c, passed / scored, passed, scored, \
           (inval > 0 ? "; " inval " invalid excluded" : "")
         printf " · fix rounds %s (n=%d)", mean(frs, frn, "%.2f"), frn
-        printf " · rank %s (n=%d)", mean(rks, rkn, "%.2f"), rkn
+        # Rank: over the group'"'"'s one ranking set, or, when it has more than one,
+        # per set that ranked this model, each named, never averaged together.
+        if (nset <= 1) printf " · rank %s (n=%d)", mean(Rs[m, c, 1], Rn[m, c, 1], "%.2f"), Rn[m, c, 1]
+        else {
+          r = ""
+          for (t = 1; t <= nset; t++) if ((t, m) in SETHAS)
+            r = r (r == "" ? "" : "; ") mean(Rs[m, c, t], Rn[m, c, t], "%.2f") " (n=" Rn[m, c, t] + 0 ") in ranking set " SETNAME[t]
+          printf " · rank %s", (r == "" ? "unmeasured (n=0)" : r)
+        }
         printf " · tokens %s (n=%d)", mean(tks, tkn, "%.0f"), tkn
         printf " · dollars %s (n=%d)\n", (dn > 0 ? sprintf("%.2f–%.2f", lo / dn, hi / dn) : "unmeasured"), dn
       }
@@ -4848,12 +4975,17 @@ cmd_report() {
       printf "\n**Packets**\n"
       for (j = 0; j < np; j++) {
         p = S[j, "packet"]
-        printf "> **%s** (`%s`) — %s, handoff %s, %s\n", S[j, "title"], p, S[j, "class"], \
-          (S[j, "handoff"] == "" ? "unrecorded" : S[j, "handoff"]), ((p in why) ? "unranked: " why[p] : "ranked")
+        printf "> **%s** (`%s`) — %s, handoff %s, %s%s\n", S[j, "title"], p, S[j, "class"], \
+          (S[j, "handoff"] == "" ? "unrecorded" : S[j, "handoff"]), ((j in why) ? "unranked: " why[j] : "ranked"), \
+          (ng > 1 ? ", in experiment `" Sx[j] "`" : "")
       }
 
       printf "\n**Ranking**\n"
       printf "> %s%d of %d packet(s) unranked\n", (unranked > 0 ? "⚠️ " : ""), unranked, np
+      if (nset > 1) {
+        s = ""; for (t = 1; t <= nset; t++) s = s (t > 1 ? ", " : "") SETNAME[t]
+        printf "> %d ranking sets: %s. A rank is averaged only within the set that ranked those models together, never across sets.\n", nset, s
+      }
 
       # The proposal: computed by THE PROPOSAL RULE, never written by a model,
       # and text only: nothing here writes routing configuration.
@@ -4877,7 +5009,7 @@ cmd_report() {
       if (FP != "") printf "> Prose favours %s, by %s\n", FP, FPBY
       else printf "> ⚠️ The prose cells favour no single model: %s\n", FPWHY
       if (FC != "" && FP != "") print split_line(W, FC, FP)
-    }' "$tmp/sel" "$tmp/records" "$tmp/rankings" "$tmp/labels" > "$tmp/out" \
+    }' "$tmp/sels" "$tmp/records" "$tmp/rankings" "$tmp/labels" > "$tmp/out" \
     || die "report: the report could not be rendered"
   cat "$tmp/out"
 }

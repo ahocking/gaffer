@@ -104,7 +104,7 @@ feature: model-comparison-harness
   - covers: A report per cell proposes a `model_routing` change
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh
-- [ ] **T16** [P] **P1** Make the report group stored records by varied role, reviewer model and source repository, never pooling cells across groups, and average ranks only within one ranking set (the same model set ranked together). `scripts/test-compare.sh` gains cases for two renders being byte-identical with a zero stub invocation count, a second experiment on another role appearing as its own group, and two ranking sets over different model sets never averaged together.
+- [x] **T16** [P] **P1** Make the report group stored records by varied role, reviewer model and source repository, never pooling cells across groups, and average ranks only within one ranking set (the same model set ranked together). `scripts/test-compare.sh` gains cases for two renders being byte-identical with a zero stub invocation count, a second experiment on another role appearing as its own group, and two ranking sets over different model sets never averaged together.
   - deps: T15
   - covers: Stored results re-render and experiments accumulate
   - arch: —

@@ -116,7 +116,7 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
     experiment is resumed, the harness states the remaining count and its
     estimate, and waits again
 
-- [ ] **P0**: Each replay runs isolated from the parent commit on the configured model
+- [x] **P0**: Each replay runs isolated from the parent commit on the configured model
   - a replay starts from the parent of the packet's landed commit, in an
     isolated checkout. The main checkout's working tree, its `.agents/` state
     and every branch other than the experiment's own are unchanged by any

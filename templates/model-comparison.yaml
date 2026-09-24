@@ -40,6 +40,23 @@ models:
 # the repository's routing changes later.
 # reviewer_model:
 
+# The one concrete model id each alias is pinned to: `<alias>: <id>`, one
+# indented line each. A dispatch's routing stamp records the alias; run metrics
+# record the full id its transcript shows. `compare.sh routing-check` fails a
+# replay whose transcripts name any id but the pin of the alias routing
+# resolved, so a same-family model of another version never passes. Every
+# model in `models`, and the reviewer model (named above or left to its
+# default), must be pinned to a non-empty id, else the file is refused naming
+# `model_ids`. An entry for any other alias is left out of the experiment and
+# of its id. The pins are part of the experiment: changing one starts a new
+# experiment.
+# No default: set each pin to the id the alias resolves to when the experiment
+# runs. The values below are the first experiment's.
+model_ids:
+  fable: claude-fable-5-1
+  opus: claude-opus-5-5
+  sonnet: claude-sonnet-5
+
 # The repository whose landed packets are replayed. A relative path is read
 # from this file's directory. Left out, it is the checkout compare.sh runs
 # from.

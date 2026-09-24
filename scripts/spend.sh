@@ -65,6 +65,19 @@
 #         `.effort` at all — which is why the cause scan below reads the
 #         lifetime per context from the rows, and treats "effort unrecorded on
 #         both turns" as no change shown rather than as a change.
+#         Probed again 2026-09-24 (every assistant row of every
+#         `<sid>/subagents/agent-*.jsonl` on this machine): dispatched-agent
+#         rows now carry a top-level `.effort` (e.g. "high"); older rows do
+#         not. The earliest row carrying it is dated 2026-07-19; before that
+#         no subagent row carried it. Since then the only rows without it were
+#         claude-haiku-4-5 rows and "<synthetic>" rows; no haiku row carried
+#         it at any date. The 2026-09-21 line above is not borne out on this
+#         machine: that day every non-haiku subagent row carried `.effort`
+#         (985 claude-fable-5-1, 2220 claude-opus-5, 22 claude-sonnet-5) and
+#         the only rows without it were 54 claude-haiku-4-5 rows, so that
+#         probe most likely sampled haiku files only. The cause scan's
+#         "effort unrecorded on both turns" rule still applies to haiku,
+#         "<synthetic>" and pre-2026-07-19 rows.
 #       * every real row scanned on this machine carried both `usage` and
 #         `.timestamp`; no row lacking either was found. The exclude-and-count
 #         path exists for format drift, not a bug reproduced here — it is

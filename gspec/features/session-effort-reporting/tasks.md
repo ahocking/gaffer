@@ -30,7 +30,7 @@ feature: session-effort-reporting
   - covers: Each dispatch's effort is on its run-metrics per-dispatch row
   - arch: —
   - files: scripts/metrics.sh, scripts/test-metrics.sh, docs/adr/0019-run-metrics-observability.md
-- [ ] **T4** [P] **P1** First check a current `subagents/agent-*.jsonl` on this machine. Then amend the 2026-09-21 probe note in the `scripts/spend.sh` header: add a dated observation that dispatched-agent rows now carry a top-level `.effort` and older rows do not. Leave the earlier probe's text in place and change no code, so `scripts/test-spend.sh` still passes unchanged
+- [x] **T4** [P] **P1** First check a current `subagents/agent-*.jsonl` on this machine. Then amend the 2026-09-21 probe note in the `scripts/spend.sh` header: add a dated observation that dispatched-agent rows now carry a top-level `.effort` and older rows do not. Leave the earlier probe's text in place and change no code, so `scripts/test-spend.sh` still passes unchanged
   - deps: —
   - covers: The `scripts/spend.sh` effort note is amended
   - arch: —

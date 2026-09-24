@@ -24,7 +24,7 @@ packet receive byte-identical handoff input, and every replay's quality and cost
 is recorded. The reviewer then ranks the models' final diffs side by side. The
 output is a report per model and packet class, plus a *proposed* `model_routing`
 change that the operator applies by hand, or does not. The first experiment
-varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
+varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
 
 ## Users & Use Cases
 
@@ -40,8 +40,9 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
 
 **In**
 - Experiment settings: the varied role, the model set, the fixed reviewer model,
-  the source repository, the number of packets per class, and the code and
-  prose file sets.
+  the pinned model ids, the reasoning effort every session runs at, the source
+  repository, the number of packets per class, and the code and prose file
+  sets.
 - Selecting landed packets and classing each one as prose or code.
 - Isolated replays from each packet's parent commit, with the varied role's
   model set through `model_routing` and one handoff per packet, original or
@@ -167,7 +168,12 @@ varies the implementer, across Fable 5.1, Opus 5 and Sonnet 5.
   - cost is recorded as tokens and API-equivalent dollars, from the existing
     run-metrics and spend tooling and the per-dispatch rows of
     `dispatch-progress-metrics`. A figure those sources cannot supply is
-    `null`, never 0
+    `null`, never 0; every model in the price table the sources use is
+    priced, so no arm's cost reads unpriced
+  - every session an experiment starts runs at the one reasoning effort its
+    settings name, which no environment override can change; a replay whose
+    transcripts show another effort fails the routing check, and each record
+    carries the effort
   - each record is stored with the experiment's settings once its outcome is
     decided, and survives the session. A resumed experiment runs only replays
     with no stored record, and re-running an `invalid` replay stores a new

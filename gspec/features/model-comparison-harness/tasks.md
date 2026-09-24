@@ -59,7 +59,7 @@ feature: model-comparison-harness
   - covers: Each replay runs isolated from the parent commit on the configured model
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh, templates/model-comparison.yaml
-- [ ] **T9** **P0** Add `compare.sh sweeps <replay>`. It takes every `scripts/test-*.sh` path the replay's handoff names as the required sweeps, runs each with a timeout in a fresh clone of the final diff, and prints `pass`, `fail` (naming the failing sweep) or `none-required`. `scripts/test-compare.sh` gains cases for a passing sweep, a failing sweep named, a handoff naming no sweep, and a sweep run leaving the work clone byte-unchanged.
+- [x] **T9** **P0** Add `compare.sh sweeps <replay>`. It takes every `scripts/test-*.sh` path the replay's handoff names as the required sweeps, runs each with a timeout in a fresh clone of the final diff, and prints `pass`, `fail` (naming the failing sweep) or `none-required`. `scripts/test-compare.sh` gains cases for a passing sweep, a failing sweep named, a handoff naming no sweep, and a sweep run leaving the work clone byte-unchanged.
   - deps: T8
   - covers: Every replay is recorded with its outcome, sweeps and cost
   - arch: —

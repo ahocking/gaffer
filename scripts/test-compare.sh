@@ -58,7 +58,15 @@
 # model, a wrong reviewer model and an unpinned resolved alias each failing on a
 # line naming its check, an empty stamp read as unresolved, the packets written
 # outside the view, and a replay whose step log has no END or whose selection
-# pins no id for its model refused.
+# pins no id for its model refused. `sweeps`: the required sweeps read from the
+# cached handoff (an absolute and a sentence-final path each naming one; a
+# pattern, a longer file name and another directory naming none) and run on the
+# final diff in a fresh clone: a passing sweep on a landed replay (its tree the
+# landed commit's), a failing sweep named on an unlanded replay (tested on the
+# work it left, the work clone byte-unchanged, .git included), a handoff naming
+# no sweep reading none-required, a sweep past the time limit killed with the
+# process it started, a required sweep absent from the final diff failing as
+# not run, no ORCH_* setting reaching a sweep, and a replay with no END refused.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -2119,6 +2127,179 @@ assert_has "routing-check, a replay that has not ended: named" "has not ended" "
 assert_eq "routing-check, a replay that has not ended: nothing is recorded" "no" \
   "$(if [ -e "$RCREPLAYS/$RCR.routing" ]; then echo yes; else echo no; fi)"
 
+printf '\n== sweeps: the required sweeps on the final diff ==\n'
+# A source whose start commit carries four sweeps: test-a passes only when
+# scripts/a.sh holds the stub implementer's `echo step` line (so it passes only
+# on the final diff, never on the start) and reports its environment; test-b
+# always fails; test-slow starts a child and outlives any limit. Four packets,
+# each with an original handoff naming a different set of sweeps.
+SW="$WORK/swsrc"
+mkdir -p "$SW/scripts" "$SW/.agents" "$SW/gspec/features/rp"
+git -C "$SW" init -q
+printf '.agents/loop/\n.agents/run-state.yaml\n.agents/metrics/\n' > "$SW/.gitignore"
+printf 'echo a\n' > "$SW/scripts/a.sh"
+cat > "$SW/scripts/test-a.sh" <<'EOS'
+printf 'cwd=%s\nproject=%s\nstore=%s\n' "$(pwd -P)" "${CLAUDE_PROJECT_DIR-unset}" "${ORCH_COMPARE_STORE-unset}"
+grep -q '^echo step' scripts/a.sh
+EOS
+printf 'echo failing on purpose\nexit 1\n' > "$SW/scripts/test-b.sh"
+printf 'sleep 37 &\necho child=$!\nwait\n' > "$SW/scripts/test-slow.sh"
+printf -- '- [ ] **T1** sw work\n' > "$SW/gspec/features/rp/tasks.md"
+printf 'order: []\n' > "$SW/.agents/roadmap.yaml"
+printf 'packet_attempts: 1\n' > "$SW/.agents/project-overrides.yaml"
+git -C "$SW" add -A >/dev/null
+sw_commit() {  # sw_commit <message> -> prints the new commit's sha
+  GIT_AUTHOR_DATE=2026-05-01T00:00:00Z GIT_COMMITTER_DATE=2026-05-01T00:00:00Z git -C "$SW" -c user.name=fixture \
+    -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "$1" >/dev/null
+  git -C "$SW" rev-parse HEAD
+}
+SW0="$(sw_commit base)"
+SWEXP=eeeeeeeeeee8
+SWSTORE="$WORK/swstore"
+SWSEL=""
+for k in 1 2 3 4; do
+  printf 'echo landed %s\n' "$k" >> "$SW/scripts/a.sh"
+  git -C "$SW" add -A >/dev/null
+  SWS="$(git -C "$SW" rev-parse HEAD)"
+  SWK="$(sw_commit "$(printf 'sw %s\n\n[orch packet:sw-t%s]' "$k" "$k")")"
+  SWSEL="$SWSEL${SWSEL:+,
+}    {\"packet\": \"sw-t$k\", \"class\": \"code\", \"tier\": \"integration\", \"fix_rounds\": 0, \"title\": \"sw $k\", \"handoff\": \"original\", \"start\": \"$SWS\", \"commits\": [\"$SWK\"]}"
+done
+sw_handoff() {  # sw_handoff <packet> <body line>...
+  local d="$SW/.agents/loop/20260501T000000-cc/$1"; shift
+  mkdir -p "$d"
+  { printf '# the original\n\ntier: integration\nagent: implementer\nrun-state: /elsewhere/run-state.yaml\nresult: /elsewhere/implementer.md\nreview: /elsewhere/review.md\n\nPACKET=x\nFILES=scripts/a.sh\n'
+    printf '%s\n' "$@"; } > "$d/handoff.md"
+}
+# t1: one sweep. t2: two, one named by an absolute path and one at a sentence's
+# end, beside a pattern and a longer file name, which name none. t3: none.
+# t4: a sweep that outlives the limit and one the final diff does not hold.
+sw_handoff sw-t1 'TEXT=Change scripts/a.sh; `scripts/test-a.sh` gains a case.'
+sw_handoff sw-t2 'TEXT=Run /elsewhere/checkout/scripts/test-b.sh and scripts/test-a.sh.' \
+  'Every `scripts/test-*.sh` sweep; not scripts/test-a.sh.bak, nor myscripts/test-z.sh.'
+sw_handoff sw-t3 'TEXT=Change scripts/a.sh only; every `scripts/test-*.sh` stays as it is.'
+sw_handoff sw-t4 'TEXT=Run scripts/test-slow.sh and scripts/test-new.sh.'
+mkdir -p "$SWSTORE/$SWEXP"
+cat > "$SWSTORE/$SWEXP/selection.json" <<EOF
+{
+  "experiment": "$SWEXP",
+  "settings": {"role": "implementer", "models": ["fable"], "reviewer_model": "haiku", "model_ids": {"fable": "claude-fable-5-1", "haiku": "claude-haiku-4-5"}, "source_repo": "$SW", "per_class": 4, "code_files": ["scripts/"], "prose_files": ["docs/"]},
+  "selected": [
+$SWSEL
+  ],
+  "shortfalls": [],
+  "excluded": [],
+  "dropped": []
+}
+EOF
+SWSCRATCH="$WORK/swscratch"
+SWN=0
+# sw_replay <packet> <script lines...>: a replay of <packet> prepared on fable and
+# run through the stub. Sets SWC (clone), SWR (replay), SWEND and SWCOMMIT.
+sw_replay() {
+  local pkt="$1"; shift
+  SWN=$((SWN + 1)); SD="$WORK/swstub$SWN"; mkdir -p "$SD"; : > "$SD/log"
+  printf '%s\n' "$@" > "$SD/script"
+  OUT="$(ORCH_COMPARE_STORE="$SWSTORE" ORCH_COMPARE_SCRATCH="$SWSCRATCH" "$COMPARE" prepare "$SWEXP" "$pkt" fable 2>"$WORK/err")"
+  SWC="$(line CLONE)"; SWR="$(line REPLAY)"
+  OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT=60 \
+    ORCH_COMPARE_STORE="$SWSTORE" ORCH_COMPARE_SCRATCH="$SWSCRATCH" "$COMPARE" replay "$SWR" 2>"$WORK/err")"
+  SWEND="$(line END)"; SWCOMMIT="$(line COMMIT)"
+}
+# sw_run <replay>: OUT/ERR/RC for `compare.sh sweeps`.
+sw_run() {
+  OUT="$(ORCH_COMPARE_STORE="$SWSTORE" ORCH_COMPARE_SCRATCH="$SWSCRATCH" ORCH_COMPARE_SWEEP_TIMEOUT="${SW_TIMEOUT:-60}" \
+    "$COMPARE" sweeps "$1" 2>"$WORK/err")"; RC=$?
+  ERR="$(cat "$WORK/err")"
+}
+# tree_bytes <dir>: every path under <dir> (the .git directory included) with its
+# type, mode and content checksum, read without running git, so "byte-unchanged"
+# is checked by nothing that could itself rewrite the index.
+tree_bytes() {
+  (cd "$1" && find . -print | LC_ALL=C sort | while IFS= read -r f; do
+    if [ -L "$f" ]; then printf 'l %s %s\n' "$f" "$(readlink "$f")"
+    elif [ -d "$f" ]; then printf 'd %s %s\n' "$f" "$(ls -ld "$f" | awk '{ print $1 }')"
+    else printf 'f %s %s %s\n' "$f" "$(ls -l "$f" | awk '{ print $1 }')" "$(cksum < "$f")"
+    fi
+  done)
+}
+swl() { printf '%s\n' "$OUT" | awk -v p="SWEEP path=$1 " 'index($0, p) == 1'; }
+
+# A passing sweep, on a landed replay.
+sw_replay sw-t1 "$IMPL_DONE" "$REV_PASS"
+assert_eq "sweeps fixture: sw-t1 landed" "land" "$SWEND"
+SWC1="$SWC"; SWR1="$SWR"
+sw_run "$SWR1"
+assert_eq "sweeps, a passing sweep: exit 0, passes" "0:pass" "$RC:$(line SWEEPS)"
+assert_eq "sweeps, a passing sweep: the one required sweep" "scripts/test-a.sh" "$(line REQUIRED)"
+assert_has "sweeps, a passing sweep: its line" "SWEEP path=scripts/test-a.sh result=pass exit=0 " "$(swl scripts/test-a.sh)"
+assert_eq "sweeps, a passing sweep: no FAILED= line" "" "$(line FAILED)"
+assert_eq "sweeps, a landed replay: the final diff is the landed commit's tree" \
+  "$(git -C "$SWC1" rev-parse "$SWCOMMIT^{tree}")" "$(line TREE)"
+SWLOG="$(swl scripts/test-a.sh | sed -n 's/.* log=//p')"
+SWCWD="$(sed -n 's/^cwd=//p' "$SWLOG")"
+assert_eq "sweeps: the sweep ran in a fresh clone under the scratch root, not the work clone" "$SWSCRATCH:no" \
+  "$(dirname "$SWCWD"):$(if [ "$SWCWD" = "$SWC1" ]; then echo yes; else echo no; fi)"
+assert_eq "sweeps: CLAUDE_PROJECT_DIR is the fresh clone, and no ORCH_* setting reaches the sweep" \
+  "project=$SWCWD|store=unset" "$(grep '^project=' "$SWLOG")|$(grep '^store=' "$SWLOG")"
+assert_eq "sweeps: the fresh clone is removed afterwards" "no" "$(if [ -e "$SWCWD" ]; then echo yes; else echo no; fi)"
+assert_eq "sweeps: the lines are stored as <replay>.sweeps" "$OUT" "$(cat "$SWSTORE/$SWEXP/replays/$SWR1.sweeps")"
+
+# A failing sweep named, on a replay that ended without landing: the final diff
+# is the uncommitted work it left in the work clone, which is only read.
+sw_replay sw-t2 "$IMPL_DONE" "$REV_ESC"
+assert_eq "sweeps fixture: sw-t2 ended at the decider, nothing landed" "decider:none" "$SWEND:$SWCOMMIT"
+SWC2="$SWC"; SWR2="$SWR"
+SWB2="$(tree_bytes "$SWC2")"
+sw_run "$SWR2"
+assert_eq "sweeps, a failing sweep: exit 0, fails" "0:fail" "$RC:$(line SWEEPS)"
+assert_eq "sweeps, a failing sweep: named by FAILED=" "scripts/test-b.sh" "$(line FAILED)"
+assert_eq "sweeps: an absolute path and a sentence-final path each name a sweep; a pattern, a longer name and another directory do not" \
+  "scripts/test-a.sh,scripts/test-b.sh" "$(line REQUIRED)"
+assert_has "sweeps, a failing sweep: its line" "SWEEP path=scripts/test-b.sh result=fail exit=1 " "$(swl scripts/test-b.sh)"
+assert_has "sweeps, an unlanded replay: the sweep passes on the work it left" \
+  "SWEEP path=scripts/test-a.sh result=pass exit=0 " "$(swl scripts/test-a.sh)"
+assert_eq "sweeps: the work clone is byte-unchanged by a sweep run (files, .git, index, objects)" \
+  "$SWB2" "$(tree_bytes "$SWC2")"
+SWG2="$(git -C "$SWC2" status --porcelain=v1 | paste -sd' ' -)"
+assert_has "sweeps fixture: the work clone did hold uncommitted work" "scripts/a.sh" "$SWG2"
+
+# A handoff naming no sweep.
+sw_replay sw-t3 "$IMPL_DONE" "$REV_PASS"
+sw_run "$SWR"
+assert_eq "sweeps, a handoff naming no sweep: exit 0, none-required" "0:none-required" "$RC:$(line SWEEPS)"
+assert_eq "sweeps, a handoff naming no sweep: REQUIRED=none, and nothing is run" "none::" \
+  "$(line REQUIRED):$(line TREE):$(printf '%s\n' "$OUT" | grep '^SWEEP ')"
+
+# A sweep past the time limit (killed with the child it started) and a required
+# sweep the final diff does not hold: both fail, both named.
+sw_replay sw-t4 "$IMPL_DONE" "$REV_PASS"
+T0=$SECONDS
+SW_TIMEOUT=1 sw_run "$SWR"
+assert_eq "sweeps, a timeout and a missing sweep: exit 0, fails naming both" "0:fail:scripts/test-new.sh,scripts/test-slow.sh" \
+  "$RC:$(line SWEEPS):$(line FAILED)"
+assert_has "sweeps, a timed-out sweep: recorded as a timeout" "SWEEP path=scripts/test-slow.sh result=fail exit=timeout " \
+  "$(swl scripts/test-slow.sh)"
+assert_eq "sweeps, a timed-out sweep: killed at the limit, not left to finish" "yes" \
+  "$(if [ $((SECONDS - T0)) -lt 20 ]; then echo yes; else echo no; fi)"
+SWCHILD="$(sed -n 's/^child=//p' "$(swl scripts/test-slow.sh | sed -n 's/.* log=//p')")"
+assert_eq "sweeps, a timed-out sweep: the process it started is killed too" "gone" \
+  "$(if [ -n "$SWCHILD" ] && ! kill -0 "$SWCHILD" 2>/dev/null; then echo gone; else echo "alive:[$SWCHILD]"; fi)"
+assert_eq "sweeps, a missing sweep: not run, and failing" \
+  "SWEEP path=scripts/test-new.sh result=fail exit=not-run reason=absent-from-final-diff" "$(swl scripts/test-new.sh)"
+
+# Refusals.
+cp "$SWSTORE/$SWEXP/replays/$SWR1.steps" "$WORK/sw.steps"
+grep -v '^END=' "$WORK/sw.steps" > "$SWSTORE/$SWEXP/replays/$SWR1.steps"
+sw_run "$SWR1"
+cp "$WORK/sw.steps" "$SWSTORE/$SWEXP/replays/$SWR1.steps"
+assert_eq "sweeps, a replay that has not ended: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+assert_has "sweeps, a replay that has not ended: named" "has not ended" "$ERR"
+sw_run 0123456789ab
+assert_eq "sweeps, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
+SW_TIMEOUT=0 sw_run "$SWR1"
+assert_eq "sweeps, a zero timeout: exit 2" "2" "$RC"
+
 printf '\n== usage ==\n'
 "$COMPARE" >/dev/null 2>&1; assert_eq "no subcommand: exit 2" "2" "$?"
 "$COMPARE" bogus >/dev/null 2>&1; assert_eq "unknown subcommand: exit 2" "2" "$?"
@@ -2132,6 +2313,7 @@ printf '\n== usage ==\n'
 "$COMPARE" review-view >/dev/null 2>&1; assert_eq "review-view without a replay: exit 2" "2" "$?"
 "$COMPARE" replay >/dev/null 2>&1; assert_eq "replay without a replay id: exit 2" "2" "$?"
 "$COMPARE" routing-check >/dev/null 2>&1; assert_eq "routing-check without a replay id: exit 2" "2" "$?"
+"$COMPARE" sweeps >/dev/null 2>&1; assert_eq "sweeps without a replay id: exit 2" "2" "$?"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

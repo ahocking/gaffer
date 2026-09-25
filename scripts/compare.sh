@@ -283,13 +283,30 @@
 #                     `replay` of the same id is refused (<replay>.steps exists).
 #                     Every agent step is one non-interactive session,
 #                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> --effort <effort>
-#                         --permission-mode bypassPermissions --session-id <uuid> -p <prompt>
+#                         --permission-mode bypassPermissions --settings <confinement>
+#                         --session-id <uuid> -p <prompt>
 #                     (the bypass mode because nobody can answer a prompt in a
 #                     headless session; its working directory is a disposable
 #                     clone or view, and the harness's hooks/guard.sh, loaded
 #                     through --plugin-dir, still hard-denies; <uuid> is a fresh
 #                     id per session, named on its STEP line so `record` can
-#                     find its transcript)
+#                     find its transcript). A working directory confines
+#                     nothing, so <confinement> is a settings JSON with <dir>
+#                     the session's clone or view, physical, adding: Claude
+#                     Code's OS-level Bash sandbox (`sandbox.enabled`,
+#                     `failIfUnavailable`, no unsandboxed retry, filesystem
+#                     writes allowed in <dir> and the session's own temp
+#                     directory), which confines a shell write however it is
+#                     made; `disableAllHooks: false`; and one `PreToolUse`
+#                     hook on Edit, MultiEdit, Write, NotebookEdit and Bash:
+#                     `<harness>/scripts/compare-confine.sh <dir>`. The hook
+#                     refuses a write whose target does not resolve inside
+#                     <dir>, and one whose target it cannot resolve, failing
+#                     closed (compare-confine.sh's header states what it
+#                     recognises). A refusal by either is a denied call like
+#                     any other, so `record` scores the replay `invalid`.
+#                     Refused (exit 2) before any session when
+#                     compare-confine.sh is missing or not executable.
 #                     where <effort> is the stored selection's settings
 #                     `effort` (a selection naming none, or one outside
 #                     EFFORT_LEVELS, is refused before any session starts),
@@ -705,6 +722,7 @@
 #                     THE SESSION: one, started as `replay` starts every
 #                     session (`--plugin-dir <harness> --effort <the
 #                     selection's effort> --permission-mode bypassPermissions
+#                     --settings <confinement to the ranking clone>
 #                     --session-id <uuid>`, CLAUDE_CODE_EFFORT_LEVEL removed,
 #                     stdin /dev/null, killed at ${ORCH_COMPARE_STEP_TIMEOUT}),
 #                     in the ranking clone, dispatching the `reviewer` agent
@@ -2796,6 +2814,38 @@ new_session_id() {
   printf '%s-%s-4%s-%s%s-%s' "${h:0:8}" "${h:8:4}" "${h:13:3}" "$v" "${h:17:3}" "${h:20:12}"
 }
 
+# sh_quote <s>: <s> as one single-quoted shell word.
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# confine_settings <dir>: the `--settings` JSON every session run_session starts
+# is given, <root> being <dir> physical. Three parts:
+#   - `sandbox`: Claude Code's OS-level Bash sandbox, on, with filesystem writes
+#     allowed in <root> (the session's working directory, also named in
+#     `allowWrite`) and in the session's own temp directory, which the sandbox
+#     always opens and `$TMPDIR` names for sandboxed commands. It is what
+#     confines a shell write this harness cannot parse (`python3 -c`, a script).
+#     `failIfUnavailable` makes a session whose sandbox cannot start exit
+#     instead of running unsandboxed; `allowUnsandboxedCommands: false` removes
+#     the `dangerouslyDisableSandbox` retry, which the bypass mode would
+#     otherwise approve; `filesystem.disabled: false` outranks a user setting
+#     that turns the filesystem layer off.
+#   - `disableAllHooks: false`, outranking a replayed repo's own settings.
+#   - One `PreToolUse` hook on the write tools and Bash,
+#       '<harness>/scripts/compare-confine.sh' '<root>'
+#     which refuses a write whose target does not resolve inside <root> (the
+#     harness's own hook: never hooks/guard.sh or hooks/hooks.json, which the
+#     live loop runs). The sandbox covers Bash only; the file tools are this
+#     hook's alone.
+# Return 1, printing nothing, when <dir> cannot be entered.
+confine_settings() {
+  local root
+  root="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$root" ] || return 1
+  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":[%s]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":%s}]}]}}' \
+    "$(rd_json_str "$root")" \
+    "$(rd_json_str "$(sh_quote "$_CMP_HARNESS/scripts/compare-confine.sh") $(sh_quote "$root")")"
+}
+
 # run_session <dir> <prompt-file> <out> <err>: one non-interactive session in
 # <dir>, at the experiment's effort, killed at the time limit. Sets STEP_EXIT to
 # its exit code, or `timeout`, and STEP_SESSION to the session id it was started
@@ -2804,13 +2854,17 @@ new_session_id() {
 # `--effort`, so it is removed from the session's environment. The session runs
 # in the bypass permission mode: nobody can answer a prompt in it, its working
 # directory is a disposable clone or view, and `--plugin-dir` still loads the
-# harness's hooks/guard.sh, whose hard-deny tier keeps applying.
+# harness's hooks/guard.sh, whose hard-deny tier keeps applying. A working
+# directory confines nothing, so `--settings` adds confine_settings' Bash
+# sandbox and hook, which keep writes inside <dir>; a session whose settings
+# cannot be built is not started (its exit reads as a crash).
 run_session() {
   local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
   STEP_SESSION="$(new_session_id)"
-  ( cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL \
+  ( cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL && cset="$(confine_settings "$dir")" \
       && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" \
-           --permission-mode bypassPermissions --session-id "$STEP_SESSION" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
+           --permission-mode bypassPermissions --settings "$cset" \
+           --session-id "$STEP_SESSION" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
   pid=$!
   t0=$SECONDS
   STEP_EXIT=""
@@ -3011,6 +3065,8 @@ cmd_replay() {
   _CMP_TIMEOUT="${ORCH_COMPARE_STEP_TIMEOUT:-$_CMP_STEP_TIMEOUT_DEFAULT}"
   case "$_CMP_TIMEOUT" in ''|0|*[!0-9]*) die "replay: ORCH_COMPARE_STEP_TIMEOUT is not a positive number of seconds: $_CMP_TIMEOUT" 2 ;; esac
   _CMP_HARNESS="$(cd "$HERE/.." && pwd -P)"
+  [ -x "$_CMP_HARNESS/scripts/compare-confine.sh" ] \
+    || die "replay: compare-confine.sh is missing or not executable: $_CMP_HARNESS/scripts/compare-confine.sh" 2
 
   # --- the replay's record, found in whichever experiment holds it --------------
   local store env="" f n=0
@@ -4602,6 +4658,8 @@ cmd_rank() {
   _CMP_TIMEOUT="${ORCH_COMPARE_STEP_TIMEOUT:-$_CMP_STEP_TIMEOUT_DEFAULT}"
   case "$_CMP_TIMEOUT" in ''|0|*[!0-9]*) die "rank: ORCH_COMPARE_STEP_TIMEOUT is not a positive number of seconds: $_CMP_TIMEOUT" 2 ;; esac
   _CMP_HARNESS="$(cd "$HERE/.." && pwd -P)"
+  [ -x "$_CMP_HARNESS/scripts/compare-confine.sh" ] \
+    || die "rank: compare-confine.sh is missing or not executable: $_CMP_HARNESS/scripts/compare-confine.sh" 2
 
   local store sel lfile rfile
   store="$(store_root)"

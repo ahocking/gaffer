@@ -131,3 +131,55 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > compose the full file and pipe it through the run-state helper (it writes to a
   > temp file and renames)
+
+## Relocated from skills (2026-09-25) — the resume skill's reconcile and adopt reasons
+
+Moved out of `skills/resume/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here. The
+membership-recovery reason moved with its rule into `skills/run-loop/SKILL.md` §3's
+**Form this packet's members** step, which keeps one clause of it.
+
+- **Why `discard` escalates on doubt instead of stashing** (resume §2). The skill
+  keeps "the checkout is shared, and `reconcile`'s reviewed-output patterns cannot
+  cover everything". It used to read:
+
+  > Because the loop shares this single checkout, that scratch may include
+  > work you did not produce — `reconcile` already escalates instead of `discard`
+  > when it recognizes a reviewed-output path (e.g. `.gspec/memory/pending/`, agent
+  > memories awaiting `/gspec-memorize`), but its pattern list cannot cover
+  > everything: **escalate to the human before stashing if there is any doubt it
+  > is disposable loop scratch** rather than deliberate output someone else
+  > produced, matching the instinct `skills/pause/SKILL.md` carries for the same
+  > shared-checkout risk.
+
+- **Why `adopt` re-reads every trailer, anchored** (resume §2). The skill keeps
+  "`reconcile` checks only that first trailer", "so prose that mentions a trailer is
+  never read as a member", "never loosen the anchor for it" and "`reconcile`'s own
+  match is unanchored". It used to read:
+
+  > (`reconcile` only checks that first trailer — `orphan_packet_tag` reads no
+  > further)
+
+  > — anchored to the whole line so prose elsewhere in the commit body that merely
+  > *mentions* another packet's trailer cannot be read as a member, and
+  > deduplicated so a repeated trailer cannot hand `record-outcome` the same id
+  > twice. [...] That is the intended, safe outcome for a shape this anchored read
+  > cannot confirm, not a regression to loosen the anchor for. **If the first id in
+  > `$MEMBERS` is not `<cursor>` itself, escalate to the human instead of
+  > adopting** — `reconcile`'s own `orphan_packet_tag` match is unanchored and only
+  > reads the first hit it finds, so an orphan whose real first trailer differs from
+  > what `orphan_packet_tag` matched can still reach `DECISION=adopt`; this
+  > re-read, anchored, is what catches that case before anything is attested.
+
+- **Why no adopted member is redone** (resume §2):
+
+  > this is exactly the crash window the task exists to close, so a crash between
+  > a bundled commit and the run-state write can never leave a landed member
+  > unchecked and queued for re-execution.
+
+- **Why a recovered bundle never re-runs `group`** (resume §4, now run-loop §3's
+  **Form this packet's members** step). Run-loop keeps "it could shrink or grow a
+  membership a start record already covers". The consequence it named:
+
+  > the sweep below would then close members the run had started as
+  > `interrupted`, or silently start a member no start record covers

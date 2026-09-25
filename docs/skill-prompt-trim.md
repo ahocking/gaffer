@@ -85,6 +85,25 @@ separate variance figure for `cc_shape` itself.
   gains one section: each site calls `record-completion` with its own restore
   source, keeps its own staging, commit, restore and report rules, and carries
   no copy of the exit-code table.
+- **T5 (resume restructured):** one existing assertion group changed, to follow a
+  moved rule. In the session-effort loop (`for se_skill in run-loop resume`), the
+  three prose pins — *the effort is read, never inferred from the model*, *never ask
+  the operator to change the effort*, and *printed `EFFORT_ENV=set`* — are now read,
+  for resume, from `skills/run-loop/SKILL.md`, because resume no longer restates
+  them: it refers to run-loop's `## 2. Enter driver mode`, their one statement. Not
+  loosened: the three phrases are still pinned, now where the rule is stated, and a
+  new pin requires resume to name that heading as where they live. The fenced-block
+  checks over resume (the `SOURCE` enum, the `session-effort` → `driver-mode enter`
+  order, `--effort <EFFORT, exactly as printed>`, no literal unknown effort) are
+  unchanged, because resume keeps the block. The T4 adopt-span anchors and needles
+  are unchanged. `test-report-conventions.sh` gains one section: run-loop carries the
+  moved rules (membership recovery in §3's **Form this packet's members** step,
+  before `group` is read; a recovered bundle's non-cursor `HANDOFF=unknown` in the
+  **Write the handoff** step; a resumed session's first-packet continuation rule in
+  the sweep), resume carries no copy of them, resume names no run-loop line number or
+  bare section number, every heading and §3 step title resume names exists in
+  run-loop, and resume keeps its own four things and the `routing.sh resolve` beside
+  its dispatch.
 
 ## Loop-skill rule review
 

@@ -6,13 +6,20 @@ argument-hint: (optional — a specific run-state path if not .agents/run-state.
 
 # Resume the run $ARGUMENTS
 
-Pick a paused run back up from disk. Because the previous session is gone, the
-**only** trustworthy memory is `.agents/run-state.yaml` — read it first and let it
-drive. This session takes on the **loop-driver** role (ADR 0028) for the rest of
-the run — passing paths, reading status lines, routing mechanically — the same
-role a fresh `/gaffer:run-loop` takes on. There is one sequential mode; the
-remaining backlog size never switches it. See
+Pick a paused run back up from disk. The previous session is gone, so
+`.agents/run-state.yaml` is the **only** trustworthy memory — read it first and
+let it drive. This session takes on the **loop-driver** role (ADR 0028) for the
+rest of the run, in the loop's one sequential mode, exactly as a fresh
+`/gaffer:run-loop` does. See
 [ADR 0004](../../docs/adr/0004-graduated-autonomy-and-pausable-loop.md).
+
+**This skill states only what is unique to resuming**: loading the checkpoint,
+rebuilding it from git, reconciling the working tree, and surfacing pending
+questions. Everything else is `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md`,
+named here by its `##` heading or, inside its `## 3. Loop`, by a step's bold
+title. If this session has not read that file already (it has when
+`/gaffer:run-loop` redirected here), `Read` it once now, and follow each section
+this skill names exactly as written there.
 
 ## The report contract — `Read` it before you emit anything
 
@@ -20,20 +27,17 @@ remaining backlog size never switches it. See
 `${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md` (the glyph vocabulary, the
 indentation contract, the header tally, the decision block) and
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shape **C** for the resuming
-kickoff, **A** per landing, **B** when it stops again). **Naming a path is not reading
-it** — unread, you will render from memory and produce free prose. One read covers the
-whole run; do not re-read per packet.
+kickoff, **A** per landing, **B** when it stops again). **Naming a path is not
+reading it** — unread, you render from memory. One read covers the whole run; do
+not re-read per packet.
 
 ## Flags this run no longer has
 
-`--relay` and `--inline` are still accepted in `$ARGUMENTS` and must **not** error —
-relay dispatch was retired
-([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded). If either is
-present, resume normally and note it in the kickoff (§4) the same way
-`/gaffer:run-loop` does: one `⚠️ **--<flag>** no longer does anything — this loop
-runs one sequential mode.` line per flag, using the existing ⚠️ glyph. `--parallel`
-is handled separately, immediately below — it does not resurrect the retired
-parallel driver; only a run-state that actually records `mode: parallel` does.
+`--relay` and `--inline` are still accepted in `$ARGUMENTS` and must **not**
+error: resume normally and add one ⚠️ line per flag to the kickoff (§4), in the
+form run-loop's `## Flags this loop no longer has` gives. `--parallel` never
+triggers the stop below on its own — only a run-state that records `mode:
+parallel` does.
 
 ## A `mode: parallel` run-state stops here — no auto-migration
 
@@ -59,23 +63,15 @@ report (shape B):
   `.agents/run-state.yaml` itself, which still reads `mode: parallel` — nothing here
   rewrites or migrates it.
 
-Run `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh driver-mode exit` immediately
-after that stop report. This check runs first, but this session can still
-reach it already marked — `/gaffer:run-loop` §2 enters driver mode before
-its own redirect to this skill, so this stop path may run with a mark
-already set. `driver-mode exit` is idempotent (a no-op if there is no mark),
-so calling it here is always safe regardless of which caller reached this
-skill.
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh driver-mode exit` immediately after
+that stop report — it is idempotent, and `/gaffer:run-loop` enters driver mode
+before redirecting here. Everything below is the sequential resume, for a
+run-state that does not record `mode: parallel`.
 
-`$ARGUMENTS` containing `--parallel` does **not** trigger this on its own — there is
-no parallel driver left to resume into. Only the run-state's own recorded `mode:`
-does. Everything below is the sequential resume, for a run-state that does not
-record `mode: parallel`.
+## 0. Enter driver mode
 
-## 0. Enter driver mode and resume the run
-
-Right after the parallel-mode check above returns normal (no `mode: parallel`),
-before reading anything else (ADR 0028):
+Right after the parallel-mode check above returns normal, before reading anything
+else (ADR 0028):
 
 ```
 runstate.sh compact-threshold   # THRESHOLD=<n|unknown> SOURCE=repo|operator|unknown APPLIED=no
@@ -84,81 +80,30 @@ runstate.sh driver-mode enter --model <this session's model> \
   --effort <EFFORT, exactly as printed> --threshold <unknown, or THRESHOLD per the rule below>
 ```
 
-Run `session-effort` just before `driver-mode enter` and pass its `EFFORT`
-to `--effort` exactly as printed — a level or `unknown` alike. It reads the
-level from this session's own transcript; it always exits 0, so driver-mode
-entry proceeds whatever it printed. **The effort is read, never inferred from
-the model** — never substitute a level you expect the model to run at, and
-never replace an `unknown` with a guess. Keep its `EFFORT_ENV` for the
-kickoff (§4): render shape C's `⚠️ **Effort override**` line only when it
-reads `set`, and no such line when it reads `unset`.
-`compact-threshold` is a pure reader — it never writes a settings file, so
-`APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
-`THRESHOLD` straight through to `driver-mode enter` and state that number in
-the kickoff — the harness genuinely enforces it. When `SOURCE` reads
-`unknown` — the one enumerated value naming no value in effect
-— pass `--threshold unknown` instead, regardless of what `THRESHOLD`
-printed, and state the absence in the kickoff in exactly these words —
-*no compaction threshold in effect for this session — the settings key
-`autoCompactWindow` supplies one* — and never a number: the measurement should
-read unmeasured rather than flag a threshold nothing enforces, and silence
-would read as a measured run. **Never ask the
-operator to change the effort or the threshold** — state what applies, as
-read, and move on. If
-`driver-mode enter` refuses (no session id available, from neither an
-argument nor `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report
-saying so; never resume the loop unmarked. `Read`
-`${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now too — it is your role for
-the rest of this session, same as a fresh `/gaffer:run-loop`.
+The rule for each of these three calls is the one run-loop's
+`## 2. Enter driver mode` states beside the same block: the effort passed exactly as printed and never
+inferred, the threshold passed or replaced by `unknown` according to `SOURCE`, the
+kickoff wording for each, never asking the operator to change either, and
+**stopping** with a stop report when `enter` refuses — never resume the loop
+unmarked. Keep `EFFORT_ENV` and the threshold reading for the kickoff (§4). `Read`
+`${CLAUDE_PLUGIN_ROOT}/agents/loop-driver.md` now too — it is your role for the rest
+of this session.
 
-**`begin-run` waits until §1 has established the checkpoint** (below) — it
-dies on a missing run-state, and at this point the file may not exist yet
-(the reconstruct path in §1 can still be building it). Call it once §1
-concludes, right before §2.
-
-## Concurrency
-
-**File-editing agents run one at a time, unless their declared file scopes are
-disjoint** — a resumed run dispatches a single `implementer` per packet, same as a
-fresh one. **Read-only agents** (a `researcher`, a `reviewer`, an `Explore`-style
-search) may fan out freely; nothing they do needs serializing. **Worktree isolation
-is not part of this resume.** Reach for it only on self-contained work starting
-fresh off the default branch — a spike, an experiment, a deliberate refactor —
-**never** for an implementer continuing a packet on this run's own `orch/<task-id>`
-branch: a worktree branched mid-run lacks the earlier packets' commits and is never
-merged back automatically, so it silently drops the packet from the branch the run
-is building.
+Call `begin-run` only once §1 has established the checkpoint — it dies on a missing
+run-state, and §1's reconstruct path may still be building it — right before §2.
 
 ## 1. Load the checkpoint
 
-**First, the gspec preflight (ADR 0020), same as `/gaffer:run-loop` §1.** If
-the repo has a `gspec/` directory, run
-`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check` and `… interlock`. A
-`CHECK=fail` means the specs moved to a gspec version this plugin does not support —
-stop and say so rather than resuming against a contract you cannot read, then run
-`runstate.sh driver-mode exit` right after that stop report (driver mode is already
-active from §0). An `INTERLOCK=busy` means a `gspec build` is driving this repo
-right now — stop the same way, with the same exit call; a resume that starts
-driving beside it puts two drivers in one checkout. Both checks are no-ops
-without a gspec project.
+**Preflight first**, as run-loop's `## 1. Preflight` states it: its gspec contract +
+interlock bullet, and its model-routing bullet (keep `validate`'s and `table`'s
+output for the kickoff, §4). Driver mode is already active, so a stop there — a
+`CHECK=fail` or an `INTERLOCK=busy` — runs `runstate.sh driver-mode exit` right
+after its stop report.
 
-**Then the model-routing preflight, same as `/gaffer:run-loop` §1.** Run
-`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh validate` and
-`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh table` once, and keep both outputs
-for the kickoff (§4). Running them after §0's driver-mode entry is harmless:
-`routing.sh` is read-only. Both exit 0 on every config state, and **a
-`validate` report never stops the resume** — an ignored entry already falls
-back to its agent's frontmatter model. Do not read `model_routing` yourself.
-
-**Resume runs no capability-drift scan of its own** — it neither repeats
-`run-loop` §1's drifted-completion-record scan nor its drifted-capability-checkbox
-scan. The `adopt` path in §2 below reconciles the one case a crash can leave —
-an orphan commit that landed a capability's last covering task but never
-recorded it — as part of adopting that commit; any capability finished mid-run
-but not by an adopted commit is left for the resumed run's own `run-loop` §4
-end-of-run scan to reconcile when it terminates. That is the only phrasing of
-the rule this file carries — reconciling judgeable drift is the loop's job,
-never the human's, and this file assigns it nowhere else.
+**Resume runs neither of that section's two drift scans.** The `adopt` path in §2
+reconciles the one case a crash can leave — an orphan commit that landed a
+capability's last covering task but never recorded it; any other capability
+finished mid-run is left to the end-of-run scan in run-loop's `## 4. Termination`.
 
 When the run-state file exists, first run
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh prune-questions .agents/run-state.yaml`
@@ -173,16 +118,12 @@ Then read `.agents/run-state.yaml` (or the path in $ARGUMENTS). From it take: `s
 `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh findings .agents/run-state.yaml`. One line
 each; the bodies live in `.agents/findings/<id>.md`. Open a body **only** when its
 summary bears on the packet you are about to run, and say which you opened and why.
-
-Both failure modes are real, so neither instinct is safe on its own. Reading every
-body rebuilds the 41k-token run-state this design took apart, just in another file.
-Skipping the index means a gotcha recorded specifically to prevent rework goes unseen
-and the rework happens — which costs more than the reading would have. The index is
-cheap and mandatory; the bodies are not free and are conditional.
+The index is mandatory and the bodies conditional, since skipping the index repeats
+the rework a finding was recorded to prevent.
 
 **If the file is missing, reconstruct it from git before giving up** (it is
-gitignored local bookkeeping — ADR 0009 — so a lost disk or a fresh checkout will
-not have it, but the feature branch and its commit trailers usually survive):
+gitignored — ADR 0009 — but the feature branch and its commit trailers usually
+survive):
 
 1. Get onto the run's feature branch. If you are on `main`/`develop`, list
    candidates with `git branch --list 'orch/*'` and `git switch orch/<task-id>`.
@@ -190,19 +131,18 @@ not have it, but the feature branch and its commit trailers usually survive):
    `BRANCH=`, `TIP=` (a **candidate** `last_green_commit`), `BASE=`, and `DONE=`
    (the packet ids already committed, from the `[orch packet:<id>]` trailers), or
    `RECONSTRUCT=escalate` with what to fix first.
-3. **Verify `TIP` is actually green** — run the packet build+tests on it. The
-   script cannot; you must. If it is **red**, do not fabricate a green
-   checkpoint — treat it as crash scratch, **escalate to the human** with a
-   stop report, and run `runstate.sh driver-mode exit` right after it.
+3. **Verify `TIP` is actually green** — run the packet build+tests on it; the
+   script cannot. If it is **red**, do not fabricate a green checkpoint — treat it
+   as crash scratch, **escalate to the human** with a stop report, and run
+   `runstate.sh driver-mode exit` right after it.
 4. Rebuild the backlog **through the adapter** (ADR 0020 D2) — never by parsing
    `gspec/` yourself: `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` for the
    feature, then `… nodes <slug>` for its unchecked tasks (or `$ARGUMENTS`).
    `pending` = the committed backlog minus `DONE` (from step 2), in order;
    `cursor` = first pending. There is no `backlog.done` field to populate (ADR
-   0025) — `DONE` here is scratch used only to compute `pending`, same as
-   `reconstruct`'s own note that nothing is written from it automatically. Note
-   the adapter already omits tasks that are checked off, so a task completed
-   before the crash will not reappear.
+   0025): `DONE` is scratch used only to compute `pending`, and nothing is written
+   from it automatically. The adapter already omits checked tasks, so a task
+   completed before the crash will not reappear.
 5. `pending_questions`: **empty** — flag clearly in your first check-in that any
    outstanding blocking questions could **not** be recovered from git (they lived
    only in the lost file; the human should re-supply them, e.g. from the last
@@ -225,20 +165,16 @@ backlog), there is genuinely nothing to resume — say so, stop, and run
   torn-write orphan commit that landed green but was never recorded. **Do not
   trust the tree — reconcile it in step 2 before doing anything else.**
 
-**Keep this reading** — step 4's sweep needs to know whether it read `paused` or
-`blocked` **here**, before step 2 overwrites `status` to `running`.
+**Keep this reading**: the sweep in run-loop §3's **Form this packet's members**
+step decides whether this session's first packet is a continuation from it, and
+step 2 overwrites `status` to `running` before that sweep runs.
 
 ## 2. Re-establish the working tree at the green checkpoint
 
-**Begin the run now** — `.agents/run-state.yaml` is guaranteed to exist at
-this point (it either already did, or §1's reconstruct path just wrote it):
-`runstate.sh begin-run .agents/run-state.yaml`. It **keeps** the existing
-`run_id` (a run spans sessions, and this one is continuing) while pruning old
-run directories down to the current run and the newest previous one. Calling
-it any earlier, before the checkpoint file is confirmed to exist, would die.
-Capture its `RUN_DIR=` line into `$RUN_DIR` — §4 needs it to check for the
-cursor's own existing `handoff.md` before deciding how to re-form its bundle
-membership.
+**Begin the run now** — `.agents/run-state.yaml` exists at this point:
+`runstate.sh begin-run .agents/run-state.yaml`. It keeps the existing `run_id`,
+since a run spans sessions. Keep the `RUN_DIR=` value it prints: the adopt path
+below, the membership recovery and every lint name it, written out literally.
 
 Switch to the packet's feature branch in the local checkout (idempotent —
 `git switch orch/<task-id>`; the branch already exists from the paused run), then
@@ -258,130 +194,81 @@ Act on the `DECISION=` it prints:
 - **`discard`** — uncommitted scratch sits on top of green. Set it aside
   non-destructively with `git stash --include-untracked` (recoverable — note the
   stash ref), leaving a clean tree at `last_green_commit`, then continue from the
-  cursor. Because the loop shares this single checkout, that scratch may include
-  work you did not produce — `reconcile` already escalates instead of `discard`
-  when it recognizes a reviewed-output path (e.g. `.gspec/memory/pending/`, agent
-  memories awaiting `/gspec-memorize`), but its pattern list cannot cover
-  everything: **escalate to the human before stashing if there is any doubt it
-  is disposable loop scratch** rather than deliberate output someone else
-  produced, matching the instinct `skills/pause/SKILL.md` carries for the same
-  shared-checkout risk. **Record no outcome here** — nothing finished; whether
-  the cursor's bundle's open starts read `interrupted` is step 4's sweep to
-  decide, once it re-forms the bundle's membership.
-- **`adopt`** — a clean orphan commit one ahead of the recorded green SHA
-  carries a `[orch packet:<cursor>]` trailer FIRST (`reconcile` only checks
-  that first trailer — `orphan_packet_tag` reads no further): a **torn
-  write** (the packet committed but the crash beat the run-state update).
-  **Re-verify build+tests are green on that commit yourself** (the helper
-  cannot run the suite). The commit may carry more than one
-  `[orch packet:...]` trailer — a landed bundle (`packet-bundling`) writes
-  one per member, cursor first, in the same commit (§3.6) — so read
-  **every** trailer on it, in commit order, rather than trusting the cursor
-  alone (T7), the same read `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md`
-  §4 uses to recover a landed bundle's membership:
+  cursor. **Escalate to the human before stashing if there is any doubt it is
+  disposable loop scratch** — the checkout is shared, and `reconcile`'s
+  reviewed-output patterns cannot cover everything. **Record no outcome here**:
+  the sweep in run-loop §3's **Form this packet's members** step decides whether
+  the cursor's bundle's open starts read `interrupted`.
+- **`adopt`** — a clean orphan commit one ahead of the recorded green SHA carries a
+  `[orch packet:<cursor>]` trailer first (`reconcile` checks only that first
+  trailer): a **torn write** — the packet committed, but the crash beat the
+  run-state update. **Re-verify build+tests are green on that commit yourself**
+  (the helper cannot run the suite). A landed bundle writes one trailer per
+  member, cursor first, in the same commit, so read **every** trailer on it, in
+  commit order:
   ```bash
   MEMBERS="$(git log -1 --format=%B HEAD \
     | grep -oE '^[[:space:]]*\[orch packet:[a-z0-9][a-z0-9-]*\][[:space:]]*$' \
     | sed -E 's/^[[:space:]]*\[orch packet:(.*)\][[:space:]]*$/\1/' \
     | awk '!seen[$0]++' | paste -sd, -)"
   ```
-  the same anchored, deduplicated read the drifted-completion-record preflight
-  uses (`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` :69-72) — anchored to
-  the whole line so prose elsewhere in the commit body that merely *mentions*
-  another packet's trailer cannot be read as a member, and deduplicated so a
-  repeated trailer cannot hand `record-outcome` the same id twice. **A commit
-  predating this trailer convention — one whose `[orch packet:...]` trailers
-  sit inline within prose rather than each on its own line — matches nothing
-  here, so `$MEMBERS` comes back empty and the check below escalates instead
-  of adopting.** That is the intended, safe outcome for a shape this anchored
-  read cannot confirm, not a regression to loosen the anchor for. **If the
-  first id in `$MEMBERS` is not `<cursor>` itself, escalate to the human
-  instead of adopting** — `reconcile`'s own `orphan_packet_tag` match is
-  unanchored and only reads the first hit it finds, so an orphan whose real
-  first trailer differs from what `orphan_packet_tag` matched can still reach
-  `DECISION=adopt`; this re-read, anchored, is what catches that case before
-  anything is attested. (a lone `<cursor>` trailer reads back as
-  `MEMBERS=<cursor>`, byte-identical to a single-member adoption). Then adopt
-  it: set `last_green_commit` to that SHA and **remove every member of
-  `$MEMBERS` from `pending`** — there
-  is no `done` list to move them into (ADR 0025). **Record whatever
-  completion the commit missed** — §3.6 lands every member's flip in the
-  same commit, but check it again here — in one call, restoring from
-  `HEAD`:
+  This is the anchored, deduplicated read of run-loop's `## 1. Preflight`
+  **Drifted completion record** bullet, so prose that mentions a trailer is never
+  read as a member. A commit whose trailers sit inline in prose — predating this
+  convention — matches nothing, so `$MEMBERS` comes back empty and the check
+  below escalates; never loosen the anchor for it. **If the first id in
+  `$MEMBERS` is not `<cursor>` itself, escalate to the human instead of
+  adopting** — `reconcile`'s own match is unanchored, so this is what catches a
+  mismatched first trailer. (A lone `<cursor>` trailer reads back as
+  `MEMBERS=<cursor>`.) Then adopt it: set `last_green_commit` to that SHA and
+  **remove every member of `$MEMBERS` from `pending`** — there is no `done` list to
+  move them into (ADR 0025). **Record whatever completion the commit missed** — in
+  one call, restoring from `HEAD`:
   ```bash
   ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion \
     --tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore head
   ```
-  passing `--feature`, from the cursor's own `$RUN_DIR/<cursor>/handoff.md`,
-  **only when that file exists**. It runs
-  `check-task` for each member in trailer order (a member already flipped
-  reads `CHECKED=already`), then `complete-capabilities` once for the
-  adopted feature — an adopted commit is always one feature, same as a
-  fresh land — reads both commands' exit codes, and restores a failed
-  capability call's PRD itself.
-  - **`TASK_DRIFT=<member>\t<reason>`** — note it by name and do not halt:
-    the commit already landed regardless of whether its own checkbox could
-    be flipped.
-  - **`HALT=<member>\t<reason>`** (the call exits 1) — a malformed id, a
-    real usage error §3.6 treats as grounds to stop before committing; here
-    the commit is already made, so instead **escalate to the human** naming
-    the member, since an already-landed trailer failing `check-task` this
-    way is not expected and should not be guessed past.
-  - **No slug and no handoff** — `$RUN_DIR/<cursor>/handoff.md` does not
-    exist (a crash before §4 ever wrote that handoff, or a run directory
-    pruned since) and no member printed a `CHECKED=<feature>#T<n>` value,
-    so the call reads `RECORD_COMPLETION=skipped` with a `REASON=` naming
-    no feature slug: no capability call ran, so there is **no restore and
-    no commit** for capabilities here — say so in the kickoff. Nothing is
-    lost by skipping: the resumed run's own `run-loop` §4 end-of-run scan
-    reconciles this feature's judgeable capability drift when the run
-    terminates, exactly as §1 above leaves any capability finished mid-run
-    but not by an adopted commit to that same scan.
-  - **`HELD=<slug>\t<reason>` — a held feature.** An unchecked task's
-    `covers:` quote matches no capability, so every flip for that feature
-    is held until it is fixed. It stages nothing and leaves nothing to
-    restore, and is **neither a failure nor a flip** — name the feature in
-    the kickoff below, carrying that reason, the same per-row form
-    `run-loop` §1 and §4 name a held feature in.
-  - **`CAPABILITIES=<slug>\tfailed`** — report it by name — never escalate
-    for this, and never change anything already decided above. The call
-    has already restored that PRD from `HEAD` (`RESTORED=`, the path the
-    handoff's `PRD=` line names), so a partial write from the failed call
-    never rides into the commit below. That is the `HEAD` form §1 and §4
-    use, not §3.6's index form: this step runs outside any packet and
-    stages the PRD itself, so the index entry is precisely the thing that
-    has to go.
+  passing `--feature`, from the cursor's own `<RUN_DIR>/<cursor>/handoff.md`,
+  **only when that file exists**.
+  - **`TASK_DRIFT=<member>\t<reason>`** — note it by name and do not halt: the
+    commit already landed whether or not its checkbox could be flipped.
+  - **`HALT=<member>\t<reason>`** (the call exits 1) — a malformed id; the
+    commit is already made, so instead of stopping before a commit as a fresh land would,
+    **escalate to the human** naming the member; an already-landed trailer
+    failing this way should not be guessed past.
+  - **No slug and no handoff** — `<RUN_DIR>/<cursor>/handoff.md` does not exist
+    and no member printed a `CHECKED=<feature>#T<n>` value, so the call reads
+    `RECORD_COMPLETION=skipped`: there is **no restore and no commit** for
+    capabilities here — say so in the kickoff. The end-of-run scan in run-loop's
+    `## 4. Termination` reconciles that feature's judgeable drift instead.
+  - **`HELD=<slug>\t<reason>`** — a held feature: name it in the kickoff,
+    carrying that reason, in the per-row form run-loop's `## 1. Preflight`
+    **Drifted capability checkboxes** bullet uses, which states what a held
+    feature is.
+  - **`CAPABILITIES=<slug>\tfailed`** — report it by name — never escalate for
+    this, and never change anything already decided above. The call has already
+    restored that PRD from `HEAD` (`RESTORED=`, the path the handoff's `PRD=`
+    line names), so a partial write never rides into the commit below.
 
-  **Commit the flips.** Stage every `STAGE=` path, then commit only when
-  that left a change against `HEAD` (`git diff --cached --quiet` exits 1):
-  a `CHECKED=already` member's plan file is named on a `STAGE=` line but
-  unchanged, and a held feature, a `completed=0` resolve, a skipped call
-  and a failure add nothing, so none of them is a reason to commit. That
-  one commit — task flips and capability flip together, or either alone —
-  uses the reconciliation form (the same form `run-loop` §1/§4 use for
-  preflight and end-of-run reconciliation) with site `adopt`: `spec:
-  reconcile capability record (adopt)`. It is **never an amend of the
-  orphan commit** — the orphan commit is already recorded, so amending it
-  would rewrite history — and it carries **no `[orch packet:]` trailer**,
+  **Commit the flips.** Stage every `STAGE=` path, then commit only when that
+  left a change against `HEAD` (`git diff --cached --quiet` exits 1) — a
+  `CHECKED=already` member's plan file is named but unchanged. That one commit
+  uses the reconciliation form run-loop's `## 1. Preflight` and
+  `## 4. Termination` use, with site `adopt`: `spec: reconcile capability record
+  (adopt)`. It is **never an amend of the orphan commit**, which is already
+  recorded, and it carries **no `[orch packet:]` trailer**,
   so run metrics count no packet for it.
-  A failure in the call or in this commit is reported by name as stated above — never escalated, never halting — and
-  never changes the `green` attestation below: the packet already landed
-  regardless of whether its capability could be flipped, so a crash between
-  landing and recording this leaves no capability drift this step has to
-  chase — the resumed run's own `run-loop` §4 end-of-run scan reconciles
-  whatever this step could not, the same scan the skip above hands to.
+  A failure in the call or in this commit is reported by name as stated above —
+  never escalated, never halting — and never changes the `green` attestation
+  below: the packet already landed, and the end-of-run scan in run-loop's
+  `## 4. Termination` reconciles what this step could not.
 
-  **Attest the outcome** — it landed, just was not recorded, for every
-  member in one call: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh
-  record-outcome "$MEMBERS" green`. Set `cursor` to whatever entry remains
-  first in `pending` (or none, if nothing does — the same rule §3.6's own
-  cursor-advance uses, since `group` forms a bundle from the plan's order
-  while `pending` is the loop's own chosen order, so a member is never
-  assumed to sit at a consecutive prefix of it), and write run-state
-  atomically via `runstate.sh write`. Every member of the bundle is done —
-  do not redo any of them: this is exactly the crash window the task exists
-  to close, so a crash between a bundled commit and the run-state write can
-  never leave a landed member unchecked and queued for re-execution.
+  **Attest the outcome** for every member in one call:
+  `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh record-outcome "$MEMBERS" green`.
+  Set `cursor` to whatever entry remains first in `pending` (or none), by the
+  cursor-advance rule of run-loop §3's **Land** step, and write run-state
+  atomically via `runstate.sh write`. Every member of the bundle is done — do not
+  redo any of them.
 - **`escalate`** — diverged history, multiple unexplained commits, an untagged /
   mismatched orphan, or a dirty tree holding a reviewed-output path (deliberate
   output the loop did not create, sitting where `discard` would otherwise stash
@@ -391,49 +278,34 @@ Act on the `DECISION=` it prints:
 
 Once reconciled, set `status: running` (`runstate.sh set .agents/run-state.yaml
 status running`) and **claim the driver**
-(`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh claim-driver .agents/run-state.yaml`) —
-you now own the run again. The claim is not bookkeeping: `status: running` alone
-cannot tell a crashed session from *this* one, so without it the next session reads
-your live run as a crash and starts driving too (ADR 0020 D5). Beat it
-(`runstate.sh heartbeat .agents/run-state.yaml`) at each packet boundary, as
-`/gaffer:run-loop` §3.5 does. **Clear the pause sentinel**
-(`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause .agents/pause`): the request
-that paused the previous session is consumed, so it must not immediately re-halt this
-one (ADR 0017).
+(`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh claim-driver .agents/run-state.yaml`),
+so the next session does not read this live run as a crash (ADR 0020 D5); beat it
+at each packet boundary, per run-loop §3's **Advance** step. **Clear the pause
+sentinel** (`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause .agents/pause`)
+so the consumed request does not re-halt this session (ADR 0017).
 
 **Snapshot run-metrics for the prior segment (best-effort, ADR 0019).** If the last
-session **crashed** (`status: running` on entry), it never ran the pause snapshot, so
-its perishable token data may still be on disk but uncollected — capture it now, before
-it is lost to transcript rotation:
-`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true`. Non-critical bookkeeping —
-if it errors or `jq` is absent, ignore it and continue.
+session **crashed** (`status: running` on entry), it never ran the pause snapshot,
+so capture its token data before transcript rotation loses it:
+`${CLAUDE_PLUGIN_ROOT}/scripts/metrics.sh collect || true`. If it errors or `jq` is
+absent, ignore it and continue.
 
 ## 3. Surface pending questions before doing work
 
 If `pending_questions` contains any `blocking` entry for the packet at
-`backlog.cursor`, the loop **cannot** proceed on it — present those questions to
-the human and wait. Assemble the surrounding stop report exactly as
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §4 does — `runstate.sh run-digest
+`backlog.cursor`, the loop **cannot** proceed on it — present those questions to the
+human and wait. Assemble, tally and lint the surrounding stop report (shape B)
+exactly as run-loop's `## 4. Termination` does — `runstate.sh run-digest
 .agents/run-state.yaml` with **no** `--since`, so it names every packet this run
-began with its outcome even when this session did not run all of them — and slot
-these questions in as its **Decisions for you** block
-(`${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`, shape B): each one an
-answerable choice with what follows from each option and your lean, not the raw
-`pending_questions` text. These were written by a session that no longer exists, so
-give the human the plain-English title of the packet they block — they will not
-recognise the id. Non-blocking questions are surfaced but do not halt progress on
-unrelated packets. Take its four digest-derived tally figures from `runstate.sh
-run-tally .agents/run-state.yaml` and compute none of them, and lint it before you
-emit it — `<RUN_DIR>/stop-digest.tsv`, `<RUN_DIR>/stop-report.md` and
-`${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape B <RUN_DIR>/stop-report.md
-<RUN_DIR>/stop-digest.tsv`, with `<RUN_DIR>` the `RUN_DIR=` value §2's
-`begin-run` printed **written out literally**, never `$RUN_DIR` — both exactly as
-run-loop §4 does, correcting the lines a finding names at most once and never
-re-linting in a loop. `REPORT_LINT=clean` means *no mechanical rule was broken*,
-never that the report conforms to the contract, and `REPORT_LINT=unjudged` is
-**not** clean; what the lint cannot judge is stated once, in run-loop §4's "How
-to read the lint's result". When this stop report is the whole of what this session does,
-run `runstate.sh driver-mode exit` right after emitting it.
+began even when this session ran none of them; the four tally figures from
+`runstate.sh run-tally`; the lint on `<RUN_DIR>/stop-report.md` and
+`<RUN_DIR>/stop-digest.tsv`, read as that section says — and slot these questions in
+as its **Decisions for you** block: each one an answerable choice with what follows
+from each option and your lean, not the raw `pending_questions` text, naming the
+packet it blocks by its plain-English title, since the human will not recognise the
+id. Non-blocking questions are surfaced but do not halt progress on unrelated
+packets. When this stop report is the whole of what this session does, run
+`runstate.sh driver-mode exit` right after emitting it.
 
 ## 4. Continue from the cursor
 
@@ -442,200 +314,30 @@ run `runstate.sh driver-mode exit` right after emitting it.
 rendered from `runstate.sh run-digest .agents/run-state.yaml` with **no** `--since`:
 its `packet` lines are what THIS run already did, across however many sessions
 drove it, so render those as one ⚠️ **Picked up** line naming what is unfinished
-rather than a second stop report, and its `enter` line gives the `▶ **Session**`
-line (model/effort/threshold), exactly as a fresh run's kickoff does. Render
-`⚠️ **Routing config**` only when §1's `validate` printed something, and `▶
-**Routing**` only when §1's `table` printed something, exactly as run-loop §2
-does — empty output means no line. Render `⚠️ **Effort override**` only when
-§0's `session-effort` printed `EFFORT_ENV=set`. State what
-is **left**, not what the original run set out to do: the remaining packets in plain
-words, what is expected to need a decision, and where this session will stop. The
-human may be days removed from the run and remembers none of the ids; the checkpoint
-you just loaded is the only thing that does. Where the tree needed reconciling (§2),
-say so in one line — whether anything was adopted or set aside, and whether the
-resumed state matches where they think they left off. If `$ARGUMENTS` carried
+rather than a second stop report. Render the `▶ **Session**`, `⚠️ **Routing
+config**`, `▶ **Routing**` and `⚠️ **Effort override**` lines exactly as run-loop's
+`## 2. Enter driver mode` renders them, from §0's and §1's outputs. State what is
+**left**, not what the original run set out to do: the remaining packets in plain
+words, what is expected to need a decision, and where this session will stop. Where
+the tree needed reconciling (§2), say so in one line — whether anything was adopted
+or set aside, and whether the resumed state matches where the human thinks they left
+off — plus any line §2's adopt path owes the kickoff. If `$ARGUMENTS` carried
 `--relay`/`--inline`, add the one `⚠️` line per flag described above.
 
-**Lint the kickoff before you emit it**, exactly as
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §2 lints a fresh run's: write
-`runstate.sh run-digest .agents/run-state.yaml > <RUN_DIR>/kickoff-digest.tsv`
-and the rendered kickoff to `<RUN_DIR>/kickoff.md`, with `<RUN_DIR>` the
-`RUN_DIR=` value §2's `begin-run` printed **written out literally** — never
-`$RUN_DIR` or any other variable, which driver mode refuses — then run
-`${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape C <RUN_DIR>/kickoff.md
-<RUN_DIR>/kickoff-digest.tsv` (both paths literal). On findings, correct the
-lines they name **at most once**, then emit — never re-lint in a loop. A finding
-records nothing, blocks nothing, rolls back nothing, flips nothing and halts
-nothing. `REPORT_LINT=clean` means *no mechanical rule was broken*, never that
-the kickoff conforms to the contract, and `REPORT_LINT=unjudged` is **not**
-clean; what the lint cannot judge is stated once, in run-loop §4's "How to read
-the lint's result".
+**Lint the kickoff before you emit it**, exactly as run-loop's
+`## 2. Enter driver mode` lints a fresh run's: `<RUN_DIR>/kickoff-digest.tsv` and `<RUN_DIR>/kickoff.md`,
+with `<RUN_DIR>` the value §2's `begin-run` printed, **written out literally** —
+never `$RUN_DIR` or any other variable, which driver mode refuses.
 
-**Form the cursor's bundle membership before anything else here** (T7,
-membership rule settled T9). A paused or crashed session's cursor may be a
-multi-task bundle (`packet-bundling`), exactly as a fresh packet's cursor can
-be — `$MEMBERS` is driver-held shell state (the same convention
-`$SINCE`/`$SWEEP` use) that does not survive a crash or a pause on its own,
-so this session must re-establish it before the sweep below can know every
-member to exempt. **Two paths, tried in this order:**
-
-- **The cursor's own `handoff.md` already exists** (`$RUN_DIR/<cursor>/
-  handoff.md`, from §2) — this session is continuing work a prior session
-  (this one or an earlier one, paused or crashed) already started on this
-  exact cursor, and `record-start` was already called against whatever
-  membership that prior session decided. **Recover that same membership
-  rather than re-deriving it** — re-running `group` here could shrink or
-  grow it (T7's bug: the sweep below would then close members the run had
-  started as `interrupted`, or silently start a member no start record
-  covers). Read the file's own header and body:
-  - `tier:` and `agent:` come straight off its header lines (`grep
-    '^tier:\|^agent:'`) — they were decided once, against this same
-    membership, when the handoff was first written (§3.3); do not re-judge
-    them from titles here.
-  - Membership comes off its body's `BUNDLE=` line (`grep -m1 '^BUNDLE='`).
-    **Its absence means a single-member bundle**: set `MEMBERS=<cursor>`
-    alone, so a bundle cap of 1 — which never writes a `BUNDLE=` line in the
-    first place — behaves exactly as it always has, byte-for-byte.
-
-  Then re-run only the **mechanical refusals**, never the scope/deps/cap
-  judgment `group` applies when forming a bundle fresh — this is recovery,
-  not re-formation. Resolve each non-cursor member's state with
-  `gspec-backlog.sh task-status "$MEMBERS"` (the same read the sweep below
-  already uses for `--gone`): a member whose line reads `finished` (its task
-  was checked off while this session was away — by a hand fix, another
-  branch's merge, anything) or `gone` (re-decomposed out of the plan) drops
-  out of `$MEMBERS`; **the cursor itself is never dropped by this rule**,
-  regardless of what its own line reads. The third mechanical refusal —
-  already routed `hand-off-feature` this run — needs no separate check here:
-  it is caught a few steps below, when the (possibly narrowed) `$MEMBERS` is
-  piped into `gspec-backlog.sh handoff` and its `HANDOFF=refused` line is
-  read exactly as it always is.
-
-- **No `handoff.md` exists yet for the cursor** — nothing was ever started on
-  it (a fresh cursor this session is about to begin, or a crash before the
-  handoff was written), so there is nothing to recover and the group is
-  formed exactly as `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.2
-  does: read the cap (`runstate.sh bundle-cap` → `CAP=<n>`), form the
-  candidate group at the cursor (`gspec-backlog.sh group <cursor> --cap
-  <n>`), then walk its `MEMBER=` lines in that printed (plan) order and
-  judge each one's tier from its title exactly as §3.2 judges a fresh
-  packet's — the first one is the cursor itself: judging it design-heavy
-  ends the group right there (`MEMBERS=<cursor>` alone); otherwise keep
-  walking and stop before the first member you would judge design-heavy,
-  dropping it and everything after it. A leading `HANDOFF=unknown` from
-  `group` (no gspec, a non-gspec packet, or a cursor already checked) means
-  this packet does not bundle at all: set `MEMBERS=<cursor>` and decide
-  `tier`/`--agent` for it alone, exactly as you would today. Otherwise
-  `MEMBERS` is the comma-joined ids that survive the walk, cursor first, in
-  plan order, and `tier`/`--agent` are decided for the whole of `MEMBERS`
-  the same way §3.2 decides them.
-
-Use `$MEMBERS` everywhere below in place of `<cursor>` alone.
-
-**Then sweep before recording the packet** (T3, T7, T8): run
-`${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --list`, passing
-`--paused-cursor "$MEMBERS"` exactly when this session is about to continue it
-(cosmetic on the `--list` call, which only lists — it costs extra ids in
-`OPEN=` if omitted; run-loop's own `--list` call below omits it and passes it
-only on the real sweep, which is the call that matters) —
-`status` read `paused` **or** `blocked` in step 1, both of which leave every
-member of the cursor's bundle open for this same session to pick back up; the
-cursor's whole bundle is what this session is about to continue, not what the
-sweep should close. A crash (`status` read `running`) is not this situation —
-no member of `$MEMBERS` is excluded there, and each still closes as
-`interrupted` (or `abandoned`, if it is also gone) like any other open packet.
-It prints one `OPEN=<id>` line per open
-packet. If it printed any, comma-join the ids (the `paste -sd,` idiom at
-run-loop/SKILL.md :84–87) into one
-string and resolve them —
-`${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh task-status "<id,id,...>"` — which
-prints one `<id>\t<state>\t<reason>` TSV line per id plus a trailing
-`FINISHED=<csv>` line; the `gone` set is the ids whose second column reads `gone`.
-Comma-join THOSE into `GONE="<id,id,...>"` and pass it to `--gone` (skip
-`task-status` and `--gone` entirely when `--list` printed nothing —
-`task-status` refuses an empty id list, and no open packets means nothing
-for the real sweep to close either — and leave `SWEEP` empty). Otherwise
-sweep for real, same `--paused-cursor`/`--gone`, capturing the sweep's own
-output:
-`SWEEP="$(${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh sweep-open --paused-cursor
-"$MEMBERS" --gone "$GONE")"`. `$SWEEP` holds one
-`SWEPT=<id>`/`OUTCOME=<interrupted|abandoned>` line pair per packet the sweep
-actually closed — every open packet, not only the gone ones; a gone packet's
-pair reads `abandoned`, every other open packet's reads `interrupted` —
-**carry `$SWEEP` through to the first shape-A report**, exactly as
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.6 renders it (that
-section's own `$SWEEP` capture, from its own §3.2, is a separate one for
-every packet after this first one) — `run-digest`'s `packet` lines are never
-filtered by `--since`, so this sweep's own record of what it just closed is
-the only thing marking it as new. The kickoff above needs nothing, since a
-sweep always runs after it.
-
-Write the packet's handoff for `$MEMBERS` exactly as
-`${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.3 does — `tier`/`--agent`
-were already decided above.
-
-**Check for `HANDOFF=unknown` or a non-cursor `HANDOFF=refused` before piping
-anything**, the same check §3.3 runs (T7 — a resumed bundle can legitimately
-carry a member routed `hand-off-feature` earlier in the same run, same as a
-freshly-formed one). Run `gspec-backlog.sh handoff "$MEMBERS"` first and read
-its output. A leading `HANDOFF=unknown` line means some id in `$MEMBERS` does
-not resolve in gspec. When `$MEMBERS` came from the no-`handoff.md` path
-above, this can only be `<cursor>` alone (`$MEMBERS` has one member), since
-`group` already confirmed every other candidate resolves. When `$MEMBERS`
-was instead recovered from an existing `handoff.md`'s `BUNDLE=` line, a
-non-cursor member can reach this too: the mechanical refusal check above only
-drops a member `task-status` reads as `finished` or `gone`, and `task-status`
-is deliberately conservative — it reads several genuinely-gone shapes as
-`unknown` rather than guess (see `gspec-backlog.sh`'s own header comment on
-`task-status`), which `handoff`'s fuller per-id resolution then catches here
-instead. Treat that the same as a non-cursor `HANDOFF=refused` below —
-truncate `$MEMBERS` to the members before it and retry — rather than as the
-single-member case. When `<cursor>` itself is the one that does not resolve
-(either path), and you have run-state's own task text for this packet
-instead (a non-gspec packet, never a bundle), pipe that in its place.
-Otherwise **skip the packet with no record** — advance the cursor and report
-the skip.
-
-A leading `HANDOFF=refused` line (`REASON=hand-off-feature`) means some id in
-`$MEMBERS` was already routed `hand-off-feature` this run — its own
-`PACKET=` line names which one. When `PACKET=` is `<cursor>` itself, **skip
-the packet with no record** — advance the cursor and report the skip. When
-`PACKET=` names a later member instead, **truncate `$MEMBERS` to the members
-before it**, dropping the refused member and everything after it, then
-re-run `gspec-backlog.sh handoff` on the truncated `$MEMBERS` and proceed
-with that narrower bundle — the refused member is left at its place in
-`pending` and gets its own packet, refused again in turn, on a later
-iteration. Never pipe a `HANDOFF=refused` body through to `runstate.sh
-handoff` as if it were real task text.
-
-Once `HANDOFF=<path>` prints clean (or a non-gspec packet's task text is
-ready), pipe it (or run-state's own task text, always a single id in that
-case) into `runstate.sh handoff .agents/run-state.yaml <cursor> --tier
-<tier> --agent <agent>` (still exactly one packet id, the bundle's own —
-never `$MEMBERS` — same as §3.3). Only once it is written do you attest the start —
-capture `SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` first, the same capture
-run-loop/SKILL.md §3.3 pairs with this exact step, so the first shape-A report
-after this resume scopes `run-digest --since "$SINCE"` to only this packet's
-own decisions rather than every decision the whole run has ever recorded —
-then `runstate.sh record-start "$MEMBERS" --continue` when this session is
-about to continue the cursor's bundle — the same condition the sweep above
-used to exclude it from closing — else `runstate.sh record-start "$MEMBERS"`
-(a fresh start for every member — its prior attempt, if any, already closed
-with a recorded outcome, since a crash is not excluded from the sweep
-above); either call writes one start (or continuation) record per member in
-a single call, sharing a timestamp and session, exactly as §3.3 does.
-
-Then `Read` `${CLAUDE_PLUGIN_ROOT}/skills/run-loop/SKILL.md` §3.4 onward
-(dispatch with the handoff path, route every verdict, land, integrate,
-advance) and §4 (termination) — this resume dispatches and routes exactly as
-a fresh run does, for the cursor packet
-and every packet after it — including running
-`${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>` immediately before
-each dispatch, passing a non-empty result as `model` and omitting `model` when
-it is empty. Honor the same gates as before: the driver owns
-routine commits, and merge/rebase/push onto non-`main`
-branches; hard gates — `main`, releases, migrations,
-secrets, deploys, the danger floor — still stop for the human. Keep
-`.agents/run-state.yaml` current as packets land, so the next pause is cheap,
-and run `runstate.sh driver-mode exit` immediately after whichever stop
-report run-loop §4 renders.
+**Then run run-loop's `## 3. Loop`** from its **Form this packet's members** step —
+§2 above already made the **Branch** step's switch — through its
+`## 4. Termination`, for the cursor packet and every packet after it: recover the cursor's
+membership from its existing handoff, sweep (this first packet's continuation
+decided from the `status` §1 read), write the handoff, record the start, then
+dispatch, route, land, integrate and advance exactly as a fresh run does —
+including running `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve <agent>`
+immediately before each dispatch, passing a non-empty result as `model` and
+omitting `model` when it is empty. Honor the gates in run-loop's `## Never`. Keep
+`.agents/run-state.yaml` current as packets land, so the next pause is cheap, and
+run `runstate.sh driver-mode exit` immediately after whichever stop report
+run-loop's `## 4. Termination` renders.

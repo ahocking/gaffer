@@ -1328,7 +1328,15 @@ for se_skill in run-loop resume; do
   esac
   has "$se_skill entry block passes the printed EFFORT to --effort" \
     '--effort <EFFORT, exactly as printed>' "$se_block"
+  # skill-prompt-trim T5: resume states these three rules by reference -- run-loop §2
+  # is their one statement -- so over resume the phrases are read from run-loop and
+  # resume must name that section as where they live.
   se_prose="$(_squeeze "$se_file")"
+  if [ "$se_skill" = resume ]; then
+    has "resume SKILL.md refers the entry-block rules to run-loop's ## 2 heading" \
+      "The rule for each of these three calls is the one run-loop's \`## 2. Enter driver mode\` states" "$se_prose"
+    se_prose="$(_squeeze "$ROOT/skills/run-loop/SKILL.md")"
+  fi
   has "$se_skill SKILL.md says the effort is read, never inferred from the model" \
     'The effort is read, never inferred from the model' "$se_prose"
   has "$se_skill SKILL.md never asks the operator to change the effort" \
@@ -1818,6 +1826,156 @@ the FEATURE= fallback wording|fall back to
 the per-slug loop|one call per slug
 RC_ABSENT
 done
+
+printf '\n== resume states only what is unique to resuming; run-loop is the one statement of the rest (skill-prompt-trim T5) ==\n'
+# Resume used to restate four rules run-loop also carries -- bundle-membership recovery,
+# the sweep before start, the handoff checks, the capability flip's shared rules -- and
+# pointed at run-loop by line number (`:69-72`, `:84–87`) and bare section number. Two
+# statements of one rule drift apart, and a line-number reference goes stale on the
+# next edit above it. So: run-loop carries the moved rules (membership recovery in the
+# Form step, the recovered bundle's non-cursor HANDOFF=unknown in the Write step, and a
+# resumed session's first-packet continuation rule in the sweep); resume carries no copy
+# of them; and every reference resume makes to run-loop names a heading or a §3 step
+# title that exists there, never a line or a bare number. Spans are content-anchored,
+# guarded non-empty and under the ceiling, as above.
+t5_rl="$ROOT/skills/run-loop/SKILL.md"
+t5_rs="$ROOT/skills/resume/SKILL.md"
+t5_recover="$(_rc_site "$t5_rl" 'Recover the membership instead of forming it' 'Then go straight to the sweep below\.')"
+t5_first="$(_rc_site "$t5_rl" 'The first packet a resumed session runs is the one' 'like any other open packet\.')"
+t5_unknown="$(_rc_site "$t5_rl" 'When it was \*\*recovered\*\* from an existing handoff' 'never as the single-member case\.')"
+for t5_pair in "run-loop membership recovery|$t5_recover" "run-loop first-packet exception|$t5_first" \
+               "run-loop recovered HANDOFF=unknown|$t5_unknown"; do
+  t5_name="${t5_pair%%|*}"; t5_span="${t5_pair#*|}"
+  [ -n "$t5_span" ] && ok "$t5_name span extracted (anchor holds)" \
+    || bad "$t5_name span extracted (anchor holds)" 'empty -- the rule moved out of run-loop or was rewritten'
+  under_ceiling "$t5_name span stays inside its ceiling (end anchor still matches)" "$t5_span"
+done
+t5_recover="$(_rc_sq "$t5_recover")"; t5_first="$(_rc_sq "$t5_first")"; t5_unknown="$(_rc_sq "$t5_unknown")"
+
+# The recovery sits in §3's Form step, before `group` is read, and the recovered-bundle
+# check sits in the Write step: a rule stated in the wrong step is a rule a session
+# reaches at the wrong time.
+t5_form_line="$(grep -n "^2\. \*\*Form this packet's members" "$t5_rl" | head -1 | cut -d: -f1)"
+t5_write_line="$(grep -n '^3\. \*\*Write the handoff' "$t5_rl" | head -1 | cut -d: -f1)"
+t5_rec_line="$(grep -n 'Recover the membership instead of forming it' "$t5_rl" | head -1 | cut -d: -f1)"
+t5_grp_line="$(grep -n 'gspec-backlog.sh group' "$t5_rl" | head -1 | cut -d: -f1)"
+t5_unk_line="$(grep -n 'When it was \*\*recovered\*\* from an existing handoff' "$t5_rl" | head -1 | cut -d: -f1)"
+t5_dsp_line="$(grep -n '^4\. \*\*Dispatch, then route' "$t5_rl" | head -1 | cut -d: -f1)"
+if [ -n "$t5_form_line" ] && [ -n "$t5_rec_line" ] && [ -n "$t5_grp_line" ] && [ -n "$t5_write_line" ] \
+   && [ "$t5_form_line" -lt "$t5_rec_line" ] && [ "$t5_rec_line" -lt "$t5_grp_line" ] \
+   && [ "$t5_grp_line" -lt "$t5_write_line" ]; then
+  ok "run-loop: membership recovery sits in the Form step, before group is read"
+else
+  bad "run-loop: membership recovery sits in the Form step, before group is read" \
+    "form=${t5_form_line:-none} recover=${t5_rec_line:-none} group=${t5_grp_line:-none} write=${t5_write_line:-none}"
+fi
+if [ -n "$t5_write_line" ] && [ -n "$t5_unk_line" ] && [ -n "$t5_dsp_line" ] \
+   && [ "$t5_write_line" -lt "$t5_unk_line" ] && [ "$t5_unk_line" -lt "$t5_dsp_line" ]; then
+  ok "run-loop: the recovered bundle's non-cursor HANDOFF=unknown sits in the Write step"
+else
+  bad "run-loop: the recovered bundle's non-cursor HANDOFF=unknown sits in the Write step" \
+    "write=${t5_write_line:-none} unknown=${t5_unk_line:-none} dispatch=${t5_dsp_line:-none}"
+fi
+
+while IFS='|' read -r t5_site t5_label t5_needle; do
+  [ -n "$t5_site" ] || continue
+  case "$t5_site" in
+    recover) t5_span="$t5_recover" ;; first) t5_span="$t5_first" ;; unknown) t5_span="$t5_unknown" ;;
+  esac
+  has "run-loop $t5_site: $t5_label" "$t5_needle" "$t5_span"
+done <<'T5_NEEDLES'
+recover|recovery is keyed on the cursor's own handoff existing|`<RUN_DIR>/<cursor>/handoff.md`
+recover|group is never re-run on recovery|**Never re-run `group` here**
+recover|tier and agent come off the handoff header|`grep '^tier:\|^agent:' <path>`
+recover|membership comes off the BUNDLE= line|`grep -m1 '^BUNDLE=' <path>`
+recover|an absent BUNDLE= line is the cursor alone|Its absence means a single-member bundle: `MEMBERS=<cursor>` alone.
+recover|only the mechanical refusals are re-run|re-run only the **mechanical refusals**
+recover|through task-status over the recovered members|`gspec-backlog.sh task-status "$MEMBERS"`
+recover|finished and gone members drop out|reads `finished`
+recover|but never the cursor|**never the cursor itself**
+recover|the hand-off-feature refusal is left to the handoff check|`HANDOFF=refused` check catches it
+first|resume decides the first packet from the status it loaded|decides it from the `status` it read when it loaded the checkpoint
+first|paused or blocked is a continuation|`paused` or `blocked` is a continuation
+first|a crash is a fresh start|`running` (a crash) is a fresh start
+first|so the crashed bundle's open starts close interrupted|closes as `interrupted`
+unknown|a non-cursor HANDOFF=unknown truncates like a refusal|treat a non-cursor `HANDOFF=unknown` exactly as a non-cursor `HANDOFF=refused`
+unknown|because task-status is conservative|reads several genuinely-gone shapes as `unknown`
+unknown|and is never the single-member case|never as the single-member case
+T5_NEEDLES
+
+# Resume carries no copy of the moved rules. Every needle below is a mechanism only the
+# moved text used; resume reaches all of it through run-loop §3's Form and Write steps.
+t5_body="$(_squeeze "$t5_rs")"
+[ -n "$t5_body" ] && ok 'resume SKILL.md is readable for the no-copy checks' \
+  || bad 'resume SKILL.md is readable for the no-copy checks' "empty or missing: $t5_rs"
+while IFS='|' read -r t5_label t5_needle; do
+  [ -n "$t5_label" ] || continue
+  case "$t5_body" in
+    *"$t5_needle"*) bad "resume carries no copy of: $t5_label" "still present: $t5_needle" ;;
+    *) ok "resume carries no copy of: $t5_label" ;;
+  esac
+done <<'T5_ABSENT'
+forming a bundle fresh (group)|gspec-backlog.sh group
+reading the bundle cap|bundle-cap
+the sweep's own calls|sweep-open
+the handoff checks|HANDOFF=unknown
+the refused-member truncation|HANDOFF=refused
+membership recovery off the handoff header|^tier:
+the start record|record-start
+writing the handoff|runstate.sh handoff
+the held-feature definition|`covers:` quote matches no capability
+T5_ABSENT
+
+# Resume refers to run-loop by heading, never by line or bare number.
+t5_linerefs="$(grep -nE 'SKILL\.md[)]?[[:space:]]*:[0-9]|:[0-9]+[-–][0-9]+' "$t5_rs")"
+[ -z "$t5_linerefs" ] && ok 'resume names no run-loop line numbers' \
+  || bad 'resume names no run-loop line numbers' "found: $(printf '%s' "$t5_linerefs" | head -1)"
+t5_subsec="$(grep -nE '§[0-9]+\.[0-9]' "$t5_rs")"
+[ -z "$t5_subsec" ] && ok 'resume names no run-loop §N.N subsection by number' \
+  || bad 'resume names no run-loop §N.N subsection by number' "found: $(printf '%s' "$t5_subsec" | head -1)"
+t5_bare="$(printf '%s' "$t5_body" | grep -oE "run-loop(/SKILL\.md|'s)? §[0-9]+('s \*\*)?" | grep -v "'s \*\*\$")"
+[ -z "$t5_bare" ] && ok "resume's every run-loop § reference is a §3 step named by its bold title" \
+  || bad "resume's every run-loop § reference is a §3 step named by its bold title" "bare: $(printf '%s' "$t5_bare" | head -1)"
+
+# ...and every heading and step title it names exists in run-loop, so a renamed heading
+# fails here instead of leaving resume pointing at nothing. A heading reference is
+# `## <prefix>` in backticks, a step reference `§3's **<prefix>**`; each must be the
+# prefix of a run-loop `## ` heading or a numbered §3 step's bold title.
+t5_heads="$(printf '%s' "$t5_body" | grep -oE '`## [^`]+`' | sed -E 's/^`## //; s/`$//' | sort -u)"
+t5_steps="$(printf '%s' "$t5_body" | grep -oE "§3's \*\*[^*]+\*\*" | sed -E "s/^§3's \*\*//; s/\*\*\$//" | sort -u)"
+[ -n "$t5_heads" ] && ok 'resume names run-loop sections by heading (at least one found)' \
+  || bad 'resume names run-loop sections by heading (at least one found)' 'no `## ...` reference in resume'
+[ -n "$t5_steps" ] && ok 'resume names run-loop §3 steps by bold title (at least one found)' \
+  || bad 'resume names run-loop §3 steps by bold title (at least one found)' "no §3's **...** reference in resume"
+t5_missing=""
+while IFS= read -r t5_h; do
+  [ -n "$t5_h" ] || continue
+  grep -qF -- "## $t5_h" "$t5_rl" || t5_missing="$t5_missing [## $t5_h]"
+done <<EOF
+$t5_heads
+EOF
+while IFS= read -r t5_s; do
+  [ -n "$t5_s" ] || continue
+  grep -qE "^[0-9]+\. \*\*$(printf '%s' "$t5_s" | sed 's/[][\.*^$()+?{}|]/\\&/g')" "$t5_rl" \
+    || t5_missing="$t5_missing [§3 **$t5_s**]"
+done <<EOF
+$t5_steps
+EOF
+[ -z "$t5_missing" ] && ok 'every heading and §3 step resume names exists in run-loop' \
+  || bad 'every heading and §3 step resume names exists in run-loop' "not found:$t5_missing"
+
+# Resume still carries its own four things, and the routing resolve beside its dispatch.
+while IFS='|' read -r t5_label t5_needle; do
+  [ -n "$t5_label" ] || continue
+  has "resume keeps: $t5_label" "$t5_needle" "$t5_body"
+done <<'T5_KEEP'
+the mode: parallel stop|runstate.sh lanes .agents/run-state.yaml
+reconstructing the checkpoint from git|runstate.sh reconstruct .
+reconciling the working tree|runstate.sh reconcile .agents/run-state.yaml .
+the adopt path's own commit|spec: reconcile capability record (adopt)
+surfacing pending questions as decisions|**Decisions for you** block
+the model resolved immediately before each dispatch|routing.sh resolve <agent>` immediately before each dispatch
+T5_KEEP
 
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"

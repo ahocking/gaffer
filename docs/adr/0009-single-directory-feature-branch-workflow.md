@@ -100,3 +100,17 @@ would simply mean bringing back an isolation mechanism for that case.
 - **CI drops `test-worktree.sh`.** The branch workflow is plain git; guard behavior
   is still pinned by `test-guard.sh` and the loop invariants by `test-runstate.sh`
   (rewritten for a single-checkout feature branch).
+
+## Relocated from skills (2026-09-25) — the resume skill's worktree reason
+
+Moved out of `skills/resume/SKILL.md`'s Concurrency section by `skill-prompt-trim`;
+the rule now lives in `skills/run-loop/SKILL.md` §3's **Branch** step, which keeps
+"a worktree branched mid-run lacks the earlier packets' commits and is never merged
+back". It used to read:
+
+> **Worktree isolation is not part of this resume.** Reach for it only on
+> self-contained work starting fresh off the default branch — a spike, an
+> experiment, a deliberate refactor — **never** for an implementer continuing a
+> packet on this run's own `orch/<task-id>` branch: a worktree branched mid-run
+> lacks the earlier packets' commits and is never merged back automatically, so it
+> silently drops the packet from the branch the run is building.

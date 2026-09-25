@@ -224,3 +224,19 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > A question the human must go reading to understand is a question that stalls
   > the run.
+
+## Relocated from skills (2026-09-25) — the resume skill's report reasons
+
+Moved out of `skills/resume/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a surfaced question names its packet by title** (resume §3). The skill keeps
+  "since the human will not recognise the id". It used to read:
+
+  > These were written by a session that no longer exists, so give the human the
+  > plain-English title of the packet they block — they will not recognise the id.
+
+- **Why the resuming kickoff states what is left** (resume §4):
+
+  > The human may be days removed from the run and remembers none of the ids; the
+  > checkpoint you just loaded is the only thing that does.

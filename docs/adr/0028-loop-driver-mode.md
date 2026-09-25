@@ -856,3 +856,46 @@ each rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > never `$RUN_DIR` or any other variable, which driver mode refuses because it
   > cannot prove where the write lands
+
+## Relocated from skills (2026-09-25) — the run-loop skill's routing-arm reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Act on `route`'s action** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why `discard-advance` stashes** (the `discard-advance` arm). The skill keeps
+  "never `git reset --hard`/`git clean -fd`, which the guard hard-denies; one stash
+  covers the whole bundle's uncommitted work". It used to read:
+
+  > (never `git reset --hard`/`git clean -fd` — the guard hard-denies both, and a
+  > stash is recoverable — one stash covers the whole bundle's uncommitted work,
+  > since nothing was ever committed member-by-member).
+
+- **Why an `append-task` merges the decider's branch at once.** The skill keeps "the
+  appended task is committed only on this packet's branch, so it is runnable in this
+  run only once that branch is merged". It used to read:
+
+  > The appended task line is committed only on this packet's branch, and
+  > `gspec-backlog.sh handoff` reads the plan from the integration branch, so the task
+  > is runnable in this run only once that branch is merged.
+
+- **Why the merged branch is deleted.** The skill keeps "so §3.1 recreates it from
+  the current `<base>`: left in place, it lacks the appended task's work and the
+  re-run fails the same way". It used to read:
+
+  > Once merged, delete the branch with `git branch -d orch/<packet-id>` — the
+  > non-forcing `-d`, which refuses a branch not merged into `HEAD`, so it cannot lose
+  > work — because this packet stays in `pending`, and §3.1 switches to an existing
+  > `orch/<packet-id>` rather than recreating it: left in place, the branch
+  > still points at the decider commit and lacks the appended task's work that lands on
+  > the integration branch ahead of it, so the re-run would fail the same way and
+  > escalate again. Deleted, §3.1 recreates it from the current `<base>`.
+
+- **Why `hand-off-feature` never assumes a prefix of `pending`.** The skill keeps "a
+  resume, a decider `reorder`, or an `append-task` can move one or leave it out". It
+  used to read:
+
+  > `group` forms `$MEMBERS` from the plan in plan order, but `pending` is the loop's own chosen order
+  > — a resume, a decider `reorder`, or an arm-1 `append-task` mid-run can each put a
+  > member somewhere other than a consecutive prefix of `pending`, or leave one out of
+  > `pending` altogether — so never assume the prefix shape

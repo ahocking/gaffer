@@ -221,3 +221,31 @@ most a one-clause reason; the fuller wording is recorded here.
   > and no kickoff or lint files, since no run directory exists yet. The checkpoint
   > is not tracked by version control, so guessing at a file whose state you cannot
   > read is the least recoverable move available at this point in the run.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's membership and sweep reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the membership is formed before the sweep.** The skill keeps "the sweep below
+  exempts every member of a paused bundle, not just the cursor". It used to read:
+
+  > so the sweep below has to know every member of a paused bundle, not just the
+  > cursor, before it decides what stays exempt — that means forming the membership
+  > comes first.
+
+- **When the membership is recovered rather than formed.** The skill keeps "(a
+  session picking this packet back up, after a compaction or through
+  `/gaffer:resume`)" beside the rule, and "it could shrink or grow a membership a
+  start record already covers" as the reason `group` is not re-run. It used to read:
+
+  > A session is then picking this packet back up (after a compaction, or through
+  > `/gaffer:resume`), and `record-start` already covers the membership an earlier session
+  > decided.
+
+- **Why an empty `--list` skips the real sweep.** The skill keeps the rule — omit
+  `--gone`, skip `task-status` and leave `SWEEP` empty when `--list` printed nothing —
+  without this reason:
+
+  > no open packets means nothing for the real sweep to close either

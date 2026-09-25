@@ -259,3 +259,28 @@ fuller wording is recorded here.
 
   > a fresh run's digest has no `packet` lines yet, so the forward plan is the
   > backlog you just resolved above, a file read moments old.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's per-packet report reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** and
+**Write the handoff, then start** steps by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a non-zero `group` exit is reported.** The skill keeps "since a silent
+  fallback reads as "nothing to bundle"". It used to read:
+
+  > since a silent fallback would read as "nothing to bundle" rather than "the check itself failed."
+
+- **Why `$SWEEP` is carried to the packet's report.** The skill keeps "this sweep is
+  the only point that knows which packets are newly closed". It used to read:
+
+  > since `run-digest`'s `packet` lines are never filtered by `--since` and this sweep
+  > is the only point that knows which of them are newly closed; without it a swept
+  > packet's line is never picked out of the digest until the eventual stop report.
+
+- **Why `SINCE` is captured before the start is attested.** The skill keeps "so
+  §3.5/§3.6's report scopes `run-digest --since "$SINCE"` to this packet's own
+  decisions". It used to read:
+
+  > so §3.5/§3.6's shape-A report can later scope `run-digest --since "$SINCE"` to
+  > only the decisions made during THIS packet's own attempts, never one already reported for an earlier packet

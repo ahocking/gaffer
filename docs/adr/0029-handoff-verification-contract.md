@@ -274,3 +274,13 @@ written without it; and around a spliced partial-work block, the `REQUIRED`
 block from its heading to the end of file compares equal to the first dispatch's,
 with the driver's conditional line still immediately after the body. Each case
 records the wrong implementation it turns red on.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's handoff-writing reason
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Write the handoff, then start** step by
+`skill-prompt-trim`. The skill keeps the rule — the two conditional `REQUIRED` lines
+are all the driver appends, and nothing from the verification contract block, which
+`runstate.sh handoff` adds itself — without this consequence:
+
+> a driver that forgets this step entirely still produces a handoff carrying all six
+> of that block's lines.

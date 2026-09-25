@@ -155,3 +155,20 @@ transport is built into the plugin.
   Mitigation: branch isolation (nothing reaches `main`), the whole run is in git
   history and fully revertible, and `.agents/project-overrides.yaml` can cap the
   ceiling.
+
+## Relocated from skills (2026-09-25) — the pause skill's reasons for stashing scratch and for who delivers the report
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why unsafe scratch is set aside with `git stash`** (pause step 1). The skill
+  keeps "never `reset --hard`/`clean -f`, which the guardrail hard-denies". It
+  used to read:
+
+  > Use `git stash`, which is recoverable (nothing is destroyed) and guard-safe —
+  > unlike `reset --hard`/`clean -f`, which the guardrail hard-denies
+
+- **Who delivers the stop report** (pause step 4). A parenthetical restating §5
+  above:
+
+  > (the plugin produces reports; the frontend delivers them — ADR 0004)

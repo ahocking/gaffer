@@ -142,3 +142,12 @@ die with the session — git reconcile is still the floor); and **(d)** adds tas
 bookkeeping and correlation failure modes. It is the *only* path to interrupting a
 long-running command mid-execution — revisit it if drain-to-checkpoint latency proves
 too coarse; until then the cooperative pause above is sufficient and far cheaper.
+
+## Relocated from skills (2026-09-25) — why the pause skill clears the sentinel
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps the
+rule (clear the sentinel once run-state is written, so the fulfilled request cannot
+re-halt a later resume); the further reason it gave is recorded here:
+
+> The durable record is now `status: paused` in run-state; the transient request
+> has served its purpose (ADR 0017).

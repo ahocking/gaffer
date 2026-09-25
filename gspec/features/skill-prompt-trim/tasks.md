@@ -90,7 +90,7 @@ size, not by criterion.
   - covers: The landing and scan decisions live in one adapter subcommand, and every site calls it
   - arch: —
   - files: scripts/gspec-backlog.sh, scripts/test-gspec-backlog.sh
-- [ ] **T3** [P] **P0** Apply capability 3's relocation and one-clause rule and capability 4's value rule to `skills/pause/SKILL.md`. Append each relocated passage under a dated `Relocated from skills (<date>)` section of the ADR that owns its rule, editing no existing ADR line. Change no step, order, command or report the skill carries. Verify: each rule of the pause skill at T1's baseline commit is still in it, every sweep passes, and the diff under `docs/adr/` is additions only.
+- [x] **T3** [P] **P0** Apply capability 3's relocation and one-clause rule and capability 4's value rule to `skills/pause/SKILL.md`. Append each relocated passage under a dated `Relocated from skills (<date>)` section of the ADR that owns its rule, editing no existing ADR line. Change no step, order, command or report the skill carries. Verify: each rule of the pause skill at T1's baseline commit is still in it, every sweep passes, and the diff under `docs/adr/` is additions only.
   - deps: T1
   - covers: Rationale in the loop skills is relocated to an ADR or deleted, and each rule keeps at most a one-clause reason · No loop skill states the current value of a configurable setting or code default
   - arch: —

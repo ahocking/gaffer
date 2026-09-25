@@ -1105,3 +1105,27 @@ repo-root `CLAUDE.md`.
   paragraph into all seven agents — **61 tokens each, 427 total**, re-read on every dispatch
   to justify a rule the agent follows without it. Small, but it was bloat added by the very
   block telling agents not to waste context. Rule in the prompt, evidence here.
+
+## Relocated from skills (2026-09-25) — the pause skill's metrics and outcome reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a pause snapshots metrics** (pause step 3b):
+
+  > A pause is the natural checkpoint to pin the run's metrics — especially the
+  > **perishable** token data, which is parsed from session transcripts that may
+  > later be rotated or reformatted.
+
+- **Why the work-in-progress commit records no outcome** (pause step 1):
+
+  > The packet's start stays open — the trailer is not a green outcome, and the
+  > sweep must not later read this still-open start as an interruption.
+
+- **Why a blocked pause records one outcome for the whole bundle** (pause step 3):
+
+  > — so a bundle's later tasks share the cursor's own terminal outcome rather than
+  > reading as still-open work a later sweep would close as `interrupted`.
+  > A single-task packet has no `BUNDLE=` line, so `$MEMBERS` is `<cursor>` alone
+  > and this reads exactly as `record-outcome <cursor> blocked` — the single-task
+  > `blocked` record run-loop §3.6 already names, unchanged in shape.

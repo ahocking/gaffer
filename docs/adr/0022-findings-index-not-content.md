@@ -240,3 +240,37 @@ repo-root `CLAUDE.md`, are recorded here because they were not in any of those.
   than sourcing the several-thousand-line `runstate.sh` on every tool call. The shell
   `_yaml_decode_value` and the awk `rs_decode` (in `_YAML_AWK_DECODE`) are the other two;
   the shared decoder fixture table in `test-runstate.sh` is the anti-drift mechanism.
+
+## Relocated from skills (2026-09-25) — the pause skill's findings and run-record reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the pause's stash leaves the run record alone** (pause step 1):
+
+  > `.agents/run-state.yaml` is gitignored (ADR 0009) — as are the finding bodies in
+  > `.agents/findings/` and `run-state-note-archive.md`, which travel with it (ADR
+  > 0022) — so `--include-untracked` sweeps the disposable scratch but leaves the
+  > whole run record in place.
+
+- **Why future work is not a finding** (pause step 3's routing table):
+
+  > Not a finding; a findings file holding future work is a shadow backlog
+  > competing with gspec (ADR 0020).
+
+- **The measurement behind "do not invent a `resolved_questions:` list"** (pause
+  step 3; the same figure as this ADR's Context table):
+
+  > a real run grew one to 21,664 chars because there was nowhere else to put it,
+  > and every later dispatch paid for it.
+
+- **Why `write` comes before every `add-finding`, and why existing index entries
+  are carried through** (pause step 3):
+
+  > Run every `add-finding` from the routing table above *after* this write, not
+  > before: a finding recorded first is erased by the write, and because the body
+  > in `.agents/findings/` survives on disk you are left with an orphaned body and
+  > no index entry pointing at it — the one failure the index exists to prevent.
+  > For the same reason, any finding already in the index from earlier in the run
+  > must be carried through the heredoc verbatim; dropping a line here silently
+  > unlinks a body that is still sitting on disk.

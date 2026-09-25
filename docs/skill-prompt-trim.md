@@ -29,6 +29,13 @@ one, run `git show 48de82d11040cbee0374a0601a30f7faaff59ead:<path> | wc -c`.
 - **Gate figure** (half the total, rounded down): **71912 bytes**. The three
   loop skills together meet the size gate when their combined `wc -c` is at or
   under this figure.
+- **After T13** (measured 2026-09-25, working tree at T13's landing, before
+  T9): `skills/run-loop/SKILL.md` 62971, `skills/resume/SKILL.md` 19608,
+  `skills/pause/SKILL.md` 13378 — **combined 95957 bytes**, down from 107095
+  as T8 left them. **The gate figure is not met: the shortfall is 24045
+  bytes.** No rule was cut to close it; the remaining text is rules, the
+  passages the sweeps extract, and the step, command and token wording the
+  skills carry.
 
 ### One-shot skills (reported, not gated)
 
@@ -168,6 +175,22 @@ separate variance figure for `cc_shape` itself.
   ADR 0017 is the closest ADR for the periodic pause, which no ADR owns; ADR 0024 owns
   the periodic review (its 2026-09-21 amendment). The fallback `periodic-pause` applies
   to an unset key was a value, and is removed rather than relocated.
+- **T13 (further trim of run-loop, resume and pause):** no existing assertion
+  changed. Every passage the sweeps extract from the three skills keeps its anchors
+  and needles; where a reworded sentence would have split an anchor or a needle
+  across a line wrap, the wrap was moved so the phrase sits on one line. The
+  status-line refusal clause and the implementer-line branch and continue arm, which
+  `agents/loop-driver.md` mirrors, are untouched. Nothing was relocated to an ADR
+  (reasons were shortened in place, never moved), so no ADR gains a relocation
+  section. `test-report-conventions.sh` gains one section: for each rule T13 now
+  states once, the one statement is present and the site that restated it points
+  at it instead — run-loop's lint-finding consequences (stated at §2's kickoff lint;
+  §4's stop-report lint points there), the Land step's removal of every member from
+  `pending` (stated in the Land step; the `hand-off-feature` arm points at it), the
+  held-feature definition (stated in §1; §4's end-of-run scan points there), the
+  model-resolution rule (stated once in step 4; no other dispatch site outside the
+  attempt and continue arms restates it), and pause's lint reading (pause carries no
+  copy of the consequences and points at run-loop's `## 4. Termination`).
 
 ## Loop-skill rule review
 

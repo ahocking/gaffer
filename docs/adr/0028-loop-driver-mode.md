@@ -824,3 +824,35 @@ redirecting here". It used to read:
 > this stop path may run with a mark already set. `driver-mode exit` is idempotent
 > (a no-op if there is no mark), so calling it here is always safe regardless of
 > which caller reached this skill.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's driver-mode entry reasons
+
+Moved out of `skills/run-loop/SKILL.md` §2 by `skill-prompt-trim`. The skill keeps
+each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why an `unknown` threshold is stated as absent, never as a number** (§2's
+  compact-threshold rule). The skill keeps "so the run reads as unmeasured". It used
+  to read:
+
+  > and never a number: the measurement should read unmeasured rather than flag a
+  > threshold nothing enforces, and silence would read as a measured run.
+
+- **Why the loop never runs unmarked** (§2, when `driver-mode enter` refuses). The
+  skill keeps "without a mark the guard's edit block has nothing to block". It used
+  to read:
+
+  > driver mode's whole safety property is the guard's edit block, and there is
+  > nothing to block without a mark.
+
+- **Why an unrecognised-status stop exits driver mode** (§2's entry-routing
+  bullet). The skill keeps "a stop that leaves the mark set leaves the session unable
+  to edit". It used to read:
+
+  > this section entered driver mode above, and a stop that leaves the mark set
+  > leaves the session unable to edit.
+
+- **Why the kickoff lint paths are written literally** (§2's kickoff lint). The skill
+  keeps "which driver mode refuses". It used to read:
+
+  > never `$RUN_DIR` or any other variable, which driver mode refuses because it
+  > cannot prove where the write lands

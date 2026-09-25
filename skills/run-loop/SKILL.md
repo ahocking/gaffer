@@ -26,11 +26,10 @@ and [ADR 0028](../../docs/adr/0028-loop-driver-mode.md).
 ## Flags this loop no longer has
 
 `--relay`, `--inline`, and `--parallel` are still accepted in `$ARGUMENTS` and
-must **not** error — something invoking this skill may still pass one from
-habit. None of them change anything any more: relay dispatch was retired
-([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md), superseded) and
-worktree parallel mode was retired
-([ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md), superseded). If
+must **not** error — a caller may still pass one from habit. None of them
+changes anything: relay dispatch and worktree parallel mode are retired
+([ADR 0012](../../docs/adr/0012-delegated-loop-driver.md),
+[ADR 0016](../../docs/adr/0016-parallel-worktree-lanes.md)). If
 `$ARGUMENTS` contains any of them, run the loop below and say so in the
 kickoff (§2) with one `⚠️ **--<flag>** no longer does anything — this loop
 runs one sequential mode.` line per flag present.
@@ -41,8 +40,7 @@ runs one sequential mode.` line per flag present.
 vocabulary, the indentation contract, the header tally, the decision block)
 and `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md` (shapes **C**
 kickoff, **A** packet line, **B** stop report) now, once, before the kickoff.
-**Naming a path is not reading it** — unread, you render from memory and
-produce free prose, which is the exact failure these files exist to prevent.
+**Naming a path is not reading it** — unread, you render from memory.
 
 ## 1. Preflight (stop here if unmet) — driver mode is NOT yet entered
 
@@ -59,11 +57,9 @@ stop never has a mark to clear.
   implementers into one checkout will collide. Both are no-ops when there is no
   gspec project — gspec is optional (ADR 0020 D4).
 - **Drifted completion record (ADR 0025 D1, gspec repos only).** Scan **every
-  ref**, not just the current branch — at preflight the checkout is normally
-  still on the integration branch, so a scan bounded to "the branch I'm on"
-  almost never fires, and the case this exists to catch — a packet that
-  landed, merged, and never got its checkbox flipped — usually lives in
-  already-merged history. Anchor the match to the **whole line** — a real
+  ref**, not just the current branch — a packet that landed and never got its
+  checkbox flipped usually lives in already-merged history. Anchor the match
+  to the **whole line** — a real
   trailer, not prose that mentions one:
   ```bash
   IDS=$(git log --all --format=%B \
@@ -99,18 +95,16 @@ stop never has a mark to clear.
   as a failure. **Commit nothing, and restore every `STAGE=` path with `git
   checkout HEAD -- <path>` instead** — it resets the index as well as the
   working tree, since the path is already staged — when the checkout is off
-  the integration branch (it is normally on it here; see the task-drift
-  bullet above for why), when the last line reads `failed=` above 0, or
+  the integration branch, when the last line reads `failed=` above 0, or
   when the commit itself fails; then leave the checkout as you found it.
   None of these halts preflight.
 
   **Say so in the kickoff (§2): one ⚠️ line per capability actually
   flipped** — from the `COMPLETED=<slug>\t<capability text>` lines, not the
   `DRIFT=` listing (a held feature flips nothing), **naming the feature and
-  the capability** — the same per-row form this bullet used to report drift
-  in; flips restored rather than committed are stated as not committed,
+  the capability**; flips restored rather than committed are stated as not committed,
   with the reason. **Name every feature held back too: one ⚠️ line per
-  `HELD=<slug>\t<reason>` line**, in that same per-row form, carrying that
+  `HELD=<slug>\t<reason>` line**, in the same one-line-per-row form, carrying that
   reason (an unchecked task's `covers:` quote matches no capability, so
   every flip for that feature is held until it is fixed). A held feature
   stages nothing and leaves nothing to restore; it is **neither a failure
@@ -135,8 +129,9 @@ stop never has a mark to clear.
   feature branches **in the single local checkout**; `git commit`/`merge`/`push` to
   a protected branch is denied by the guard anyway. The integration
   base the loop branches from and merges back into is the
-  **non-`main`** `integration_branch` from `.agents/project-overrides.yaml`
-  (default `develop`, else `main`/`master`).
+  **non-`main`** branch `.agents/project-overrides.yaml` names under
+  `integration_branch`; when that key is absent, the fallback is the one
+  `templates/task-packet.yaml`'s header comment states.
 - **Model routing — once, here, before driver mode.** Run
   `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh validate` and
   `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh table`, and keep both outputs for
@@ -168,21 +163,20 @@ kickoff: render shape C's `⚠️ **Effort override**` line only when it reads
 `compact-threshold` is a pure reader — it never writes a settings file, so
 `APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
 `THRESHOLD` straight through to `driver-mode enter` and state that number in
-the kickoff — the harness genuinely enforces it. When `SOURCE` reads
+the kickoff — the harness enforces it. When `SOURCE` reads
 `unknown` — the one enumerated value naming no value in effect
 — pass `--threshold unknown` instead, regardless of what `THRESHOLD`
 printed, and state the absence in the kickoff in exactly these words —
 *no compaction threshold in effect for this session — the settings key
-`autoCompactWindow` supplies one* — and never a number: the measurement should
-read unmeasured rather than flag a threshold nothing enforces, and silence
-would read as a measured run. **Never ask the
+`autoCompactWindow` supplies one* — and never a number, so the run reads as
+unmeasured. **Never ask the
 operator to change the effort or the threshold** — state what applies, as
 read, and move on.
 
 **If `enter` refuses** (no session id available, from neither an argument nor
 `$CLAUDE_CODE_SESSION_ID`), **stop now** with a stop report saying so. Never
-run the rest of this loop unmarked — driver mode's whole safety property is
-the guard's edit block, and there is nothing to block without a mark.
+run the rest of this loop unmarked — without a mark the guard's edit block
+has nothing to block.
 
 `Read` `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` once now, before
 building or continuing the backlog — the template carries two REQUIRED rules
@@ -195,33 +189,24 @@ or an agent/skill's frontmatter). §3.3 applies these per packet; do not
 re-read this file per packet.
 
 - If **`.agents/run-state.yaml` exists**, route on its status, not on the file
-  being there — a completed run leaves its checkpoint on disk, so existence
-  alone cannot tell a run to continue from a run already finished. Read the
+  being there — a completed run leaves its checkpoint on disk too. Read the
   value once, through the reader, and never parse the file by eye:
   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh get .agents/run-state.yaml status`.
   Then:
   - **`paused`, `blocked` or `running`** — you are resuming. `Read`
     `${CLAUDE_PLUGIN_ROOT}/skills/resume/SKILL.md` and follow it instead of the
-    rest of this section (it keeps `run_id` via its own `begin-run` call;
-    calling `driver-mode enter` again there is harmless — idempotent). These are
-    exactly the three that entry point's own decision table resolves:
-    **`paused`** a run that called `/gaffer:pause` and verified a clean
-    checkpoint, **`blocked`** the same but stopped on a blocking question, and
-    **`running`** a run left mid-flight by a session that did not pause — a
-    crash, which that skill reconciles before it trusts the tree.
+    rest of this section (it keeps `run_id`; its `driver-mode enter` is
+    idempotent). These are exactly the three statuses resume resolves.
   - **`done`** — the backlog is complete, so there is nothing to resume: take
     the **fresh-run bullet directly below**, with no redirect. A `done`
-    checkpoint that still carries a cursor or pending packets disagrees with
-    itself; the status is the authority, so it takes that same branch.
+    checkpoint that still carries a cursor or pending packets takes that same
+    branch — the status is the authority.
   - **Any other value, including an absent or empty status** — **stop** with a
     report naming the value you read and `.agents/run-state.yaml`. **Write
     nothing first**: no `set`, no `write`, no `begin-run`, no `claim-driver`,
-    and no kickoff or lint files, since no run directory exists yet. The
-    checkpoint is not tracked by version control, so guessing at a file whose
-    state you cannot read is the least recoverable move available at this point
-    in the run. Run `runstate.sh driver-mode exit` immediately after that stop
-    report — this section entered driver mode above, and a stop that leaves the
-    mark set leaves the session unable to edit.
+    and no kickoff or lint files — the checkpoint is untracked, so a guess at
+    it cannot be undone. Run `runstate.sh driver-mode exit` immediately after
+    that stop report — a stop that leaves the mark set leaves the session unable to edit.
 - Otherwise build the backlog **through the adapter** — the single place this
   plugin reads gspec (ADR 0020 D2). Never parse `gspec/` yourself:
   - `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh next` picks the feature —
@@ -243,27 +228,19 @@ re-read this file per packet.
   `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh write .agents/run-state.yaml`.
 
   **When this write replaces a `done` checkpoint, carry every `findings:`
-  index entry into the new content verbatim, and carry nothing else.** It is
-  the same consequence §3.6's packet-close write states, at the write where
-  the file being replaced belongs to a *different* run: `write` REPLACES the
-  file, so an omitted entry is unlinked, not edited out — the body stays on
-  disk with nothing left pointing at it. Carry the index **inside this one
-  `write`**, never as a follow-up `add-finding` or a repair afterwards: a
-  checkpoint that exists for any interval without the index is an interval
-  in which a crash loses it. **Read the index from disk — the `findings:`
-  block of the `.agents/run-state.yaml` you are about to replace — and copy
-  those lines line-for-line into the new content**: a `Read` of the file, or a
-  line-range extraction of that block. The quoting the file carries is then
-  the quoting the new file carries. The span is the `findings:` key through
-  its last indented entry, stopping at the next column-0 key; an absent or
-  empty block carries nothing.
-  **`runstate.sh findings` is not a source for it** — that subcommand prints a
-  tab-separated projection for one caller, and it strips the single-quoting
-  the durable-state writer applies (ADR 0027), so re-emitting its output as
-  index lines re-opens the `": "` corruption that quoting exists to prevent,
-  in the one file whose parse failure is unrecoverable. This says where the
-  index is read from, never when it lands — the carry stays inside the one
-  `write` above. Everything else comes from the new backlog —
+  index entry into the new content verbatim, and carry nothing else.** `write`
+  REPLACES the file, so an omitted entry is unlinked, not edited out — its
+  body stays on disk with nothing pointing at it. Carry the index **inside
+  this one `write`**, never as a follow-up `add-finding` or a repair
+  afterwards — a crash in between loses it. **Read the index from disk — the
+  `findings:` block of the `.agents/run-state.yaml` you are about to replace —
+  and copy those lines line-for-line into the new content**, by a `Read` of
+  the file or a line-range extraction of that block, so its quoting carries
+  over. The span is the `findings:` key through its last indented entry,
+  stopping at the next column-0 key; an absent or empty block carries nothing.
+  **`runstate.sh findings` is not a source for it** — it strips the
+  single-quoting the durable-state writer applies (ADR 0027). Everything else
+  comes from the new backlog —
   `cursor`, `pending`, `branch`, `last_green_commit` and `note` — and write
   **no `run_id` line**, so the `begin-run` below mints this run its own id
   rather than inheriting the finished run's directory and records.
@@ -289,9 +266,9 @@ sentinel here stops a stale request from immediately re-halting this run.
 `${CLAUDE_PLUGIN_ROOT}/templates/report-templates.md`. Render its `▶
 **Session**` line from `runstate.sh run-digest .agents/run-state.yaml`'s own
 `enter` line (model/effort/threshold, exactly as `driver-mode enter` just
-recorded it — never restated from memory): a fresh run's digest has no
-`packet` lines yet, so the forward plan is the backlog you just resolved
-above, a file read moments old. Render `⚠️ **Routing config**` only when
+recorded it — never restated from memory); a fresh run's digest has no
+`packet` lines yet, so take the forward plan from the backlog you just
+resolved above. Render `⚠️ **Routing config**` only when
 §1's `validate` printed something — one line, each `ROUTING-INVALID` entry's
 key and reason — and `▶ **Routing**` only when §1's `table` printed
 something — one line, each `<agent> <frontmatter> <alias>` row as `<agent>
@@ -305,8 +282,8 @@ backlog gets near, and where the run stops. Emit it
 **Lint the kickoff before you emit it.** Write the digest you rendered from
 and the rendered kickoff to two files in the run directory, naming each by
 the `RUN_DIR=` value `begin-run` just printed, **written out literally** —
-never `$RUN_DIR` or any other variable, which driver mode refuses because it
-cannot prove where the write lands: `runstate.sh run-digest
+never `$RUN_DIR` or any other variable, which driver mode refuses:
+`runstate.sh run-digest
 .agents/run-state.yaml > <RUN_DIR>/kickoff-digest.tsv`, and the kickoff to
 `<RUN_DIR>/kickoff.md`. Then run
 `${CLAUDE_PLUGIN_ROOT}/scripts/report-lint.sh --shape C <RUN_DIR>/kickoff.md

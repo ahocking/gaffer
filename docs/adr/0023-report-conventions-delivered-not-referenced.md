@@ -240,3 +240,22 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > The human may be days removed from the run and remembers none of the ids; the
   > checkpoint you just loaded is the only thing that does.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's report reasons
+
+Moved out of `skills/run-loop/SKILL.md` (the report-contract section and §2) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the report contract is `Read`, not named** (the report-contract section). The
+  skill keeps "unread, you render from memory". It used to read:
+
+  > **Naming a path is not reading it** — unread, you render from memory and
+  > produce free prose, which is the exact failure these files exist to prevent.
+
+- **Why a fresh run's kickoff plans from the backlog it just resolved** (§2's
+  kickoff). The skill keeps "a fresh run's digest has no `packet` lines yet". It
+  used to read:
+
+  > a fresh run's digest has no `packet` lines yet, so the forward plan is the
+  > backlog you just resolved above, a file read moments old.

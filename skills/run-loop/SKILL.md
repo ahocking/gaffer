@@ -324,7 +324,12 @@ nothing. Read the result exactly as §4 states it for the stop report.
    `git switch -c orch/<task-id> <base>` (integration branch from
    `.agents/project-overrides.yaml` → `integration_branch`, else `develop`,
    else `main`/`master`); `git switch orch/<task-id>` if it already exists. No
-   worktree, no separate directory.
+   worktree, no separate directory — a worktree branched mid-run lacks the
+   earlier packets' commits and is never merged back (ADR 0009); keep one for
+   self-contained work off the default branch, never a loop packet.
+   File-editing agents run one at a time unless their declared file scopes
+   are disjoint; read-only agents (a `researcher`, a `reviewer`, an
+   `Explore`-style search) may fan out freely.
 2. **Form this packet's members, then sweep for packets left open before
    recording it.** Bundling (`packet-bundling`) turns a run of consecutive,
    same-scope, same-feature tasks into ONE packet, so the sweep below has to
@@ -332,7 +337,31 @@ nothing. Read the result exactly as §4 states it for the stop report.
    decides what stays exempt — that means forming the membership comes
    first.
 
-   Read the cap — `runstate.sh bundle-cap` prints `CAP=<n>` (default `1`, so
+   **Recover the membership instead of forming it when the cursor's own
+   handoff already exists** — `<RUN_DIR>/<cursor>/handoff.md`, with
+   `<RUN_DIR>` the value `begin-run` printed. A session is then picking
+   this packet back up (after a compaction, or through `/gaffer:resume`),
+   and `record-start` already covers the membership an earlier session
+   decided. **Never re-run `group` here**: it could shrink or grow a
+   membership a start record already covers. Read the file instead:
+   - `tier:` and `agent:` come straight off its header (`grep
+     '^tier:\|^agent:' <path>`) — decided once, against this same
+     membership, when the handoff was written; never re-judge them from
+     titles.
+   - Membership comes off its body's `BUNDLE=` line (`grep -m1 '^BUNDLE='
+     <path>`). Its absence means a single-member bundle: `MEMBERS=<cursor>`
+     alone.
+
+   Then re-run only the **mechanical refusals**, never the scope/deps/cap
+   judgment `group` applies when forming a bundle fresh:
+   `gspec-backlog.sh task-status "$MEMBERS"`, dropping each member whose line
+   reads `finished` (checked off meanwhile, by any route) or `gone`
+   (re-decomposed out of the plan) — **never the cursor itself**, whatever
+   its own line reads. The third refusal, a member already routed
+   `hand-off-feature` this run, needs no check here: §3.3's
+   `HANDOFF=refused` check catches it. Then go straight to the sweep below.
+
+   Otherwise — no handoff exists for the cursor yet — read the cap — `runstate.sh bundle-cap` prints `CAP=<n>` (default `1`, so
    this whole mechanism is inert until a repo raises `bundle_max_tasks`) —
    then form the candidate group at the cursor: `gspec-backlog.sh group
    <cursor> --cap <n>`. **A non-zero exit** (`group`'s own `die` paths — a
@@ -379,19 +408,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
    `$MEMBERS` is driver-held shell state for the rest of this packet, the
    same convention `$SINCE`/`$SWEEP` already use — it does not survive a
    mid-packet compaction, or a session picking this same packet back up,
-   on its own. Recover it the **same rule** `${CLAUDE_PLUGIN_ROOT}/skills/
-   resume/SKILL.md` gives its own membership recovery (T9) — one rule,
-   stated once, never restated differently here: once §3.3 has written the
-   handoff, membership is recoverable from that packet's own `handoff.md`
-   `BUNDLE=` line (absent means `MEMBERS=<cursor>` alone), then re-check
-   only the mechanical refusals against it — `gspec-backlog.sh task-status
-   "$MEMBERS"`, dropping any member whose line reads `finished` or `gone`
-   (never the cursor itself, regardless of what its own line reads) — never
-   re-deriving the scope/deps/cap judgment `group` applies when forming a
-   bundle fresh, since that could shrink or grow a membership a start record
-   already covers. Before the handoff is written, there is nothing to
-   recover and the packet is re-formed from `group` again, exactly as
-   above.
+   on its own. The recovery rule at the top of this step brings it back
+   once §3.3 has written the handoff; before that, there is nothing to
+   recover and the packet is formed from `group` again.
 
    Now sweep, using `MEMBERS` wherever this used to read `<cursor>` alone.
    `runstate.sh sweep-open --list` prints one `OPEN=<id>` line per open
@@ -408,8 +427,13 @@ nothing. Read the result exactly as §4 states it for the stop report.
    against it since — and this is a continuation; the cursor's id absent
    (including when `--list` printed nothing) means it was never started or
    its prior attempt already closed with a recorded outcome, and this is a
-   fresh start. On a continuation the cursor's whole bundle is what this
-   session is about to continue, not what the sweep should close. Capture
+   fresh start. **The first packet a resumed session runs is the one
+   exception:** `/gaffer:resume` decides it from the `status` it read when
+   it loaded the checkpoint, not from `--list` — `paused` or `blocked` is a
+   continuation, and `running` (a crash) is a fresh start, so every open
+   member of the cursor's bundle closes as `interrupted` (or `abandoned`, if
+   it is also gone) like any other open packet. On a continuation the
+   cursor's whole bundle is what this session is about to continue, not what the sweep should close. Capture
    the real sweep's own output:
    `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (add
    `--paused-cursor "$MEMBERS"` per that rule when it applies; omit `--gone`
@@ -433,11 +457,19 @@ nothing. Read the result exactly as §4 states it for the stop report.
    a bare `<cursor>` the original single-id path, byte-identical to today. A
    leading `HANDOFF=unknown` line means some id in `$MEMBERS` does not
    resolve in gspec (a deleted/renamed task, or a genuinely non-gspec
-   packet) — this can only be `<cursor>` alone when `$MEMBERS` has one
-   member, since `group` already confirmed every other candidate resolves.
-   When you have run-state's own task text for this packet (a non-gspec-
-   sourced backlog entry — never a bundle; grouping needs gspec's own plan
-   to work from), pipe that instead of the adapter's output. Otherwise
+   packet). When `$MEMBERS` came from `group`, this can only be `<cursor>`
+   alone, since `group` already confirmed every other candidate resolves.
+   When it was **recovered** from an existing handoff's `BUNDLE=` line
+   (§3.2), a non-cursor member can reach this too — `task-status` reads
+   several genuinely-gone shapes as `unknown` rather than guess, and
+   `handoff`'s fuller per-id resolution catches them here: treat a
+   non-cursor `HANDOFF=unknown` exactly as a non-cursor `HANDOFF=refused`
+   below — truncate `$MEMBERS` to the members before it and re-run
+   `handoff` — never as the single-member case. When `<cursor>` itself does
+   not resolve (either path) and you have run-state's own task text for
+   this packet (a non-gspec-sourced backlog entry — never a bundle;
+   grouping needs gspec's own plan to work from), pipe that instead of the
+   adapter's output. Otherwise
    **skip the packet with no record** — advance the cursor and report the
    skip, the same as a refused handoff below.
 
@@ -496,7 +528,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
    already reported for an earlier packet — then `runstate.sh record-start
    "$MEMBERS"` for a fresh start, or `runstate.sh record-start
    "$MEMBERS" --continue` for a continuation, as §3.2's sweep clause
-   decided from its `--list` output — one start (or
+   decided — one start (or
    continuation) record per member, sharing a single timestamp and session,
    written in one call (T3); a lone `<cursor>` in `$MEMBERS` prints the same
    single `RECORDED=yes`/`PACKET=`/`KIND=` block as today.

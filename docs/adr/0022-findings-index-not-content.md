@@ -274,3 +274,15 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
   > For the same reason, any finding already in the index from earlier in the run
   > must be carried through the heredoc verbatim; dropping a line here silently
   > unlinks a body that is still sitting on disk.
+
+## Relocated from skills (2026-09-25) — the resume skill's index-before-bodies reason
+
+Moved out of `skills/resume/SKILL.md` §1 by `skill-prompt-trim`. The skill keeps
+"the index is mandatory and the bodies conditional, since skipping the index repeats
+the rework a finding was recorded to prevent". It used to read:
+
+> Both failure modes are real, so neither instinct is safe on its own. Reading every
+> body rebuilds the 41k-token run-state this design took apart, just in another file.
+> Skipping the index means a gotcha recorded specifically to prevent rework goes unseen
+> and the rework happens — which costs more than the reading would have. The index is
+> cheap and mandatory; the bodies are not free and are conditional.

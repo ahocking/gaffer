@@ -755,3 +755,13 @@ report about `Promise.all`, not as a feature request) and a suggested order.
   rationale), `dist/claude/commands/gspec-migrate.md` (the relocation it performs),
   `dist/claude/commands/gspec-plan.md` and `agents/feature-architect.md` (where the
   new artifacts are written), `templates/preamble.md`
+
+## Relocated from skills (2026-09-25) — the resume skill's driver-claim reason
+
+Moved out of `skills/resume/SKILL.md` §2 by `skill-prompt-trim`. The skill keeps
+"so the next session does not read this live run as a crash (ADR 0020 D5)". It used
+to read:
+
+> The claim is not bookkeeping: `status: running` alone cannot tell a crashed
+> session from *this* one, so without it the next session reads your live run as a
+> crash and starts driving too (ADR 0020 D5).

@@ -812,3 +812,15 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > driver mode ends whenever the loop renders its stop report, whether it
   > stopped, paused, or finished (ADR 0028), and a pause is exactly that: a stop.
+
+## Relocated from skills (2026-09-25) — the resume skill's driver-mode reason
+
+Moved out of `skills/resume/SKILL.md`'s `mode: parallel` stop by `skill-prompt-trim`.
+The skill keeps "it is idempotent, and `/gaffer:run-loop` enters driver mode before
+redirecting here". It used to read:
+
+> This check runs first, but this session can still reach it already marked —
+> `/gaffer:run-loop` §2 enters driver mode before its own redirect to this skill, so
+> this stop path may run with a mark already set. `driver-mode exit` is idempotent
+> (a no-op if there is no mark), so calling it here is always safe regardless of
+> which caller reached this skill.

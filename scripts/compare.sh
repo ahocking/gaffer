@@ -571,8 +571,10 @@
 #                       price_table_date cost_source cost_note recorded_at
 #                     where `denials` is the count of tool calls denied in the
 #                     replay's sessions, read from their transcripts, or null
-#                     when a session's transcript cannot be found (unmeasured,
-#                     never 0; `denial_note` says why, and is null otherwise),
+#                     when a session's transcript cannot be found or is not in
+#                     the recognised form rd_transcript_denials reads
+#                     (unmeasured, never 0; `denial_note` says why, and is null
+#                     otherwise),
 #                     `settings` is the stored selection's settings
 #                     object as it stands, `effort` its `effort` setting (null
 #                     when the selection names none) and `tokens` is {input, output,
@@ -742,6 +744,14 @@
 #                     missing-label or not-strict-order (the order is judged
 #                     only when no other rule is broken), or session-crashed
 #                     / session-timed-out when the session ends without one.
+#                     THE DENIALS: before the result is read, the session's
+#                     transcripts are read for denied tool calls as `record`
+#                     reads a replay's (rd_session_denials, below). A denied
+#                     call refuses the ranking, naming it,
+#                       REFUSED rule=denied count=<n> kinds=<kinds>
+#                     and so do denials that cannot be read (`REFUSED
+#                     rule=denials-unmeasured`, the reason on stderr): the
+#                     ranking is not shown to be free of a harness fault.
 #                     THE MODEL AND EFFORT CHECK: then routing-check's reviewer
 #                     checks, the same three (`reviewer-resolved-id`,
 #                     `reviewer-models` against the pinned id, and `effort`),
@@ -3767,26 +3777,62 @@ rd_step_field() {
   printf '%s\n' "$1" | awk -v n="$2=" '{ for (i = 1; i <= NF; i++) if (index($i, n) == 1) { print substr($i, length(n) + 1); exit } }'
 }
 
-# rd_denials <step-log> <projects-dir>: the tool calls denied in the replay's
-# sessions, one line:
+# rd_transcript_denials <transcript>: the denied calls one transcript records,
+# read from its records parsed as JSON (json_flat), one line each:
+#   K<TAB><kind>     a denied call counted (its toolDenialKind)
+#   U<TAB><why>      the transcript cannot be read for denials
+# THE RECOGNISED FORM, as Claude Code writes it (read from real transcripts, main
+# and subagent alike): a tool result is a top-level record of `"type":"user"`
+# whose `message.content` array holds an object of `"type":"tool_result"`, and a
+# call that did not run is such a record carrying a top-level string
+# `toolDenialKind`. Only that top-level field is read, never the text anywhere on
+# a line (a tool's output quoting the field is not a denial). The transcript is
+# unreadable, so its denials unmeasured, when a line is not JSON; when it holds
+# tool results (a `message.content[].type` of `tool_result` or a
+# `message.content[].tool_use_id` in any record, or a top-level `toolUseResult`,
+# `sourceToolAssistantUUID` or `toolDenialKind`) and none of them is in the
+# recognised form; when a `toolDenialKind` sits anywhere but the top level of a
+# recognised tool result, or is not a non-empty string there. So a format change
+# that moves a tool result or the field reads unmeasured, never a silent 0. A
+# transcript with no tool result at all denied nothing: 0, measured. Every kind
+# counts but `interrupted` (a person's interrupt) and `cancelled` (the response
+# stopped by a safety classifier), which no guard or permission rule decided.
+rd_transcript_denials() {
+  json_flat "$1" > "$_CMP_TMP/tx.flat" 2>/dev/null \
+    || { printf 'U\ttranscript %s is not JSON lines, so its tool results cannot be read\n' "$1"; return 0; }
+  F="$1" awk -F'\t' '
+    $2 == ".type" { ty[$1] = $4; next }
+    $2 ~ /^\.message\.content\[[0-9]+\]\.type$/ && $4 == "tool_result" { tr[$1] = 1; held = 1; next }
+    $2 ~ /^\.message\.content\[[0-9]+\]\.tool_use_id$/ { held = 1; next }
+    $2 == ".toolDenialKind" { held = 1; if ($3 == "s" && $4 != "") dk[$1] = $4; else bad = "a toolDenialKind that is not a non-empty string"; next }
+    $2 ~ /\.toolDenialKind(\.|\[|$)/ { held = 1; bad = "a toolDenialKind at " $2 ", not the top level of a tool result"; next }
+    $2 ~ /^\.(toolUseResult|sourceToolAssistantUUID)(\.|\[|$)/ { held = 1 }
+    END {
+      for (d in tr) if (ty[d] == "user") rec++
+      for (d in dk) if (!(d in tr) || ty[d] != "user") bad = "a toolDenialKind on a record that is not a tool result in the recognised form"
+      if (bad != "") { printf "U\ttranscript %s carries %s\n", ENVIRON["F"], bad; exit }
+      if (held && !rec) { printf "U\ttranscript %s holds tool results, none in the recognised form (a user record whose message.content holds a tool_result)\n", ENVIRON["F"]; exit }
+      for (d in dk) if (dk[d] != "interrupted" && dk[d] != "cancelled") printf "K\t%s\n", dk[d]
+    }' "$_CMP_TMP/tx.flat"
+}
+
+# rd_session_denials <projects-dir> <session-id>...: the tool calls denied in
+# those sessions, one line:
 #   measured<TAB><count><TAB><kinds, comma-joined, sorted, or none>
 #   null<TAB><why>
-# Every STEP line names the session it ran (`session=`, the id `run_session`
-# started it on). A session's transcript is <projects-dir>/*/<id>.jsonl, and its
-# subagents' are <projects-dir>/*/<id>/subagents/agent-*.jsonl, as metrics.sh
-# finds them. A denied call is a transcript record carrying a top-level
-# `toolDenialKind`, the field Claude Code writes on the tool_result of a call that
-# did not run; every kind counts but `interrupted` (a person's interrupt) and
-# `cancelled` (the response stopped by a safety classifier), which no guard or
-# permission rule decided. A STEP line with no session, or a session with no
-# transcript, leaves the count unmeasured: never 0.
-rd_denials() {
-  local steps="$1" proj="$2" sid f files main n=0 k kinds=""
+# A session's transcript is <projects-dir>/*/<id>.jsonl, and its subagents' are
+# <projects-dir>/*/<id>/subagents/agent-*.jsonl, as metrics.sh finds them; each
+# is read by rd_transcript_denials. A session id that is not the form
+# `run_session` writes, a session with no transcript, or a transcript that
+# cannot be read for denials leaves the count unmeasured: never 0.
+rd_session_denials() {
+  local proj="$1" sid f files main n=0 kinds="" why
+  shift
   : > "$_CMP_TMP/denials"
-  for sid in $(awk '/^STEP / { s = "-"; for (i = 2; i <= NF; i++) if (index($i, "session=") == 1) s = substr($i, 9); print s }' "$steps"); do
+  for sid in "$@"; do
     case "$sid" in
       -) printf 'null\ta STEP line names no session, so its transcript cannot be found\n'; return 0 ;;
-      *[!0-9a-f-]*) printf 'null\ta STEP line names a session id that is not one run_session writes: %s\n' "$sid"; return 0 ;;
+      ''|*[!0-9a-f-]*) printf 'null\ta session id that is not one run_session writes: %s\n' "$sid"; return 0 ;;
     esac
     main=""; files=""
     set +f
@@ -3794,16 +3840,32 @@ rd_denials() {
     for f in "$proj"/*/"$sid"/subagents/agent-*.jsonl; do [ -f "$f" ] && files="$files$f"$'\n'; done
     set -f
     [ -n "$main" ] || { printf 'null\tsession %s has no transcript under %s\n' "$sid" "$proj"; return 0; }
-    printf '%s\n%s' "$main" "$files" | while IFS= read -r f; do
+    : > "$_CMP_TMP/denials.one"
+    while IFS= read -r f; do
       [ -n "$f" ] || continue
-      awk 'match($0, /"toolDenialKind":"[^"]*"/) {
-             k = substr($0, RSTART + 18, RLENGTH - 19)
-             if (k != "interrupted" && k != "cancelled") print k }' "$f"
-    done >> "$_CMP_TMP/denials"
+      rd_transcript_denials "$f" >> "$_CMP_TMP/denials.one"
+    done <<EOF
+$main
+$files
+EOF
+    why="$(awk -F'\t' '$1 == "U" { print substr($0, 3); exit }' "$_CMP_TMP/denials.one")"
+    [ -z "$why" ] || { printf 'null\tsession %s: %s\n' "$sid" "$why"; return 0; }
+    awk -F'\t' '$1 == "K" { print $2 }' "$_CMP_TMP/denials.one" >> "$_CMP_TMP/denials"
   done
   n="$(awk 'END { print NR }' "$_CMP_TMP/denials")"
   kinds="$(sort -u "$_CMP_TMP/denials" | paste -sd, -)"
   printf 'measured\t%s\t%s\n' "$n" "${kinds:-none}"
+}
+
+# rd_denials <step-log> <projects-dir>: the tool calls denied in the replay's
+# sessions, as rd_session_denials prints them. Every STEP line names the session
+# it ran (`session=`, the id `run_session` started it on); a STEP line with no
+# session leaves the count unmeasured: never 0.
+rd_denials() {
+  local sids
+  sids="$(awk '/^STEP / { s = "-"; for (i = 2; i <= NF; i++) if (index($i, "session=") == 1) s = substr($i, 9); if (s == "") s = "-"; print s }' "$1")"
+  # shellcheck disable=SC2086  # ids are one word each: split on purpose (set -f is on)
+  rd_session_denials "$2" $sids
 }
 
 # rd_cost <flat-packet> <role> <packet>: the varied role's tokens, one line:
@@ -4738,6 +4800,22 @@ cmd_rank() {
     printf 'REFUSED rule=session-crashed exit=%s\n' "$STEP_EXIT" >&2
     die "rank: the ranking session exited $STEP_EXIT; nothing recorded"
   fi
+
+  # --- the tool calls denied in the ranking session, read as `record` reads a replay's
+  local den dcount dkinds
+  den="$(rd_session_denials "${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}" "$STEP_SESSION")"
+  case "$(printf '%s\n' "$den" | cut -f1)" in
+    measured)
+      dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"
+      case "$dcount" in ''|*[!0-9]*) die "rank: the denial count is not a count: [$dcount]" ;; esac
+      if [ "$dcount" -gt 0 ]; then
+        printf 'REFUSED rule=denied count=%s kinds=%s\n' "$dcount" "$dkinds" >&2
+        die "rank: ranking $rkid's session had $dcount tool call(s) denied ($dkinds): a harness fault, not the reviewer's; nothing recorded"
+      fi ;;
+    *)
+      printf 'REFUSED rule=denials-unmeasured\n' >&2
+      die "rank: ranking $rkid's session was not shown to have no call denied (denials unmeasured: $(printf '%s\n' "$den" | cut -f2-)); nothing recorded" ;;
+  esac
 
   # --- the result: a strict best-to-worst order of every label ----------------------
   if ! rank_parse "$tmp/out" "$labels" > "$tmp/rank"; then

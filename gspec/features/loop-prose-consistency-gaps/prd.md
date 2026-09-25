@@ -79,7 +79,7 @@ This is new scope against a feature that shipped.
 
 ## Capabilities
 
-- [ ] **P0**: The source-branching clauses name only values the reader can emit, and the sweep case defending them is retired in the same change
+- [x] **P0**: The source-branching clauses name only values the reader can emit, and the sweep case defending them is retired in the same change
   - each clause telling a reader what to do when the compaction-threshold reader
     names no value in effect enumerates only the value that reader can emit for
     that case; the value whose branch was removed appears in no instruction, in

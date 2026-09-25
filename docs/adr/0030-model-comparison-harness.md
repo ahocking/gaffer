@@ -102,17 +102,18 @@ anywhere its user can. So `run_session` also gives each session `--settings`
 session's clone or view, resolved physically (the root below):
 
 - **Claude Code's OS-level Bash sandbox**, on, with filesystem writes allowed
-  only in the root and in the session's own temp directory. `failIfUnavailable`
+  only in the root and in the session's own temp directory, the two paths its
+  `allowWrite` names. `failIfUnavailable`
   makes a session whose sandbox cannot start exit instead of running
   unsandboxed, so its step reads as a crash. `allowUnsandboxedCommands: false`
   removes the retry outside the sandbox, which the bypass mode would otherwise
   approve. The sandbox is meant to confine a shell write however it is made (a
   script, an interpreter's own file calls, `git -C`). It covers `Bash` alone.
-- **A harness-owned `PreToolUse` hook**, `scripts/compare-confine.sh <root>`, on
-  `Edit`, `MultiEdit`, `Write`, `NotebookEdit` and `Bash`. It is the only
-  confinement of the file tools, and a first line for the shell writes it
+- **A harness-owned `PreToolUse` hook**, `scripts/compare-confine.sh <root>
+  <tmp>`, on `Edit`, `MultiEdit`, `Write`, `NotebookEdit` and `Bash`. It is the
+  only confinement of the file tools, and a first line for the shell writes it
   recognises. It refuses a write whose target does not physically resolve
-  inside the root, following symlinks and refusing a file with a second hard
+  inside the root or the session's temp directory, following symlinks and refusing a file with a second hard
   link. It also refuses, failing closed, a target it cannot resolve (a
   variable, a `..` segment, a construct that can hide a write). Inside the
   root, it refuses the paths Claude Code loads configuration and code from:
@@ -121,6 +122,32 @@ session's clone or view, resolved physically (the root below):
   `hooks/hooks.json`, so the live loop never runs it. `disableAllHooks: false`
   in the same settings is meant to outrank a replayed repository's own.
 
+**One write boundary for both halves.** The hook and the sandbox allow the same
+two places, so a write is allowed by both or refused by both. A write only one
+of them allowed would be a false result either way: an ordinary scratch file
+the sandbox allows would be scored as a denial if the hook refused it. So
+`run_session` makes each session its own temp directory before launch
+(`session_tmp`): a fresh `mktemp -d` directly under `/tmp`, taken physically,
+mode 0700, outside the clone or view, the source checkout and the harness's main
+checkout. If it cannot be made there, the session is not started, and the step
+reads as a crash. The session gets it as `TMPDIR` and `CLAUDE_CODE_TMPDIR`, the
+sandbox gets it as the second `allowWrite` entry, and the hook gets it as its
+second argument: all the same string. It is removed when the session ends. Any
+other temp directory is outside both halves: another session's, a bare `/tmp`
+path, or Claude Code's shared `/tmp/claude-<uid>`. A temp directory the hook is
+given but cannot use makes it refuse every write, the root's included.
+
+It is `/tmp`, not `$TMPDIR`, and `CLAUDE_CODE_TMPDIR` as well as `TMPDIR`,
+because of how Claude Code 2.1.281 places a sandboxed command's temp directory.
+That was read from its installed binary on 2026-09-24, not observed in a
+session. The directory is `${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>`, so without
+`CLAUDE_CODE_TMPDIR` it would be one directory shared by every session of the
+user, which the sandbox allows and the hook refused. When that path is longer
+than 44 bytes, Claude Code falls back to the shared `/tmp/claude-<uid>`, and
+a macOS `$TMPDIR` path is already that long. The sandbox runtime's own
+environment also sets `TMPDIR` from `CLAUDE_CODE_TMPDIR`. Both places lie inside
+the session's temp directory.
+
 `--plugin-dir` also loads the harness's `hooks/guard.sh`, whose hard deny is a
 `PreToolUse` hook's exit 2, not a permission prompt. A refusal by the hook or
 the guard is a denied call like any other, so the replay is scored `invalid`
@@ -128,10 +155,14 @@ the guard is a denied call like any other, so the replay is scored `invalid`
 a transcript records that as a denied call has not been observed.
 
 **The residual risk.** None of this has been observed in a bypass-mode session:
-the live probe was not run. Four things are unconfirmed: that a hook's exit 2 is
+the live probe was not run. Five things are unconfirmed: that a hook's exit 2 is
 honoured in that mode, that the sandbox starts and confines there, that the
-hook's payload `cwd` follows a `cd` between `Bash` calls, and that
-`disableAllHooks: false` outranks project settings. The sandbox would bound a
+hook's payload `cwd` follows a `cd` between `Bash` calls, that
+`disableAllHooks: false` outranks project settings, and that a sandboxed
+command's `$TMPDIR` lies inside the session's temp directory (the probe
+prints `$TMPDIR` from a sandboxed `Bash` call and writes a file there; it holds
+when that path is under the directory the settings name and no call is denied).
+The sandbox would bound a
 misplaced relative write if the payload `cwd` did not follow a `cd`. Four gaps
 are known and left open:
 
@@ -154,8 +185,9 @@ are known and left open:
 A tool call denied in any of a replay's sessions makes the replay `invalid`.
 That covers a guard denial, its ask tier included (nobody can answer an ask in
 a headless session), and a permission-system denial. It is a harness fault:
-the replay is rerun and left out of the pass rate, and it is never counted
-against the varied model. `record` reads the denials from the sessions'
+the replay is left out of the pass rate, and it is never counted against the
+varied model. Its rerun question leans against a rerun, since the same rule
+would deny the same call again until the harness configuration changes (below). `record` reads the denials from the sessions'
 transcripts. Each session is started on a fresh `--session-id`, which its
 `STEP` line names. Its transcript is `<projects>/*/<id>.jsonl`, and its
 subagents' transcripts are `<projects>/*/<id>/subagents/agent-*.jsonl`, found as
@@ -193,7 +225,20 @@ parsed. That line sits beside the cells and changes no figure, since
 the cells already leave invalid replays out. `/gaffer:compare-models` step 6
 names the cause in each rerun question. For a denial it leans against a rerun,
 naming the kinds and tools: the same rule would deny the rerun too, until the harness
-configuration changes. Any other cause keeps the lean toward a rerun.
+configuration changes. Any other cause keeps the lean toward a rerun, with one
+exception.
+
+**Precedence: a denial counted under an earlier cause still blocks a rerun.**
+`record` tests the causes in order: routing, then a crash or timeout, then a
+fixed role refused, then a denial. A replay that failed its routing check and
+also had a call denied stores `routing` as its cause, and the denial is in its
+`denials` count alone. That denial would stop a rerun just the same. So when an
+invalid replay's cause is an earlier one but its record counts `denials` above
+0, the `UNRANKABLE` line adds `denials=<n>` with the kinds and tools. `report`
+gives such replays their own per-model line, naming the causes, kinds and tools
+and saying a rerun would meet the same denial; like the denial line, it changes
+no figure. Step 6 applies the denial lean to them too. A count of 0, or `null`
+(unmeasured), adds nothing: an unmeasured count is never read as a denial.
 
 **A consumer experiment.** A source repository whose configuration keeps the
 guard's ask tier on (no `bypass-ask-tier`) will see every ask-tier hit scored as

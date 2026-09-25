@@ -214,10 +214,12 @@ backticked id in parentheses after the title. For each one, run
 `compare.sh rank-prepare <experiment> <packet id>`:
 
 - **Exit 0** (a `RANKING=` line): prepared. Step 7 ranks it.
-- **`UNRANKABLE ... reason=invalid cause=<cause> [kinds=<kinds> tools=<tools>] replay=<r>`**:
+- **`UNRANKABLE ... reason=invalid cause=<cause> [denials=<n>] [kinds=<kinds> tools=<tools>] replay=<r>`**:
   that model's latest replay was a harness fault, not the model's work. It is a
-  rerun candidate. Keep its `cause=` for the decision below, and for
-  `cause=denial` its `kinds=` and `tools=` too. `routing` means the routing check did not pass.
+  rerun candidate. Keep its `cause=` for the decision below, and its `kinds=` and
+  `tools=` whenever the line carries them. `denials=<n>` after another cause means
+  that cause decided the outcome (it is tested first), but <n> tool calls were
+  denied in the replay's sessions as well. `routing` means the routing check did not pass.
   `crashed`, `timed-out` and `error` mean the replay ended without a verdict it
   could route. `fixed-role-refused` means a role not under test refused its line.
   `denial` means a tool call was denied in one of its sessions. `kinds=` holds
@@ -255,9 +257,11 @@ lower stakes — ask and I'll lay them out."*):
 The question always names the cause from the `UNRANKABLE` line. The lean
 depends on it:
 
-- **Any cause but `denial`**: the lean above, **Pick A**.
-- **`cause=denial`**: the same rule would deny the same call again, so a rerun
-  would likely be spent for another invalid replay. Name the tools from
+- **Any cause but `denial`, with no `denials=`**: the lean above, **Pick A**.
+- **`cause=denial`, or any other cause with `denials=`**: the same rule would deny
+  the same call again, so a rerun would likely be spent for another invalid
+  replay. For another cause, name that cause too, and that calls were denied
+  beside it. Name the tools from
   `tools=` and the kinds from `kinds=` in the question (for an `unrecorded`
   value, say the record does not name it), and lean the other way:
 

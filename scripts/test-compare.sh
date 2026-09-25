@@ -1908,7 +1908,14 @@ agent="$(printf '%s\n' "$prompt" | sed -n 's/^Dispatch the `\([a-z-]*\)` agent.*
 printf 'call=%s agent=%s effort=%s effort_env=%s cwd=%s plugin=%s\n' "$n" "$agent" "$effort" \
   "${CLAUDE_CODE_EFFORT_LEVEL-(unset)}" "$(pwd -P)" "$plugin" >> "$d/log"
 printf 'call=%s agent=%s perm=%s session=%s\n' "$n" "$agent" "$perm" "${session:-(none)}" >> "$d/flags"
-printf 'call=%s agent=%s cwd=%s settings=%s\n' "$n" "$agent" "$(pwd -P)" "$settings" >> "$d/confine"
+# The temp directory the session was given: TMPDIR, CLAUDE_CODE_TMPDIR, and
+# whether TMPDIR names an existing, empty directory when the session starts.
+ts=missing
+if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+  if [ -z "$(ls -A "$TMPDIR" 2>/dev/null)" ]; then ts=empty; else ts=nonempty; fi
+fi
+printf 'call=%s agent=%s tmp=%s cctmp=%s tmpstate=%s cwd=%s settings=%s\n' "$n" "$agent" "${TMPDIR-(unset)}" \
+  "${CLAUDE_CODE_TMPDIR-(unset)}" "$ts" "$(pwd -P)" "$settings" >> "$d/confine"
 printf '%s\n' "$prompt" > "$d/prompt.$n"
 line="$(sed -n "${n}p" "$d/script")"
 case "$line" in
@@ -1992,9 +1999,65 @@ STUB
 chmod +x "$WORK/stub-claude"
 # The confinement every session is started with (the stub logs it to `confine`).
 CONFINE="$HERE/compare-confine.sh"
-cf_expect() {  # cf_expect <dir>: the --settings JSON a session started in <dir> is given
-  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":["%s"]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":"'"'"'%s'"'"' '"'"'%s'"'"'"}]}]}}' \
-    "$1" "$CONFINE" "$1"
+cf_expect() {  # cf_expect <dir> <tmp>: the --settings JSON a session started in <dir>, with temp directory <tmp>, is given
+  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":["%s","%s"]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":"'"'"'%s'"'"' '"'"'%s'"'"' '"'"'%s'"'"'"}]}]}}' \
+    "$1" "$2" "$CONFINE" "$1" "$2"
+}
+cf_field() {  # cf_field <confine log line> <key>: that key's value (cwd and settings are last, in that order)
+  local v="${1#* $2=}"
+  case "$2" in
+    settings) ;;
+    cwd) v="${v%% settings=*}" ;;
+    *) v="${v%% *}" ;;
+  esac
+  printf '%s' "$v"
+}
+CF_PTMP="$(cd /tmp && pwd -P)"
+# cf_tmp_check <label> <confine log lines>: every session had its own temp
+# directory, known before launch, and the hook and the sandbox were given the
+# same path for it: TMPDIR and CLAUDE_CODE_TMPDIR both name it; it existed, empty,
+# when the session started; it is a fresh `cmp.*` directly under /tmp (physical),
+# outside the session's directory and this checkout; the settings are exactly
+# cf_expect's for the pair, so allowWrite's second entry and the hook's second
+# argument are that same string; it was removed once the session ended; and no
+# two sessions shared one.
+cf_tmp_check() {
+  local l n=0 good=0 t c cwd set all="" why=""
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    n=$((n + 1))
+    t="$(cf_field "$l" tmp)"; c="$(cf_field "$l" cctmp)"; cwd="$(cf_field "$l" cwd)"; set="$(cf_field "$l" settings)"
+    all="$all$t"$'\n'
+    if [ "$c" != "$t" ]; then why="$why [CLAUDE_CODE_TMPDIR $c is not TMPDIR $t]"; continue; fi
+    if [ "$(cf_field "$l" tmpstate)" != empty ]; then why="$why [$t was $(cf_field "$l" tmpstate) at start]"; continue; fi
+    # Placement before shape: a temp directory inside the session's directory or
+    # this checkout is not under /tmp either, so checked second it could never be
+    # the reason named.
+    case "$t/" in "$cwd/"*|"$REPO/"*) why="$why [$t lies inside $cwd or $REPO]"; continue ;; esac
+    case "$t" in "$CF_PTMP"/cmp.*) ;; *) why="$why [$t is not a cmp.* directory under $CF_PTMP]"; continue ;; esac
+    if [ "$set" != "$(cf_expect "$cwd" "$t")" ]; then why="$why [settings do not name $cwd and $t as expected: $set]"; continue; fi
+    if [ -e "$t" ]; then why="$why [$t outlived its session]"; continue; fi
+    good=$((good + 1))
+  done <<< "$2"
+  if [ "$n" -gt 0 ]; then ok "$1: sessions were logged ($n)"; else bad "$1: sessions were logged" "none"; fi
+  assert_eq "$1: every session's TMPDIR and CLAUDE_CODE_TMPDIR name its own fresh temp directory under /tmp, the same path the sandbox's allowWrite and the hook's arguments carry${why:+ ($why)}" \
+    "$n" "$good"
+  assert_eq "$1: no two sessions shared a temp directory" "$n" "$(printf '%s' "$all" | sort -u | grep -c .)"
+  if command -v jq >/dev/null 2>&1; then
+    # Parsed rather than matched as text: allowWrite is [<dir>, <tmp>] and the hook
+    # command's last word is <tmp>, the same string.
+    local jgood=0
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      t="$(cf_field "$l" tmp)"; cwd="$(cf_field "$l" cwd)"
+      cf_field "$l" settings | jq -e --arg d "$cwd" --arg t "$t" '.sandbox.filesystem.allowWrite == [$d, $t]
+          and (.hooks.PreToolUse[0].hooks[0].command | endswith(" '"'"'" + $d + "'"'"' '"'"'" + $t + "'"'"'"))' >/dev/null 2>&1 \
+        && jgood=$((jgood + 1))
+    done <<< "$2"
+    assert_eq "$1: parsed, every session's allowWrite is [its directory, its temp directory] and its hook is rooted at the same two" "$n" "$jgood"
+  else
+    printf 'skip %s: the parsed allowWrite and hook arguments (no jq)\n' "$1"
+  fi
 }
 cf_str() {  # cf_str <s>: <s> as a JSON string
   V="$1" awk 'BEGIN { s = ENVIRON["V"]; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
@@ -2011,20 +2074,36 @@ cf_payload() {  # cf_payload <tool> <path-or-command> <cwd>: a PreToolUse payloa
 # write inside the session's directory and refuses one beside it, and the
 # settings are valid JSON (Claude Code silently ignores a settings file that is not).
 cf_wired() {
-  local cwd set cmd rin rout
-  cwd="${2#* cwd=}"; cwd="${cwd%% settings=*}"; set="${2#* settings=}"
+  local cwd set cmd rin rout tmp rtmp rsh rother rbare other
+  cwd="$(cf_field "$2" cwd)"; set="$(cf_field "$2" settings)"; tmp="$(cf_field "$2" tmp)"
   cmd="$(printf '%s' "$set" | sed -n 's/.*"command":"\(.*\)"}]}]}}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
   if [ -z "$cmd" ] || [ ! -d "$cwd" ]; then bad "$1: the hook command and directory are readable from the log" "[$2]"; return; fi
+  # The session's temp directory was removed when the session ended, and the
+  # hook refuses every write while a root it was given is missing: it is stood
+  # up again at the same path for these calls.
+  case "$tmp" in "$CF_PTMP"/cmp.*) ;; *) bad "$1: the session's temp directory is readable from the log" "[$tmp]"; return ;; esac
+  mkdir "$tmp" 2>/dev/null
   cf_payload Write "$cwd/confined.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rin=$?
   cf_payload Write "${cwd%/*}/beside-$$.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rout=$?
   assert_eq "$1: the settings' hook allows a write inside the session's directory and refuses one beside it" "0:2" "$rin:$rout"
+  # A write in the temp directory is allowed; one in another session's temp
+  # directory beside it, or in a bare /tmp path, is refused.
+  other="$(mktemp -d /tmp/cmp.XXXXXXXX)"
+  cf_payload Write "$tmp/scratch.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rtmp=$?
+  cf_payload Bash "echo x > $tmp/s.txt; echo y | tee $tmp/t.txt; cp confined.txt $tmp/c.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rsh=$?
+  cf_payload Write "$other/scratch.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rother=$?
+  cf_payload Bash "echo x > /tmp/cmp-bare-$$.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rbare=$?
+  rmdir "$tmp" "$other" 2>/dev/null
+  assert_eq "$1: the settings' hook allows a Write and a shell write in the session's temp directory, and refuses another session's and a bare /tmp path" \
+    "0:0:2:2" "$rtmp:$rsh:$rother:$rbare"
   if command -v jq >/dev/null 2>&1; then
     assert_eq "$1: the settings are valid JSON" "ok" "$(printf '%s' "$set" | jq -e '.hooks.PreToolUse[0].hooks[0].type == "command"' >/dev/null 2>&1 && echo ok)"
     # The Bash sandbox, parsed rather than matched as text: on, failing closed
     # when it cannot start, no unsandboxed retry, the filesystem layer kept on,
-    # and writes allowed in the session's own directory and nowhere else named.
-    assert_eq "$1: the settings turn on the Bash sandbox with writes limited to the session's directory" \
-      "true|true|false|false|[\"$cwd\"]|false" \
+    # and writes allowed in the session's own directory and temp directory and
+    # nowhere else named.
+    assert_eq "$1: the settings turn on the Bash sandbox with writes limited to the session's directory and temp directory" \
+      "true|true|false|false|[\"$cwd\",\"$tmp\"]|false" \
       "$(printf '%s' "$set" | jq -r '[.sandbox.enabled, .sandbox.failIfUnavailable, .sandbox.allowUnsandboxedCommands,
           .sandbox.filesystem.disabled, (.sandbox.filesystem.allowWrite | tojson), .disableAllHooks] | map(tostring) | join("|")' 2>/dev/null)"
   else
@@ -2269,8 +2348,8 @@ RPCF_N="$(printf '%s\n' "$RPCF" | grep -c '^call=')"
 RPCF_R="$(printf '%s\n' "$RPCF" | grep -c '^call=[0-9]* agent=reviewer ')"
 RPCF_OK=0
 while IFS= read -r l; do
-  cwd="${l#* cwd=}"; cwd="${cwd%% settings=*}"
-  [ "${l#* settings=}" = "$(cf_expect "$cwd")" ] && RPCF_OK=$((RPCF_OK + 1))
+  cwd="$(cf_field "$l" cwd)"
+  [ "$(cf_field "$l" settings)" = "$(cf_expect "$cwd" "$(cf_field "$l" tmp)")" ] && RPCF_OK=$((RPCF_OK + 1))
 done <<< "$RPCF"
 assert_eq "replay confinement: every session the effort check counted was logged here too" "$RPEFF_N:$RPEFF_R" "$RPCF_N:$RPCF_R"
 assert_eq "replay confinement: every replay and review-view session was given --settings confining it to its own directory" \
@@ -2280,16 +2359,22 @@ assert_eq "replay confinement: every replay and review-view session was given --
 if command -v jq >/dev/null 2>&1; then
   RPSB_OK=0
   while IFS= read -r l; do
-    cwd="${l#* cwd=}"; cwd="${cwd%% settings=*}"
-    printf '%s' "${l#* settings=}" | jq -e --arg d "$cwd" '.sandbox.enabled == true and .sandbox.failIfUnavailable == true
-      and .sandbox.allowUnsandboxedCommands == false and .sandbox.filesystem.allowWrite == [$d]' >/dev/null 2>&1 \
+    cwd="$(cf_field "$l" cwd)"
+    cf_field "$l" settings | jq -e --arg d "$cwd" --arg t "$(cf_field "$l" tmp)" '.sandbox.enabled == true and .sandbox.failIfUnavailable == true
+      and .sandbox.allowUnsandboxedCommands == false and .sandbox.filesystem.allowWrite == [$d, $t]' >/dev/null 2>&1 \
       && RPSB_OK=$((RPSB_OK + 1))
   done <<< "$RPCF"
-  assert_eq "replay confinement: every replay and review-view session's settings sandbox Bash with writes limited to its own directory" \
+  assert_eq "replay confinement: every replay and review-view session's settings sandbox Bash with writes limited to its own directory and temp directory" \
     "$RPCF_N" "$RPSB_OK"
 else
   printf 'skip replay confinement: the Bash sandbox on every session (no jq to parse the settings)\n'
 fi
+# The session temp directory: one per session, the same path in TMPDIR, in the
+# sandbox's allowWrite and in the hook's arguments, on every replay and
+# review-view session above.
+cf_tmp_check "replay temp directory, every replay and review-view session" "$RPCF"
+assert_eq "replay temp directory: review-view sessions were among them" "yes" \
+  "$(printf '%s\n' "$RPCF" | grep -q ' agent=reviewer ' && printf '%s\n' "$RPCF" | grep -vq ' agent=reviewer ' && echo yes)"
 cf_wired "replay confinement, a work-clone session" "$(printf '%s\n' "$RPCF" | grep -v ' agent=reviewer ' | head -1)"
 cf_wired "replay confinement, a review-view session" "$(printf '%s\n' "$RPCF" | grep ' agent=reviewer ' | head -1)"
 # A stored selection naming no effort is refused before any session starts, and
@@ -3438,6 +3523,22 @@ assert_has "rank-prepare, a denial record storing no kinds: the kinds unrecorded
 assert_has "rank-prepare, a denied kind with unsafe characters: reduced, one token" \
   "UNRANKABLE packet=rk-t2 model=sonnet reason=invalid cause=denial kinds=a?b??x? tools=x?y?z replay=$RKR_t2_sonnet" "$ERR"
 assert_has "rank-prepare, invalid replays: the refusal says to re-run them" "compare.sh run --rerun" "$ERR"
+assert_has "rank-prepare, invalid replays: ... except one a call was denied in" \
+  "unless a call was denied in it, named by kinds= above: the same rule would deny the rerun again until the harness configuration changes" "$ERR"
+# An earlier cause decides the outcome, but the record counts denials above 0
+# too: the line names the cause and the denials, kinds and tools, so a rerun is
+# never proposed past a denial that would stop it again. A count of 0, or none
+# (unmeasured), adds nothing.
+rk_rec rk-t2 fable "$RKR_t2_fable" invalid ',"invalid_cause":"routing","denials":3,"denial_kinds":["permission-rule"],"denial_tools":["Bash","Write"]'
+rk_rec rk-t2 opus "$RKR_t2_opus" invalid ',"invalid_cause":"crashed","denials":0,"denial_kinds":[]'
+rk_rec rk-t2 sonnet "$RKR_t2_sonnet" invalid ',"invalid_cause":"fixed-role-refused","denials":null,"denial_kinds":null'
+rkp rk-t2
+assert_has "rank-prepare, an earlier cause whose record counts denials: the cause, the denials, kinds and tools" \
+  "UNRANKABLE packet=rk-t2 model=fable reason=invalid cause=routing denials=3 kinds=permission-rule tools=Bash,Write replay=$RKR_t2_fable" "$ERR"
+assert_has "rank-prepare, an earlier cause with denials 0: the cause alone" \
+  "UNRANKABLE packet=rk-t2 model=opus reason=invalid cause=crashed replay=$RKR_t2_opus" "$ERR"
+assert_has "rank-prepare, an earlier cause with denials unmeasured: the cause alone, never a guessed count" \
+  "UNRANKABLE packet=rk-t2 model=sonnet reason=invalid cause=fixed-role-refused replay=$RKR_t2_sonnet" "$ERR"
 assert_eq "rank-prepare, invalid replays: no clone built, no label map written" "$RK_N0:0" "$(rk_nclones):$(rk_nlabels)"
 
 # The reruns' records follow (the same work clones stand in for them): every
@@ -3604,8 +3705,10 @@ assert_eq "rank: the session was started with --effort high and no CLAUDE_CODE_E
 assert_eq "rank: the session was started with --permission-mode bypassPermissions and a UUID --session-id" \
   "call=1 agent=reviewer perm=bypassPermissions uuid" \
   "$(sed -n 's/^\(call=1 agent=[a-z]* perm=[^ ]*\) session=[0-9a-f]\{8\}-[0-9a-f]\{4\}-4[0-9a-f]\{3\}-[89ab][0-9a-f]\{3\}-[0-9a-f]\{12\}$/\1 uuid/p' "$SD/flags")"
-assert_eq "rank: the session was given --settings confining it to the ranking clone" \
-  "call=1 agent=reviewer cwd=$RKD settings=$(cf_expect "$RKD")" "$(cat "$SD/confine")"
+RKT="$(cf_field "$(cat "$SD/confine")" tmp)"
+assert_eq "rank: the session was given --settings confining it to the ranking clone and its temp directory" \
+  "call=1 agent=reviewer tmp=$RKT cctmp=$RKT tmpstate=empty cwd=$RKD settings=$(cf_expect "$RKD" "$RKT")" "$(cat "$SD/confine")"
+cf_tmp_check "rank temp directory, the ranking session" "$(cat "$SD/confine")"
 cf_wired "rank confinement, the ranking session" "$(cat "$SD/confine")"
 RKPROMPT="$(cat "$SD/prompt.1")"
 assert_has "rank: the brief names each diff by its label" "C  $RKD/.agents/ranking/C.diff" "$RKPROMPT"
@@ -3803,6 +3906,18 @@ assert_eq "report, denial-invalid replays: the opus code cell's denominator is u
   "$(printf '%s\n' "$RP_BASE_OUT" | awk 'index($0, "**opus, code** — ") { print; exit }')" "$(cell opus code)"
 assert_eq "report, denial-invalid replays: the sonnet code cell is unchanged (the superseded denial not read)" \
   "$(printf '%s\n' "$RP_BASE_OUT" | awk 'index($0, "**sonnet, code** — ") { print; exit }')" "$(cell sonnet code)"
+# An earlier cause whose record counts denials above 0: fable's latest rp-c2 is
+# now invalid for the routing check, with two calls denied as well. Its own line
+# names the cause, the kinds and the tools, and says a rerun would meet the
+# same denial; it is not counted as a denial-invalid replay, and no cell moves.
+RP_DEN_OUT="$OUT"
+rp_rec "$RPEXP" rp-c2 fable invalid 0 null null null ',"invalid_cause":"routing","denials":2,"denial_kinds":["permission-rule"],"denial_tools":["Bash","Write"]'
+rpt
+assert_eq "report, an earlier cause whose record counts denials: its line names the cause, kinds and tools, and the rerun it would meet" \
+  "> ⚠️ **fable** — 1 replay(s) invalid for another cause (routing) that also had a call denied (denied: permission-rule; tools: Bash, Write), excluded from its cells as a harness fault; a rerun would meet the same denial" \
+  "$(printf '%s\n' "$OUT" | grep -e '^> ⚠️ \*\*fable\*\* — ')"
+assert_eq "report, an earlier cause whose record counts denials: no other line changes" \
+  "$(printf '%s\n' "$RP_DEN_OUT" | grep -v -e '^> ⚠️ \*\*fable\*\* — ')" "$(printf '%s\n' "$OUT" | grep -v -e '^> ⚠️ \*\*fable\*\* — ')"
 RPSTORE="$RPSTORE_BASE"
 # Refusals: no stored selection, an unreadable records file, a malformed id.
 rpt bbbbbbbbbbbb
@@ -4316,6 +4431,50 @@ cf_run Write "$CFR/a.txt" "$CFR" relative/clone
 assert_eq "compare-confine, refused: a relative root" "2" "$CF_RC"
 CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" 2>/dev/null)"; CF_RC=$?
 assert_eq "compare-confine, refused: no root" "2" "$CF_RC"
+# The session's temp directory, the hook's second root: the path the sandbox's
+# allowWrite names beside the clone. A scratch write there is allowed to the
+# file tools and to a recognised shell write alike; any other temp directory
+# (another session's, a bare /tmp path) is refused, and so is the session's
+# own when the hook is given the clone alone.
+CFT="$(mktemp -d /tmp/cmp.XXXXXXXX)"; CFT="$(cd "$CFT" && pwd -P)"
+CFT2="$(mktemp -d /tmp/cmp.XXXXXXXX)"; CFT2="$(cd "$CFT2" && pwd -P)"
+printf z > "$CFR/in2.txt"
+cf_tallow() {  # cf_tallow <label> <tool> <path-or-command>: allowed, given the clone and CFT
+  CF_OUT="$(cf_payload "$2" "$3" "$CFR" | "$CONFINE" "$CFR" "$CFT" 2>"$WORK/cf.err")"; CF_RC=$?
+  CF_ERR="$(cat "$WORK/cf.err")"
+  assert_eq "compare-confine, with a temp directory, allowed: $1" "0||" "$CF_RC|$CF_OUT|$CF_ERR"
+}
+cf_trefuse() {  # cf_trefuse <label> <tool> <path-or-command> <reason needle>: refused, given the clone and CFT
+  CF_OUT="$(cf_payload "$2" "$3" "$CFR" | "$CONFINE" "$CFR" "$CFT" 2>"$WORK/cf.err")"; CF_RC=$?
+  CF_ERR="$(cat "$WORK/cf.err")"
+  assert_eq "compare-confine, with a temp directory, refused: $1: exit 2, nothing on stdout" "2|" "$CF_RC|$CF_OUT"
+  assert_has "compare-confine, with a temp directory, refused: $1: the reason is named" "compare-confine: refused: $4" "$CF_ERR"
+}
+cf_tallow "a Write into the session's temp directory" Write "$CFT/scratch.txt"
+cf_tallow "a Write creating directories in the session's temp directory" Write "$CFT/a/b/c.txt"
+cf_tallow "a shell redirect into the session's temp directory" Bash "echo x > $CFT/r.txt"
+cf_tallow "tee into the session's temp directory" Bash "echo x | tee $CFT/t.txt"
+cf_tallow "cp into the session's temp directory" Bash "cp in2.txt $CFT/c.txt"
+cf_tallow "a Write inside the clone, given a temp directory too" Write "$CFR/a.txt"
+cf_trefuse "a Write into another session's temp directory" Write "$CFT2/scratch.txt" "a write outside the session's clone ($CFR) and its temp directory ($CFT)"
+cf_trefuse "a shell redirect into another session's temp directory" Bash "echo x > $CFT2/r.txt" "a write outside the session's clone"
+cf_trefuse "tee into another session's temp directory" Bash "echo x | tee $CFT2/t.txt" "a write outside the session's clone"
+cf_trefuse "cp into another session's temp directory" Bash "cp in2.txt $CFT2/c.txt" "a write outside the session's clone"
+cf_trefuse "a Write to a bare /tmp path" Write "/tmp/cmp-bare-$$.txt" "a write outside the session's clone"
+cf_trefuse "a shell redirect to a bare /tmp path" Bash "echo x > /tmp/cmp-bare-$$.txt" "a write outside the session's clone"
+cf_trefuse "a Write beside the temp directory, sharing its name as a prefix" Write "$CFT.sibling" "a write outside the session's clone"
+cf_trefuse "a Write to the clone's .claude/settings.json, given a temp directory" Write "$CFR/.claude/settings.json" "a write to the Claude Code configuration"
+cf_run Write "$CFT/scratch.txt"
+assert_eq "compare-confine, refused: a Write into a temp directory the hook was not given (the clone alone)" "2" "$CF_RC"
+CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" "$CFR" relative/tmp 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: a relative temp directory refuses even a write inside the clone" "2" "$CF_RC"
+CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" "$CFR" "$CFT.missing" 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: a missing temp directory refuses even a write inside the clone" "2" "$CF_RC"
+CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" "$CFR" / 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: a temp directory of / refuses even a write inside the clone" "2" "$CF_RC"
+CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" "$CFR" "$CFT" extra 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: three arguments" "2" "$CF_RC"
+rm -rf "$CFT" "$CFT2"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1879,18 +1879,21 @@ cat > "$WORK/stub-claude" <<'STUB'
 #!/usr/bin/env bash
 d="$STUB_DIR"
 n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/count"
-prompt=""; plugin=""; effort="(none)"
+prompt=""; plugin=""; effort="(none)"; perm="(none)"; session=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
     --plugin-dir) plugin="$2"; shift 2 ;;
     --effort) effort="$2"; shift 2 ;;
+    --permission-mode) perm="$2"; shift 2 ;;
+    --session-id) session="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 agent="$(printf '%s\n' "$prompt" | sed -n 's/^Dispatch the `\([a-z-]*\)` agent.*/\1/p' | head -1)"
 printf 'call=%s agent=%s effort=%s effort_env=%s cwd=%s plugin=%s\n' "$n" "$agent" "$effort" \
   "${CLAUDE_CODE_EFFORT_LEVEL-(unset)}" "$(pwd -P)" "$plugin" >> "$d/log"
+printf 'call=%s agent=%s perm=%s session=%s\n' "$n" "$agent" "$perm" "${session:-(none)}" >> "$d/flags"
 printf '%s\n' "$prompt" > "$d/prompt.$n"
 line="$(sed -n "${n}p" "$d/script")"
 case "$line" in
@@ -1936,13 +1939,18 @@ fi
 # STUB_SEED=<projects dir>: the session leaves what a real one would for the
 # routing check: the metrics hook's events in its working directory (the
 # dispatch stamped with what routing.sh resolves there) and the subagent's
-# transcript turn on the id STUB_PINS (`alias=id ...`) pins that alias to.
+# transcript turn on the id STUB_PINS (`alias=id ...`) pins that alias to, under
+# the session id the harness started it on (--session-id), with the session's
+# own transcript beside it. STUB_DENY=`<call>:<kind> ...`: that call's subagent
+# transcript also carries a tool call denied with that toolDenialKind, in the
+# shape a real transcript records one.
 if [ -n "${STUB_PAUSE_AT:-}" ] && [ "$n" = "$STUB_PAUSE_AT" ]; then printf 'reason: stub\n' > "$STUB_PAUSE_FILE"; fi
 if [ -n "${STUB_SEED:-}" ]; then
   mdl="$("$STUB_ROUTING" --root "$(pwd -P)" resolve "$agent")"
   pin="$(printf '%s\n' $STUB_PINS | sed -n "s/^$mdl=//p" | head -1)"
-  sid="s$(basename "$d")c$n"
+  sid="${session:-s$(basename "$d")c$n}"
   mkdir -p .agents/metrics/events "$STUB_SEED/p/$sid/subagents"
+  printf '{"type":"user","sessionId":"%s","message":{"role":"user","content":"the step prompt"}}\n' "$sid" > "$STUB_SEED/p/$sid.jsonl"
   printf '{"ts":"2026-05-02T00:00:02Z","session_id":"%s","agent_id":"%sa","agent_type":"gaffer:%s","tool":"Edit","ok":true}\n' \
     "$sid" "$sid" "$agent" > ".agents/metrics/events/$sid.jsonl"
   printf '{"ts":"2026-05-02T00:00:03Z","session_id":"%s","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:%s","model":"%s","routing_resolved":"%s","routing_table":{"%s":"%s"},"ok":true}\n' \
@@ -1951,6 +1959,11 @@ if [ -n "${STUB_SEED:-}" ]; then
   ef=""; [ -z "${STUB_EFF:-}" ] || ef=",\"effort\":\"$STUB_EFF\""
   printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z"%s,"message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
     "$ef" "$sid" "$pin" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
+  dk="$(printf '%s\n' ${STUB_DENY:-} | sed -n "s/^$n://p" | head -1)"
+  if [ -n "$dk" ]; then
+    printf '{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","content":"PreToolUse:Write hook error: [guard.sh]: GUARDRAIL: blocked a high-risk action","is_error":true,"tool_use_id":"toolu_%s"}]},"toolUseResult":"Error: PreToolUse:Write hook error: [guard.sh]: GUARDRAIL: blocked a high-risk action","toolDenialKind":"%s","sessionId":"%s"}\n' \
+      "$n" "$dk" "$sid" >> "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
+  fi
 fi
 # `file:<path>`: the session's answer is that file's lines (a ranking block).
 case "$line" in
@@ -2014,7 +2027,7 @@ RP_VIEW="$(line VIEW)"
 assert_eq "replay, pass first time: the reviewer ran in the review view, the implementer in the clone" \
   "$RPC|$RP_VIEW" "$(sed -n 's/^call=1 .* cwd=\([^ ]*\) .*/\1/p' "$SD/log")|$(sed -n 's/^call=2 .* cwd=\([^ ]*\) .*/\1/p' "$SD/log")"
 assert_eq "replay, pass first time: the view resolves the reviewer model" "haiku" "$("$ROUTING" --root "$RP_VIEW" resolve reviewer)"
-RP_PASS_SD="$SD"; RP_PASS_C="$RPC"
+RP_PASS_SD="$SD"; RP_PASS_C="$RPC"; RP_PASS_R="$RPR"
 # Once per replay.
 OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STORE="$RPSTORE" \
   ORCH_COMPARE_SCRATCH="$RPSCRATCH" "$COMPARE" replay "$RPR" 2>"$WORK/err")"; RC=$?
@@ -2172,6 +2185,22 @@ if [ "$RPEFF_N" -gt 0 ] && [ "$RPEFF_R" -gt 0 ]; then ok "replay effort: session
 else bad "replay effort: sessions of both roles were logged" "$RPEFF_N sessions, $RPEFF_R reviewer"; fi
 assert_eq "replay effort: every session was started with --effort high and no CLAUDE_CODE_EFFORT_LEVEL" \
   "$RPEFF_N" "$RPEFF_OK"
+# The same sessions, each started in the bypass permission mode (nobody can answer
+# a prompt in them) on a fresh session id of the UUID form `claude --session-id`
+# takes, the id its STEP line names, so `record` can find its transcript.
+RPPERM="$(cat "$WORK"/stub[0-9]*/flags)"
+RPPERM_N="$(printf '%s\n' "$RPPERM" | grep -c '^call=')"
+RPPERM_R="$(printf '%s\n' "$RPPERM" | grep -c '^call=[0-9]* agent=reviewer perm=bypassPermissions ')"
+RPPERM_OK="$(printf '%s\n' "$RPPERM" | grep -c '^call=[0-9]* agent=[a-z-]* perm=bypassPermissions session=[0-9a-f]\{8\}-[0-9a-f]\{4\}-4[0-9a-f]\{3\}-[89ab][0-9a-f]\{3\}-[0-9a-f]\{12\}$')"
+assert_eq "replay permission mode: every session the effort check counted was logged here too" "$RPEFF_N:$RPEFF_R" "$RPPERM_N:$RPPERM_R"
+assert_eq "replay permission mode: every replay and review-view session was started with --permission-mode bypassPermissions and a UUID --session-id" \
+  "$RPPERM_N" "$RPPERM_OK"
+assert_eq "replay permission mode: no two sessions share a session id" "$RPPERM_N" \
+  "$(printf '%s\n' "$RPPERM" | sed -n 's/.* session=//p' | sort -u | wc -l | tr -d ' ')"
+RPS_FLAGS="$(sed -n 's/^call=[0-9]* agent=\([a-z-]*\) perm=[^ ]* session=\(.*\)$/\1 \2/p' "$RP_PASS_SD/flags" | paste -sd'|' -)"
+RPS_STEPS="$(sed -n 's/^STEP n=[0-9]* agent=\([a-z-]*\) .* session=\(.*\)$/\1 \2/p' "$RPSTORE/$RPEXP/replays/$RP_PASS_R.steps" | paste -sd'|' -)"
+assert_eq "replay permission mode: each STEP line names the session id its session was started on" \
+  "$RPS_FLAGS" "$RPS_STEPS"
 # A stored selection naming no effort is refused before any session starts, and
 # the replay is left unrun.
 cp "$RPSTORE/$RPEXP/selection.json" "$WORK/rp.sel"
@@ -2725,8 +2754,13 @@ assert_eq "record, pass first time: tokens are the dispatch rows' sum, dollars p
 assert_eq "record: one line appended to <store>/records.jsonl" "1:$RDSTORE/records.jsonl" "$(rd_count):$(line RECORDS)"
 RDL="$(rd_rec "$RDR1")"
 assert_eq "record: the record's exact key set" \
-  "experiment replay packet model role reviewer_model effort handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
+  "experiment replay packet model role reviewer_model effort handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end denials denial_note tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
   "$(printf '%s\n' "$RDL" | rd_keys)"
+# A step log whose STEP lines name no session: the denials cannot be read, so
+# they are unmeasured (null, with the reason), never 0, and the outcome stands.
+assert_eq "record, STEP lines naming no session: denials unmeasured" "unmeasured" "$(line DENIALS)"
+assert_has "record, STEP lines naming no session: denials null, never 0, with the reason" \
+  "\"denials\":null,\"denial_note\":\"denials unmeasured: a STEP line names no session, so its transcript cannot be found\"," "$RDL"
 assert_has "record: the experiment's settings are carried as stored" \
   "\"settings\":{\"role\": \"implementer\", \"models\": [\"opus\"], \"reviewer_model\": \"haiku\", \"effort\": \"high\", \"model_ids\": {\"haiku\": \"claude-haiku-rd\", \"opus\": \"claude-opus-rd\"}," "$RDL"
 assert_has "record: the model, reviewer model, effort setting and handoff source" \
@@ -3079,6 +3113,34 @@ assert_eq "run --rerun, the superseded invalid replay: exit 1, nothing run" "1:0
 assert_has "run --rerun, the superseded invalid replay: refused, the rerun's record read in its place" \
   "its record is not the latest for packet rp-t1 on fable: replay $RUN_R3's (outcome passed) is" "$ERR"
 
+printf '\n== run: a tool call denied in a replay session is a harness fault ==\n'
+# The same packet and models as a second experiment, every step real. The stub
+# sessions are seeded, so each routing check passes; the sonnet replay's review
+# session (call 4, in its review view) also records a tool call the guard denied
+# (toolDenialKind permission-rule, as a real transcript records one), and the
+# fable replay's implementer session (call 1) a call a person interrupted, which
+# no guard or permission rule decided.
+RUNDEXP=eeeeeeeeee12
+mkdir -p "$RUNSTORE/$RUNDEXP"
+sed "s/$RUNEXP/$RUNDEXP/" "$RUNSTORE/$RUNEXP/selection.json" > "$RUNSTORE/$RUNDEXP/selection.json"
+OUT="$(ORCH_COMPARE_STORE="$RUNSTORE" "$COMPARE" estimate "$RUNDEXP" 2>/dev/null)"
+RUNDTOK="$(line APPROVAL)"
+run_stub "$IMPL_DONE" "$REV_PASS" "$IMPL_DONE" "$REV_PASS"
+STUB_SEED="$RUNPROJ" STUB_DENY="1:interrupted 4:permission-rule" run_run "$RUNDEXP" --approve "$RUNDTOK"
+assert_eq "run, a denied call: exit 0, complete, four sessions" "0:complete:4" "$RC:$(line RUN):$(run_calls)"
+RUND_F="$(printf '%s\n' "$OUT" | sed -n 's/^DONE packet=rp-t1 model=fable replay=\([0-9a-f]*\) outcome=\(.*\)$/\1 \2/p')"
+RUND_S="$(printf '%s\n' "$OUT" | sed -n 's/^DONE packet=rp-t1 model=sonnet replay=\([0-9a-f]*\) outcome=\(.*\)$/\1 \2/p')"
+assert_eq "run, a guard-denied call in a review session: the replay is recorded invalid" "invalid" "${RUND_S#* }"
+assert_eq "run, an interrupted call and no denial: the replay is recorded passed" "passed" "${RUND_F#* }"
+RUND_SREC="$(awk -v r="\"replay\":\"${RUND_S%% *}\"" 'index($0, r)' "$RUNSTORE/records.jsonl")"
+RUND_FREC="$(awk -v r="\"replay\":\"${RUND_F%% *}\"" 'index($0, r)' "$RUNSTORE/records.jsonl")"
+assert_has "run, a denied call: the record counts it and names its kind as the reason" \
+  "\"outcome\":\"invalid\",\"outcome_reason\":\"1 tool call(s) were denied in the replay's sessions (permission-rule): a harness fault, not the model's\"," "$RUND_SREC"
+assert_has "run, a denied call: the routing check passed, so the denial alone made it invalid" \
+  "\"routing_check\":\"pass\",\"end\":\"land\",\"denials\":1,\"denial_note\":null," "$RUND_SREC"
+assert_has "run, no denial: every session's transcript read, 0 denials measured" \
+  "\"denials\":0,\"denial_note\":null," "$RUND_FREC"
+
 printf '\n== rank-prepare: the blinded ranking clone ==\n'
 # Two packets, three models, a reviewer outside the compared set. Each model's
 # replay does work that differs only by a number (fable 1, opus 2, sonnet 3), so
@@ -3325,6 +3387,9 @@ assert_eq "rank: one session, the reviewer's, in the ranking clone, with the har
   "$(sed -n 's/^\(call=[0-9]* agent=[a-z]*\) effort=[^ ]* effort_env=[^ ]* \(cwd=.*\)/\1 \2/p' "$SD/log")"
 assert_eq "rank: the session was started with --effort high and no CLAUDE_CODE_EFFORT_LEVEL" \
   "effort=high effort_env=(unset)" "$(sed -n 's/.* \(effort=[^ ]* effort_env=[^ ]*\) .*/\1/p' "$SD/log")"
+assert_eq "rank: the session was started with --permission-mode bypassPermissions and a UUID --session-id" \
+  "call=1 agent=reviewer perm=bypassPermissions uuid" \
+  "$(sed -n 's/^\(call=1 agent=[a-z]* perm=[^ ]*\) session=[0-9a-f]\{8\}-[0-9a-f]\{4\}-4[0-9a-f]\{3\}-[89ab][0-9a-f]\{3\}-[0-9a-f]\{12\}$/\1 uuid/p' "$SD/flags")"
 RKPROMPT="$(cat "$SD/prompt.1")"
 assert_has "rank: the brief names each diff by its label" "C  $RKD/.agents/ranking/C.diff" "$RKPROMPT"
 case "$RKPROMPT" in

@@ -213,7 +213,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     across different varied roles, reviewer models or source repositories, and
     ranks from different ranking sets are never averaged together
 
-- [ ] **P0**: Every replay session runs unattended, and a denied action is a harness fault
+- [x] **P0**: Every replay session runs unattended, and a denied action is a harness fault
   - every replay, review-view and ranking session starts in the bypass
     permission mode, confined to that session's disposable clone, so no step
     waits on a permission prompt nobody can answer. The guardrail's hard-deny

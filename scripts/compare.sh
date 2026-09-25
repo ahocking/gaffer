@@ -282,7 +282,14 @@
 #                     with this script as the driver. Once per replay: a second
 #                     `replay` of the same id is refused (<replay>.steps exists).
 #                     Every agent step is one non-interactive session,
-#                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> --effort <effort> -p <prompt>
+#                       ${ORCH_COMPARE_CLAUDE:-claude} --plugin-dir <harness> --effort <effort>
+#                         --permission-mode bypassPermissions --session-id <uuid> -p <prompt>
+#                     (the bypass mode because nobody can answer a prompt in a
+#                     headless session; its working directory is a disposable
+#                     clone or view, and the harness's hooks/guard.sh, loaded
+#                     through --plugin-dir, still hard-denies; <uuid> is a fresh
+#                     id per session, named on its STEP line so `record` can
+#                     find its transcript)
 #                     where <effort> is the stored selection's settings
 #                     `effort` (a selection naming none, or one outside
 #                     EFFORT_LEVELS, is refused before any session starts),
@@ -349,6 +356,7 @@
 #                     <store>/<experiment>/replays/<replay>.steps:
 #                       STEP n=<k> agent=<a> try=<1|2> exit=<code|timeout>
 #                            status=<ok|refused|none> [token=<first token>]
+#                            session=<the session's id>
 #                       ROUTE agent=<a> token= action= attempts= limit=
 #                       REFRESH partial_work=<...> paths=<n>
 #                       VIEW=<review view path>
@@ -490,8 +498,13 @@
 #                                        step log's last STEP line is not the
 #                                        replay's role (the reviewer's line
 #                                        refused twice, or its token outside
-#                                        the review vocabulary). A harness
-#                                        fault, not the model's.
+#                                        the review vocabulary), or a tool call
+#                                        was denied in any of its sessions (by
+#                                        the guard, its ask tier included, or by
+#                                        the permission system; rd_denials
+#                                        below says how it is read). A harness
+#                                        fault, not the model's: rerun, and
+#                                        left out of the pass rate.
 #                       escalated        a routing record's token is `escalate`
 #                                        (the reviewer returned it), or the
 #                                        replay ended at the decider or a stop,
@@ -537,14 +550,19 @@
 #                       experiment replay packet model role reviewer_model
 #                       effort handoff_source settings outcome outcome_reason
 #                       first_verdict fix_rounds sweeps routing_check end
-#                       tokens dollars_min dollars_max price price_table_date
-#                       cost_source cost_note recorded_at
-#                     where `settings` is the stored selection's settings
+#                       denials denial_note tokens dollars_min dollars_max price
+#                       price_table_date cost_source cost_note recorded_at
+#                     where `denials` is the count of tool calls denied in the
+#                     replay's sessions, read from their transcripts, or null
+#                     when a session's transcript cannot be found (unmeasured,
+#                     never 0; `denial_note` says why, and is null otherwise),
+#                     `settings` is the stored selection's settings
 #                     object as it stands, `effort` its `effort` setting (null
 #                     when the selection names none) and `tokens` is {input, output,
 #                     cache_creation, cache_read} or null. Output:
 #                       REPLAY= OUTCOME= REASON= FIRST_VERDICT=<v|none>
-#                       FIX_ROUNDS= SWEEPS=<v|not-run> TOKENS=<n|unmeasured>
+#                       FIX_ROUNDS= SWEEPS=<v|not-run> DENIALS=<n|unmeasured>
+#                       TOKENS=<n|unmeasured>
 #                       DOLLARS_MIN=<x|unmeasured> DOLLARS_MAX=<x|unmeasured>
 #                       RECORDS=<path>
 #                     THE LATEST-RECORD RULE: records.jsonl is append-only, and
@@ -686,7 +704,8 @@
 #                     only the map's labels are read, never its models.
 #                     THE SESSION: one, started as `replay` starts every
 #                     session (`--plugin-dir <harness> --effort <the
-#                     selection's effort>`, CLAUDE_CODE_EFFORT_LEVEL removed,
+#                     selection's effort> --permission-mode bypassPermissions
+#                     --session-id <uuid>`, CLAUDE_CODE_EFFORT_LEVEL removed,
 #                     stdin /dev/null, killed at ${ORCH_COMPARE_STEP_TIMEOUT}),
 #                     in the ranking clone, dispatching the `reviewer` agent
 #                     once on what `routing.sh --root <clone> resolve reviewer`
@@ -2768,15 +2787,30 @@ _CMP_REVIEW_TOKENS="pass fix escalate"
 # on its own.
 _CMP_LAND_EXCLUDED=".agents/metrics .agents/loop .agents/run-state.yaml .agents/run-state-prev.yaml .agents/roadmap.yaml gspec"
 
+# new_session_id: a fresh version-4 UUID (new_token's 32 hex, its version and
+# variant nibbles set), the form `claude --session-id` takes.
+new_session_id() {
+  local h v
+  h="$(new_token)"
+  v="$(printf '%x' $(( (0x${h:16:1} & 3) | 8 )))"
+  printf '%s-%s-4%s-%s%s-%s' "${h:0:8}" "${h:8:4}" "${h:13:3}" "$v" "${h:17:3}" "${h:20:12}"
+}
+
 # run_session <dir> <prompt-file> <out> <err>: one non-interactive session in
 # <dir>, at the experiment's effort, killed at the time limit. Sets STEP_EXIT to
-# its exit code, or `timeout`. Polled rather than watched by a second process,
-# so no watchdog outlives the step. CLAUDE_CODE_EFFORT_LEVEL outranks
-# `--effort`, so it is removed from the session's environment.
+# its exit code, or `timeout`, and STEP_SESSION to the session id it was started
+# on, so `record` can find its transcript. Polled rather than watched by a second
+# process, so no watchdog outlives the step. CLAUDE_CODE_EFFORT_LEVEL outranks
+# `--effort`, so it is removed from the session's environment. The session runs
+# in the bypass permission mode: nobody can answer a prompt in it, its working
+# directory is a disposable clone or view, and `--plugin-dir` still loads the
+# harness's hooks/guard.sh, whose hard-deny tier keeps applying.
 run_session() {
   local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
+  STEP_SESSION="$(new_session_id)"
   ( cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL \
-      && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
+      && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" \
+           --permission-mode bypassPermissions --session-id "$STEP_SESSION" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
   pid=$!
   t0=$SECONDS
   STEP_EXIT=""
@@ -2820,7 +2854,7 @@ dispatch_step() {
     step_prompt "$agent" "$dir" "$brief" "$refusal" > "$_CMP_TMP/prompt"
     run_session "$dir" "$_CMP_TMP/prompt" "$_CMP_TMP/out" "$_CMP_TMP/err"
     if [ "$STEP_EXIT" != 0 ]; then
-      emit "STEP n=$STEPN agent=$agent try=$try exit=$STEP_EXIT status=none"
+      emit "STEP n=$STEPN agent=$agent try=$try exit=$STEP_EXIT status=none session=$STEP_SESSION"
       D_EXIT="$STEP_EXIT"
       return 1
     fi
@@ -2832,11 +2866,11 @@ dispatch_step() {
     fi
     if [ "$rc" -eq 0 ]; then
       D_TOKEN="${D_LINE%% · *}"
-      emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=ok token=$D_TOKEN"
+      emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=ok token=$D_TOKEN session=$STEP_SESSION"
       return 0
     fi
     refusal="$(printf '%s\n' "$chk" | head -1)"
-    emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=refused"
+    emit "STEP n=$STEPN agent=$agent try=$try exit=0 status=refused session=$STEP_SESSION"
   done
   D_REASON="$refusal"
   return 2
@@ -3677,6 +3711,45 @@ rd_step_field() {
   printf '%s\n' "$1" | awk -v n="$2=" '{ for (i = 1; i <= NF; i++) if (index($i, n) == 1) { print substr($i, length(n) + 1); exit } }'
 }
 
+# rd_denials <step-log> <projects-dir>: the tool calls denied in the replay's
+# sessions, one line:
+#   measured<TAB><count><TAB><kinds, comma-joined, sorted, or none>
+#   null<TAB><why>
+# Every STEP line names the session it ran (`session=`, the id `run_session`
+# started it on). A session's transcript is <projects-dir>/*/<id>.jsonl, and its
+# subagents' are <projects-dir>/*/<id>/subagents/agent-*.jsonl, as metrics.sh
+# finds them. A denied call is a transcript record carrying a top-level
+# `toolDenialKind`, the field Claude Code writes on the tool_result of a call that
+# did not run; every kind counts but `interrupted` (a person's interrupt) and
+# `cancelled` (the response stopped by a safety classifier), which no guard or
+# permission rule decided. A STEP line with no session, or a session with no
+# transcript, leaves the count unmeasured: never 0.
+rd_denials() {
+  local steps="$1" proj="$2" sid f files main n=0 k kinds=""
+  : > "$_CMP_TMP/denials"
+  for sid in $(awk '/^STEP / { s = "-"; for (i = 2; i <= NF; i++) if (index($i, "session=") == 1) s = substr($i, 9); print s }' "$steps"); do
+    case "$sid" in
+      -) printf 'null\ta STEP line names no session, so its transcript cannot be found\n'; return 0 ;;
+      *[!0-9a-f-]*) printf 'null\ta STEP line names a session id that is not one run_session writes: %s\n' "$sid"; return 0 ;;
+    esac
+    main=""; files=""
+    set +f
+    for f in "$proj"/*/"$sid".jsonl; do [ -f "$f" ] && main="$f"; done
+    for f in "$proj"/*/"$sid"/subagents/agent-*.jsonl; do [ -f "$f" ] && files="$files$f"$'\n'; done
+    set -f
+    [ -n "$main" ] || { printf 'null\tsession %s has no transcript under %s\n' "$sid" "$proj"; return 0; }
+    printf '%s\n%s' "$main" "$files" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      awk 'match($0, /"toolDenialKind":"[^"]*"/) {
+             k = substr($0, RSTART + 18, RLENGTH - 19)
+             if (k != "interrupted" && k != "cancelled") print k }' "$f"
+    done >> "$_CMP_TMP/denials"
+  done
+  n="$(awk 'END { print NR }' "$_CMP_TMP/denials")"
+  kinds="$(sort -u "$_CMP_TMP/denials" | paste -sd, -)"
+  printf 'measured\t%s\t%s\n' "$n" "${kinds:-none}"
+}
+
 # rd_cost <flat-packet> <role> <packet>: the varied role's tokens, one line:
 #   measured<TAB><input><TAB><output><TAB><cache_creation><TAB><cache_read>
 #   null<TAB><why>
@@ -3813,6 +3886,17 @@ cmd_record() {
   cmp -s "$tmp/pairs" "$tmp/steps.pairs" \
     || die "record: the work clone's routing records for $pkt ($(wc -l < "$tmp/pairs" | tr -d ' ')) are not the step log's ROUTE lines ($(wc -l < "$tmp/steps.pairs" | tr -d ' ')): $rj"
 
+  # --- the tool calls denied in the replay's sessions ---------------------------------
+  local den dstate dcount="" dkinds="" dnote=""
+  den="$(rd_denials "$steps" "${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}")"
+  dstate="$(printf '%s\n' "$den" | cut -f1)"
+  if [ "$dstate" = measured ]; then
+    dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"
+    case "$dcount" in ''|*[!0-9]*) die "record: the denial count is not a count: [$dcount]" ;; esac
+  else
+    dnote="denials unmeasured: $(printf '%s\n' "$den" | cut -f2-)"
+  fi
+
   # --- the outcome, in the PRD's order -----------------------------------------------
   local outcome reason last ltok lact att lim whose=""
   last="$(grep '^ROUTE ' "$steps" | tail -1)"
@@ -3831,6 +3915,8 @@ cmd_record() {
     outcome=invalid; reason="the replay ended $end without a verdict it could route"
   elif [ "$end" = refused ] && [ "$whose" != "$role" ]; then
     outcome=invalid; reason="the replay ended refused on the $whose's line, a role not under test (a harness fault)"
+  elif [ -n "$dcount" ] && [ "$dcount" -gt 0 ]; then
+    outcome=invalid; reason="$dcount tool call(s) were denied in the replay's sessions ($dkinds): a harness fault, not the model's"
   elif awk -F'\t' '$1 == "escalate" { f = 1 } END { exit !f }' "$tmp/pairs"; then
     outcome=escalated; reason="the reviewer returned escalate"
   elif [ "$end" = refused ]; then
@@ -3925,15 +4011,17 @@ cmd_record() {
   fi
 
   # --- the one record, appended only now that the outcome is decided ---------------------------
-  local js_first="null" js_sweeps="null" js_note="null" line
+  local js_first="null" js_sweeps="null" js_note="null" js_den="null" js_dnote="null" line
   [ -n "$first" ] && js_first="$(rd_json_str "$first")"
   [ -n "$sweeps" ] && js_sweeps="$(rd_json_str "$sweeps")"
   [ -n "$note" ] && js_note="$(rd_json_str "$note")"
-  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"effort":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
+  [ -n "$dcount" ] && js_den="$dcount"
+  [ -n "$dnote" ] && js_dnote="$(rd_json_str "$dnote")"
+  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"effort":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"denials":%s,"denial_note":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
     "$(rd_json_str "$exp")" "$(rd_json_str "$rid")" "$(rd_json_str "$pkt")" "$(rd_json_str "$model")" \
     "$(rd_json_str "$role")" "$(rd_json_str "$rmodel")" "$js_effort" "$(rd_json_str "$hsrc")" "$settings" \
     "$(rd_json_str "$outcome")" "$(rd_json_str "$reason")" "$js_first" "$fixr" "$js_sweeps" \
-    "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$tokens_json" "$dmin" "$dmax" "$price" \
+    "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$js_den" "$js_dnote" "$tokens_json" "$dmin" "$dmax" "$price" \
     "$(rd_json_str "$tdate")" "$(rd_json_str "$csrc")" "$js_note" "$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"
   printf '%s\n' "$line" > "$tmp/line.json"
   json_flat "$tmp/line.json" > /dev/null 2>&1 || die "record: the record could not be built as one JSON line"
@@ -3942,6 +4030,7 @@ cmd_record() {
 
   printf 'REPLAY=%s\nOUTCOME=%s\nREASON=%s\nFIRST_VERDICT=%s\nFIX_ROUNDS=%s\nSWEEPS=%s\n' \
     "$rid" "$outcome" "$reason" "${first:-none}" "$fixr" "${sweeps:-not-run}"
+  printf 'DENIALS=%s\n' "${dcount:-unmeasured}"
   if [ "$cstate" = measured ]; then
     printf 'TOKENS=%s\n' "$(awk -v a="$ti" -v b="$to" -v c="$tc" -v d="$tr" 'BEGIN { printf "%.0f", a + b + c + d }')"
   else

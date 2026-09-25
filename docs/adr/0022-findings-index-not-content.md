@@ -320,3 +320,24 @@ fuller wording is recorded here.
   > prevent, in the one file whose parse failure is unrecoverable. This says where
   > the index is read from, never when it lands — the carry stays inside the one
   > `write` above.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's packet-close carry reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step, the
+packet-close `write`, by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **What an omitted findings entry leaves behind.** The skill keeps "An omitted entry
+  is unlinked, not edited out". It used to add:
+
+  > the body stays on disk with nothing left pointing at it.
+
+- **Why every carried key is copied from the on-disk file.** The skill keeps "so the
+  file's quoting survives" and "`runstate.sh findings` is not a source for the index
+  (its projection strips that quoting, ADR 0027)". It used to read:
+
+  > the same source rule §2's fresh-run write states, and for the same reason: the
+  > quoting the file carries is the quoting the new file carries, `runstate.sh
+  > findings` is not a source for the index (its projection strips that quoting, ADR
+  > 0027), and a value restated from memory of an earlier read is a value this write
+  > can silently change.

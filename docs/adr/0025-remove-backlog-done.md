@@ -364,3 +364,52 @@ each rule with at most a one-clause reason; the fuller wording is recorded here.
   parenthetical, which pointed at the reason above:
 
   > (it is normally on it here; see the task-drift bullet above for why)
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and end-of-run scan reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination`'s end-of-run capability-drift scan by `skill-prompt-trim`. The
+skill keeps each rule with at most a one-clause reason; the fuller wording is recorded
+here.
+
+- **What `record-completion` does with `--feature`.** The skill keeps "It flips each
+  member's task in plan order, then the landed feature's capabilities, and restores a
+  failed capability call's PRD itself". It used to read:
+
+  > It runs `check-task` for each member in plan order, then `complete-capabilities`
+  > once for the landed feature (a bundle is always one feature; `--feature`, from
+  > §3.3's handoff still in this session's context, is the fallback slug), reads both
+  > commands' exit codes, and restores a failed capability call's PRD itself.
+
+- **What a `HALT=` leaves uncommitted.** The skill keeps "do not commit, so no part of
+  the bundle lands on its own". It used to read:
+
+  > do not commit (no `STAGE=` line is printed, and a member flipped before the halt
+  > stays an uncommitted edit on the branch, so no part of the bundle lands on its own)
+
+- **Why the landing restore is from the index.** The skill keeps "so the packet's own
+  staged PRD edit survives". It used to read:
+
+  > the index already holds the packet's own staged files, and the PRD may be one of
+  > them, so the index form undoes only this failed call's unstaged write where `HEAD`
+  > would discard the packet's own staged PRD edit too. §1 and §4 restore from `HEAD`
+  > for the mirror of this reason: their scan runs outside any packet and stages the
+  > PRD itself, so there the index entry is the thing that has to go.
+
+- **Why the end-of-run reconcile commit follows the merge.** The skill keeps "so a flip
+  never reaches the integration branch ahead of the work it records". It used to add:
+
+  > since checking a branch out to merge into it leaves the checkout on that branch
+
+- **Why the end-of-run restore is the `HEAD` form.** The skill keeps the rule —
+  restore every `STAGE=` path with `git checkout HEAD -- <path>` — without this
+  reason:
+
+  > (this resets the index as well as the working tree, since the path is already
+  > staged)
+
+- **Why a feature is held.** The skill keeps the rule — one unglyphed line per
+  `HELD=<slug>\t<reason>` line, carrying that reason — without this explanation:
+
+  > (an unchecked task's `covers:` quote matches no capability, so every flip for that
+  > feature is held until it is fixed)

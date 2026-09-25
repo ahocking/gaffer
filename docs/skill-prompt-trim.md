@@ -138,6 +138,36 @@ separate variance figure for `cc_shape` itself.
   `templates/task-packet.yaml`'s header comment states, which §1 points at.
   `agents/chief-engineer.md` still states the `main`/`master` arm; aligning it is
   outside this task's files.
+- **T8 (run-loop §3 step 6 **Land** to the end of the file):** no existing assertion
+  changed. Every passage the sweep extracts from this range — §3.6's packet-close
+  carry-through clause, the `rc_land` and `rc_s4` record-completion spans, the
+  `## 4. Termination` heading with its whole-branch review needles and retired-arm
+  absences, and §4's relay-and-record clause — keeps its anchors and needles as they
+  were; the `rc_land` end anchor ("reads exactly as it does today: nothing staged,
+  nothing to report") and the relay clause's "retired (ADR 0026 amendment 2026-09-22)"
+  are kept verbatim for that reason, though both read as history. The §3.8 periodic
+  review paragraph is trimmed to one clause per reason like the rest of the range; its
+  pointer now says `agents/loop-driver.md` §The periodic review "carries the same
+  rule", not the same words. Known mirror-wording gap: `agents/loop-driver.md` still
+  says it states that paragraph "in the same words", which is no longer literally true.
+  That file is out of scope under the PRD's Out and Deferred (`agents/*.md`), so the gap
+  is left for the deferred `agents/*.md` trim. No sweep pins that mirror; the only
+  same-words pin in `test-report-conventions.sh` covers the status-line refusal clause.
+  `test-report-conventions.sh` gains one section: the
+  Advance step names `pause_every_packets` and `.agents/project-overrides.yaml` and
+  reads the value through `periodic-pause`'s `EVERY=`; the range states no default
+  value and no measurement, carries no task-id history and no "today" outside the
+  `rc_land` anchor, holds both later headings, and keeps `routing.sh resolve` beside
+  its two dispatches; and for each of the twenty-nine reasons this task moved,
+  run-loop keeps its one clause, carries no copy of the moved wording, and the owning
+  ADR's run-loop relocation section (ADR 0005, 0017, 0020, 0022, 0023, 0024, 0025,
+  0026) holds it. The periodic-review paragraph is also read on its own: it keeps
+  `resolve chief-engineer`, the `unmeasured`-is-due arm, "record nothing yourself", the
+  second-refusal carry-on, `unmeasured` never rendered as `0`, the `run-digest` route
+  for the review's counts and the same-rule pointer, and claims no identical wording.
+  ADR 0017 is the closest ADR for the periodic pause, which no ADR owns; ADR 0024 owns
+  the periodic review (its 2026-09-21 amendment). The fallback `periodic-pause` applies
+  to an unset key was a value, and is removed rather than relocated.
 
 ## Loop-skill rule review
 

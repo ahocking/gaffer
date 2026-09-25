@@ -249,3 +249,34 @@ fuller wording is recorded here.
   without this reason:
 
   > no open packets means nothing for the real sweep to close either
+
+## Relocated from skills (2026-09-25) — the run-loop skill's land-commit and packet-close reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why `<cursor>` leads the trailer block.** The skill keeps "because a resume adopts
+  by the FIRST `[orch packet:]` trailer on a commit alone (ADR 0005)". It used to read:
+
+  > The first line is still the write-ahead trailer a resume *adopts* on a crash
+  > between this commit and the run-state write (ADR 0005) — `orphan_packet_tag` reads
+  > only the FIRST `[orch packet:]` trailer on a commit, so `<cursor>` leading the
+  > block is load-bearing, not cosmetic.
+
+- **What dropping `schema` does.** The skill keeps "`write` refuses content without
+  it". It used to add:
+
+  > so dropping this one fails loudly rather than quietly.
+
+- **What dropping `run_id` costs.** The skill keeps "losing it fails nothing at the
+  write, but `run-digest` then refuses (…) and the next `begin-run` mints a second id
+  and creates a second run directory". It used to read:
+
+  > the run's own identity, and the most expensive of these to lose, because nothing
+  > fails at the write itself. Afterwards `run-digest` refuses outright (*run-state
+  > has no run_id (begin-run has not been called)*), so no shape-A, shape-B or
+  > `run-tally` figure can be rendered for the rest of the run; and the next
+  > `begin-run` — this session's or a resuming one's — sees no id, mints a second one
+  > and creates a second run directory, orphaning this run's handoff files, result
+  > files and routing log.

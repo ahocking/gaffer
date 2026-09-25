@@ -284,3 +284,71 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 
   > so §3.5/§3.6's shape-A report can later scope `run-digest --since "$SINCE"` to
   > only the decisions made during THIS packet's own attempts, never one already reported for an earlier packet
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and stop-report reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination` by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **Why each swept packet gets its own ⚠️ line in the landing report.** The skill keeps
+  "since that sweep's record is the only thing marking these as new". It used to read:
+
+  > `run-digest`'s `packet` lines are never filtered by `--since`, so this sweep's own
+  > record of what it just closed is the only thing marking these as new, not already
+  > carried by an earlier report
+
+- **Why a failed capability call is an alert, not a withheld line.** The skill keeps
+  "as an alert alongside the ✅/🔁 line, never a reason to withhold it". It used to
+  read:
+
+  > the packet still landed, so this is an alert alongside the ✅/🔁 line, never a
+  > reason to withhold it.
+
+- **Why a capability flip in the stop report carries no ⚠️.** The skill keeps "since a
+  capability flip is not a packet". It used to read:
+
+  > (the conventions reserve that glyph for a tally-counted section carrying one line
+  > per packet, and a capability flip is not a packet)
+
+- **Why the stop report reads the whole-run digest.** The skill keeps "whether or not
+  this session was the one that ran it". It used to add:
+
+  > (a compaction or a resumed session reads the same report)
+
+- **Why a landed bundle's one line must name every member.** The skill keeps "A bundle
+  is ONE packet — one `packet` line in `run-digest`, one ✅ line, never one per member —
+  but `<title>` on that line is only the cursor's own `TEXT=` line (§3.3)". It used to
+  read:
+
+  > a bundle's several members share the one directory keyed to its own id,
+  > `<cursor>` — so it still counts as ONE packet, matching `run-digest`'s own line
+  > count and this shape's tally: a bundle earns exactly one ✅ line, never one per
+  > member. But `<title>` on that line is only the cursor's own `TEXT=` line (§3.3),
+  > so rendering it as-is would read a four-task bundle as one task, and the header
+  > tally would read `✅ 1` for four landed tasks.
+
+- **Why membership is confirmed from the branch.** The skill keeps "since that line
+  records the intent at §3.3 and the commit's own trailers record what landed". It
+  used to read:
+
+  > This session may not be the one that landed it (a compaction, or a resumed session
+  > inheriting someone else's run), so confirm membership from the branch itself
+  > rather than trusting the `BUNDLE=` line alone — that line was written back at
+  > §3.3, before the packet even started, and names an intent
+
+- **Why both branches are searched, never `<base>..HEAD`.** The skill keeps "§3.7 has
+  already merged each earlier bundle's commit into the integration branch". It used to
+  read:
+
+  > §3.7 merges a landed packet's branch into the integration branch right after it
+  > lands, so by stop-report time `HEAD` is wherever the *last* packet in the run
+  > happens to have run, and every earlier bundle's commit is only reachable from the
+  > integration branch, not from `<base>..HEAD`; that range finds nothing for any
+  > bundle but the most recent one — exactly the resumed/compacted case this step
+  > exists to cover.
+
+- **Why the trailer list is read in commit order.** The skill keeps "`<cursor>` first
+  (§3.6 writes it first)". It used to add:
+
+  > and that ordering is load-bearing there for orphan-adopt — see that step

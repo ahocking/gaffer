@@ -440,3 +440,48 @@ preceding step had just flipped. That made the flip non-load-bearing — delete 
 behaviour was identical — and it would have expired **zero of fifteen** live entries while
 appearing to work. Expiry must read the positive evidence (the checkbox, or an
 `[orch packet:<id>]` trailer), never assume it.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's stale-finding and termination-finding reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination` by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **Why the stale-finding drop passes `$MEMBERS`.** The skill keeps the rule in its
+  code block (`FINISHED="${FINISHED:+${FINISHED},}$MEMBERS"`) without this note:
+
+  > (`$MEMBERS` in place of a bare `<landed>` — `task-status`/`findings --finished`
+  > already accept a comma list, so a finding naming any member the bundle just
+  > landed, not only the cursor, is caught here too; a single-member packet is
+  > unaffected, `$MEMBERS` being `<cursor>` alone.)
+
+- **Why a termination finding's `--packets` is truthful and adds no expiry rule.** The
+  skill keeps "`--packets` is mandatory, so each finding names the packet or packets
+  the note is about, and expiry stays the positive-evidence rule (ADR 0024)". It used
+  to add:
+
+  > at termination those are landed packets, which is truthful, and expiry stays the
+  > positive-evidence rule (ADR 0024) already governing every finding — this step adds
+  > no expiry behaviour of its own.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's periodic-review reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Advance** step (the periodic review
+checked at the packet boundary, per this ADR's 2026-09-21 amendment) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here. `agents/loop-driver.md` §The periodic review still
+carries the untrimmed wording.
+
+- **Why the driver records nothing after a periodic review.** The skill keeps "record
+  nothing yourself, since the review writes its own `record-review` record". It used
+  to add:
+
+  > the `record-review` record that completes the review and resets `review-due`'s
+  > count is already on disk when the line returns, and a review that returned no line
+  > left no record, so `review-due` runs it again at the next boundary.
+
+- **Why a second `check-status` refusal still carries on.** The skill keeps "On a
+  second `check-status` refusal, carry on to the next packet, for the same reason". It
+  used to add:
+
+  > the record, not the line, decides whether the review counted.

@@ -214,8 +214,18 @@ backticked id in parentheses after the title. For each one, run
 `compare.sh rank-prepare <experiment> <packet id>`:
 
 - **Exit 0** (a `RANKING=` line): prepared. Step 7 ranks it.
-- **`UNRANKABLE ... reason=invalid replay=<r>`**: that model's latest replay was
-  a harness fault, not the model's work. It is a rerun candidate.
+- **`UNRANKABLE ... reason=invalid cause=<cause> [kinds=<kinds> tools=<tools>] replay=<r>`**:
+  that model's latest replay was a harness fault, not the model's work. It is a
+  rerun candidate. Keep its `cause=` for the decision below, and for
+  `cause=denial` its `kinds=` and `tools=` too. `routing` means the routing check did not pass.
+  `crashed`, `timed-out` and `error` mean the replay ended without a verdict it
+  could route. `fixed-role-refused` means a role not under test refused its line.
+  `denial` means a tool call was denied in one of its sessions. `kinds=` holds
+  each denial's category as its transcript records it (`permission-rule`, which
+  covers a guard hook's deny, `automode-blocked`, `user-rejected`, ...), and
+  `tools=` the tools the denied calls asked for (`Bash`, `Write`, ...). Neither
+  names the specific guard rule. `unrecorded` is a record written before the
+  field was stored, or a denied call its transcript does not name.
 - **`UNRANKABLE ... reason=missing`**: that model's replay has no record yet. The
   packet stays unranked. Say so in one line.
 - **Any other `UNRANKABLE` line, or any other failure**: a ⚠️ line quoting it. The
@@ -232,7 +242,7 @@ Then ask one decision per invalid replay, numbered under
 `🔀 **Decisions** — reply \`1A 2B\``, four at most (after four, add *"<N> more,
 lower stakes — ask and I'll lay them out."*):
 
-> **<n> · Rerun <model> on <packet title>?**
+> **<n> · Rerun <model> on <packet title>? It was invalid: <the cause, in words>**
 >
 > - **A ›** Rerun it
 >   → one new replay; its record replaces the invalid one, and the packet can then be ranked
@@ -241,6 +251,21 @@ lower stakes — ask and I'll lay them out."*):
 >
 > **→ Pick A** — an invalid replay is a harness fault, and the packet cannot be ranked without its rerun
 > *Silence = B, nothing runs.*
+
+The question always names the cause from the `UNRANKABLE` line. The lean
+depends on it:
+
+- **Any cause but `denial`**: the lean above, **Pick A**.
+- **`cause=denial`**: the same rule would deny the same call again, so a rerun
+  would likely be spent for another invalid replay. Name the tools from
+  `tools=` and the kinds from `kinds=` in the question (for an `unrecorded`
+  value, say the record does not name it), and lean the other way:
+
+  > **→ Pick B** — a `<kinds>` denial stopped a `<tools>` call in this replay,
+  > and it would deny the rerun too; rerun only after the harness configuration
+  > changes to allow that call
+
+  Offer A all the same. The operator may have changed that configuration since.
 
 End your turn and wait. Then, for each rerun the operator chose A for, one at a
 time:

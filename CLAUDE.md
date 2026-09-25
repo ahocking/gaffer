@@ -264,16 +264,33 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   checkout by `--plugin-dir` (from the operator's session, a dispatch counts as a
   model override). Every session gets the `effort` setting **with
   `CLAUDE_CODE_EFFORT_LEVEL` unset**, and **`--permission-mode bypassPermissions`**
-  (nobody can answer a headless prompt; the clone is disposable and `guard.sh`'s
-  hard-deny tier is meant to keep applying), on a fresh `--session-id` its `STEP` line names.
-  **A tool call denied in any replay session makes the replay `invalid`**: read by
-  `record` from a top-level `toolDenialKind` in the sessions' transcripts, except
-  `interrupted` and `cancelled`. It is rerun and never counted against the model. A
-  session with no transcript leaves `denials` null, never 0. No bypass-mode session
-  has been observed yet, so neither its hard deny nor its ask-tier kind is confirmed
-  (ADR 0030 §2). The reviewer sees only a redacted view.
-  Results live in `.agents/metrics/comparisons/`, **never `.agents/loop/`**
-  (`begin-run` prunes it). `run` needs a single-use `estimate` token. The required
+  (in `-p` mode a prompt nobody can answer refuses the call or stalls the step),
+  on a fresh `--session-id` its `STEP` line names.
+- **A working directory is never a confinement.** Every harness session gets
+  `--settings` from `confine_settings`: the OS Bash sandbox, writes limited to its
+  clone or view, and `scripts/compare-confine.sh`, a harness-only `PreToolUse` hook
+  that is the file tools' only confinement. It refuses writes resolving outside the
+  root, into the root's `.claude`/`.mcp.json` config, or unresolvable (fail closed).
+  **Never register it in `hooks/hooks.json` or fold it into `guard.sh`.** Residual
+  risk (ADR 0030 §2): none of it has been observed in bypass mode; MCP tools and
+  the network are unconfined; existing settings entries can widen the sandbox; and
+  **T26 leaves open** that a session can plant a git setting or a symlink in its
+  clone that the harness's own unsandboxed steps later act on.
+- **A tool call denied in any replay session makes the replay `invalid`**: read by
+  `record` from a top-level `toolDenialKind` on a recognised tool-result record,
+  parsed as JSON, except `interrupted` and `cancelled`. It is a rerun candidate,
+  never counted against the model. A missing or unrecognised transcript leaves `denials`
+  null, never 0. `rank` reads its session the same way and refuses to record on a
+  denied or unmeasured call. **The reason reaches the operator**: `invalid_cause`
+  in the record, `cause=` on `UNRANKABLE` (plus `kinds=` and `tools=`, the denied
+  calls' tool names joined from their `tool_use_id`, `unrecorded` when the
+  transcript holds no such call — never the specific guard rule), a per-model
+  denial count in `report` that changes no figure, and `compare-models` step 6 leaning against rerunning a
+  denial until the harness configuration changes. A consumer repository whose
+  configuration keeps the guard's ask tier on will see its ask-tier hits scored as
+  denial-invalid replays.
+- The reviewer sees only a redacted view. Results live in
+  `.agents/metrics/comparisons/`, **never `.agents/loop/`** (`begin-run` prunes it). `run` needs a single-use `estimate` token. The required
   sweeps are every `scripts/test-*.sh` path the handoff names. **The proposal is
   computed, never written by a model, and never written to routing config.**
 

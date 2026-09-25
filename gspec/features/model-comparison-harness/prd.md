@@ -222,7 +222,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     by the permission system, is `invalid`: a harness fault that is rerun and
     left out of the pass rate, never counted against the varied model
 
-- [ ] **P0**: A harness session cannot write outside its own clone, and every denial is read and explained
+- [x] **P0**: A harness session cannot write outside its own clone, and every denial is read and explained
   - a write by any replay, review-view or ranking session whose target
     resolves outside that session's own clone or view is refused inside the
     session, whatever its permission mode; its working directory alone is never

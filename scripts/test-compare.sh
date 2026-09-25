@@ -1972,9 +1972,12 @@ if [ -n "${STUB_SEED:-}" ]; then
     "$sid" "$agent" "$mdl" "$mdl" "$agent" "$mdl" >> ".agents/metrics/events/$sid.jsonl"
   # STUB_EFF=<level>: the transcript turn carries that effort (unset: none).
   ef=""; [ -z "${STUB_EFF:-}" ] || ef=",\"effort\":\"$STUB_EFF\""
-  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z"%s,"message":{"id":"%s-m1","model":"%s","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
-    "$ef" "$sid" "$pin" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
+  # A denied call is asked for first: the turn carries its tool_use (id and name),
+  # as a real assistant record does.
   dk="$(printf '%s\n' ${STUB_DENY:-} | sed -n "s/^$n://p" | head -1)"
+  tc=""; [ -z "$dk" ] || tc=",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_$n\",\"name\":\"Write\",\"input\":{\"file_path\":\"x\"}}]"
+  printf '{"type":"assistant","timestamp":"2026-05-02T00:00:02Z"%s,"message":{"id":"%s-m1","model":"%s"%s,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' \
+    "$ef" "$sid" "$pin" "$tc" > "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
   if [ -n "$dk" ]; then
     printf '{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","content":"PreToolUse:Write hook error: [guard.sh]: GUARDRAIL: blocked a high-risk action","is_error":true,"tool_use_id":"toolu_%s"}]},"toolUseResult":"Error: PreToolUse:Write hook error: [guard.sh]: GUARDRAIL: blocked a high-risk action","toolDenialKind":"%s","sessionId":"%s"}\n' \
       "$n" "$dk" "$sid" >> "$STUB_SEED/p/$sid/subagents/agent-${sid}a.jsonl"
@@ -2842,19 +2845,19 @@ assert_eq "record, pass first time: tokens are the dispatch rows' sum, dollars p
 assert_eq "record: one line appended to <store>/records.jsonl" "1:$RDSTORE/records.jsonl" "$(rd_count):$(line RECORDS)"
 RDL="$(rd_rec "$RDR1")"
 assert_eq "record: the record's exact key set" \
-  "experiment replay packet model role reviewer_model effort handoff_source settings outcome outcome_reason first_verdict fix_rounds sweeps routing_check end denials denial_note tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
+  "experiment replay packet model role reviewer_model effort handoff_source settings outcome outcome_reason invalid_cause first_verdict fix_rounds sweeps routing_check end denials denial_kinds denial_tools denial_note tokens dollars_min dollars_max price price_table_date cost_source cost_note recorded_at" \
   "$(printf '%s\n' "$RDL" | rd_keys)"
 # A step log whose STEP lines name no session: the denials cannot be read, so
 # they are unmeasured (null, with the reason), never 0, and the outcome stands.
 assert_eq "record, STEP lines naming no session: denials unmeasured" "unmeasured" "$(line DENIALS)"
 assert_has "record, STEP lines naming no session: denials null, never 0, with the reason" \
-  "\"denials\":null,\"denial_note\":\"denials unmeasured: a STEP line names no session, so its transcript cannot be found\"," "$RDL"
+  "\"denials\":null,\"denial_kinds\":null,\"denial_tools\":null,\"denial_note\":\"denials unmeasured: a STEP line names no session, so its transcript cannot be found\"," "$RDL"
 assert_has "record: the experiment's settings are carried as stored" \
   "\"settings\":{\"role\": \"implementer\", \"models\": [\"opus\"], \"reviewer_model\": \"haiku\", \"effort\": \"high\", \"model_ids\": {\"haiku\": \"claude-haiku-rd\", \"opus\": \"claude-opus-rd\"}," "$RDL"
 assert_has "record: the model, reviewer model, effort setting and handoff source" \
   "\"model\":\"opus\",\"role\":\"implementer\",\"reviewer_model\":\"haiku\",\"effort\":\"high\",\"handoff_source\":\"original\"," "$RDL"
 assert_has "record, pass first time: outcome, verdict, rounds, sweeps and routing check" \
-  "\"outcome\":\"passed\",\"outcome_reason\":\"the reviewer returned pass\",\"first_verdict\":\"pass\",\"fix_rounds\":0,\"sweeps\":\"pass\",\"routing_check\":\"pass\",\"end\":\"land\"," "$RDL"
+  "\"outcome\":\"passed\",\"outcome_reason\":\"the reviewer returned pass\",\"invalid_cause\":null,\"first_verdict\":\"pass\",\"fix_rounds\":0,\"sweeps\":\"pass\",\"routing_check\":\"pass\",\"end\":\"land\"," "$RDL"
 assert_has "record, pass first time: the cost" \
   "\"tokens\":{\"input\":1000000,\"output\":200000,\"cache_creation\":200000,\"cache_read\":1000000},\"dollars_min\":11.750000,\"dollars_max\":12.500000,\"price\":\"claude-opus-rd\",\"price_table_date\":\"2026-01-02\",\"cost_source\":\"dispatches\",\"cost_note\":null," "$RDL"
 rd_run "$RDR1"
@@ -3054,17 +3057,35 @@ rdd_replay() {  # rdd_replay <session> [main-transcript-line...]: a crashed repl
 }
 rdd_unmeasured() {  # rdd_unmeasured <label> <note>: recorded, DENIALS unmeasured, null with <note>, never 0
   assert_eq "record, $1: recorded, denials unmeasured" "0:unmeasured" "$RC:$(line DENIALS)"
-  assert_has "record, $1: denials null, never 0, with the reason" "\"denials\":null,\"denial_note\":\"denials unmeasured: $2\"," "$RDL"
+  assert_has "record, $1: denials null, never 0, with the reason" "\"denials\":null,\"denial_kinds\":null,\"denial_tools\":null,\"denial_note\":\"denials unmeasured: $2\"," "$RDL"
 }
 
 # The guard case first: a recognised tool result and no denial read 0, measured,
 # so the checks below do not simply read every transcript as unmeasured.
 rdd_replay aaaaaaaa-0000-4000-8000-000000000001 "$RDTR_OK"
 assert_eq "record, a tool result in the recognised form and no denial: 0 denials, measured" "0:0" "$RC:$(line DENIALS)"
-assert_has "record, a tool result in the recognised form and no denial: denials 0, no note" "\"denials\":0,\"denial_note\":null," "$RDL"
+assert_has "record, a tool result in the recognised form and no denial: denials 0, no note" "\"denials\":0,\"denial_kinds\":[],\"denial_tools\":[],\"denial_note\":null," "$RDL"
 # A denial in the recognised form in the session's own transcript is counted.
 rdd_replay aaaaaaaa-0000-4000-8000-000000000002 "$RDTR_OK" "$RDTR_DENY"
 assert_eq "record, a recognised denial in the session's own transcript: counted" "0:1" "$RC:$(line DENIALS)"
+# The denied call's tool, joined from the tool result's tool_use_id to the
+# assistant record that asked for it. With no such record the transcript does
+# not name the call: `unrecorded`, the denial still counted, never dropped.
+assert_has "record, a denial whose call the transcript does not hold: its tool unrecorded" \
+  "\"denials\":1,\"denial_kinds\":[\"permission-rule\"],\"denial_tools\":[\"unrecorded\"],\"denial_note\":null," "$RDL"
+RDTR_CALL='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"x"},{"type":"tool_use","id":"toolu_2","name":"Write","input":{"file_path":"/x"}}]},"sessionId":"s"}'
+rdd_replay aaaaaaaa-0000-4000-8000-000000000012 "$RDTR_OK" "$RDTR_CALL" "$RDTR_DENY"
+assert_has "record, a denial whose call the transcript holds: the tool it asked for named" \
+  "\"denials\":1,\"denial_kinds\":[\"permission-rule\"],\"denial_tools\":[\"Write\"],\"denial_note\":null," "$RDL"
+# Only an assistant record asks for a call: the same id and name on a user record
+# names nothing.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000013 "$(printf '%s\n' "$RDTR_CALL" | sed 's/"type":"assistant"/"type":"user"/')" "$RDTR_DENY"
+assert_has "record, the call's id and name on a record that is not an assistant's: the tool unrecorded" \
+  "\"denials\":1,\"denial_kinds\":[\"permission-rule\"],\"denial_tools\":[\"unrecorded\"]," "$RDL"
+# A tool name is transcript text: reduced to one token.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000014 "$(printf '%s\n' "$RDTR_CALL" | sed 's/"name":"Write"/"name":"a b,c$(x)"/')" "$RDTR_DENY"
+assert_has "record, a denied call's tool name with unsafe characters: reduced, one token" \
+  "\"denial_tools\":[\"a?b?c??x?\"]," "$RDL"
 
 # A named session with no transcript under the projects directory.
 rdd_replay aaaaaaaa-0000-4000-8000-000000000003
@@ -3295,11 +3316,13 @@ assert_eq "run, an interrupted call and no denial: the replay is recorded passed
 RUND_SREC="$(awk -v r="\"replay\":\"${RUND_S%% *}\"" 'index($0, r)' "$RUNSTORE/records.jsonl")"
 RUND_FREC="$(awk -v r="\"replay\":\"${RUND_F%% *}\"" 'index($0, r)' "$RUNSTORE/records.jsonl")"
 assert_has "run, a denied call: the record counts it and names its kind as the reason" \
-  "\"outcome\":\"invalid\",\"outcome_reason\":\"1 tool call(s) were denied in the replay's sessions (permission-rule): a harness fault, not the model's\"," "$RUND_SREC"
+  "\"outcome\":\"invalid\",\"outcome_reason\":\"1 tool call(s) were denied in the replay's sessions (permission-rule; tools: Write): a harness fault, not the model's\",\"invalid_cause\":\"denial\"," "$RUND_SREC"
 assert_has "run, a denied call: the routing check passed, so the denial alone made it invalid" \
-  "\"routing_check\":\"pass\",\"end\":\"land\",\"denials\":1,\"denial_note\":null," "$RUND_SREC"
-assert_has "run, no denial: every session's transcript read, 0 denials measured" \
-  "\"denials\":0,\"denial_note\":null," "$RUND_FREC"
+  "\"routing_check\":\"pass\",\"end\":\"land\",\"denials\":1,\"denial_kinds\":[\"permission-rule\"],\"denial_tools\":[\"Write\"],\"denial_note\":null," "$RUND_SREC"
+assert_has "run, a passed replay: no invalid cause stored" \
+  "\"invalid_cause\":null,\"first_verdict\"" "$RUND_FREC"
+assert_has "run, no denial: every session's transcript read, 0 denials measured, no kind" \
+  "\"denials\":0,\"denial_kinds\":[],\"denial_tools\":[],\"denial_note\":null," "$RUND_FREC"
 
 printf '\n== rank-prepare: the blinded ranking clone ==\n'
 # Two packets, three models, a reviewer outside the compared set. Each model's
@@ -3364,9 +3387,9 @@ for p in rk-t1 rk-t2; do
 done
 assert_ne "rank-prepare fixture: all six replays prepared" "" \
   "$RKR_t1_fable$RKR_t1_opus$RKR_t1_sonnet$RKR_t2_fable$RKR_t2_opus$RKR_t2_sonnet"
-rk_rec() {  # rk_rec <packet> <model> <replay> <outcome>: one record line, as `record` names its fields
-  printf '{"experiment":"%s","replay":"%s","packet":"%s","model":"%s","role":"implementer","outcome":"%s"}\n' \
-    "$RKEXP" "$3" "$1" "$2" "$4" >> "$RKSTORE/records.jsonl"
+rk_rec() {  # rk_rec <packet> <model> <replay> <outcome> [<more fields>]: one record line, as `record` names its fields
+  printf '{"experiment":"%s","replay":"%s","packet":"%s","model":"%s","role":"implementer","outcome":"%s"%s}\n' \
+    "$RKEXP" "$3" "$1" "$2" "$4" "${5:-}" >> "$RKSTORE/records.jsonl"
 }
 rkp() {  # rkp <packet>: OUT/ERR/RC for `compare.sh rank-prepare`
   OUT="$(ORCH_COMPARE_STORE="$RKSTORE" ORCH_COMPARE_SCRATCH="$RKSCRATCH" "$COMPARE" rank-prepare "$RKEXP" "$1" 2>"$WORK/err")"; RC=$?
@@ -3391,14 +3414,29 @@ assert_eq "rank-prepare, a model with no record: no clone built, no label map wr
 
 # Refused on an invalid replay: sonnet's latest record is invalid, and so is a
 # later opus record that follows its escalated one (the latest record rules).
-rk_rec rk-t1 sonnet "$RKR_t1_sonnet" invalid
-rk_rec rk-t1 opus "$RKR_t1_opus" invalid
+# Each is named with its record's invalid cause; a denial with the denied calls'
+# kinds as well.
+rk_rec rk-t1 sonnet "$RKR_t1_sonnet" invalid ',"invalid_cause":"denial","denials":2,"denial_kinds":["permission-rule","user-rejected"],"denial_tools":["Bash","Write"]'
+rk_rec rk-t1 opus "$RKR_t1_opus" invalid ',"invalid_cause":"timed-out","denials":0,"denial_kinds":[]'
 rkp rk-t1
 assert_eq "rank-prepare, invalid replays: exit 1, nothing on stdout" "1:" "$RC:$OUT"
-assert_has "rank-prepare, an invalid replay: named with its replay" \
-  "UNRANKABLE packet=rk-t1 model=sonnet reason=invalid replay=$RKR_t1_sonnet" "$ERR"
-assert_has "rank-prepare, an invalid record after an escalated one: the latest is read, and named" \
-  "UNRANKABLE packet=rk-t1 model=opus reason=invalid replay=$RKR_t1_opus" "$ERR"
+assert_has "rank-prepare, a denial-invalid replay: named with its cause, the denied kinds and its replay" \
+  "UNRANKABLE packet=rk-t1 model=sonnet reason=invalid cause=denial kinds=permission-rule,user-rejected tools=Bash,Write replay=$RKR_t1_sonnet" "$ERR"
+assert_has "rank-prepare, an invalid record after an escalated one: the latest is read, and named with its cause" \
+  "UNRANKABLE packet=rk-t1 model=opus reason=invalid cause=timed-out replay=$RKR_t1_opus" "$ERR"
+# A record that stores no cause (written before the field existed) reads
+# `unrecorded`, never a guessed cause; a denial storing no kind names none, and
+# a kind is reduced to the characters a line can carry.
+rk_rec rk-t2 fable "$RKR_t2_fable" invalid
+rk_rec rk-t2 opus "$RKR_t2_opus" invalid ',"invalid_cause":"denial"'
+rk_rec rk-t2 sonnet "$RKR_t2_sonnet" invalid ',"invalid_cause":"denial","denial_kinds":["a b$(x)"],"denial_tools":["x;y,z"]'
+rkp rk-t2
+assert_has "rank-prepare, an invalid record storing no cause: unrecorded, never guessed" \
+  "UNRANKABLE packet=rk-t2 model=fable reason=invalid cause=unrecorded replay=$RKR_t2_fable" "$ERR"
+assert_has "rank-prepare, a denial record storing no kinds: the kinds unrecorded" \
+  "UNRANKABLE packet=rk-t2 model=opus reason=invalid cause=denial kinds=unrecorded tools=unrecorded replay=$RKR_t2_opus" "$ERR"
+assert_has "rank-prepare, a denied kind with unsafe characters: reduced, one token" \
+  "UNRANKABLE packet=rk-t2 model=sonnet reason=invalid cause=denial kinds=a?b??x? tools=x?y?z replay=$RKR_t2_sonnet" "$ERR"
 assert_has "rank-prepare, invalid replays: the refusal says to re-run them" "compare.sh run --rerun" "$ERR"
 assert_eq "rank-prepare, invalid replays: no clone built, no label map written" "$RK_N0:0" "$(rk_nclones):$(rk_nlabels)"
 
@@ -3543,9 +3581,9 @@ assert_has "rank, a ranking session at another effort: the failing check is name
 # whose reviewer had a tool call denied (in the shape a real transcript records
 # one): refused, naming the denial, as `record` reads a replay's.
 RK_DENY=1:permission-rule rk_rank valid
-rk_refused "a ranking session with a denied call" "REFUSED rule=denied count=1 kinds=permission-rule"
+rk_refused "a ranking session with a denied call" "REFUSED rule=denied count=1 kinds=permission-rule tools=Write"
 assert_has "rank, a ranking session with a denied call: the denial is named as a harness fault" \
-  "session had 1 tool call(s) denied (permission-rule)" "$ERR"
+  "session had 1 tool call(s) denied (permission-rule; tools: Write)" "$ERR"
 # A call a person interrupted is no denial: the valid ranking is not refused for it.
 RK_DENY=1:interrupted rk_rank valid
 assert_eq "rank, an interrupted call and no denial: recorded" "0:$((RK_NB + 1))" "$RC:$(rk_nranks)"
@@ -3654,9 +3692,9 @@ cat > "$RPSTORE/$RPEXP/selection.json" <<EOF
   "dropped": []
 }
 EOF
-rp_rec() {  # rp_rec <experiment> <packet> <model> <outcome> <fix> <tokens-json|null> <dmin|null> <dmax|null>
-  printf '{"experiment":"%s","replay":"r-%s-%s","packet":"%s","model":"%s","role":"implementer","reviewer_model":"haiku","effort":"high","handoff_source":"original","settings":{"role":"implementer"},"outcome":"%s","outcome_reason":"x","first_verdict":null,"fix_rounds":%s,"sweeps":null,"routing_check":"pass","end":"land","tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":null,"price_table_date":"2026-01-01","cost_source":"dispatches","cost_note":null,"recorded_at":"2026-01-01T00:00:00Z"}\n' \
-    "$1" "$2" "$3" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >> "$RPSTORE/records.jsonl"
+rp_rec() {  # rp_rec <experiment> <packet> <model> <outcome> <fix> <tokens-json|null> <dmin|null> <dmax|null> [<more fields>]
+  printf '{"experiment":"%s","replay":"r-%s-%s","packet":"%s","model":"%s","role":"implementer","reviewer_model":"haiku","effort":"high","handoff_source":"original","settings":{"role":"implementer"},"outcome":"%s","outcome_reason":"x","first_verdict":null,"fix_rounds":%s,"sweeps":null,"routing_check":"pass","end":"land","tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":null,"price_table_date":"2026-01-01","cost_source":"dispatches","cost_note":null,"recorded_at":"2026-01-01T00:00:00Z"%s}\n' \
+    "$1" "$2" "$3" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-}" >> "$RPSTORE/records.jsonl"
 }
 rp_tok() { printf '{"input":%s,"output":%s,"cache_creation":0,"cache_read":0}' "$1" "$2"; }
 rp_rec "$RPEXP" rp-c1 fable passed 0 "$(rp_tok 100 100)" 0.10 0.20
@@ -3728,6 +3766,44 @@ assert_eq "report: a ranking whose label map is gone leaves its packet unranked"
 assert_eq "report: ... and counted" "> ⚠️ 3 of 3 packet(s) unranked" \
   "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Ranking\*\*$/{n;p;}')"
 mv "$RPSTORE/labels.saved" "$RPSTORE/labels.jsonl"
+# Denial-invalid replays, counted per model beside the cells. The fixture's
+# invalid records store no cause, so none is a denial, and no count line prints.
+rpt
+assert_eq "report, no denial-invalid replay: no count line" "" \
+  "$(printf '%s\n' "$OUT" | grep -e 'invalid for a denial')"
+# A copy of the store with causes: opus's latest rp-c2 and rp-p1 records are
+# denial-invalid (three kinds between them, one shared), sonnet's rp-p1 is one
+# storing no kinds, fable's latest rp-c2 is invalid for a crash (not a denial),
+# and sonnet's rp-c1 denial is superseded by its rerun, so it is not counted.
+RPSTORE_BASE="$RPSTORE"
+RPSTORE="$WORK/rpstore-denial"
+cp -R "$RPSTORE_BASE" "$RPSTORE"
+awk '!/"replay":"r-rp-c1-sonnet"/' "$RPSTORE_BASE/records.jsonl" > "$RPSTORE/records.jsonl"
+rp_rec "$RPEXP" rp-c1 sonnet invalid 0 null null null ',"invalid_cause":"denial","denial_kinds":["permission-rule"]'
+rp_rec "$RPEXP" rp-c1 sonnet passed 1 null null null ',"invalid_cause":null,"denial_kinds":[]'
+rp_rec "$RPEXP" rp-c2 opus invalid 0 null null null ',"invalid_cause":"denial","denial_kinds":["permission-rule"],"denial_tools":["Bash"]'
+rp_rec "$RPEXP" rp-p1 opus invalid 0 null null null ',"invalid_cause":"denial","denial_kinds":["user-rejected","permission-rule"],"denial_tools":["Write","Bash","unrecorded"]'
+rp_rec "$RPEXP" rp-p1 sonnet invalid 0 null null null ',"invalid_cause":"denial"'
+rp_rec "$RPEXP" rp-c2 fable invalid 0 null null null ',"invalid_cause":"crashed","denial_kinds":[]'
+RP_BASE_OUT="$(ORCH_COMPARE_STORE="$RPSTORE_BASE" "$COMPARE" report "$RPEXP" 2>/dev/null)"
+rpt
+assert_eq "report, denial-invalid replays: exit 0" "0" "$RC"
+assert_eq "report, denial-invalid replays: the count per model, over its latest records, with the kinds denied" \
+  "> ⚠️ **opus** — 2 replay(s) invalid for a denial (denied: permission-rule, user-rejected; tools: Bash, Write, unrecorded), excluded from its cells as a harness fault" \
+  "$(printf '%s\n' "$OUT" | grep -e '^> ⚠️ \*\*opus\*\* — ')"
+assert_eq "report, a denial record storing no kinds: counted, its kinds unrecorded" \
+  "> ⚠️ **sonnet** — 1 replay(s) invalid for a denial (denied: kinds unrecorded for 1; tools unrecorded for 1), excluded from its cells as a harness fault" \
+  "$(printf '%s\n' "$OUT" | grep -e '^> ⚠️ \*\*sonnet\*\* — ')"
+assert_eq "report, an invalid replay for another cause: no denial count line for its model" "" \
+  "$(printf '%s\n' "$OUT" | grep -e '^> ⚠️ \*\*fable\*\* — ')"
+assert_eq "report, denial-invalid replays: the count lines follow the cells, before the Packets heading" \
+  "opus|sonnet|**Packets**" \
+  "$(printf '%s\n' "$OUT" | sed -n '/^\*\*Cells\*\*$/,/^\*\*Packets\*\*$/p' | sed -n 's/^> ⚠️ \*\*\([a-z]*\)\*\* — .*/\1/p; /^\*\*Packets\*\*$/p' | paste -sd'|' -)"
+assert_eq "report, denial-invalid replays: the opus code cell's denominator is unchanged" \
+  "$(printf '%s\n' "$RP_BASE_OUT" | awk 'index($0, "**opus, code** — ") { print; exit }')" "$(cell opus code)"
+assert_eq "report, denial-invalid replays: the sonnet code cell is unchanged (the superseded denial not read)" \
+  "$(printf '%s\n' "$RP_BASE_OUT" | awk 'index($0, "**sonnet, code** — ") { print; exit }')" "$(cell sonnet code)"
+RPSTORE="$RPSTORE_BASE"
 # Refusals: no stored selection, an unreadable records file, a malformed id.
 rpt bbbbbbbbbbbb
 assert_eq "report, no stored selection: exit 1, nothing on stdout" "1:" "$RC:$OUT"

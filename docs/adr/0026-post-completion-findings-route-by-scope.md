@@ -524,3 +524,37 @@ a note left only in that file is gone within two runs. Nothing new is built for 
   `scripts/test-report-conventions.sh` (the two sections pinning the deleted clause,
   replaced by one pinning the review, the relay and the per-note finding), and
   [ADR 0028](0028-loop-driver-mode.md)'s matching amendment on the routing log's shape.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's whole-branch review reasons
+
+Moved out of `skills/run-loop/SKILL.md` `## 4. Termination` by `skill-prompt-trim`.
+The amendment above keeps the whole-branch review; the skill keeps each of its rules
+with at most a one-clause reason, and the fuller wording is recorded here.
+
+- **Why the review's diff is bounded to this run's own work.** The skill keeps "since
+  a branch-vs-base diff re-presents earlier runs' already-reviewed commits". It used to
+  read, the measurement being the reason for the rule:
+
+  > A long-lived integration branch already carries earlier runs' already-reviewed
+  > commits, so a plain branch-vs-base diff re-presents all of them: measured on the
+  > run that found this defect, branch-vs-base was 211 files and about 30,000
+  > insertions, against only the files that run actually landed.
+
+- **When the branch-vs-base fallback applies.** The skill keeps "whether the digest
+  names no packet or every packet ended failed, rolled-back, blocked or interrupted;
+  such a run has no narrower boundary to offer". It used to read:
+
+  > This includes, but is not limited to, a digest that names no packet at all — it
+  > also covers a run whose packets all ended failed, rolled-back, blocked or
+  > interrupted, which has a non-empty digest and still no such commit. Either way,
+  > there is no run-owned trailer to anchor a parent on, so the base comparison is the
+  > only diff available — it may re-present already-reviewed work from earlier runs,
+  > but a run that landed nothing traceable has no narrower boundary to offer instead.
+
+- **Why each note becomes a finding.** The skill keeps "since the findings index, not
+  the review file, is what the next run can see". It used to read:
+
+  > so the note survives this run: the findings index is the only thing §2's
+  > fresh-run write carries forward, and `begin-run` prunes the run directory holding
+  > the review file after two runs, so a note left only in that file is a note the
+  > next run cannot see.

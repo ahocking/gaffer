@@ -791,3 +791,25 @@ with at most a one-clause reason; the fuller wording is recorded here.
 
   > a multi-member `MEMBERS` is never `design-heavy` by construction, so this can only
   > land on `mechanical`, `integration`, or `docs`.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and driver-claim reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the cursor advances past every member, wherever each sits.** The skill keeps
+  "never assume the members are a consecutive prefix of `pending`, whose order is not
+  the plan's". It used to read:
+
+  > the same rule §3.5's `discard-advance` uses, and for the same reason: `group`
+  > forms `$MEMBERS` from the plan in plan order, but `pending` is the loop's own
+  > chosen order, so never assume the members are a consecutive prefix of it.
+
+- **Why every `driver_*` key is carried.** The skill keeps "the driver claim (ADR 0020
+  D5), which `claim-driver` makes once at §2 and never re-makes". It used to read:
+
+  > Together they are the driver claim (ADR 0020 D5), what tells a crashed run apart
+  > from another session driving right now; `claim-driver` runs once at §2, so a key
+  > dropped here is not re-made, and `driver-status` reads the run as never claimed
+  > from that point on.

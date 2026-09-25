@@ -688,14 +688,10 @@ nothing. Read the result exactly as §4 states it for the stop report.
    ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion \
      --tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore index
    ```
-   It runs `check-task` for each member in plan order, then
-   `complete-capabilities` once for the landed feature (a bundle is always
-   one feature; `--feature`, from §3.3's handoff still in this session's
-   context, is the fallback slug), reads both commands' exit codes, and
-   restores a failed capability call's PRD itself.
+   It flips each member's task in plan order, then the landed feature's
+   capabilities, and restores a failed capability call's PRD itself.
    - **Stage every `STAGE=` path** alongside the packet's own files, in the
-     same commit. No `STAGE=` line stages nothing from `gspec/` — the
-     single-member, non-gspec case, unchanged.
+     same commit. No `STAGE=` line means nothing from `gspec/` is staged.
    - **`TASK_DRIFT=<member>\t<reason>`** — the plan no longer names this
      member's task id: genuine **drift**. Commit as normal, but say so in
      the report, naming the member; never a reason to halt, and never a
@@ -707,10 +703,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
    - **`HALT=<member>\t<reason>`** (the call exits 1) — malformed id: a real
      usage error. Treat the whole bundle as ending together —
      `runstate.sh record-outcome "$MEMBERS" failed` — then stop and report;
-     do not commit (no `STAGE=` line is printed, and a member flipped
-     before the halt stays an uncommitted edit on the branch, so no part of
-     the bundle lands on its own) — and run `runstate.sh driver-mode exit`
-     immediately after that stop report.
+     do not commit, so no part of the bundle lands on its own — and run
+     `runstate.sh driver-mode exit` immediately after that stop report.
    - **`HELD=<slug>\t<reason>`** — a held feature stages nothing, and the
      bundle commits as normal — neither a failure nor a flip.
    - **`CAPABILITIES=<slug>\tfailed`** — report it on this packet's own
@@ -720,12 +714,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
      bookkeeping on top of tasks that already landed, never a condition of
      landing them. The call has already restored that PRD (`RESTORED=`,
      the path the handoff's `PRD=` line names) **from the index, not from
-     `HEAD`**: the index already holds the packet's own staged files, and
-     the PRD may be one of them, so the index form undoes only this failed
-     call's unstaged write where `HEAD` would discard the packet's own
-     staged PRD edit too. §1 and §4 restore from `HEAD` for the mirror of
-     this reason: their scan runs outside any packet and stages the PRD
-     itself, so there the index entry is the thing that has to go.
+     `HEAD`**, so the packet's own staged PRD edit survives.
    A single-task packet that completes no capability reads exactly as it
    does today: nothing staged, nothing to report.
 
@@ -733,12 +722,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
    self-label — a factual record, not a grade):
    - `[orch packet:<id>]` — one per member that landed, each on its own
      line, each naming that member's own id, in the same plan order as the
-     `--tasks` list above, `<cursor>` always first. The first line is
-     still the write-ahead trailer a resume *adopts* on a crash between this
-     commit and the run-state write (ADR 0005) — `orphan_packet_tag` reads
-     only the FIRST `[orch packet:]` trailer on a commit, so `<cursor>`
-     leading the block is load-bearing, not cosmetic. A single-member packet
-     prints exactly one such line, byte-identical to today.
+     `--tasks` list above, `<cursor>` always first, because a resume adopts
+     by the FIRST `[orch packet:]` trailer on a commit alone (ADR 0005). A
+     single-member packet prints exactly one such line.
    - `[orch tier:mechanical|integration|design-heavy|docs]` — the tier §3.2
      decided, for the bundle as a whole. If the work turned out to be a
      different tier, record what it *actually* was.
@@ -746,12 +732,11 @@ nothing. Read the result exactly as §4 states it for the stop report.
      inline in this loop.
 
    Then update run-state atomically (`runstate.sh write`): `last_green_commit`
-   = the new SHA, `cursor` advances **past every member of `$MEMBERS`** —
-   the same rule §3.5's `discard-advance` uses, and for the same reason:
-   `group` forms `$MEMBERS` from the plan in plan order, but `pending` is
-   the loop's own chosen order, so never assume the members are a
-   consecutive prefix of it. **Remove every member of `$MEMBERS` from
-   `pending` wherever it sits** (a member absent from `pending` is simply
+   = the new SHA, `cursor` advances **past every member of `$MEMBERS`**, as
+   §3.5's `discard-advance` does — never assume the members are a
+   consecutive prefix of `pending`, whose order is not the plan's. **Remove
+   every member of `$MEMBERS` from `pending` wherever it sits** (a member
+   absent from `pending` is simply
    not there to remove), then set `cursor` to whatever entry remains first
    in `pending` (or none, if nothing does) — call the packet you just
    committed `<landed>` from here on, meaning `$MEMBERS` as a whole.
@@ -760,36 +745,27 @@ nothing. Read the result exactly as §4 states it for the stop report.
    because you carry it into the new content.** None of them is this close's
    own output, so one left out is not omitted — it is gone. The whole list:
    - `schema` — the version line the reader keys off; `write` refuses content
-     without it, so dropping this one fails loudly rather than quietly.
-   - `run_id` — the run's own identity, and the most expensive of these to
-     lose, because nothing fails at the write itself. Afterwards
-     `run-digest` refuses outright (*run-state has no run_id (begin-run has
-     not been called)*), so no shape-A, shape-B or `run-tally` figure can be
-     rendered for the rest of the run; and the next `begin-run` — this
-     session's or a resuming one's — sees no id, mints a second one and
-     creates a second run directory, orphaning this run's handoff files,
-     result files and routing log.
+     without it.
+   - `run_id` — the run's own identity; losing it fails nothing at the
+     write, but `run-digest` then refuses (*run-state has no run_id
+     (begin-run has not been called)*) and the next `begin-run` mints a
+     second id and creates a second run directory.
    - `branch` — the feature branch this run lives on.
    - every `driver_*` key the file already carries: `driver_host`,
      `driver_since`, `driver_heartbeat`, and `driver_pid` when the claim
-     recorded one. Together they are the driver claim (ADR 0020 D5), what
-     tells a crashed run apart from another session driving right now;
-     `claim-driver` runs once at §2, so a key dropped here is not re-made,
-     and `driver-status` reads the run as never claimed from that point on.
-   - `status: running` — the crash signal. Only a pause (→ `paused` /
-     `blocked`) and completion (→ `done`) clear it, and this close is
-     neither.
+     recorded one. Together they are the driver claim (ADR 0020 D5), which
+     `claim-driver` makes once at §2 and never re-makes.
+   - `status: running` — the crash signal, which only a pause (→ `paused` /
+     `blocked`) or completion (→ `done`) clears; this close is neither.
    - `pending_questions` — every entry, unchanged.
    - the `findings:` block — the whole index, verbatim. An omitted entry is
-     unlinked, not edited out: the body stays on disk with nothing left
-     pointing at it.
+     unlinked, not edited out.
    **Take every one of them from the on-disk `.agents/run-state.yaml` you are
    replacing, copied line-for-line** — the same source rule §2's fresh-run
-   write states, and for the same reason: the quoting the file carries is the
-   quoting the new file carries, `runstate.sh findings` is not a source for
-   the index (its projection strips that quoting, ADR 0027), and a value
-   restated from memory of an earlier read is a value this write can silently
-   change. What this close itself produces is exactly `last_green_commit`,
+   write states, so the file's quoting survives, and
+   `runstate.sh findings` is not a source for the index (its projection
+   strips that quoting, ADR 0027). What this close itself produces is
+   exactly `last_green_commit`,
    `backlog` (the `cursor` and `pending` above) and `note` (below), and
    `updated_at` is the writer's own stamp — never a key you carry.
 
@@ -822,10 +798,6 @@ nothing. Read the result exactly as §4 states it for the stop report.
      FINISHED="${FINISHED:+${FINISHED},}$MEMBERS"
      runstate.sh findings .agents/run-state.yaml --stale --finished "$FINISHED"
      ```
-     (`$MEMBERS` in place of a bare `<landed>` — `task-status`/`findings
-     --finished` already accept a comma list, so a finding naming any member
-     the bundle just landed, not only the cursor, is caught here too; a
-     single-member packet is unaffected, `$MEMBERS` being `<cursor>` alone.)
      For each `STALE=yes` line naming a member of `<landed>`: file a backlog
      task first if it is really "this should be built/fixed" and not already
      filed — capture precedes drop (ADR 0024), and "this should be
@@ -846,21 +818,18 @@ nothing. Read the result exactly as §4 states it for the stop report.
      timestamp captured at §3.3): take `<landed>`'s own `packet` line
      (outcome — ✅, or 🔁 instead when a `decision` line for this same id
      reads `retry`), but render its title from **every** member of
-     `$MEMBERS`, not `run-digest`'s own `<title>` field — that field is only
-     the cursor's `TEXT=` line (§3.3). `$MEMBERS` and the
-     `MEMBER=<id>\t<title>` lines `group` printed in §3.2 are still in this
-     session's own context, so read titles from there directly; §4 below
-     covers naming a landed bundle from a session that no longer has them.
-     One ⚠️ line per `SWEPT=`/`OUTCOME=` pair in `$SWEEP` (§3.2,
+     `$MEMBERS`, not `run-digest`'s own `<title>` field, which is only the
+     cursor's `TEXT=` line (§3.3). Read the titles from the
+     `MEMBER=<id>\t<title>` lines `group` printed in §3.2, still in this
+     session's own context; §4 below covers a session that no longer has
+     them. One ⚠️ line per `SWEPT=`/`OUTCOME=` pair in `$SWEEP` (§3.2,
      above) reading *swept as interrupted* or *swept as abandoned* per that
-     pair's own `OUTCOME` — `run-digest`'s `packet` lines are never filtered
-     by `--since`, so this sweep's own record of what it just closed is the
-     only thing marking these as new, not already carried by an earlier
-     report — plus one 🔀 line per `decision` line `<landed>` carries other
-     than `retry` (already the 🔁 above, never reported twice), plus one
-     ⚠️ line naming the feature for each `CAPABILITIES=<slug>\tfailed`
-     line the `record-completion` call above printed — the packet still
-     landed, so this is an alert alongside the ✅/🔁 line, never a reason to
+     pair's own `OUTCOME`, since that sweep's record is the only thing
+     marking these as new — plus one 🔀 line per `decision` line `<landed>`
+     carries other than `retry` (already the 🔁 above, never reported
+     twice), plus one ⚠️ line naming the feature for each
+     `CAPABILITIES=<slug>\tfailed` line the `record-completion` call above
+     printed, as an alert alongside the ✅/🔁 line, never a reason to
      withhold it. Never write this from the dispatched agent's or
      reviewer's own words — the digest's fields are what render, not your
      memory of their status lines.
@@ -879,10 +848,10 @@ nothing. Read the result exactly as §4 states it for the stop report.
    the outcomes above — the packet's start stays open for a later session.
 
    **Otherwise, check the periodic pause at the same boundary:** `runstate.sh
-   periodic-pause` prints `ENDED=<n>`, `EVERY=<n|off>`, `DUE=yes|no`. `EVERY=off`
-   (missing/invalid/0 in `.agents/project-overrides.yaml`, and the default) means
-   `DUE` is always `no` — a periodic pause must never fire on its own, since it
-   halts an unattended run until a human resumes it. On `DUE=yes`, capture the
+   periodic-pause` prints `ENDED=<n>`, `EVERY=<n|off>`, `DUE=yes|no`, with
+   `EVERY=` read from `pause_every_packets` in `.agents/project-overrides.yaml`.
+   `EVERY=off` means `DUE` is always `no`, so a periodic pause never fires on
+   its own. On `DUE=yes`, capture the
    setting itself before you interpolate it — `EVERY=$(runstate.sh
    periodic-pause | grep '^EVERY=' | cut -d= -f2-)` — then request one yourself,
    naming the setting in the reason so the stop report can state it plainly:
@@ -891,8 +860,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
    above.
 
    **With neither pause taking the run, check the periodic review at this
-   same boundary** (`agents/loop-driver.md` §The periodic review states it in
-   the same words). Between packets — never while one is open — run
+   same boundary** (`agents/loop-driver.md` §The periodic review carries the
+   same rule). Between packets — never while one is open — run
    `runstate.sh review-due`. It prints `NON_GREEN=`, `BEGINNINGS=`,
    `EVERY_NON_GREEN=`, `EVERY_BEGINNINGS=` (each a number or the word
    `unmeasured`) and `DUE=yes|no`. On `DUE=no` nothing is dispatched and
@@ -908,12 +877,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
    no counts. It picks its own result path inside the run directory. Read
    its one status line (its status word is `reviewed`; `check-status` it as
    you do every line) and route nothing on it — `route` has no token for a
-   review — and record nothing yourself: the `record-review` record that
-   completes the review and resets `review-due`'s count is already on disk
-   when the line returns, and a review that returned no line left no record,
-   so `review-due` runs it again at the next boundary. On a second
-   `check-status` refusal, carry on to the next packet for the same reason —
-   the record, not the line, decides whether the review counted. Then carry
+   review — and record nothing yourself, since the review writes its own
+   `record-review` record. On a second `check-status` refusal, carry on to the
+   next packet, for the same reason. Then carry
    both counts into the next report you emit, shape A at the next landing or
    shape B if the run stops first: `NON_GREEN=` and `BEGINNINGS=` exactly as
    `review-due` printed them, with `unmeasured` rendered as the word
@@ -928,29 +894,21 @@ nothing. Read the result exactly as §4 states it for the stop report.
   `model`; empty → omit `model`, and its frontmatter applies), then dispatch
   **one broad whole-branch review** (the `reviewer`) over **this run's own
   integrated work — not everything the branch has accumulated since its
-  base.** A long-lived integration branch already carries earlier runs'
-  already-reviewed commits, so a plain branch-vs-base diff re-presents all
-  of them: measured on the run that found this defect, branch-vs-base was
-  211 files and about 30,000 insertions, against only the files that run
-  actually landed. Bound the diff to the packet ids `runstate.sh run-digest
+  base**, since a branch-vs-base diff re-presents earlier runs'
+  already-reviewed commits. Bound the diff to the packet ids `runstate.sh run-digest
   .agents/run-state.yaml` already prints (no `--since` — every packet this
   run began, landed or not) and the `[orch packet:<id>]` trailers those ids
   carry: walk the branch's commits oldest-to-newest (`git log <base>..HEAD
   --reverse`) to the first one whose trailer names an id from that list,
   and diff from **that commit's own parent** to `HEAD` — `git diff
   <parent>..HEAD`, or that same parent against the integration branch's
-  `HEAD`. **Fall back to the old branch-vs-base diff —
+  `HEAD`. **Fall back to the branch-vs-base diff —
   `git diff <base>...HEAD`, or the integration branch vs its base
   — only when the trailer walk finds nothing to anchor
   on: no commit on `<base>..HEAD` carries a trailer naming any id from
-  that digest list.** This includes, but is not limited to, a digest that
-  names no packet at all — it also covers a run whose packets all ended
-  failed, rolled-back, blocked or interrupted, which has a non-empty
-  digest and still no such commit. Either way, there is no run-owned
-  trailer to anchor a parent on, so the base comparison is the only diff
-  available — it may re-present already-reviewed work from earlier runs,
-  but a run that landed nothing traceable has no narrower boundary to
-  offer instead.
+  that digest list**, whether the digest names no packet or every packet
+  ended failed, rolled-back, blocked or interrupted; such a run has no
+  narrower boundary to offer.
   There is no handoff file for this one — hand it the diff directly, plus
   `.agents/run-state.yaml`'s path and a result path of your choosing under
   the run directory (any path works; this review is not packet-scoped). It
@@ -965,21 +923,17 @@ nothing. Read the result exactly as §4 states it for the stop report.
   agent to route them — the end-of-run routing step that once did was
   retired (ADR 0026 amendment 2026-09-22).
 
-  **Record one finding per note that status line reports**, so the note
-  survives this run: the findings index is the only thing §2's fresh-run
-  write carries forward, and `begin-run` prunes the run directory holding
-  the review file after two runs, so a note left only in that file is a
-  note the next run cannot see. For each note the line reports:
+  **Record one finding per note that status line reports**, since the
+  findings index, not the review file, is what the next run can see. For
+  each note the line reports:
   ```
   runstate.sh add-finding .agents/run-state.yaml <id> '<summary>' --packets <packet-id[,id...]>
   ```
   The `<summary>` is **what that status line says about that note and
   nothing more** — never a finding you invent about a file you have not
   read. `--packets` is mandatory, so each finding names the packet or
-  packets the note is about; at termination those are landed packets, which
-  is truthful, and expiry stays the positive-evidence rule (ADR 0024)
-  already governing every finding — this step adds no expiry behaviour of
-  its own. The id is `[a-zA-Z0-9._-]`, and `add-finding` refuses a
+  packets the note is about, and expiry stays the positive-evidence rule
+  (ADR 0024), with no expiry behaviour of this step's own. The id is `[a-zA-Z0-9._-]`, and `add-finding` refuses a
   duplicate rather than overwriting, so suffix a number when the id is
   already in the index. Nothing here files a feature, appends a task, or
   writes into `gspec/`. **A review that reports no notes records nothing at
@@ -1001,34 +955,27 @@ nothing. Read the result exactly as §4 states it for the stop report.
   outside any packet, message `spec: reconcile capability record
   (end-of-run)`, carrying neither an `[orch packet:]` nor an `[orch
   decider:]` trailer. No `STAGE=` line means **no commit** and no flips to
-  report — not a failure. If §3.7 actually merged this run's
-  packets into the integration branch, that commit goes there too, since
-  checking a branch out to merge into it leaves the checkout on that
-  branch; if nothing merged — no green `orch/*` branch this run — the
-  commit goes on the run's own branch instead — either way, a flip never
-  reaches the integration branch ahead of the work it records. When the
-  last line reads `failed=` above 0, or the commit fails, commit nothing:
-  restore every `STAGE=` path with `git checkout HEAD -- <path>` (this
-  resets the index as well as the working tree, since the path is already
-  staged), report it below, and never withhold `status: done` or otherwise
-  halt.
+  report — not a failure. The commit goes on the integration branch when
+  §3.7 actually merged this run's packets into it, and on the run's own
+  branch when nothing merged (no green `orch/*` branch this run), so a
+  flip never reaches the integration branch ahead of the work it records.
+  When the last line reads `failed=` above 0, or the commit fails, commit
+  nothing: restore every `STAGE=` path with `git checkout HEAD -- <path>`,
+  report it below, and never withhold `status: done` or otherwise halt.
 
   Carry each capability this scan actually flipped — from the
   `COMPLETED=<slug>\t<capability text>` lines, not the `DRIFT=` listing —
   into the stop report's `▶ Next` section below — the one section
   the tally does not count — as an unglyphed line naming the feature and the
   capability; flips restored rather than committed are stated as not
-  committed. This does not reuse ⚠️ (the conventions reserve that glyph for
-  a tally-counted section carrying one line per packet, and a capability
-  flip is not a packet) and introduces no new glyph, shape, or tally figure.
+  committed. It does not reuse ⚠️, since a capability flip is not a packet,
+  and introduces no new glyph, shape, or tally figure.
   **Carry every held feature into that same section too** — one unglyphed
   line per `HELD=<slug>\t<reason>` line, naming the feature and carrying
-  that reason (an unchecked task's `covers:` quote matches no capability, so
-  every flip for that feature is held until it is fixed), in the same
-  unglyphed form the flips use here. A held feature stages nothing and
-  leaves nothing to restore; it is **neither a failure nor a flip** — a
-  feature this run could not complete yet, named so the next run's
-  preflight does not have to be the first to say so. Each
+  that reason, in the same unglyphed form the flips use here. A held
+  feature stages nothing and leaves nothing to restore; it is **neither a
+  failure nor a flip**, and naming it here spares the next run's preflight
+  from being the first to say so. Each
   `CAPABILITIES=<slug>\tfailed` line goes there too, naming the feature.
   State the trailing `unjudgeable=<n>` count the same way §1 does, in the
   same section, naming only the classes that actually appear — these rows
@@ -1045,8 +992,7 @@ nothing. Read the result exactly as §4 states it for the stop report.
   true`. Emit the **stop report** (`report-templates.md` shape B), assembled
   from `runstate.sh run-digest .agents/run-state.yaml` with **no** `--since`
   — its `packet` lines name every packet the run began, with its outcome,
-  whether or not this session was the one that ran it (a compaction or a
-  resumed session reads the same report): what shipped in plain words,
+  whether or not this session was the one that ran it: what shipped in plain words,
   anything left undone, any decision still open (its `handoff-feature`
   lines, plus any un-merged decider-commit branch), the whole-branch
   review's own status line and the path to its review file, the single
@@ -1061,54 +1007,37 @@ nothing. Read the result exactly as §4 states it for the stop report.
   printed, never recounted from the `packet` or `decision` lines. ⬚ queued is
   not one of them: it stays the `N pending` from `runstate.sh summary`.
 
-  **Naming a landed bundle in that report.** `run-digest` still emits
-  exactly one `packet` line per packet the run began — a bundle's several
-  members share the one directory keyed to its own id, `<cursor>` — so it
-  still counts as ONE packet, matching `run-digest`'s own line count and
-  this shape's tally: a bundle earns exactly one ✅ line, never one per
-  member. But `<title>` on that line is only the cursor's own `TEXT=` line
-  (§3.3), so rendering it as-is would read a four-task bundle as one task,
-  and the header tally would read `✅ 1` for four landed tasks. That one
-  line must still name every member.
+  **Naming a landed bundle in that report.** A bundle is ONE packet —
+  one `packet` line in `run-digest`, one ✅ line, never one per member —
+  but `<title>` on that line is only the cursor's own `TEXT=` line (§3.3),
+  so that one line must still name every member.
 
   First check cheaply, per `packet` line whose outcome reads `green`,
   whether it bundled at all: read its own `handoff.md`
-  (`<run-dir>/<id>/handoff.md`) — this is a body line runstate.sh writes
-  below its own header, not part of the header block itself — and look for
-  a `BUNDLE=` line (T5). Its absence means a single-member packet — render
-  it exactly as `run-digest` gives it, no different than today, and nothing
-  further below applies to it. Only a `BUNDLE=<id,id,...>` line means the
-  rest of this is needed.
+  (`<run-dir>/<id>/handoff.md`) — a body line below runstate.sh's own
+  header, not part of the header block — and look for a `BUNDLE=` line.
+  Its absence means a single-member packet — render it exactly as
+  `run-digest` gives it, and nothing further below applies to it. Only a
+  `BUNDLE=<id,id,...>` line means the rest of this is needed.
 
-  This session may not be the one that landed it (a compaction, or a
-  resumed session inheriting someone else's run), so confirm membership
-  from the branch itself rather than trusting the `BUNDLE=` line alone —
-  that line was written back at §3.3, before the packet even started, and
-  names an intent; the commit's own trailers are the actual record of what
-  landed. **Search the packet's own feature branch and the integration
-  branch together, never `<base>..HEAD` alone** — §3.7
-  merges a landed packet's branch into the integration branch right after
-  it lands, so by stop-report time `HEAD` is wherever the *last* packet in
-  the run happens to have run, and every earlier bundle's commit is only
-  reachable from the integration branch, not from `<base>..HEAD`; that
-  range finds nothing for any bundle but the most recent one — exactly the
-  resumed/compacted case this step exists to cover. Find the commit whose
+  Confirm membership from the branch itself rather than trusting the
+  `BUNDLE=` line alone, since that line records the intent at §3.3 and
+  the commit's own trailers record what landed. **Search the packet's own
+  feature branch and the integration branch together, never
+  `<base>..HEAD` alone** — §3.7 has already merged each earlier bundle's
+  commit into the integration branch. Find the commit whose
   trailers name this packet's id, anchored to the **whole line** — the
   same `^[[:space:]]*\[orch packet:<id>\][[:space:]]*$` shape §1's drift
   scan uses, never a bare substring, so prose that merely mentions a
   trailer can never be read as a landed member:
   `git log orch/<id> <base> -E --grep '^[[:space:]]*\[orch packet:<id>\][[:space:]]*$' --format=%H -1`
   (fall back to `--all` when `orch/<id>` no longer exists, e.g. deleted
-  after merging — the same targeted trailer search the branch-cleanup step
-  above already runs for `[orch decider:`, and the same read T7 gives
-  `resume`'s own `adopt` path) — then read **every** `[orch packet:...]`
-  trailer on that ONE commit, each on its own line, in commit order: that
-  ordered list is the bundle's full landed membership, `<cursor>` first
-  (§3.6 writes it first, and that ordering is load-bearing there for
-  orphan-adopt — see that step). For each member's title, read the same
-  `handoff.md` again — the member's own `PACKET=<id>` line and the `TEXT=`
-  line that follows it name it (T5's per-member block shape), the same
-  field `run-digest`'s `<title>` already reads for the first member alone.
+  after merging) — then read **every**
+  `[orch packet:...]` trailer on that ONE commit, each on its own line, in
+  commit order: that ordered list is the bundle's full landed membership,
+  `<cursor>` first (§3.6 writes it first). For each member's title, read
+  the same `handoff.md` again — the member's own `PACKET=<id>` line and
+  the `TEXT=` line that follows it name it.
   Render the packet's ✅ line (or 🔁, when a `decision` line for this id
   reads `retry`) with every landed member's title recovered this way, still
   as the one line `run-digest` gives you.

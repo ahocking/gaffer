@@ -2126,6 +2126,129 @@ why the merged branch is deleted|left in place, it lacks the appended task's wor
 why hand-off-feature assumes no prefix|a resume, a decider `reorder`, or an `append-task` can move one or leave it out|the loop's own chosen order|0028
 T7_MOVES
 
+printf '\n== run-loop §3 step 6 to the end: values by key only, reasons one clause with the rest in their ADRs (skill-prompt-trim T8) ==\n'
+# Same three rules as the T6 and T7 sections above, over the last range: from the
+# step-6 **Land** line to end of file (steps 7-8, `## 4. Termination` and `## Never`).
+# Capability 4: the Advance step stated `periodic-pause`'s fallback for an unset key;
+# it now names `pause_every_packets` and its file, and `EVERY=` is where the value is
+# read. Capability 3: each row below pins the clause the skill kept, the moved wording
+# gone from the range, and that wording present in the owning ADR's run-loop relocation
+# section. The range carries no task-id history and no "today" comparison except the
+# `rc_land` end anchor the T4 section above reads, and both dispatches keep their
+# `routing.sh resolve`.
+#
+# The guard requires the range to START at the step-6 line and to hold both later
+# headings, so a renamed step -- which empties the range -- or a renamed heading fails
+# loud rather than scanning nothing.
+t8_rl="$ROOT/skills/run-loop/SKILL.md"
+t8_raw="$(sed -n '/^6\. \*\*Land/,$p' "$t8_rl")"
+t8_first="$(printf '%s\n' "$t8_raw" | head -1)"
+case "$t8_first" in
+  '6. **Land'*) ok 'run-loop step 6 to end range extracted (starts at the step-6 Land line)' ;;
+  *) bad 'run-loop step 6 to end range extracted (starts at the step-6 Land line)' "first: $t8_first" ;;
+esac
+case "$t8_raw" in
+  *'## 4. Termination'*'## Never'*) ok 'run-loop step 6 to end range holds ## 4. Termination and ## Never' ;;
+  *) bad 'run-loop step 6 to end range holds ## 4. Termination and ## Never' 'a heading moved or was renamed' ;;
+esac
+t8_range="$(_rc_sq "$t8_raw")"
+
+has 'Advance step: the periodic pause is named by its key and file, read through EVERY=' \
+  '`EVERY=` read from `pause_every_packets` in `.agents/project-overrides.yaml`' "$t8_range"
+t8_vals="$(printf '%s\n' "$t8_raw" | grep -nE '\(default |default `|and the default|missing/invalid/0|after two runs|211 files')"
+[ -z "$t8_vals" ] && ok 'run-loop step 6 to end states no default value and no measurement' \
+  || bad 'run-loop step 6 to end states no default value and no measurement' "found: $(printf '%s' "$t8_vals" | head -1)"
+
+# History: no task id, and no "today" beyond the rc_land end anchor.
+t8_ids="$(printf '%s\n' "$t8_raw" | grep -nE '\(T[0-9]+[;)]|T[0-9]+'"'"'s |read T[0-9]+ ')"
+[ -z "$t8_ids" ] && ok 'run-loop step 6 to end carries no task-id history' \
+  || bad 'run-loop step 6 to end carries no task-id history' "found: $(printf '%s' "$t8_ids" | head -1)"
+t8_today="${t8_range//reads exactly as it does today: nothing staged/}"
+case "$t8_today" in
+  *today*) bad 'run-loop step 6 to end carries no "today" history outside the rc_land anchor' \
+             "found: $(printf '%s' "$t8_today" | grep -oE '.{40}today.{0,10}' | head -1)" ;;
+  *) ok 'run-loop step 6 to end carries no "today" history outside the rc_land anchor' ;;
+esac
+
+# Every dispatch in the range keeps its model resolution beside it.
+while IFS='|' read -r t8_label t8_needle; do
+  [ -n "$t8_label" ] || continue
+  has "run-loop step 6 to end keeps routing.sh resolve beside: $t8_label" "$t8_needle" "$t8_range"
+done <<'T8_RESOLVE'
+the periodic-review decider dispatch|routing.sh resolve chief-engineer`
+the whole-branch review dispatch|routing.sh resolve reviewer`
+T8_RESOLVE
+
+while IFS='|' read -r t8_label t8_kept t8_moved t8_adr; do
+  [ -n "$t8_label" ] || continue
+  has "run-loop keeps one clause: $t8_label" "$t8_kept" "$t8_range"
+  case "$t8_range" in
+    *"$t8_moved"*) bad "run-loop carries no copy of the moved reason: $t8_label" "still present: $t8_moved" ;;
+    *) ok "run-loop carries no copy of the moved reason: $t8_label" ;;
+  esac
+  t8_adr_file="$(ls "$ROOT"/docs/adr/"$t8_adr"-*.md 2>/dev/null | head -1)"
+  t8_sect="$(sed -n "/^## Relocated from skills ([0-9-]*) — the run-loop skill's/,\$p" "$t8_adr_file" 2>/dev/null)"
+  has "ADR $t8_adr's run-loop relocation section holds it: $t8_label" "$t8_moved" "$(_rc_sq "$t8_sect")"
+done <<'T8_MOVES'
+why cursor leads the trailer block|a resume adopts by the FIRST `[orch packet:]` trailer|block is load-bearing, not cosmetic|0005
+what dropping schema does|`write` refuses content without it.|fails loudly rather than quietly|0005
+what dropping run_id costs|losing it fails nothing at the write|the most expensive of these to lose|0005
+why a periodic pause never fires on its own|so a periodic pause never fires on its own|halts an unattended run until a human resumes it|0017
+why the cursor skips every member|never assume the members are a consecutive prefix of `pending`, whose order is not the plan's|the same rule §3.5's `discard-advance` uses|0020
+why every driver_* key is carried|which `claim-driver` makes once at §2 and never re-makes|what tells a crashed run apart|0020
+what an omitted findings entry leaves|An omitted entry is unlinked, not edited out|the body stays on disk with nothing left pointing at it|0022
+why carried keys are copied from disk|so the file's quoting survives|a value restated from memory of an earlier read|0022
+why each swept packet gets a warning line|since that sweep's record is the only thing marking these as new|record of what it just closed is the only thing marking these as new|0023
+why a failed capability call is an alert|as an alert alongside the ✅/🔁 line|the packet still landed, so this is an alert|0023
+why a capability flip carries no warning glyph|since a capability flip is not a packet|the conventions reserve that glyph|0023
+why the stop report reads the whole-run digest|whether or not this session was the one that ran it|a compaction or a resumed session reads the same report|0023
+why a landed bundle's line names every member|A bundle is ONE packet|would read a four-task bundle as one task|0023
+why membership is confirmed from the branch|the commit's own trailers record what landed|before the packet even started|0023
+why both branches are searched|§3.7 has already merged each earlier bundle's commit into the integration branch|happens to have run|0023
+why the trailers are read in commit order|`<cursor>` first (§3.6 writes it first)|load-bearing there for orphan-adopt|0023
+why the stale-finding drop passes $MEMBERS|FINISHED="${FINISHED:+${FINISHED},}$MEMBERS"|already accept a comma list|0024
+why a termination finding adds no expiry rule|expiry stays the positive-evidence rule (ADR 0024)|which is truthful|0024
+what record-completion does at the land|It flips each member's task in plan order|a bundle is always one feature|0025
+what a HALT= leaves uncommitted|do not commit, so no part of the bundle lands on its own|stays an uncommitted edit on the branch|0025
+why the landing restore is from the index|so the packet's own staged PRD edit survives|for the mirror of this reason|0025
+why the reconcile commit follows the merge|so a flip never reaches the integration branch ahead of the work it records|leaves the checkout on that branch|0025
+why the end-of-run restore is the HEAD form|restore every `STAGE=` path with `git checkout HEAD -- <path>`|resets the index as well as the working tree|0025
+why a feature is held|one unglyphed line per `HELD=<slug>\t<reason>` line|matches no capability, so every flip|0025
+why the review diff is bounded to this run|since a branch-vs-base diff re-presents earlier runs' already-reviewed commits|211 files and about 30,000|0026
+when the branch-vs-base fallback applies|such a run has no narrower boundary to offer|no run-owned trailer to anchor a parent on|0026
+why each review note becomes a finding|since the findings index, not the review file, is what the next run can see|a note left only in that file|0026
+why the driver records nothing after a periodic review|and record nothing yourself, since the review writes its own `record-review` record|is already on disk when the line returns|0024
+why a second check-status refusal still carries on|On a second `check-status` refusal, carry on to the next packet|the record, not the line, decides whether the review counted|0024
+T8_MOVES
+
+# The Advance step's periodic-review paragraph, read on its own: its rules survive the
+# trim (the dispatch's model resolution, an `unmeasured` count read as due, the driver
+# recording nothing), and its pointer at `agents/loop-driver.md` claims the same rule,
+# not the same words -- the loop-driver copy is untrimmed. The guard fails loud on an
+# empty extraction, so a renamed opening line cannot pass by scanning nothing.
+t8_pr_raw="$(sed -n '/\*\*With neither pause taking the run, check the periodic review/,/^## 4\. Termination/p' "$t8_rl")"
+case "$t8_pr_raw" in
+  *'**With neither pause taking the run'*'## 4. Termination'*) ok 'run-loop Advance periodic-review paragraph extracted' ;;
+  *) bad 'run-loop Advance periodic-review paragraph extracted' 'opening line or ## 4. Termination not found' ;;
+esac
+t8_pr="$(_rc_sq "$t8_pr_raw")"
+while IFS='|' read -r t8_label t8_needle; do
+  [ -n "$t8_label" ] || continue
+  has "run-loop periodic-review paragraph keeps: $t8_label" "$t8_needle" "$t8_pr"
+done <<'T8_PR_KEPT'
+the decider dispatch's model resolution|routing.sh resolve chief-engineer`
+an unmeasured count is due|On `DUE=yes` — **including when any of the four reads `unmeasured`**
+the driver records nothing|and record nothing yourself
+a second refusal carries on|On a second `check-status` refusal, carry on to the next packet
+unmeasured is never rendered as 0|with `unmeasured` rendered as the word `unmeasured` and never as `0`
+the review's counts come through run-digest|through `run-digest`'s `review` line, never from its status line or its result file
+the loop-driver pointer claims the same rule|(`agents/loop-driver.md` §The periodic review carries the same rule)
+T8_PR_KEPT
+case "$t8_pr" in
+  *'in the same words'*|*'states it in the'*) bad 'run-loop periodic-review paragraph claims no identical wording with loop-driver' 'still claims the same words' ;;
+  *) ok 'run-loop periodic-review paragraph claims no identical wording with loop-driver' ;;
+esac
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

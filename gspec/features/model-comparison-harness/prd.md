@@ -222,6 +222,18 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     by the permission system, is `invalid`: a harness fault that is rerun and
     left out of the pass rate, never counted against the varied model
 
+- [ ] **P0**: A harness session cannot write outside its own clone, and every denial is read and explained
+  - a write by any replay, review-view or ranking session whose target
+    resolves outside that session's own clone or view is refused inside the
+    session, whatever its permission mode; its working directory alone is never
+    the confinement. A target that cannot be resolved is refused too
+  - denied calls are read from every harness session, the ranking session
+    included. A session whose transcript cannot be found or is not in a
+    recognised form reads its denials as unmeasured, never as 0
+  - an invalid replay's reason reaches the operator: the report counts
+    denial-invalid replays per model, and a rerun is not recommended when the
+    same denial would stop it again
+
 ## Dependencies
 
 - `per-agent-model-routing`: the `model_routing` lookup, its model validation,

@@ -91,13 +91,65 @@ run the old loop, or no loop at all.
 
 Every session `run_session` starts (each replay step, each review view and each
 `rank` session) runs with `--permission-mode bypassPermissions`. A headless
-session has nobody to answer a permission prompt, so a step that reached one
-would stall until its time limit. The bypass is confined to a disposable
-directory: the session's working directory is its clone or view. The
-guardrail is meant to keep applying inside it: `--plugin-dir` loads the
-harness's `hooks/guard.sh`, and its hard deny is a `PreToolUse` hook's exit 2,
-not a permission prompt. No bypass-mode session has yet been observed to
-confirm that (see the list below).
+`-p` session has nobody to answer a permission prompt. A call that reaches one
+is refused, as a real `claude -p` session's refused edit shows (the evidence
+paragraph below), or the step stalls until its time limit. Either way the
+replay measures the harness, not the model.
+
+A working directory is not a confinement: a bypass-mode session can write
+anywhere its user can. So `run_session` also gives each session `--settings`
+(`confine_settings` in `scripts/compare.sh`) with two parts, each bound to that
+session's clone or view, resolved physically (the root below):
+
+- **Claude Code's OS-level Bash sandbox**, on, with filesystem writes allowed
+  only in the root and in the session's own temp directory. `failIfUnavailable`
+  makes a session whose sandbox cannot start exit instead of running
+  unsandboxed, so its step reads as a crash. `allowUnsandboxedCommands: false`
+  removes the retry outside the sandbox, which the bypass mode would otherwise
+  approve. The sandbox is meant to confine a shell write however it is made (a
+  script, an interpreter's own file calls, `git -C`). It covers `Bash` alone.
+- **A harness-owned `PreToolUse` hook**, `scripts/compare-confine.sh <root>`, on
+  `Edit`, `MultiEdit`, `Write`, `NotebookEdit` and `Bash`. It is the only
+  confinement of the file tools, and a first line for the shell writes it
+  recognises. It refuses a write whose target does not physically resolve
+  inside the root, following symlinks and refusing a file with a second hard
+  link. It also refuses, failing closed, a target it cannot resolve (a
+  variable, a `..` segment, a construct that can hide a write). Inside the
+  root, it refuses the paths Claude Code loads configuration and code from:
+  `.claude` and its settings files, its `skills`, `agents`, `commands`, `hooks`
+  and `workflows` trees, and `.mcp.json`. It is not registered in
+  `hooks/hooks.json`, so the live loop never runs it. `disableAllHooks: false`
+  in the same settings is meant to outrank a replayed repository's own.
+
+`--plugin-dir` also loads the harness's `hooks/guard.sh`, whose hard deny is a
+`PreToolUse` hook's exit 2, not a permission prompt. A refusal by the hook or
+the guard is a denied call like any other, so the replay is scored `invalid`
+(below). A write the sandbox blocks fails inside its command instead. Whether
+a transcript records that as a denied call has not been observed.
+
+**The residual risk.** None of this has been observed in a bypass-mode session:
+the live probe was not run. Four things are unconfirmed: that a hook's exit 2 is
+honoured in that mode, that the sandbox starts and confines there, that the
+hook's payload `cwd` follows a `cd` between `Bash` calls, and that
+`disableAllHooks: false` outranks project settings. The sandbox would bound a
+misplaced relative write if the payload `cwd` did not follow a `cd`. Four gaps
+are known and left open:
+
+- MCP tools are confined by nothing the harness adds. A session loaded
+  through `--plugin-dir` has the harness's `.mcp.json` servers (`git`,
+  `filesystem`, `github`), and only their own scopes limit them.
+- Network access is not restricted.
+- The sandbox's write list can be widened by entries already in a replayed
+  repository's committed `.claude/settings.json` or in the operator's own
+  user settings. The hook stops a session from writing those files, but it
+  cannot undo entries that are already there. This comes from Claude Code's
+  settings documentation, not from an observed run.
+- **The harness's own steps are not sandboxed** (T26 leaves this open). A
+  session can plant a git setting (`core.fsmonitor`, `core.hooksPath`, a
+  filter or diff driver) or a symlink inside its own clone. The harness's own
+  unsandboxed steps later act on that clone (`land_tree`'s git commands, the
+  review file `replay` copies from a view into the work clone), and they
+  would run the setting or write through the link.
 
 A tool call denied in any of a replay's sessions makes the replay `invalid`.
 That covers a guard denial, its ask tier included (nobody can answer an ask in
@@ -108,12 +160,44 @@ transcripts. Each session is started on a fresh `--session-id`, which its
 `STEP` line names. Its transcript is `<projects>/*/<id>.jsonl`, and its
 subagents' transcripts are `<projects>/*/<id>/subagents/agent-*.jsonl`, found as
 `metrics.sh` finds them (`ORCH_METRICS_PROJECTS_DIR`, else
-`~/.claude/projects`). A denied call is a transcript record carrying a top-level
-`toolDenialKind`. Every kind counts except `interrupted` (a person's interrupt)
-and `cancelled` (a response stopped by a safety classifier). A kind not yet seen
-also counts. The count is stored as `denials`. When a `STEP` line names no
-session, or a session has no transcript, the count is `null` (unmeasured, never
-0), `denial_note` says why, and the outcome is decided without it.
+`~/.claude/projects`). Each transcript is parsed as JSON. A denied call is a
+tool-result record (a `user` record whose `message.content` holds a
+`tool_result`) carrying a top-level string `toolDenialKind`. The field is read
+only there, never as text anywhere on a line. Every kind counts except
+`interrupted` (a person's interrupt) and `cancelled` (a response stopped by a
+safety classifier). A kind not yet seen also counts. The count is stored as
+`denials`, the kinds as `denial_kinds`, and the tools the denied calls asked
+for as `denial_tools`: each denial's `tool_use_id` joined to the `tool_use` item
+of the assistant record that made the call, in the same transcript, whose name
+is taken (`unrecorded` when the transcript holds no such call; the count never
+depends on it). The count is `null` (unmeasured,
+never 0) when a `STEP` line names no session, a session id is malformed, a
+session has no transcript, or a transcript is not in the recognised form (a
+line that is not JSON, tool results none of which is in that form, or a
+`toolDenialKind` anywhere else). `denial_note` then says why, and the outcome is
+decided without it. So a Claude Code format change reads as unmeasured, not as
+a silent 0. `rank` reads its one session's transcript the same way. It refuses
+to record a ranking whose session had a call denied, or whose denials are
+unmeasured.
+
+**The reason reaches the operator.** `record` stores an `invalid` replay's
+cause as one token, `invalid_cause`: `routing`, `crashed`, `timed-out`, `error`,
+`fixed-role-refused` or `denial`. `rank-prepare`'s `UNRANKABLE` line carries that
+cause (`cause=`), and for a denial the denied kinds (`kinds=`) and tools
+(`tools=`). `report` adds one line per model whose latest records hold a
+denial-invalid replay: the count, the kinds and the tools denied. A kind is the
+transcript's category (a guard hook's deny reads `permission-rule`), so the tool
+is what tells the operator which call the configuration refused. Neither names
+the specific guard rule: the guard's own message in the tool result is not
+parsed. That line sits beside the cells and changes no figure, since
+the cells already leave invalid replays out. `/gaffer:compare-models` step 6
+names the cause in each rerun question. For a denial it leans against a rerun,
+naming the kinds and tools: the same rule would deny the rerun too, until the harness
+configuration changes. Any other cause keeps the lean toward a rerun.
+
+**A consumer experiment.** A source repository whose configuration keeps the
+guard's ask tier on (no `bypass-ask-tier`) will see every ask-tier hit scored as
+a denial-invalid replay.
 
 This detection was read from real transcripts, not from a live replay. The
 evidence was the machine's own `~/.claude/projects` on Claude Code 2.1.202 to
@@ -133,8 +217,8 @@ bypass-mode session. Five cases were not observed:
 
 A live probe (a bypass-mode `claude -p` session attempting a guard-denied and
 an ask-tier write) was refused by the environment it was tried from. The first
-live experiment must confirm that the steps run unprompted and that a denied
-call is scored `invalid`. It should also confirm that the guard still hard-denies
+live experiment must confirm that the steps run unprompted, that a denied
+call is scored `invalid`, and that a write outside the clone is refused. It should also confirm that the guard still hard-denies
 in that mode, and read one bypass-mode replay's transcripts for the kind an
 ask-tier decision records.
 

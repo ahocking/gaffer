@@ -286,9 +286,9 @@
 #                         --permission-mode bypassPermissions --settings <confinement>
 #                         --session-id <uuid> -p <prompt>
 #                     (the bypass mode because nobody can answer a prompt in a
-#                     headless session; its working directory is a disposable
-#                     clone or view, and the harness's hooks/guard.sh, loaded
-#                     through --plugin-dir, still hard-denies; <uuid> is a fresh
+#                     headless session, where one refuses the call or stalls
+#                     the step; the harness's hooks/guard.sh, loaded through
+#                     --plugin-dir, is meant to keep hard-denying; <uuid> is a fresh
 #                     id per session, named on its STEP line so `record` can
 #                     find its transcript). A working directory confines
 #                     nothing, so <confinement> is a settings JSON with <dir>
@@ -303,8 +303,11 @@
 #                     refuses a write whose target does not resolve inside
 #                     <dir>, and one whose target it cannot resolve, failing
 #                     closed (compare-confine.sh's header states what it
-#                     recognises). A refusal by either is a denied call like
-#                     any other, so `record` scores the replay `invalid`.
+#                     recognises). A refusal by the hook is a denied call like
+#                     any other, so `record` scores the replay `invalid`; a
+#                     write the sandbox blocks fails inside its command, and
+#                     whether a transcript records that as a denied call has
+#                     not been observed.
 #                     Refused (exit 2) before any session when
 #                     compare-confine.sh is missing or not executable.
 #                     where <effort> is the stored selection's settings
@@ -566,10 +569,21 @@
 #                     The record, one compact JSON line, has exactly the keys
 #                       experiment replay packet model role reviewer_model
 #                       effort handoff_source settings outcome outcome_reason
-#                       first_verdict fix_rounds sweeps routing_check end
-#                       denials denial_note tokens dollars_min dollars_max price
-#                       price_table_date cost_source cost_note recorded_at
-#                     where `denials` is the count of tool calls denied in the
+#                       invalid_cause first_verdict fix_rounds sweeps
+#                       routing_check end denials denial_kinds denial_tools
+#                       denial_note tokens dollars_min dollars_max price price_table_date
+#                       cost_source cost_note recorded_at
+#                     where `invalid_cause` is an `invalid` outcome's reason as
+#                     one token, by the test that decided it: `routing`,
+#                     `crashed`, `timed-out` or `error` (the END=),
+#                     `fixed-role-refused` or `denial`, and null for every
+#                     other outcome; `denial_kinds` is the denied calls' kinds
+#                     (each a `toolDenialKind`, sorted, [] when none was
+#                     denied, null when the denials are unmeasured);
+#                     `denial_tools` the tool names those calls asked for,
+#                     likewise (`unrecorded` among them for a denial whose call
+#                     its transcript does not name);
+#                     `denials` is the count of tool calls denied in the
 #                     replay's sessions, read from their transcripts, or null
 #                     when a session's transcript cannot be found or is not in
 #                     the recognised form rd_transcript_denials reads
@@ -662,9 +676,17 @@
 #                     `passed`, `escalated` or `failed-at-limit`; each model
 #                     that does not is named on stderr, one line each:
 #                       UNRANKABLE packet=<id> model=<m> reason=missing
-#                       UNRANKABLE packet=<id> model=<m> reason=invalid replay=<r>
+#                       UNRANKABLE packet=<id> model=<m> reason=invalid cause=<c> replay=<r>
+#                       UNRANKABLE packet=<id> model=<m> reason=invalid cause=denial kinds=<k,...> tools=<t,...> replay=<r>
 #                       UNRANKABLE packet=<id> model=<m> reason=outcome(<o>) replay=<r>
-#                     An `invalid` replay is re-run (`run --rerun`) first. Then:
+#                     where <c> is the record's `invalid_cause` (`routing`,
+#                     `crashed`, `timed-out`, `error`, `fixed-role-refused`),
+#                     `unrecorded` for a record that stores none, <k> the
+#                     denied calls' kinds and <t> the tools they asked for
+#                     (each `unrecorded` when the record stores none).
+#                     An `invalid` replay is re-run (`run --rerun`) first, unless
+#                     its cause is a denial: the same rule stops a rerun again
+#                     until the harness configuration changes. Then:
 #                       1. each model's final diff: the tree `sweeps` tests
 #                          (land_tree: metrics, run directory, run-state,
 #                          roadmap and plan paths as the start holds them, the
@@ -748,7 +770,7 @@
 #                     transcripts are read for denied tool calls as `record`
 #                     reads a replay's (rd_session_denials, below). A denied
 #                     call refuses the ranking, naming it,
-#                       REFUSED rule=denied count=<n> kinds=<kinds>
+#                       REFUSED rule=denied count=<n> kinds=<kinds> tools=<tools>
 #                     and so do denials that cannot be read (`REFUSED
 #                     rule=denials-unmeasured`, the reason on stderr): the
 #                     ranking is not shown to be free of a harness fault.
@@ -847,7 +869,18 @@
 #                                    `unmeasured`, and a cell with no scored
 #                                    replay reads `unmeasured` whole, naming how
 #                                    many of its packets are recorded and how
-#                                    many of those are invalid.
+#                                    many of those are invalid. After the
+#                                    cells, one line per model whose latest
+#                                    records (over both classes) hold a replay
+#                                    whose `invalid_cause` is `denial`: how
+#                                    many, the denied calls' kinds (the
+#                                    records' `denial_kinds`, or `kinds
+#                                    unrecorded for <n>`) and the tools they
+#                                    asked for (`denial_tools`, or `tools
+#                                    unrecorded for <n>`). It is a count beside
+#                                    the cells, which already exclude those
+#                                    replays, so no figure changes; a model
+#                                    with none prints no line.
 #                       Packets      one line per selected packet: its title,
 #                                    class, handoff source (`original` or
 #                                    `rebuilt`, as the selection stored it and
@@ -2862,9 +2895,9 @@ confine_settings() {
 # on, so `record` can find its transcript. Polled rather than watched by a second
 # process, so no watchdog outlives the step. CLAUDE_CODE_EFFORT_LEVEL outranks
 # `--effort`, so it is removed from the session's environment. The session runs
-# in the bypass permission mode: nobody can answer a prompt in it, its working
-# directory is a disposable clone or view, and `--plugin-dir` still loads the
-# harness's hooks/guard.sh, whose hard-deny tier keeps applying. A working
+# in the bypass permission mode: nobody can answer a prompt in it (one refuses
+# the call or stalls the step), and `--plugin-dir` still loads the harness's
+# hooks/guard.sh, whose hard-deny tier is meant to keep applying. A working
 # directory confines nothing, so `--settings` adds confine_settings' Bash
 # sandbox and hook, which keep writes inside <dir>; a session whose settings
 # cannot be built is not started (its exit reads as a crash).
@@ -3779,8 +3812,15 @@ rd_step_field() {
 
 # rd_transcript_denials <transcript>: the denied calls one transcript records,
 # read from its records parsed as JSON (json_flat), one line each:
-#   K<TAB><kind>     a denied call counted (its toolDenialKind)
+#   K<TAB><kind><TAB><tools>  a denied call counted (its toolDenialKind, and the
+#                    tool it asked for)
 #   U<TAB><why>      the transcript cannot be read for denials
+# <tools> is the name of the call the denial answers: the tool result's
+# `message.content[].tool_use_id` joined to the `message.content[].id` of an
+# assistant record in the same transcript, whose `.name` it takes. Each name is
+# reduced to [A-Za-z0-9._-] (it is transcript text) and several are
+# comma-joined; a denial whose call cannot be found reads `unrecorded`, never
+# dropped. The count and the kind never depend on it.
 # THE RECOGNISED FORM, as Claude Code writes it (read from real transcripts, main
 # and subagent alike): a tool result is a top-level record of `"type":"user"`
 # whose `message.content` array holds an object of `"type":"tool_result"`, and a
@@ -3803,7 +3843,9 @@ rd_transcript_denials() {
   F="$1" awk -F'\t' '
     $2 == ".type" { ty[$1] = $4; next }
     $2 ~ /^\.message\.content\[[0-9]+\]\.type$/ && $4 == "tool_result" { tr[$1] = 1; held = 1; next }
-    $2 ~ /^\.message\.content\[[0-9]+\]\.tool_use_id$/ { held = 1; next }
+    $2 ~ /^\.message\.content\[[0-9]+\]\.tool_use_id$/ { held = 1; if ($3 == "s" && $4 != "") { nu[$1]++; tu[$1, nu[$1]] = $4 }; next }
+    $2 ~ /^\.message\.content\[[0-9]+\]\.id$/   && $3 == "s" { p = $2; sub(/\.id$/, "", p); cid[$1, p] = $4; next }
+    $2 ~ /^\.message\.content\[[0-9]+\]\.name$/ && $3 == "s" { p = $2; sub(/\.name$/, "", p); cnm[$1, p] = $4; next }
     $2 == ".toolDenialKind" { held = 1; if ($3 == "s" && $4 != "") dk[$1] = $4; else bad = "a toolDenialKind that is not a non-empty string"; next }
     $2 ~ /\.toolDenialKind(\.|\[|$)/ { held = 1; bad = "a toolDenialKind at " $2 ", not the top level of a tool result"; next }
     $2 ~ /^\.(toolUseResult|sourceToolAssistantUUID)(\.|\[|$)/ { held = 1 }
@@ -3812,13 +3854,24 @@ rd_transcript_denials() {
       for (d in dk) if (!(d in tr) || ty[d] != "user") bad = "a toolDenialKind on a record that is not a tool result in the recognised form"
       if (bad != "") { printf "U\ttranscript %s carries %s\n", ENVIRON["F"], bad; exit }
       if (held && !rec) { printf "U\ttranscript %s holds tool results, none in the recognised form (a user record whose message.content holds a tool_result)\n", ENVIRON["F"]; exit }
-      for (d in dk) if (dk[d] != "interrupted" && dk[d] != "cancelled") printf "K\t%s\n", dk[d]
+      # A tool call is a message.content item of an assistant record, with an id and a name.
+      for (k in cid) { split(k, kp, SUBSEP); if (ty[kp[1]] == "assistant" && (k in cnm)) nm[cid[k]] = cnm[k] }
+      for (d in dk) if (dk[d] != "interrupted" && dk[d] != "cancelled") {
+        tools = ""
+        for (i = 1; i <= nu[d]; i++) if (tu[d, i] in nm) {
+          t = nm[tu[d, i]]; gsub(/[^A-Za-z0-9._-]/, "?", t)
+          if (index("," tools ",", "," t ",") == 0) tools = tools (tools == "" ? "" : ",") t
+        }
+        printf "K\t%s\t%s\n", dk[d], (tools == "" ? "unrecorded" : tools)
+      }
     }' "$_CMP_TMP/tx.flat"
 }
 
 # rd_session_denials <projects-dir> <session-id>...: the tool calls denied in
 # those sessions, one line:
-#   measured<TAB><count><TAB><kinds, comma-joined, sorted, or none>
+#   measured<TAB><count><TAB><kinds, comma-joined, sorted, or none><TAB><tools, likewise>
+# where <tools> are the denied calls' tool names, `unrecorded` among them for a
+# denial whose call its transcript does not name.
 #   null<TAB><why>
 # A session's transcript is <projects-dir>/*/<id>.jsonl, and its subagents' are
 # <projects-dir>/*/<id>/subagents/agent-*.jsonl, as metrics.sh finds them; each
@@ -3826,9 +3879,9 @@ rd_transcript_denials() {
 # `run_session` writes, a session with no transcript, or a transcript that
 # cannot be read for denials leaves the count unmeasured: never 0.
 rd_session_denials() {
-  local proj="$1" sid f files main n=0 kinds="" why
+  local proj="$1" sid f files main n=0 kinds="" tools="" why
   shift
-  : > "$_CMP_TMP/denials"
+  : > "$_CMP_TMP/denials"; : > "$_CMP_TMP/denials.tools"
   for sid in "$@"; do
     case "$sid" in
       -) printf 'null\ta STEP line names no session, so its transcript cannot be found\n'; return 0 ;;
@@ -3851,10 +3904,12 @@ EOF
     why="$(awk -F'\t' '$1 == "U" { print substr($0, 3); exit }' "$_CMP_TMP/denials.one")"
     [ -z "$why" ] || { printf 'null\tsession %s: %s\n' "$sid" "$why"; return 0; }
     awk -F'\t' '$1 == "K" { print $2 }' "$_CMP_TMP/denials.one" >> "$_CMP_TMP/denials"
+    awk -F'\t' '$1 == "K" { print ($3 == "" ? "unrecorded" : $3) }' "$_CMP_TMP/denials.one" | tr ',' '\n' >> "$_CMP_TMP/denials.tools"
   done
   n="$(awk 'END { print NR }' "$_CMP_TMP/denials")"
   kinds="$(sort -u "$_CMP_TMP/denials" | paste -sd, -)"
-  printf 'measured\t%s\t%s\n' "$n" "${kinds:-none}"
+  tools="$(sort -u "$_CMP_TMP/denials.tools" | paste -sd, -)"
+  printf 'measured\t%s\t%s\t%s\n' "$n" "${kinds:-none}" "${tools:-none}"
 }
 
 # rd_denials <step-log> <projects-dir>: the tool calls denied in the replay's
@@ -4005,11 +4060,11 @@ cmd_record() {
     || die "record: the work clone's routing records for $pkt ($(wc -l < "$tmp/pairs" | tr -d ' ')) are not the step log's ROUTE lines ($(wc -l < "$tmp/steps.pairs" | tr -d ' ')): $rj"
 
   # --- the tool calls denied in the replay's sessions ---------------------------------
-  local den dstate dcount="" dkinds="" dnote=""
+  local den dstate dcount="" dkinds="" dtools="" dnote=""
   den="$(rd_denials "$steps" "${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}")"
   dstate="$(printf '%s\n' "$den" | cut -f1)"
   if [ "$dstate" = measured ]; then
-    dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"
+    dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"; dtools="$(printf '%s\n' "$den" | cut -f4)"
     case "$dcount" in ''|*[!0-9]*) die "record: the denial count is not a count: [$dcount]" ;; esac
   else
     dnote="denials unmeasured: $(printf '%s\n' "$den" | cut -f2-)"
@@ -4027,14 +4082,17 @@ cmd_record() {
     whose="$(rd_step_field "$(grep '^STEP ' "$steps" | tail -1)" agent)"
     case "$whose" in ''|*[!a-z:-]*) die "record: the replay ended refused, but its step log's last STEP line names no readable agent: $steps" ;; esac
   fi
+  # `cause` is an invalid outcome's reason as one token (empty, stored null, for
+  # every other outcome), so `report` and `rank-prepare` never parse the reason.
+  local cause=""
   if [ "$rcheck" != pass ]; then
-    outcome=invalid; reason="the routing check read $rcheck"
+    outcome=invalid; cause=routing; reason="the routing check read $rcheck"
   elif case "$end" in crashed|timed-out|error) true ;; *) false ;; esac; then
-    outcome=invalid; reason="the replay ended $end without a verdict it could route"
+    outcome=invalid; cause="$end"; reason="the replay ended $end without a verdict it could route"
   elif [ "$end" = refused ] && [ "$whose" != "$role" ]; then
-    outcome=invalid; reason="the replay ended refused on the $whose's line, a role not under test (a harness fault)"
+    outcome=invalid; cause=fixed-role-refused; reason="the replay ended refused on the $whose's line, a role not under test (a harness fault)"
   elif [ -n "$dcount" ] && [ "$dcount" -gt 0 ]; then
-    outcome=invalid; reason="$dcount tool call(s) were denied in the replay's sessions ($dkinds): a harness fault, not the model's"
+    outcome=invalid; cause=denial; reason="$dcount tool call(s) were denied in the replay's sessions ($dkinds; tools: $dtools): a harness fault, not the model's"
   elif awk -F'\t' '$1 == "escalate" { f = 1 } END { exit !f }' "$tmp/pairs"; then
     outcome=escalated; reason="the reviewer returned escalate"
   elif [ "$end" = refused ]; then
@@ -4135,11 +4193,27 @@ cmd_record() {
   [ -n "$note" ] && js_note="$(rd_json_str "$note")"
   [ -n "$dcount" ] && js_den="$dcount"
   [ -n "$dnote" ] && js_dnote="$(rd_json_str "$dnote")"
-  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"effort":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"denials":%s,"denial_note":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
+  # The denied calls' kinds and tool names, one string each and [] when none was
+  # denied; null when the denials are unmeasured.
+  local js_cause="null" js_dkinds="null" js_dtools="null" k
+  [ -n "$cause" ] && js_cause="$(rd_json_str "$cause")"
+  if [ -n "$dcount" ]; then
+    js_dkinds=""; js_dtools=""
+    if [ "$dcount" -gt 0 ]; then
+      while IFS= read -r k; do
+        [ -n "$k" ] && js_dkinds="$js_dkinds${js_dkinds:+,}$(rd_json_str "$k")"
+      done < <(printf '%s\n' "$dkinds" | tr ',' '\n')
+      while IFS= read -r k; do
+        [ -n "$k" ] && js_dtools="$js_dtools${js_dtools:+,}$(rd_json_str "$k")"
+      done < <(printf '%s\n' "${dtools:-unrecorded}" | tr ',' '\n')
+    fi
+    js_dkinds="[$js_dkinds]"; js_dtools="[$js_dtools]"
+  fi
+  line="$(printf '{"experiment":%s,"replay":%s,"packet":%s,"model":%s,"role":%s,"reviewer_model":%s,"effort":%s,"handoff_source":%s,"settings":%s,"outcome":%s,"outcome_reason":%s,"invalid_cause":%s,"first_verdict":%s,"fix_rounds":%s,"sweeps":%s,"routing_check":%s,"end":%s,"denials":%s,"denial_kinds":%s,"denial_tools":%s,"denial_note":%s,"tokens":%s,"dollars_min":%s,"dollars_max":%s,"price":%s,"price_table_date":%s,"cost_source":%s,"cost_note":%s,"recorded_at":%s}' \
     "$(rd_json_str "$exp")" "$(rd_json_str "$rid")" "$(rd_json_str "$pkt")" "$(rd_json_str "$model")" \
     "$(rd_json_str "$role")" "$(rd_json_str "$rmodel")" "$js_effort" "$(rd_json_str "$hsrc")" "$settings" \
-    "$(rd_json_str "$outcome")" "$(rd_json_str "$reason")" "$js_first" "$fixr" "$js_sweeps" \
-    "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$js_den" "$js_dnote" "$tokens_json" "$dmin" "$dmax" "$price" \
+    "$(rd_json_str "$outcome")" "$(rd_json_str "$reason")" "$js_cause" "$js_first" "$fixr" "$js_sweeps" \
+    "$(rd_json_str "$rcheck")" "$(rd_json_str "$end")" "$js_den" "$js_dkinds" "$js_dtools" "$js_dnote" "$tokens_json" "$dmin" "$dmax" "$price" \
     "$(rd_json_str "$tdate")" "$(rd_json_str "$csrc")" "$js_note" "$(rd_json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")")"
   printf '%s\n' "$line" > "$tmp/line.json"
   json_flat "$tmp/line.json" > /dev/null 2>&1 || die "record: the record could not be built as one JSON line"
@@ -4161,20 +4235,33 @@ cmd_record() {
 # --- run ---------------------------------------------------------------------------
 
 # run_records <records.jsonl> <experiment>: one
-# `<line>\t<replay>\t<packet>\t<model>\t<outcome>` row per record of that
-# experiment, in file order, so the last row for a packet and model is its
-# latest record (THE LATEST-RECORD RULE). Exit 1 on a file it cannot read.
+# `<line>\t<replay>\t<packet>\t<model>\t<outcome>\t<cause>\t<kinds>\t<tools>` row per
+# record of that experiment, in file order, so the last row for a packet and
+# model is its latest record (THE LATEST-RECORD RULE). <cause> is the record's
+# `invalid_cause`, `unrecorded` when it holds none (a record written before the
+# field existed); <kinds> its `denial_kinds` comma-joined, `unrecorded` when it
+# names none (json_flat emits nothing for an empty list, so [] and a record
+# written before the field existed read alike; a `denial` cause always has a
+# kind); <tools> its `denial_tools` likewise (a `denial` cause always has one,
+# `unrecorded` when the transcript did not name the call). Each is reduced to
+# [A-Za-z0-9._-] per name (both are transcript text).
+# Exit 1 on a file it cannot read.
 run_records() {
   local flat
   flat="$(json_flat "$1")" || return 1
   printf '%s\n' "$flat" | EXP="$2" awk -F'\t' '
+    function safe(s) { gsub(/[^A-Za-z0-9._-]/, "?", s); return s }
     $1 + 0 > n { n = $1 + 0 }
     $2 == ".experiment" && $3 == "s" { e[$1] = $4 }
     $2 == ".replay"     && $3 == "s" { r[$1] = $4 }
     $2 == ".packet"     && $3 == "s" { p[$1] = $4 }
     $2 == ".model"      && $3 == "s" { m[$1] = $4 }
     $2 == ".outcome"    && $3 == "s" { o[$1] = $4 }
-    END { for (d = 1; d <= n; d++) if ((d in e) && e[d] == ENVIRON["EXP"] && (d in p) && (d in m)) print d "\t" r[d] "\t" p[d] "\t" m[d] "\t" o[d] }'
+    $2 == ".invalid_cause" && $3 == "s" { c[$1] = safe($4) }
+    $2 ~ /^\.denial_kinds\[[0-9]+\]$/ && $3 == "s" { k[$1] = k[$1] (k[$1] == "" ? "" : ",") safe($4) }
+    $2 ~ /^\.denial_tools\[[0-9]+\]$/ && $3 == "s" { t[$1] = t[$1] (t[$1] == "" ? "" : ",") safe($4) }
+    END { for (d = 1; d <= n; d++) if ((d in e) && e[d] == ENVIRON["EXP"] && (d in p) && (d in m))
+            print d "\t" r[d] "\t" p[d] "\t" m[d] "\t" o[d] "\t" ((d in c) ? c[d] : "unrecorded") "\t" ((d in k) ? k[d] : "unrecorded") "\t" ((d in t) ? t[d] : "unrecorded") }'
 }
 
 # run_pause: is a pause requested? Returns 0 and prints the reason when it is.
@@ -4471,7 +4558,7 @@ cmd_rank_prepare() {
     run_records "$records" "$exp" > "$tmp/recs" \
       || die "rank-prepare: the records file is not readable JSONL, so which replays are recorded cannot be read: $records"
   fi
-  local m latest lrep lout nbad=0
+  local m latest lrep lout lcause lkinds ltools nbad=0
   : > "$tmp/ranked"
   while IFS= read -r m; do
     latest="$(P="$pkt" M="$m" awk -F'\t' '$3 == ENVIRON["P"] && $4 == ENVIRON["M"]' "$tmp/recs" | tail -1)"
@@ -4485,7 +4572,16 @@ cmd_rank_prepare() {
       *" $lout "*) printf '%s\t%s\n' "$m" "$lrep" >> "$tmp/ranked" ;;
       *)
         if [ "$lout" = invalid ]; then
-          printf 'UNRANKABLE packet=%s model=%s reason=invalid replay=%s\n' "$pkt" "$m" "$lrep" >&2
+          # The invalid replay's cause, as its record stored it; a denial names
+          # the denied calls' kinds and the tools they asked for too.
+          lcause="$(printf '%s\n' "$latest" | cut -f6)"
+          lkinds="$(printf '%s\n' "$latest" | cut -f7)"
+          ltools="$(printf '%s\n' "$latest" | cut -f8)"
+          if [ "$lcause" = denial ]; then
+            printf 'UNRANKABLE packet=%s model=%s reason=invalid cause=denial kinds=%s tools=%s replay=%s\n' "$pkt" "$m" "${lkinds:-unrecorded}" "${ltools:-unrecorded}" "$lrep" >&2
+          else
+            printf 'UNRANKABLE packet=%s model=%s reason=invalid cause=%s replay=%s\n' "$pkt" "$m" "${lcause:-unrecorded}" "$lrep" >&2
+          fi
         else
           printf 'UNRANKABLE packet=%s model=%s reason=outcome(%s) replay=%s\n' "$pkt" "$m" "${lout:-unreadable}" "$lrep" >&2
         fi
@@ -4802,15 +4898,15 @@ cmd_rank() {
   fi
 
   # --- the tool calls denied in the ranking session, read as `record` reads a replay's
-  local den dcount dkinds
+  local den dcount dkinds dtools
   den="$(rd_session_denials "${ORCH_METRICS_PROJECTS_DIR:-$HOME/.claude/projects}" "$STEP_SESSION")"
   case "$(printf '%s\n' "$den" | cut -f1)" in
     measured)
-      dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"
+      dcount="$(printf '%s\n' "$den" | cut -f2)"; dkinds="$(printf '%s\n' "$den" | cut -f3)"; dtools="$(printf '%s\n' "$den" | cut -f4)"
       case "$dcount" in ''|*[!0-9]*) die "rank: the denial count is not a count: [$dcount]" ;; esac
       if [ "$dcount" -gt 0 ]; then
-        printf 'REFUSED rule=denied count=%s kinds=%s\n' "$dcount" "$dkinds" >&2
-        die "rank: ranking $rkid's session had $dcount tool call(s) denied ($dkinds): a harness fault, not the reviewer's; nothing recorded"
+        printf 'REFUSED rule=denied count=%s kinds=%s tools=%s\n' "$dcount" "$dkinds" "${dtools:-unrecorded}" >&2
+        die "rank: ranking $rkid's session had $dcount tool call(s) denied ($dkinds; tools: ${dtools:-unrecorded}): a harness fault, not the reviewer's; nothing recorded"
       fi ;;
     *)
       printf 'REFUSED rule=denials-unmeasured\n' >&2
@@ -5058,6 +5154,9 @@ cmd_report() {
       else if ($2 == ".packet" && $3 == "s") rp[d] = $4
       else if ($2 == ".model" && $3 == "s") rmod[d] = $4
       else if ($2 == ".outcome" && $3 == "s") ro[d] = $4
+      else if ($2 == ".invalid_cause" && $3 == "s") rc[d] = $4
+      else if ($2 ~ /^\.denial_kinds\[[0-9]+\]$/ && $3 == "s") { v = $4; gsub(/[^A-Za-z0-9._-]/, "?", v); rk[d] = rk[d] (rk[d] == "" ? "" : ",") v }
+      else if ($2 ~ /^\.denial_tools\[[0-9]+\]$/ && $3 == "s") { v = $4; gsub(/[^A-Za-z0-9._-]/, "?", v); rtl[d] = rtl[d] (rtl[d] == "" ? "" : ",") v }
       else if ($2 == ".fix_rounds" && $3 == "n" && $4 ~ /^[0-9]+$/) rf[d] = $4 + 0
       else if ($2 ~ /^\.tokens\.(input|output|cache_creation|cache_read)$/ && $3 == "n" && $4 ~ /^[0-9]+$/) { rt[d] += $4; rtn[d]++ }
       else if ($2 == ".dollars_min" && $3 == "n" && $4 ~ /^[0-9]+(\.[0-9]+)?$/) rdl[d] = $4 + 0
@@ -5166,7 +5265,25 @@ cmd_report() {
           if ((j, m) in rankpos) { Rs[m, c, kset[j]] += rankpos[j, m]; Rn[m, c, kset[j]]++ }
           if (!((Sx[j], p, m) in latest)) continue
           d = latest[Sx[j], p, m]; rec++
-          if (ro[d] == "invalid") { inval++; continue }
+          if (ro[d] == "invalid") {
+            inval++
+            # A denial-invalid replay, counted per model beside the cells; its
+            # kinds and tools are the record'"'"'s, or unrecorded when it stores none.
+            if (rc[d] == "denial") {
+              DNn[m]++
+              if (rk[d] == "") DNu[m]++
+              else {
+                nkd = split(rk[d], kd, ",")
+                for (t = 1; t <= nkd; t++) if (!((m, kd[t]) in DNseen)) { DNseen[m, kd[t]] = 1; DNk[m] = DNk[m] (DNk[m] == "" ? "" : ", ") kd[t] }
+              }
+              if (rtl[d] == "") DNtu[m]++
+              else {
+                nkd = split(rtl[d], kd, ",")
+                for (t = 1; t <= nkd; t++) if (!((m, kd[t]) in DNtseen)) { DNtseen[m, kd[t]] = 1; DNt[m] = DNt[m] (DNt[m] == "" ? "" : ", ") kd[t] }
+              }
+            }
+            continue
+          }
           scored++
           if (ro[d] == "passed") { passed++; if (d in rf) { frs += rf[d]; frn++ } }
           if (rtn[d] == 4) { tks += rt[d]; tkn++ }
@@ -5195,6 +5312,18 @@ cmd_report() {
         }
         printf " · tokens %s (n=%d)", mean(tks, tkn, "%.0f"), tkn
         printf " · dollars %s (n=%d)\n", (dn > 0 ? sprintf("%.2f–%.2f", lo / dn, hi / dn) : "unmeasured"), dn
+      }
+      # Per model, the latest replays invalid for a denial, over both classes: a
+      # count beside the cells (each already excludes them), changing no figure.
+      # A model with none prints no line.
+      for (mi = 1; mi <= nm; mi++) {
+        m = mod[mi]
+        if (DNn[m] == 0) continue
+        r = DNk[m]
+        if (DNu[m] > 0) r = r (r == "" ? "" : "; ") "kinds unrecorded for " DNu[m]
+        tl = (DNt[m] == "" ? "" : "tools: " DNt[m])
+        if (DNtu[m] > 0) tl = tl (tl == "" ? "" : "; ") "tools unrecorded for " DNtu[m]
+        printf "> ⚠️ **%s** — %d replay(s) invalid for a denial (denied: %s; %s), excluded from its cells as a harness fault\n", m, DNn[m], r, tl
       }
 
       printf "\n**Packets**\n"

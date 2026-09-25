@@ -139,8 +139,8 @@ given but cannot use makes it refuse every write, the root's included.
 
 It is `/tmp`, not `$TMPDIR`, and `CLAUDE_CODE_TMPDIR` as well as `TMPDIR`,
 because of how Claude Code 2.1.281 places a sandboxed command's temp directory.
-That was read from its installed binary on 2026-09-24, not observed in a
-session. The directory is `${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>`, so without
+That was read from its installed binary on 2026-09-24, and the live probe
+(below) observed it on 2026-09-25. The directory is `${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>`, so without
 `CLAUDE_CODE_TMPDIR` it would be one directory shared by every session of the
 user, which the sandbox allows and the hook refused. When that path is longer
 than 44 bytes, Claude Code falls back to the shared `/tmp/claude-<uid>`, and
@@ -151,20 +151,25 @@ the session's temp directory.
 `--plugin-dir` also loads the harness's `hooks/guard.sh`, whose hard deny is a
 `PreToolUse` hook's exit 2, not a permission prompt. A refusal by the hook or
 the guard is a denied call like any other, so the replay is scored `invalid`
-(below). A write the sandbox blocks fails inside its command instead. Whether
-a transcript records that as a denied call has not been observed.
+(below). A write the sandbox blocks fails inside its command instead, and its
+transcript records no denied call (observed by the live probe below), so it
+does not make the replay `invalid`.
 
-**The residual risk.** None of this has been observed in a bypass-mode session:
-the live probe was not run. Five things are unconfirmed: that a hook's exit 2 is
-honoured in that mode, that the sandbox starts and confines there, that the
-hook's payload `cwd` follows a `cd` between `Bash` calls, that
-`disableAllHooks: false` outranks project settings, and that a sandboxed
-command's `$TMPDIR` lies inside the session's temp directory (the probe
-prints `$TMPDIR` from a sandboxed `Bash` call and writes a file there; it holds
-when that path is under the directory the settings name and no call is denied).
-The sandbox would bound a
-misplaced relative write if the payload `cwd` did not follow a `cd`. Four gaps
-are known and left open:
+**The residual risk.** A live probe on 2026-09-25 (Claude Code 2.1.281, below)
+confirmed four of the five things this paragraph left unconfirmed, in
+bypass-mode `claude -p` sessions. A hook's exit 2 is honoured in that mode. The
+sandbox starts and confines there: a `python3` write outside the clone, which
+the hook does not see, failed with `Operation not permitted`.
+`disableAllHooks: false` outranks project settings: with `disableAllHooks: true`
+in the clone's `.claude/settings.json`, the confinement hook and the guard both
+still refused. A sandboxed command's `$TMPDIR` lies inside the session's temp
+directory: it read `<tmp>/claude-<uid>`, and a write there was not denied. The
+fifth is confirmed in part. After a `Bash` call ran `cd` out of the clone,
+Claude Code reset the shell to the clone, so the next relative write landed
+inside it. Whether the hook's payload `cwd` follows a `cd` between directories
+inside the root is still unobserved; the sandbox would bound a misplaced
+relative write there, and it keeps Claude Code's configuration paths from
+`Bash` either way. Four gaps are known and left open:
 
 - MCP tools are confined by nothing the harness adds. A session loaded
   through `--plugin-dir` has the harness's `.mcp.json` servers (`git`,
@@ -260,12 +265,23 @@ bypass-mode session. Five cases were not observed:
 - the transcript a `-p` session writes under a given `--session-id`;
 - a denial reported on a `-p` session's stdout.
 
-A live probe (a bypass-mode `claude -p` session attempting a guard-denied and
-an ask-tier write) was refused by the environment it was tried from. The first
-live experiment must confirm that the steps run unprompted, that a denied
-call is scored `invalid`, and that a write outside the clone is refused. It should also confirm that the guard still hard-denies
-in that mode, and read one bypass-mode replay's transcripts for the kind an
-ask-tier decision records.
+**The live probe (2026-09-25).** A first attempt, a bypass-mode `claude -p`
+session attempting a guard-denied and an ask-tier write, was refused by the
+environment it was tried from. The probe that ran used `compare.sh`'s own
+`run_session`, `confine_settings`, `session_tmp` and `rd_session_denials` on
+Claude Code 2.1.281. It started two sessions, each in a `git clone --shared` of
+this repository with `bypass-ask-tier` turned off; the second also had
+`disableAllHooks: true` in the clone's `.claude/settings.json`. Both ran to the
+end unprompted. Every refusal the probe expected happened, and nothing was
+written outside a clone or its temp directory. It observed three of the five
+cases above. A guard hard deny (a `.env` write) records `permission-rule`, as
+the confinement hook's refusal does. A guard ask-tier decision is refused, not
+approved, and records `user-rejected`. Each session's transcript was where
+`rd_session_denials` looks for its `--session-id`, and it counted all five
+denials, so a replay that meets any of them is scored `invalid`. A denial inside
+a subagent transcript and a denial reported on stdout remain unobserved; the
+probe dispatched no subagent. The first live experiment should read one
+replay's subagent transcripts for a denial.
 
 ### 3. A replay copies `run-loop` §3's sequence, so the two are amended together
 

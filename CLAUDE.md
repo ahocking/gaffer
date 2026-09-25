@@ -278,7 +278,7 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   Never allow a temp path in one half only. Another session's temp directory and a bare
   `/tmp` path stay refused.
   **Never register it in `hooks/hooks.json` or fold it into `guard.sh`.** Residual
-  risk (ADR 0030 §2): none of it has been observed in bypass mode; MCP tools and
+  risk (ADR 0030 §2; its live probe confirmed the rest): MCP tools and
   the network are unconfined; existing settings entries can widen the sandbox; and
   **T26 leaves open** that a session can plant a git setting or a symlink in its
   clone that the harness's own unsandboxed steps later act on.

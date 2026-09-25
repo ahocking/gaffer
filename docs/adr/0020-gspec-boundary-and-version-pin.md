@@ -765,3 +765,29 @@ to read:
 > The claim is not bookkeeping: `status: running` alone cannot tell a crashed
 > session from *this* one, so without it the next session reads your live run as a
 > crash and starts driving too (ADR 0020 D5).
+
+## Relocated from skills (2026-09-25) — the run-loop skill's bundle-forming reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** step by
+`skill-prompt-trim`. No ADR owns bundle formation; this one, which owns the adapter
+whose `group` subcommand forms a bundle, is the closest. The skill keeps each rule
+with at most a one-clause reason; the fuller wording is recorded here.
+
+- **What a non-zero `group` exit means.** The skill keeps "(stderr only, no
+  `HANDOFF=`/`GROUP=` line) leaves no group to read". It used to read:
+
+  > **A non-zero exit** (`group`'s own `die` paths — a refused id, ADR 0025 D1, or a
+  > malformed argument — write to stderr only, with no `HANDOFF=`/`GROUP=` line at
+  > all) means the command produced no group to read
+
+- **Why a `HANDOFF=unknown` packet's tier is judged as for any single packet.** The
+  skill keeps the rule without this reason:
+
+  > (nothing about that judgment depended on `group`'s output to begin with — a
+  > non-gspec packet never had it)
+
+- **Why a multi-member bundle's tier has three possible values.** The skill keeps "a
+  multi-member `MEMBERS` is never `design-heavy`". It used to read:
+
+  > a multi-member `MEMBERS` is never `design-heavy` by construction, so this can only
+  > land on `mechanical`, `integration`, or `docs`.

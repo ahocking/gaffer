@@ -2037,6 +2037,95 @@ why the findings carry is inside the one write|a crash in between loses it|exist
 why runstate.sh findings is not a source|it strips the single-quoting the durable-state writer applies|tab-separated projection for one caller|0022
 T6_MOVES
 
+printf '\n== run-loop §3 steps 1-5: values by key only, reasons one clause with the rest in their ADRs (skill-prompt-trim T7) ==\n'
+# Same three rules as the T6 section above, over the next range: from the `## 3. Loop`
+# heading to the end of step 5 (**Act on `route`'s action**), i.e. up to the step-6
+# **Land** line. Capability 4: the Branch step named the integration branch's fallback
+# chain and the Form step stated `bundle-cap`'s default; both now name the key and the
+# file (or the printed `CAP=`) instead. Capability 3: each row below pins the clause
+# the skill kept, the moved wording gone from the range, and that wording present in the
+# owning ADR's run-loop relocation section. The range also carries no task-id history
+# and no "as today" comparison, except the two pinned phrases the refusal and
+# continuation sections above read on both driver surfaces, and every dispatch in it
+# keeps its `routing.sh resolve`.
+#
+# The guard below requires the range's last line to BE the step-6 line, so a renamed
+# step -- which runs the range on to end of file, over text outside it -- fails loud.
+t7_rl="$ROOT/skills/run-loop/SKILL.md"
+t7_raw="$(sed -n '/^## 3\. Loop/,/^6\. \*\*Land/p' "$t7_rl")"
+t7_first="$(printf '%s\n' "$t7_raw" | head -1)"
+t7_last="$(printf '%s\n' "$t7_raw" | tail -1)"
+case "$t7_first|$t7_last" in
+  '## 3. Loop'*'|6. **Land'*) ok 'run-loop §3 steps 1-5 range extracted (## 3. Loop heading to the step-6 Land line)' ;;
+  *) bad 'run-loop §3 steps 1-5 range extracted (## 3. Loop heading to the step-6 Land line)' "first: $t7_first / last: $t7_last" ;;
+esac
+t7_range="$(_rc_sq "$t7_raw")"
+
+t7_branch="$(_rc_site "$t7_rl" '^1\. \*\*Branch\.\*\*' 'if it already exists\.')"
+[ -n "$t7_branch" ] && ok 'run-loop §3 Branch step extracted (anchor holds)' \
+  || bad 'run-loop §3 Branch step extracted (anchor holds)' 'empty -- the step moved or was rewritten'
+under_ceiling 'run-loop §3 Branch span stays inside its ceiling (end anchor still matches)' "$t7_branch"
+t7_branch="$(_rc_sq "$t7_branch")"
+has 'Branch step: the integration base is named by its key' '`integration_branch`' "$t7_branch"
+has 'Branch step: and by the file that holds its value' '`.agents/project-overrides.yaml`' "$t7_branch"
+has "Branch step: the fallback is pointed at §1's Branch bullet, not stated" "its absent-key fallback as §1's **Branch** bullet states" "$t7_branch"
+has 'Form step: the bundle cap is read from bundle-cap, named by its key and file' \
+  '`runstate.sh bundle-cap` prints `CAP=<n>`, the cap in effect, from `bundle_max_tasks` in `.agents/project-overrides.yaml`' "$t7_range"
+t7_vals="$(printf '%s\n' "$t7_raw" | grep -nE '\(default |default `|else `develop`|else `main`|inert until')"
+[ -z "$t7_vals" ] && ok 'run-loop §3 steps 1-5 state no default value' \
+  || bad 'run-loop §3 steps 1-5 state no default value' "found: $(printf '%s' "$t7_vals" | head -1)"
+
+# History: no task id in parentheses, and no "today" beyond the two pinned phrases.
+t7_ids="$(printf '%s\n' "$t7_raw" | grep -nE '\(T[0-9]+[;)]')"
+[ -z "$t7_ids" ] && ok 'run-loop §3 steps 1-5 carry no task-id history' \
+  || bad 'run-loop §3 steps 1-5 carry no task-id history' "found: $(printf '%s' "$t7_ids" | head -1)"
+t7_today="${t7_range//proceeds to the reviewer dispatch exactly as today/}"
+t7_today="${t7_today//reviewer exactly as today/}"
+case "$t7_today" in
+  *today*) bad 'run-loop §3 steps 1-5 carry no "as today" history outside the two pinned phrases' \
+             "found: $(printf '%s' "$t7_today" | grep -oE '.{40}today.{0,10}' | head -1)" ;;
+  *) ok 'run-loop §3 steps 1-5 carry no "as today" history outside the two pinned phrases' ;;
+esac
+
+# Every dispatch in the range keeps its model resolution beside it.
+while IFS='|' read -r t7_label t7_needle; do
+  [ -n "$t7_label" ] || continue
+  has "run-loop §3 keeps routing.sh resolve beside: $t7_label" "$t7_needle" "$t7_range"
+done <<'T7_RESOLVE'
+the packet's first dispatch|routing.sh resolve <agent>` for the `--agent` from §3.3
+the reviewer dispatch|routing.sh resolve reviewer`
+the attempt re-dispatch|routing.sh resolve <agent>` for the packet's `--agent`
+the continuation dispatch|routing.sh resolve implementer`
+the decider dispatch|routing.sh resolve chief-engineer`
+T7_RESOLVE
+
+while IFS='|' read -r t7_label t7_kept t7_moved t7_adr; do
+  [ -n "$t7_label" ] || continue
+  has "run-loop keeps one clause: $t7_label" "$t7_kept" "$t7_range"
+  case "$t7_range" in
+    *"$t7_moved"*) bad "run-loop carries no copy of the moved reason: $t7_label" "still present: $t7_moved" ;;
+    *) ok "run-loop carries no copy of the moved reason: $t7_label" ;;
+  esac
+  t7_adr_file="$(ls "$ROOT"/docs/adr/"$t7_adr"-*.md 2>/dev/null | head -1)"
+  t7_sect="$(sed -n "/^## Relocated from skills ([0-9-]*) — the run-loop skill's/,\$p" "$t7_adr_file" 2>/dev/null)"
+  has "ADR $t7_adr's run-loop relocation section holds it: $t7_label" "$t7_moved" "$(_rc_sq "$t7_sect")"
+done <<'T7_MOVES'
+why the membership is formed first|the sweep below exempts every member of a paused bundle, not just the cursor|before it decides what stays exempt|0005
+when the membership is recovered|(a session picking this packet back up, after a compaction or through `/gaffer:resume`)|`record-start` already covers the membership an earlier session|0005
+why an empty --list skips the real sweep|skip `task-status` entirely when `--list` printed nothing|nothing for the real sweep to close either|0005
+what a non-zero group exit means|(stderr only, no `HANDOFF=`/`GROUP=` line) leaves no group to read|`group`'s own `die` paths|0020
+why a HANDOFF=unknown tier is judged as for any single packet|decide its `tier`/`--agent` as for any single packet|non-gspec packet never had it|0020
+why a bundle is never design-heavy|a multi-member `MEMBERS` is never `design-heavy`.|by construction, so this can only|0020
+why a non-zero group exit is reported|since a silent fallback reads as "nothing to bundle"|rather than "the check itself failed."|0023
+why $SWEEP is carried to the report|this sweep is the only point that knows which packets are newly closed|never filtered by `--since`|0023
+why SINCE is captured before the start|to this packet's own decisions|never one already reported for an earlier packet|0023
+why the driver appends no contract line|which `runstate.sh handoff` adds itself|a driver that forgets this step entirely|0029
+why discard-advance stashes|which the guard hard-denies; one stash covers the whole bundle's uncommitted work|nothing was ever committed member-by-member|0028
+why append-task merges at once|so it is runnable in this run only once that branch is merged|reads the plan from the integration branch|0028
+why the merged branch is deleted|left in place, it lacks the appended task's work and the re-run fails the same way|still points at the decider commit|0028
+why hand-off-feature assumes no prefix|a resume, a decider `reorder`, or an `append-task` can move one or leave it out|the loop's own chosen order|0028
+T7_MOVES
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -114,6 +114,30 @@ separate variance figure for `cc_shape` itself.
   default value; and for each of the nine reasons this task moved, run-loop keeps its
   one clause, carries no copy of the moved wording, and the owning ADR's run-loop
   relocation section (ADR 0005, 0022, 0023, 0025, 0028) holds it.
+- **T7 (run-loop §3 steps 1–5, `## 3. Loop` through **Act on `route`'s action**):**
+  no existing assertion changed. Every passage the sweep extracts from this range —
+  the `check-status` refusal clause, the implementer-line branch, the attempt-refresh
+  and `ACTION=continue` arms, and T5's membership-recovery, first-packet and
+  recovered-`HANDOFF=unknown` spans — keeps its anchors and needles as they were; the
+  refusal clause, the branch and both arms are byte-identical, so the two surfaces
+  those sections compare still read the same. `test-report-conventions.sh` gains one
+  section: the Branch step names `integration_branch` and
+  `.agents/project-overrides.yaml` and points at §1's **Branch** bullet for the
+  fallback; the Form step reads the cap from `runstate.sh bundle-cap`'s `CAP=`, named
+  by `bundle_max_tasks` and its file; the range states no default value, carries no
+  task-id history and no "as today" outside the two pinned phrases; each of its five
+  dispatches keeps its `routing.sh resolve`; and for each of the fourteen reasons this
+  task moved, run-loop keeps its one clause, carries no copy of the moved wording, and
+  the owning ADR's run-loop relocation section (ADR 0005, 0020, 0023, 0028, 0029)
+  holds it.
+  One rule removal, deliberate (operator decision, 2026-09-25): the Branch step's
+  integration-base fallback at the baseline — `integration_branch`, else `develop`,
+  else `main`/`master` — loses its `main`/`master` arm, and is not restored. That arm
+  contradicted §1's **Branch** bullet ("Never run on `main`/`master`"; the base is
+  the **non-`main`** branch). The remaining fallback is the one
+  `templates/task-packet.yaml`'s header comment states, which §1 points at.
+  `agents/chief-engineer.md` still states the `main`/`master` arm; aligning it is
+  outside this task's files.
 
 ## Loop-skill rule review
 

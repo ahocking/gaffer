@@ -234,6 +234,14 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     denial-invalid replays per model, and a rerun is not recommended when the
     same denial would stop it again
 
+- [ ] **P0**: The confinement hook and the Bash sandbox allow the same write boundary
+  - the session's own temp directory is writable under both halves of the
+    confinement or under neither, never one, so an ordinary scratch write is
+    not scored as a denial
+  - an invalid replay whose record also counts denials says so wherever its
+    cause is shown, so a rerun is never recommended past a denial that would
+    stop it again
+
 - [ ] **P2**: Harness steps never act on what a session planted in its clone
   - no harness-side step run outside the sandbox (staging, copying, landing)
     executes a command or follows a link that a session wrote into its clone:

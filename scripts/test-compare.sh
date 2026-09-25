@@ -150,6 +150,19 @@
 # never their average, and named; the proposal's rank read only from the one
 # set that ranked every tied model (none: unmeasured; one: it decides, named;
 # two: the rule stops, naming both).
+# Confinement: every replay, review-view and ranking session given `--settings`
+# holding compare-confine.sh as a PreToolUse hook rooted at its own directory,
+# that command (run as a hook runs) allowing a write inside and refusing one
+# beside it, and the Bash sandbox (on, strict, writes limited to that
+# directory); and compare-confine.sh fed payloads directly: writes inside the
+# clone and read-only commands allowed; a path outside, a home-directory path,
+# the source checkout, a `..` escape, a symlink out, an unresolvable target and
+# a payload or root it cannot read each refused; a hard link from outside (`ln`,
+# `cp -l`, `link`, `install -l`) and a write to a file with another hard link
+# refused, a symbolic link allowed; a copy into a directory whose same-named
+# entry, or whose tree for a recursive copy, holds a link refused, and allowed
+# without one; the clone's Claude Code configuration paths refused; a tool
+# path's brackets read literally.
 #
 # Run:  scripts/test-compare.sh   (exit 0 = all passed, 1 = a case failed)
 # =============================================================================
@@ -1879,7 +1892,7 @@ cat > "$WORK/stub-claude" <<'STUB'
 #!/usr/bin/env bash
 d="$STUB_DIR"
 n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/count"
-prompt=""; plugin=""; effort="(none)"; perm="(none)"; session=""
+prompt=""; plugin=""; effort="(none)"; perm="(none)"; session=""; settings="(none)"
 while [ $# -gt 0 ]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
@@ -1887,6 +1900,7 @@ while [ $# -gt 0 ]; do
     --effort) effort="$2"; shift 2 ;;
     --permission-mode) perm="$2"; shift 2 ;;
     --session-id) session="$2"; shift 2 ;;
+    --settings) settings="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -1894,6 +1908,7 @@ agent="$(printf '%s\n' "$prompt" | sed -n 's/^Dispatch the `\([a-z-]*\)` agent.*
 printf 'call=%s agent=%s effort=%s effort_env=%s cwd=%s plugin=%s\n' "$n" "$agent" "$effort" \
   "${CLAUDE_CODE_EFFORT_LEVEL-(unset)}" "$(pwd -P)" "$plugin" >> "$d/log"
 printf 'call=%s agent=%s perm=%s session=%s\n' "$n" "$agent" "$perm" "${session:-(none)}" >> "$d/flags"
+printf 'call=%s agent=%s cwd=%s settings=%s\n' "$n" "$agent" "$(pwd -P)" "$settings" >> "$d/confine"
 printf '%s\n' "$prompt" > "$d/prompt.$n"
 line="$(sed -n "${n}p" "$d/script")"
 case "$line" in
@@ -1972,6 +1987,48 @@ case "$line" in
 esac
 STUB
 chmod +x "$WORK/stub-claude"
+# The confinement every session is started with (the stub logs it to `confine`).
+CONFINE="$HERE/compare-confine.sh"
+cf_expect() {  # cf_expect <dir>: the --settings JSON a session started in <dir> is given
+  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":["%s"]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":"'"'"'%s'"'"' '"'"'%s'"'"'"}]}]}}' \
+    "$1" "$CONFINE" "$1"
+}
+cf_str() {  # cf_str <s>: <s> as a JSON string
+  V="$1" awk 'BEGIN { s = ENVIRON["V"]; gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
+    gsub(/\n/, "\\n", s); gsub(/\t/, "\\t", s); printf "\"%s\"", s }'
+}
+cf_payload() {  # cf_payload <tool> <path-or-command> <cwd>: a PreToolUse payload as Claude Code sends one
+  local k=file_path
+  case "$1" in Bash) k=command ;; NotebookEdit) k=notebook_path ;; esac
+  printf '{"session_id":"s","hook_event_name":"PreToolUse","cwd":%s,"tool_name":%s,"tool_input":{"%s":%s}}' \
+    "$(cf_str "$3")" "$(cf_str "$1")" "$k" "$(cf_str "$2")"
+}
+# cf_wired <label> <confine log line>: the hook command the settings carry, run as
+# Claude Code runs a hook command (through sh, the payload on stdin), allows a
+# write inside the session's directory and refuses one beside it, and the
+# settings are valid JSON (Claude Code silently ignores a settings file that is not).
+cf_wired() {
+  local cwd set cmd rin rout
+  cwd="${2#* cwd=}"; cwd="${cwd%% settings=*}"; set="${2#* settings=}"
+  cmd="$(printf '%s' "$set" | sed -n 's/.*"command":"\(.*\)"}]}]}}$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+  if [ -z "$cmd" ] || [ ! -d "$cwd" ]; then bad "$1: the hook command and directory are readable from the log" "[$2]"; return; fi
+  cf_payload Write "$cwd/confined.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rin=$?
+  cf_payload Write "${cwd%/*}/beside-$$.txt" "$cwd" | sh -c "$cmd" >/dev/null 2>&1; rout=$?
+  assert_eq "$1: the settings' hook allows a write inside the session's directory and refuses one beside it" "0:2" "$rin:$rout"
+  if command -v jq >/dev/null 2>&1; then
+    assert_eq "$1: the settings are valid JSON" "ok" "$(printf '%s' "$set" | jq -e '.hooks.PreToolUse[0].hooks[0].type == "command"' >/dev/null 2>&1 && echo ok)"
+    # The Bash sandbox, parsed rather than matched as text: on, failing closed
+    # when it cannot start, no unsandboxed retry, the filesystem layer kept on,
+    # and writes allowed in the session's own directory and nowhere else named.
+    assert_eq "$1: the settings turn on the Bash sandbox with writes limited to the session's directory" \
+      "true|true|false|false|[\"$cwd\"]|false" \
+      "$(printf '%s' "$set" | jq -r '[.sandbox.enabled, .sandbox.failIfUnavailable, .sandbox.allowUnsandboxedCommands,
+          .sandbox.filesystem.disabled, (.sandbox.filesystem.allowWrite | tojson), .disableAllHooks] | map(tostring) | join("|")' 2>/dev/null)"
+  else
+    printf 'skip %s: the settings are valid JSON (no jq to parse them)\n' "$1"
+    printf 'skip %s: the settings turn on the Bash sandbox (no jq to parse them)\n' "$1"
+  fi
+}
 IMPL_DONE='done · did the work · result: no · /r/implementer.md'
 IMPL_CONT='continue · stopped at the budget · result: needs-reading · /r/implementer.md'
 REV_PASS='pass · looks right · result: no · /r/review.md'
@@ -2201,6 +2258,37 @@ RPS_FLAGS="$(sed -n 's/^call=[0-9]* agent=\([a-z-]*\) perm=[^ ]* session=\(.*\)$
 RPS_STEPS="$(sed -n 's/^STEP n=[0-9]* agent=\([a-z-]*\) .* session=\(.*\)$/\1 \2/p' "$RPSTORE/$RPEXP/replays/$RP_PASS_R.steps" | paste -sd'|' -)"
 assert_eq "replay permission mode: each STEP line names the session id its session was started on" \
   "$RPS_FLAGS" "$RPS_STEPS"
+# The same sessions, each confined to its own clone or view: `--settings` carries
+# the harness's compare-confine.sh as a PreToolUse hook on the write tools and
+# Bash, rooted at the directory the session was started in.
+RPCF="$(cat "$WORK"/stub[0-9]*/confine)"
+RPCF_N="$(printf '%s\n' "$RPCF" | grep -c '^call=')"
+RPCF_R="$(printf '%s\n' "$RPCF" | grep -c '^call=[0-9]* agent=reviewer ')"
+RPCF_OK=0
+while IFS= read -r l; do
+  cwd="${l#* cwd=}"; cwd="${cwd%% settings=*}"
+  [ "${l#* settings=}" = "$(cf_expect "$cwd")" ] && RPCF_OK=$((RPCF_OK + 1))
+done <<< "$RPCF"
+assert_eq "replay confinement: every session the effort check counted was logged here too" "$RPEFF_N:$RPEFF_R" "$RPCF_N:$RPCF_R"
+assert_eq "replay confinement: every replay and review-view session was given --settings confining it to its own directory" \
+  "$RPCF_N" "$RPCF_OK"
+# The Bash sandbox on every one of them, read by parsing each session's settings:
+# on, strict, and its writes limited to that session's own directory.
+if command -v jq >/dev/null 2>&1; then
+  RPSB_OK=0
+  while IFS= read -r l; do
+    cwd="${l#* cwd=}"; cwd="${cwd%% settings=*}"
+    printf '%s' "${l#* settings=}" | jq -e --arg d "$cwd" '.sandbox.enabled == true and .sandbox.failIfUnavailable == true
+      and .sandbox.allowUnsandboxedCommands == false and .sandbox.filesystem.allowWrite == [$d]' >/dev/null 2>&1 \
+      && RPSB_OK=$((RPSB_OK + 1))
+  done <<< "$RPCF"
+  assert_eq "replay confinement: every replay and review-view session's settings sandbox Bash with writes limited to its own directory" \
+    "$RPCF_N" "$RPSB_OK"
+else
+  printf 'skip replay confinement: the Bash sandbox on every session (no jq to parse the settings)\n'
+fi
+cf_wired "replay confinement, a work-clone session" "$(printf '%s\n' "$RPCF" | grep -v ' agent=reviewer ' | head -1)"
+cf_wired "replay confinement, a review-view session" "$(printf '%s\n' "$RPCF" | grep ' agent=reviewer ' | head -1)"
 # A stored selection naming no effort is refused before any session starts, and
 # the replay is left unrun.
 cp "$RPSTORE/$RPEXP/selection.json" "$WORK/rp.sel"
@@ -3390,6 +3478,9 @@ assert_eq "rank: the session was started with --effort high and no CLAUDE_CODE_E
 assert_eq "rank: the session was started with --permission-mode bypassPermissions and a UUID --session-id" \
   "call=1 agent=reviewer perm=bypassPermissions uuid" \
   "$(sed -n 's/^\(call=1 agent=[a-z]* perm=[^ ]*\) session=[0-9a-f]\{8\}-[0-9a-f]\{4\}-4[0-9a-f]\{3\}-[89ab][0-9a-f]\{3\}-[0-9a-f]\{12\}$/\1 uuid/p' "$SD/flags")"
+assert_eq "rank: the session was given --settings confining it to the ranking clone" \
+  "call=1 agent=reviewer cwd=$RKD settings=$(cf_expect "$RKD")" "$(cat "$SD/confine")"
+cf_wired "rank confinement, the ranking session" "$(cat "$SD/confine")"
 RKPROMPT="$(cat "$SD/prompt.1")"
 assert_has "rank: the brief names each diff by its label" "C  $RKD/.agents/ranking/C.diff" "$RKPROMPT"
 case "$RKPROMPT" in
@@ -3958,6 +4049,109 @@ printf '\n== usage ==\n'
 "$COMPARE" rank-prepare aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank-prepare without a packet: exit 2" "2" "$?"
 "$COMPARE" rank aaaaaaaaaaa1 >/dev/null 2>&1; assert_eq "rank without a packet: exit 2" "2" "$?"
 "$COMPARE" report >/dev/null 2>&1; assert_eq "report without an experiment: exit 2" "2" "$?"
+
+printf '\n== compare-confine.sh: the confinement hook, directly ==\n'
+# The hook every harness session is given, fed payloads as Claude Code sends
+# them, confined to a fixture clone. `esc` is a symlink out of it; `outside` is
+# beside it; the source checkout is this repository.
+CFR="$WORK/cf/clone"
+mkdir -p "$CFR/sub" "$WORK/cf/outside"
+ln -s "$WORK/cf/outside" "$CFR/esc"
+cf_run() {  # cf_run <tool> <path-or-command> [cwd] [root]: CF_RC, CF_OUT, CF_ERR (root: the fixture clone)
+  CF_OUT="$(cf_payload "$1" "$2" "${3:-$CFR}" | "$CONFINE" "${4:-$CFR}" 2>"$WORK/cf.err")"; CF_RC=$?
+  CF_ERR="$(cat "$WORK/cf.err")"
+}
+cf_allow() {  # cf_allow <label> <tool> <path-or-command>
+  cf_run "$2" "$3"
+  assert_eq "compare-confine, allowed: $1" "0||" "$CF_RC|$CF_OUT|$CF_ERR"
+}
+cf_refuse() {  # cf_refuse <label> <tool> <path-or-command> <reason needle>
+  cf_run "$2" "$3"
+  assert_eq "compare-confine, refused: $1: exit 2, nothing on stdout" "2|" "$CF_RC|$CF_OUT"
+  assert_has "compare-confine, refused: $1: the reason is named" "compare-confine: refused: $4" "$CF_ERR"
+}
+cf_allow "a Write inside the clone" Write "$CFR/a.txt"
+cf_allow "a Write creating directories inside the clone" Write "$CFR/sub/new/deep.txt"
+cf_allow "a NotebookEdit inside the clone" NotebookEdit "$CFR/n.ipynb"
+cf_allow "a shell write to a relative path inside the clone" Bash 'echo hi > a.txt'
+cf_allow "a shell write after a leading cd into the clone" Bash "cd $CFR/sub && printf x >> f.txt"
+cf_allow "a read-only command reading outside the clone" Bash 'ls -la /etc; cat /etc/hosts | grep -c localhost 2>/dev/null'
+cf_allow "a Read outside the clone (reads are not judged)" Read /etc/hosts
+cf_allow "quoted text that only looks like a write" Bash 'git commit -m "a > /etc/x; cp y /etc/z"'
+cf_allow "a heredoc body that only looks like a write" Bash "cat > $CFR/f.txt <<'EOF'
+line > /etc/x
+EOF"
+cf_refuse "an absolute path outside the clone" Write "$WORK/cf/outside/x.txt" "a write outside the session's clone"
+cf_refuse "a home-directory path" Write "$HOME/.compare-confine-probe" "a write outside the session's clone"
+cf_refuse "a home-directory path written with ~" Write '~/.compare-confine-probe' "a home-directory target"
+cf_refuse "a path into the source checkout" Edit "$REPO/scripts/compare.sh" "a write outside the session's clone"
+cf_refuse "a shell write into the source checkout" Bash "echo x >> $REPO/README.md" "a write outside the session's clone"
+cf_refuse "a '..' escape that reads as inside the clone" Write "$CFR/nosuch/../../outside/x.txt" "a target with a '..' segment"
+cf_refuse "a relative '..' escape in a shell write" Bash 'echo x > nosuch/../../x.txt' "a target with a '..' segment"
+cf_refuse "an unexpanded variable in a target" Write '$HOME/x.txt' "a target this hook cannot resolve"
+cf_refuse "an unexpanded variable in a redirection" Bash 'echo x > $OUT' "a target this hook cannot resolve"
+cf_refuse "a quoted redirection target that is not a plain word" Bash 'echo x > "$OUT"' "a target this hook cannot resolve"
+cf_refuse "a redirection with no target" Bash 'echo x >' "a redirection with no readable target"
+cf_refuse "a symlink out of the clone" Write "$CFR/esc/x.txt" "a write outside the session's clone"
+cf_refuse "cp to outside the clone" Bash "cp a.txt $WORK/cf/outside/" "a write outside the session's clone"
+cf_refuse "tee to outside the clone" Bash "echo x | tee $WORK/cf/outside/t.txt" "a write outside the session's clone"
+cf_refuse "sed -i outside the clone" Bash "sed -i '' 's/a/b/' $WORK/cf/outside/s.txt" "a write outside the session's clone"
+cf_refuse "a relative write after a cd out of the clone" Bash "cd $WORK/cf/outside && echo x > f.txt" "a write outside the session's clone"
+cf_refuse "a write beside a command substitution" Bash 'echo "$(touch /tmp/x)" > a.txt' "a write beside a construct"
+# Hard links: a hard link gives its source a second name, so its source is
+# judged as a target; `pre` is a real hard link from inside the clone to a
+# file outside it, made the way a tool this hook cannot see would make one.
+printf x > "$WORK/cf/outside/f"; printf y > "$WORK/cf/outside/g"; printf z > "$CFR/in.txt"
+ln "$WORK/cf/outside/g" "$CFR/pre"
+cf_refuse "a hard link (ln) to a file outside the clone" Bash "ln $WORK/cf/outside/f hl" "a write outside the session's clone"
+cf_refuse "a hard link (ln --) named by an absolute path inside" Bash "ln -- $WORK/cf/outside/f $CFR/hl3" "a write outside the session's clone"
+cf_refuse "a hard link (cp -l) to a file outside the clone" Bash "cp -l $WORK/cf/outside/f x" "a write outside the session's clone"
+cf_refuse "a hard link (cp -al) to a file outside the clone" Bash "cp -al $WORK/cf/outside/f x" "a write outside the session's clone"
+cf_refuse "a hard link (link) to a file outside the clone" Bash "link $WORK/cf/outside/f hl4" "a write outside the session's clone"
+cf_refuse "rsync --link-dest" Bash "rsync -a --link-dest=../x src/ dst/" "a write whose target this hook cannot pick out"
+cf_refuse "a Write to a file with another hard link" Write "$CFR/pre" "a file with another hard link"
+cf_refuse "a shell append to a file with another hard link" Bash 'echo evil >> pre' "a file with another hard link"
+cf_allow "a symbolic link (ln -s) to a file outside the clone" Bash "ln -s $WORK/cf/outside/f sl"
+cf_allow "a hard link between two files inside the clone" Bash 'ln in.txt in2.txt'
+cf_allow "cp (no -l) from outside the clone" Bash "cp $WORK/cf/outside/f copy.txt"
+# A tool takes its path as it stands; the shell would expand the same text.
+cf_allow "a Write to a path with brackets and parens" Write "$CFR/app/[id]/(group)/page.tsx"
+cf_refuse "a shell write to a path with brackets" Bash 'touch app/[id]/x' "a target this hook cannot resolve"
+# A copy into a directory writes <dest>/<basename>, where a link already sitting
+# there carries it out: real fixture links, a symlink `ds/x` and a hard link
+# `dh/y` to files outside, and a tree `dt/d` holding a symlink out; `dc` holds
+# none. BSD `install -l` makes a hard link whatever its flags.
+mkdir -p "$CFR/ds" "$CFR/dh" "$CFR/dt/d" "$CFR/dc/sub" "$CFR/src/sub"
+ln -s "$WORK/cf/outside/f" "$CFR/ds/x"; ln "$WORK/cf/outside/g" "$CFR/dh/y"; ln -s "$WORK/cf/outside" "$CFR/dt/d/lnk"
+printf c > "$CFR/dc/sub/f"; printf s > "$CFR/src/sub/f"
+cf_refuse "cp into a directory whose same-named entry is a symlink out" Bash 'cp x ds/' "a write outside the session's clone"
+cf_refuse "cp into a directory whose same-named entry is a hard link" Bash 'cp y dh' "a file with another hard link"
+cf_refuse "cp -t into a directory whose same-named entry is a hard link" Bash 'cp -t dh y' "a file with another hard link"
+cf_refuse "install into a directory whose same-named entry is a hard link" Bash 'install -m 644 y dh' "a file with another hard link"
+cf_refuse "rsync --inplace into a directory whose same-named entry is a symlink out" Bash 'rsync --inplace x ds/' "a write outside the session's clone"
+cf_refuse "install -l h: a hard link to a file outside" Bash "install -l h $WORK/cf/outside/g dh/y2" "a write outside the session's clone"
+cf_refuse "install -l s: any -l flags read as a hard link" Bash "install -l s $WORK/cf/outside/g dh/y2" "a write outside the session's clone"
+cf_refuse "cp -R into a directory tree holding a symlink out" Bash 'cp -R src/ dt/d' "a recursive copy into a directory holding a symbolic or hard link"
+cf_refuse "rsync -a into a directory tree holding a symlink out" Bash 'rsync -a src/ dt/d/' "a recursive copy into a directory holding a symbolic or hard link"
+cf_refuse "ln <source> alone after a cd out of the clone" Bash "cd $WORK/cf/outside && ln $CFR/in.txt" "a write outside the session's clone"
+cf_allow "cp into a directory with no link" Bash 'cp x dc/'
+cf_allow "cp -R into a directory tree with no link" Bash 'cp -R src/sub dc/'
+cf_allow "rsync -a into a directory tree with no link" Bash 'rsync -a src/ dc/'
+# What a session in this clone loads configuration and code from is refused to
+# every judged write: the bypass mode lets the file tools past the sandbox's own
+# protection of these paths.
+cf_refuse "a Write to the clone's .claude/settings.json" Write "$CFR/.claude/settings.json" "a write to the Claude Code configuration"
+cf_refuse "a Write to the clone's .claude/settings.local.json" Write "$CFR/.claude/settings.local.json" "a write to the Claude Code configuration"
+cf_refuse "a Write to the clone's .mcp.json" Write "$CFR/.mcp.json" "a write to the Claude Code configuration"
+cf_refuse "a Write into the clone's .claude/hooks" Write "$CFR/.claude/hooks/h.sh" "a write to the Claude Code configuration"
+cf_refuse "mkdir .claude/ with a trailing slash" Bash 'mkdir .claude/' "a write to the Claude Code configuration"
+cf_allow "a Write elsewhere under the clone's .claude" Write "$CFR/.claude/notes.md"
+CF_OUT="$(printf 'not json' | "$CONFINE" "$CFR" 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: a payload that is not JSON" "2|" "$CF_RC|$CF_OUT"
+cf_run Write "$CFR/a.txt" "$CFR" relative/clone
+assert_eq "compare-confine, refused: a relative root" "2" "$CF_RC"
+CF_OUT="$(cf_payload Write "$CFR/a.txt" "$CFR" | "$CONFINE" 2>/dev/null)"; CF_RC=$?
+assert_eq "compare-confine, refused: no root" "2" "$CF_RC"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

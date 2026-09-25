@@ -79,66 +79,51 @@ stop never has a mark to clear.
   checkbox and do not block the run** — reconciling a drifted record is the
   human's call.
 - **Drifted capability checkboxes (gspec repos only).** Run
-  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh capability-drift`. Each
-  `DRIFT=<slug>\t<capability text>` line names a feature whose finished plan has
-  outrun its own PRD — every task covering that capability is checked but the
-  capability's own box is not. **The loop reconciles this itself, rather
-  than handing it to the operator.** For every distinct slug named on a
-  `DRIFT=` line, call `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh
-  complete-capabilities <slug>` through the adapter — never a main-thread
-  edit, one call per slug even when it covers several `DRIFT=` rows. Stage a
-  call's `FILE=` PRD path only when that call's own summary line reads
-  `completed=<n>` with `n` greater than 0 — equivalently, it printed at
-  least one `COMPLETED=` line. `FILE=` alone does not mean anything
-  flipped: it is present whenever the feature resolved, including a
-  `blocked` hold and a `completed=0` resolve, so staging on `FILE=` presence
-  would stage a PRD nothing changed on. If at least one path was staged this
-  way, land them as **one commit** on the integration branch, outside any
-  packet, message `spec: reconcile capability record (preflight)`, carrying
-  neither an `[orch packet:]` nor an `[orch decider:]` trailer — so run
-  metrics count no packet for it — through the loop's own scripts and commit
-  path. If no call flipped anything, make **no commit**: report no flips,
-  and do not treat the absence of a commit as a failure. The checkout is
-  normally already on the integration branch here (see the task-drift
-  bullet above for why); **if it is not, do not commit** even when something
-  flipped — state the flips in the kickoff exactly as below, noting they
-  were not committed because the checkout was off the integration branch,
-  then restore every PRD this scan touched with `git checkout HEAD -- <path>`
-  — this resets the index as well as the working tree, since the path may
-  already be staged, unlike `git checkout -- <path>` which restores from the
-  index and is a no-op there — and leave the checkout as you found it.
-  `complete-capabilities` exits 0
-  whether a call flips something, flips nothing (`blocked` — an unrelated
-  unmatched `covers:` quote elsewhere in the same feature holds every flip
-  for it), or is skipped outright (no `gspec/` at all); exit 1 (malformed
-  slug) and exit 4 (no resolvable PRD+plan pair) are the real failures.
-  Either failure, or a failed commit, is reported the same way below,
-  restores every PRD this scan touched the same way — `git checkout HEAD --
-  <path>` — and never halts preflight.
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh capability-drift \
+    | ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion --drift --restore head
+  ```
+  Each `DRIFT=<slug>\t<capability text>` line (passed through unchanged)
+  names a feature whose finished plan has outrun its own PRD — every task
+  covering that capability is checked but the capability's own box is not.
+  **The loop reconciles this itself, rather than handing it to the
+  operator**, through that one call — never a main-thread edit: it calls
+  `complete-capabilities` once per distinct slug, reads its exit codes, and
+  restores a failed call's PRD from `HEAD` itself. Stage each `STAGE=` path
+  it prints. If at least one was staged, land them as **one commit** on the
+  integration branch, outside any packet, message `spec: reconcile
+  capability record (preflight)`, carrying neither an `[orch packet:]` nor
+  an `[orch decider:]` trailer — so run metrics count no packet for it —
+  through the loop's own scripts and commit path. No `STAGE=` line means
+  **no commit**: report no flips, and do not treat the absence of a commit
+  as a failure. **Commit nothing, and restore every `STAGE=` path with `git
+  checkout HEAD -- <path>` instead** — it resets the index as well as the
+  working tree, since the path is already staged — when the checkout is off
+  the integration branch (it is normally on it here; see the task-drift
+  bullet above for why), when the last line reads `failed=` above 0, or
+  when the commit itself fails; then leave the checkout as you found it.
+  None of these halts preflight.
 
   **Say so in the kickoff (§2): one ⚠️ line per capability actually
-  flipped** — from each call's own `COMPLETED=<slug>\t<capability text>`
-  lines, not the earlier `DRIFT=` listing (a `blocked` call flips nothing),
-  **naming the feature and the capability** — the same per-row form this
-  bullet used to report drift in. **Name every feature a call held back
-  too: one ⚠️ line per slug whose own summary line reads
-  `COMPLETE_CAPABILITIES=blocked`**, in that same per-row form, naming the
-  feature and carrying that call's own `REASON=` text (an unchecked task's
-  `covers:` quote matches no capability, so every flip for that feature is
-  held until it is fixed) — one line per such slug, however many `DRIFT=`
-  rows it covered. **Nothing is flipped, restored or committed for a held
-  feature**: `blocked` is exit 0 with `completed=0`, so it stages no PRD,
-  joins no commit, and leaves nothing to restore. It is **neither a failure
-  nor a flip** — a feature this run cannot complete yet, named so the
-  operator can fix the quote rather than left silent.
-  State the trailing `unjudgeable=<n>` count
+  flipped** — from the `COMPLETED=<slug>\t<capability text>` lines, not the
+  `DRIFT=` listing (a held feature flips nothing), **naming the feature and
+  the capability** — the same per-row form this bullet used to report drift
+  in; flips restored rather than committed are stated as not committed,
+  with the reason. **Name every feature held back too: one ⚠️ line per
+  `HELD=<slug>\t<reason>` line**, in that same per-row form, carrying that
+  reason (an unchecked task's `covers:` quote matches no capability, so
+  every flip for that feature is held until it is fixed). A held feature
+  stages nothing and leaves nothing to restore; it is **neither a failure
+  nor a flip** — named so the operator can fix the quote rather than left
+  silent. One ⚠️ line per `CAPABILITIES=<slug>\tfailed` line, naming the
+  feature. State the trailing `unjudgeable=<n>` count
   separately, as a figure — never one `UNJUDGEABLE=` line per finding —
   naming only the classes that actually appear among the command's own
   `UNJUDGEABLE=<class>\t<slug>\t<detail>` lines (possible classes:
   `unmatched-quote`, `uncovered-capability`, `unrecognized-capability`; e.g.
   "34 unjudgeable — all unmatched-quote"), never folded into the flip count
-  and never flipped, whatever `complete-capabilities` returns for the rest
-  of the scan. Say nothing when the scan is fully clean (`CAPABILITY_DRIFT=ok
+  and never flipped, whatever the rest of the scan flips. Say nothing when
+  the scan is fully clean (`CAPABILITY_DRIFT=ok
   drift=0 unjudgeable=0`); state the figure whenever `unjudgeable` is
   nonzero, even if `drift` is `0`. Never treat any exit — including
   `CAPABILITY_DRIFT=attention` — as a stop: the loop reconciles judgeable
@@ -721,99 +706,59 @@ nothing. Read the result exactly as §4 states it for the stop report.
      entry through as `runstate.sh prune-questions` leaves it), verifies the checkpoint, sets `status: blocked`, renders
      the stop report, and runs `driver-mode exit` itself (§4 "Blocked" is the
      one-line pointer back to this).
-6. **Land (the `land` action).** Flip every member's checkbox first, in plan
-   order, so all of them land in this same commit (ADR 0025 D1) — one
-   `check-task` call per member (`check-task` stays at exactly one id; T5's
-   comma-joined widening is `handoff`'s, a read, and does not touch this
-   write), applying the exit-code rules below to each member in turn,
-   before you commit anything:
-   - **exit 0, `CHECKED=<feature>#T<n>` or `CHECKED=already`** — stage the
-     touched plan file (`FILE=` names it) alongside the packet's own files,
-     in the same commit. Every member of one bundle names the same feature's
-     plan file, so this stages it once however many members touch it.
-   - **exit 0, `CHECKED=none`** — non-gspec backlog; commit as normal with
-     nothing staged from `gspec/` (a bundle is always gspec-sourced, so this
-     is the single-member, non-gspec case, unchanged).
-   - **exit 4** — the plan no longer names this member's task id: genuine
-     **drift**. Keep going to the next member — commit as normal, but say so
-     in the report, naming the member; never a reason to halt, and never a
+6. **Land (the `land` action).** Record every member's completion first,
+   so all of it lands in this same commit (ADR 0025 D1) — one call, with
+   the packet's own files staged and before you commit anything:
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion \
+     --tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore index
+   ```
+   It runs `check-task` for each member in plan order, then
+   `complete-capabilities` once for the landed feature (a bundle is always
+   one feature; `--feature`, from §3.3's handoff still in this session's
+   context, is the fallback slug), reads both commands' exit codes, and
+   restores a failed capability call's PRD itself.
+   - **Stage every `STAGE=` path** alongside the packet's own files, in the
+     same commit. No `STAGE=` line stages nothing from `gspec/` — the
+     single-member, non-gspec case, unchanged.
+   - **`TASK_DRIFT=<member>\t<reason>`** — the plan no longer names this
+     member's task id: genuine **drift**. Commit as normal, but say so in
+     the report, naming the member; never a reason to halt, and never a
      reason to skip the rest of the loop. This member still lands with the
      rest of the bundle: it still gets its own `[orch packet:<id>]` trailer
      below and its own `green` record in the single `record-outcome` call —
      drift means its checkbox could not be flipped, not that its work did
      not land.
-   - **exit 1** — malformed id: a real usage error. Stop the loop over
-     `MEMBERS` right there and treat the whole bundle as ending together —
+   - **`HALT=<member>\t<reason>`** (the call exits 1) — malformed id: a real
+     usage error. Treat the whole bundle as ending together —
      `runstate.sh record-outcome "$MEMBERS" failed` — then stop and report;
-     do not commit, even a member whose own `check-task` call already
-     succeeded earlier in this same loop stays as an uncommitted edit on the
-     branch, so no part of the bundle lands on its own — and run `runstate.sh
-     driver-mode exit` immediately after that stop report.
-
-   **Complete the feature's capabilities.** Once every member above has
-   been flipped or drifted (an exit-1 above already ended the bundle before
-   this point is ever reached), run `gspec-backlog.sh complete-capabilities
-   <slug>` exactly once for the landed feature — a bundle is always one
-   feature. Take the slug from any member's own `CHECKED=<feature>#T<n>`
-   line above when one was printed; they all name the same one.
-   `CHECKED=already` (the idempotent path) prints no feature slug, and
-   neither does the `CHECKED=none` drift case, so when no member printed a
-   `<feature>#T<n>` line, fall back to the handoff's own `FEATURE=` line
-   (§3.3, still in this session's context — one feature per bundle); that
-   still counts as gspec-sourced. Skip the call entirely only when every
-   member returned `CHECKED=none` **at exit 0** — nothing gspec-sourced
-   resolved for any member, so there is no capability to complete.
-   `CHECKED=none` on its own does not mean that: an **exit-4** drift member
-   prints the same line (the plan no longer names its task id), and that
-   member *is* gspec-sourced — it takes the `FEATURE=` fallback just above,
-   so the call still runs. One member at exit 4 is enough; the skip needs
-   every member at exit 0.
-   - **exit 0** — stage the `FILE=` PRD into this same commit, alongside
-     the plan file(s) staged above, **only when that call's own summary
-     line reads `completed=<n>` with `n` greater than 0** — equivalently,
-     it printed at least one `COMPLETED=` line. This is the same test §1
-     and §4 already apply. `FILE=` alone does not mean anything flipped:
-     it is printed whenever the feature resolved, including a `blocked`
-     hold and a `completed=0` resolve, so staging on `FILE=` presence
-     would stage a PRD nothing changed on. A held feature
-     (`COMPLETE_CAPABILITIES=blocked`) therefore stages nothing here and
-     the bundle commits as normal — neither a failure nor a flip.
-   - **exit 4, exit 1, or anything else** — report it on this packet's own
-     landing report below (shape A), naming the feature and the failure,
-     but never for this reason: halt the loop, withhold the commit, or
-     record an outcome other than `green` for `$MEMBERS`. This is **not**
-     `check-task`'s exit-1 rule just above — that one is unchanged and
-     still ends the bundle without landing it; a capability flip is derived
+     do not commit (no `STAGE=` line is printed, and a member flipped
+     before the halt stays an uncommitted edit on the branch, so no part of
+     the bundle lands on its own) — and run `runstate.sh driver-mode exit`
+     immediately after that stop report.
+   - **`HELD=<slug>\t<reason>`** — a held feature stages nothing, and the
+     bundle commits as normal — neither a failure nor a flip.
+   - **`CAPABILITIES=<slug>\tfailed`** — report it on this packet's own
+     landing report below (shape A), naming the feature, but never for
+     this reason halt the loop, withhold the commit, or record an outcome
+     other than `green` for `$MEMBERS`: a capability flip is derived
      bookkeeping on top of tasks that already landed, never a condition of
-     landing them, and the task record itself is unaffected either way.
-     Since no `FILE=` line is ever printed on a failure here, restore the
-     PRD with `git checkout -- <path>` — the same path the handoff's own
-     `PRD=` line already named for this bundle — so a partial or unexpected
-     write from this call never rides into the commit unstaged. **Restore
-     from the index, not from `HEAD`**, and that is the whole reason for
-     the form: by the time this call runs, the index already holds the
-     packet's own files and the plan file(s) staged a step above, and the
-     PRD is itself a file a packet may have edited as one of its own — it
-     is what `PRD=` names. `git checkout -- <path>` restores the working
-     tree from the index, so it undoes only what is *unstaged* on that
-     path, which is exactly this failed call's write (nothing staged it —
-     no `FILE=` was printed). `git checkout HEAD -- <path>` would reset the
-     index entry too and discard the packet's own staged PRD edit along
-     with it. §1 and §4 use the `HEAD` form for the mirror of this reason:
-     their scan runs outside any packet and stages the PRD itself, so there
-     the index entry is precisely the thing that has to go.
-   A single-task packet that completes no capability (`completed=0`, or the
-   call skipped outright) reads exactly as it does today: nothing staged,
-   nothing to report — and now because the `completed=<n>` test above holds
-   the staging back, rather than because `git add` on an unchanged path
-   happens to be a no-op; `FILE=` is still printed on a `completed=0`
-   resolve either way.
+     landing them. The call has already restored that PRD (`RESTORED=`,
+     the path the handoff's `PRD=` line names) **from the index, not from
+     `HEAD`**: the index already holds the packet's own staged files, and
+     the PRD may be one of them, so the index form undoes only this failed
+     call's unstaged write where `HEAD` would discard the packet's own
+     staged PRD edit too. §1 and §4 restore from `HEAD` for the mirror of
+     this reason: their scan runs outside any packet and stages the PRD
+     itself, so there the index entry is the thing that has to go.
+   A single-task packet that completes no capability reads exactly as it
+   does today: nothing staged, nothing to report.
 
    **Commit on the branch.** Trailers, each on its own line (ADR 0019
    self-label — a factual record, not a grade):
    - `[orch packet:<id>]` — one per member that landed, each on its own
      line, each naming that member's own id, in the same plan order as the
-     `check-task` calls above, `<cursor>` always first. The first line is
+     `--tasks` list above, `<cursor>` always first. The first line is
      still the write-ahead trailer a resume *adopts* on a crash between this
      commit and the run-state write (ADR 0005) — `orphan_packet_tag` reads
      only the FIRST `[orch packet:]` trailer on a commit, so `<cursor>`
@@ -883,8 +828,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
      verifies the checkpoint.
    - **rolled-back** — the `discard-advance` action (§3.5).
    - **failed** — verification is still red after honest diagnosis and the
-     loop moves past with no blocking question; the check-task exit-1 usage
-     error just above is this trigger.
+     loop moves past with no blocking question; the `HALT=` usage error
+     just above is this trigger.
    - **abandoned** — the operator's answer to a blocking question drops the
      packet rather than retrying it (including on resume, when they say so).
    A retry within a packet is neither a start nor an ending, and records
@@ -938,8 +883,8 @@ nothing. Read the result exactly as §4 states it for the stop report.
      only thing marking these as new, not already carried by an earlier
      report — plus one 🔀 line per `decision` line `<landed>` carries other
      than `retry` (already the 🔁 above, never reported twice), plus one
-     ⚠️ line naming the feature whenever the capability-completion call
-     above failed (exit 4, exit 1, or anything else) — the packet still
+     ⚠️ line naming the feature for each `CAPABILITIES=<slug>\tfailed`
+     line the `record-completion` call above printed — the packet still
      landed, so this is an alert alongside the ✅/🔁 line, never a reason to
      withhold it. Never write this from the dispatched agent's or
      reviewer's own words — the digest's fields are what render, not your
@@ -1073,58 +1018,48 @@ nothing. Read the result exactly as §4 states it for the stop report.
   what it did) in the stop report so the human can see what landed.
 
   **Also before declaring done, re-run the same capability-drift scan §1
-  states** — the same `gspec-backlog.sh capability-drift` invocation, not a
-  second reading of its rule — so a capability whose last covering task
-  landed during this run is named by this run rather than by the next one's
-  preflight. **Reconcile it the same way §1 does**: for every distinct slug
-  named on a `DRIFT=` line, call `complete-capabilities <slug>` through the
-  adapter — never a main-thread edit, one call per slug even when it covers
-  several `DRIFT=` rows. Stage a call's `FILE=` PRD path only when that
-  call's own summary line reads `completed=<n>` with `n` greater than 0 —
-  equivalently, it printed at least one `COMPLETED=` line; `FILE=` alone
-  does not mean anything flipped, the same distinction §1 makes. If at
-  least one path was staged this way, land them into **one commit**,
+  states** — the same `capability-drift | record-completion --drift
+  --restore head` call, not a second reading of its rule — so a capability
+  whose last covering task landed during this run is named by this run
+  rather than by the next one's preflight. Stage each `STAGE=` path it
+  prints. If at least one was staged, land them into **one commit**,
   outside any packet, message `spec: reconcile capability record
   (end-of-run)`, carrying neither an `[orch packet:]` nor an `[orch
-  decider:]` trailer. If no call flipped anything, make **no commit** and
-  report no flips — not a failure. If §3.7 actually merged this run's
+  decider:]` trailer. No `STAGE=` line means **no commit** and no flips to
+  report — not a failure. If §3.7 actually merged this run's
   packets into the integration branch, that commit goes there too, since
   checking a branch out to merge into it leaves the checkout on that
   branch; if nothing merged — no green `orch/*` branch this run — the
   commit goes on the run's own branch instead — either way, a flip never
-  reaches the integration branch ahead of the work it records.
-  `complete-capabilities`'s exit codes are read exactly as at preflight:
-  exit 0 whether a call flips something, flips nothing (`blocked`), or is
-  skipped outright; exit 1 or exit 4 is a real failure. Either failure, or a
-  failed commit, is reported below, restores every PRD this scan touched
-  (`git checkout HEAD -- <path>` per staged `FILE=` — this resets the index
-  as well as the working tree, since the path may already be staged), and
-  never withholds `status: done` or otherwise halts.
+  reaches the integration branch ahead of the work it records. When the
+  last line reads `failed=` above 0, or the commit fails, commit nothing:
+  restore every `STAGE=` path with `git checkout HEAD -- <path>` (this
+  resets the index as well as the working tree, since the path is already
+  staged), report it below, and never withhold `status: done` or otherwise
+  halt.
 
-  Carry each capability this scan actually flipped — from each call's own
-  `COMPLETED=<slug>\t<capability text>` lines, not the earlier `DRIFT=`
-  listing — into the stop report's `▶ Next` section below — the one section
+  Carry each capability this scan actually flipped — from the
+  `COMPLETED=<slug>\t<capability text>` lines, not the `DRIFT=` listing —
+  into the stop report's `▶ Next` section below — the one section
   the tally does not count — as an unglyphed line naming the feature and the
-  capability. This does not reuse ⚠️ (the conventions reserve that glyph for
+  capability; flips restored rather than committed are stated as not
+  committed. This does not reuse ⚠️ (the conventions reserve that glyph for
   a tally-counted section carrying one line per packet, and a capability
   flip is not a packet) and introduces no new glyph, shape, or tally figure.
-  **Carry every feature a call held back into that same section too** — one
-  unglyphed line per slug whose own summary line reads
-  `COMPLETE_CAPABILITIES=blocked`, naming the feature and carrying that
-  call's own `REASON=` text (an unchecked task's `covers:` quote matches no
-  capability, so every flip for that feature is held until it is fixed) —
-  one line per such slug, however many `DRIFT=` rows it covered, in the same
-  unglyphed form the flips use here. **Nothing is flipped, restored or
-  committed for a held feature**: `blocked` is exit 0 with `completed=0`, so
-  it stages no PRD, joins no commit, and leaves nothing to restore. It is
-  **neither a failure nor a flip** — a feature this run could not complete
-  yet, named so the next run's preflight does not have to be the first to
-  say so.
+  **Carry every held feature into that same section too** — one unglyphed
+  line per `HELD=<slug>\t<reason>` line, naming the feature and carrying
+  that reason (an unchecked task's `covers:` quote matches no capability, so
+  every flip for that feature is held until it is fixed), in the same
+  unglyphed form the flips use here. A held feature stages nothing and
+  leaves nothing to restore; it is **neither a failure nor a flip** — a
+  feature this run could not complete yet, named so the next run's
+  preflight does not have to be the first to say so. Each
+  `CAPABILITIES=<slug>\tfailed` line goes there too, naming the feature.
   State the trailing `unjudgeable=<n>` count the same way §1 does, in the
   same section, naming only the classes that actually appear — these rows
-  are never flipped, whatever `complete-capabilities` returns for the rest
-  of the scan. `CAPABILITY_DRIFT=none` stays a silent no-op, same as at
-  preflight. A flip changes no tally figure, no packet count, and never the
+  are never flipped, whatever the rest of the scan flips.
+  `CAPABILITY_DRIFT=none` stays a silent no-op, same as at preflight. A
+  flip changes no tally figure, no packet count, and never the
   outcome recorded for `status` — the run's stop reason is unaffected either
   way.
 

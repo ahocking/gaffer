@@ -184,7 +184,7 @@ kickoff: render shape C's `⚠️ **Effort override**` line only when it reads
 `APPLIED` is always `no`. When `SOURCE` reads `repo` or `operator`, pass
 `THRESHOLD` straight through to `driver-mode enter` and state that number in
 the kickoff — the harness genuinely enforces it. When `SOURCE` reads
-`gaffer-default` or `unknown` — the enumerated set naming no value in effect
+`unknown` — the one enumerated value naming no value in effect
 — pass `--threshold unknown` instead, regardless of what `THRESHOLD`
 printed, and state the absence in the kickoff in exactly these words —
 *no compaction threshold in effect for this session — the settings key

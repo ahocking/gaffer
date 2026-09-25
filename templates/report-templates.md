@@ -430,8 +430,8 @@
 #   *effort unknown, inherited by every dispatched agent as far as its model accepts
 #   one*. Where the whole `enter` line is absent, write *`▶ **Session** —
 #   can't tell: no driver-mode record`*. **Whenever the reader's `SOURCE` named no
-#   value in effect** (`gaffer-default` or `unknown` — neither is a value the
-#   harness enforces), the threshold element states the absence in exactly the
+#   value in effect** (`unknown` — not a value the harness enforces), the
+#   threshold element states the absence in exactly the
 #   words the two loop entry points use — *no compaction threshold in effect for
 #   this session — the settings key `autoCompactWindow` supplies one* — in place
 #   of `compaction <threshold>`: never a figure, and never the bare word

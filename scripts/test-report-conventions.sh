@@ -232,13 +232,14 @@ has 'the anchor for the negative assertion above still holds (implementer.md sti
 printf '\n== compact-threshold output blocks name only the values the reader emits (loop-prose-consistency T1) ==\n'
 # cmd_compact_threshold emits SOURCE=repo|operator|unknown, never gaffer-default --
 # there is no settings-derived default branch in the reader. The two loop skills'
-# output-contract comments must say so; the three rule-prose clauses that
-# deliberately still name gaffer-default (the omission rule covers a value the
-# reader could plausibly have emitted, and is not itself an output block) must
-# stay byte-unchanged. Extraction is anchored on the invocation line, not a line
-# number, so a moved or renamed fenced block fails loud rather than silently
-# checking an empty span.
-REPORT_SHAPES="$ROOT/templates/report-templates.md"
+# output-contract comments must say so. The three rule-prose clauses that branch
+# on SOURCE (one under each skill's output block, one in shape C's `▶ Session`
+# note) name only `unknown` as the no-value-in-effect case, corrected to this
+# enumeration (loop-prose-consistency-gaps T1); the occurrence-count case that
+# once froze them naming gaffer-default is retired, and no absence case replaces
+# it -- one would pass forever from the moment the removal landed. Extraction is
+# anchored on the invocation line, not a line number, so a moved or renamed
+# fenced block fails loud rather than silently checking an empty span.
 _extract_ct_block() { # file -> the fenced block containing `runstate.sh compact-threshold`
   sed -n '/runstate\.sh compact-threshold/,/^```$/p' "$1"
 }
@@ -263,20 +264,6 @@ has 'run-loop output block still names the SOURCE enum the reader actually emits
   'SOURCE=repo|operator|unknown' "$block_runloop"
 has 'resume output block still names the SOURCE enum the reader actually emits' \
   'SOURCE=repo|operator|unknown' "$block_resume"
-
-# The rule-prose clauses that deliberately keep naming gaffer-default must survive
-# untouched: exactly one occurrence per file, three total across the two skills
-# and the report shapes, and none of them inside a compact-threshold output block
-# (checked immediately above).
-count_runloop="$(grep -c -- 'gaffer-default' "$ROOT/skills/run-loop/SKILL.md")"
-count_resume="$(grep -c -- 'gaffer-default' "$ROOT/skills/resume/SKILL.md")"
-count_shapes="$(grep -c -- 'gaffer-default' "$REPORT_SHAPES")"
-if [ "$count_runloop" = 1 ] && [ "$count_resume" = 1 ] && [ "$count_shapes" = 1 ]; then
-  ok 'gaffer-default appears exactly once per file, in the three rule-prose clauses'
-else
-  bad 'gaffer-default appears exactly once per file, in the three rule-prose clauses' \
-      "run-loop=$count_runloop resume=$count_resume shapes=$count_shapes"
-fi
 
 printf '\n== the run entry point routes on the checkpoint status, not its existence (loop-entry-routing T1) ==\n'
 # §2's first decision used to be a test on `.agents/run-state.yaml` EXISTING, which

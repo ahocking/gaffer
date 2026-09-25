@@ -86,7 +86,7 @@ evidence moves to the ADRs.
     `scripts/test-routing.sh` that read resume or run-loop keep passing, under
     capability 5's rule for a changed assertion
 
-- [ ] **P0**: The landing and scan decisions live in one adapter subcommand, and every site calls it
+- [x] **P0**: The landing and scan decisions live in one adapter subcommand, and every site calls it
   - one `scripts/gspec-backlog.sh` subcommand serves two input shapes: at the
     two landing sites (run-loop §3.6 and resume's adopt path) it takes the
     packet's tasks, runs `check-task` for each member, then

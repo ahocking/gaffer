@@ -1699,6 +1699,126 @@ case "$sq_dec" in
     ;;
 esac
 
+printf '\n== the four landing and scan sites call record-completion, each naming its restore source (skill-prompt-trim T4) ==\n'
+# `gspec-backlog.sh record-completion` (skill-prompt-trim T2) holds the landing and scan
+# decisions: which exit code of `check-task` / `complete-capabilities` means what, which
+# slug to complete, the FEATURE= fallback, the staging test, and the per-slug loop. Four
+# sites used to spell those out in prose -- run-loop §1's drifted-capability bullet,
+# §3.6's Land step, §4's end-of-run scan, and resume's adopt path. Each must now CALL the
+# subcommand with its own restore source stated (§3.6 the index; §1, §4 and adopt HEAD),
+# keep what it does with the output (stage STAGE=, the halt/escalate on HALT=, its
+# commit and restore rules, its report lines), and carry no copy of the table it gave
+# up -- a copy left behind is a second statement of the rule that can drift from the
+# one the adapter enforces.
+#
+# Each span is extracted by its own content anchors, guarded non-empty and under the
+# ceiling (an end anchor that stops matching runs the range on and would let every
+# presence pin pass on text outside the site). The adopt path is two spans because the
+# whole of it sits at the ceiling. Needles are read over the whitespace-squeezed span,
+# so a markdown wrap inside one does not fail a clause that is present.
+_rc_site() { # file, start-regex, end-regex -> the raw span
+  sed -n "/$2/,/$3/p" "$1"
+}
+_rc_sq() { printf '%s' "$1" | tr -d '\r' | tr '\n' ' ' | tr -s ' '; }
+rc_s1="$(_rc_site "$ROOT/skills/run-loop/SKILL.md" \
+  '^- \*\*Drifted capability checkboxes' 'silent no-op, same as the check above\.')"
+rc_land="$(_rc_site "$ROOT/skills/run-loop/SKILL.md" \
+  '^6\. \*\*Land (the `land` action)\.\*\*' 'does today: nothing staged, nothing to report\.')"
+rc_s4="$(_rc_site "$ROOT/skills/run-loop/SKILL.md" \
+  'Also before declaring done, re-run the same capability-drift scan' 'whatever the rest of the scan flips\.')"
+rc_adopt="$(_rc_site "$ROOT/skills/resume/SKILL.md" \
+  '\*\*Record whatever' '^  \*\*Commit the flips\.\*\*')"
+rc_adopt_commit="$(_rc_site "$ROOT/skills/resume/SKILL.md" \
+  '^  \*\*Commit the flips\.\*\*' 'so run metrics count no packet for it\.')"
+for rc_pair in "§1 preflight scan|$rc_s1" "§3.6 Land|$rc_land" "§4 end-of-run scan|$rc_s4" \
+               "resume adopt|$rc_adopt" "resume adopt commit|$rc_adopt_commit"; do
+  rc_name="${rc_pair%%|*}"; rc_span="${rc_pair#*|}"
+  [ -n "$rc_span" ] && ok "$rc_name span extracted (anchor holds)" \
+    || bad "$rc_name span extracted (anchor holds)" 'empty -- the site moved or was rewritten'
+  under_ceiling "$rc_name span stays inside its ceiling (end anchor still matches)" "$rc_span"
+done
+rc_s1="$(_rc_sq "$rc_s1")"; rc_land="$(_rc_sq "$rc_land")"; rc_s4="$(_rc_sq "$rc_s4")"
+rc_adopt="$(_rc_sq "$rc_adopt")"; rc_adopt_commit="$(_rc_sq "$rc_adopt_commit")"
+
+# Present: the call with its restore source, and what the site keeps.
+while IFS='|' read -r rc_site rc_label rc_needle; do
+  [ -n "$rc_site" ] || continue
+  case "$rc_site" in
+    s1) rc_span="$rc_s1" ;; land) rc_span="$rc_land" ;; s4) rc_span="$rc_s4" ;;
+    adopt) rc_span="$rc_adopt" ;; commit) rc_span="$rc_adopt_commit" ;;
+  esac
+  has "$rc_site: $rc_label" "$rc_needle" "$rc_span"
+done <<'RC_NEEDLES'
+s1|the scan pipes capability-drift into the subcommand, restoring from HEAD|capability-drift \ | ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion --drift --restore head
+s1|every STAGE= path is staged|Stage each `STAGE=` path
+s1|one reconcile commit, preflight site|spec: reconcile capability record (preflight)
+s1|off the integration branch it restores instead of committing|when the checkout is off the integration branch
+s1|a failed call anywhere in the scan restores every STAGE= path|when the last line reads `failed=` above 0
+s1|so does a failed commit|when the commit itself fails
+s1|the restore is the HEAD form|git checkout HEAD -- <path>
+s1|flips are reported from COMPLETED= lines|`COMPLETED=<slug>\t<capability text>`
+s1|held features are reported from HELD= lines|`HELD=<slug>\t<reason>`
+s1|failed calls are reported|`CAPABILITIES=<slug>\tfailed`
+s1|the unjudgeable count is still stated|State the trailing `unjudgeable=<n>` count
+land|the call names the members, the FEATURE= fallback, and the index restore|--tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore index
+land|every STAGE= path is staged with the packet's files|Stage every `STAGE=` path** alongside the packet's own files
+land|a drifted member is reported by name, never a halt|`TASK_DRIFT=<member>\t<reason>`
+land|a halted call ends the bundle|`HALT=<member>\t<reason>`
+land|as failed, for every member|runstate.sh record-outcome "$MEMBERS" failed
+land|and leaves driver mode after the stop report|runstate.sh driver-mode exit
+land|a held feature commits as normal|`HELD=<slug>\t<reason>`
+land|a failed capability call is reported on the landing report|`CAPABILITIES=<slug>\tfailed`
+land|and its restore is stated to be from the index|from the index, not from `HEAD`
+s4|the same scan call, restoring from HEAD|`capability-drift | record-completion --drift --restore head`
+s4|every STAGE= path is staged|Stage each `STAGE=` path
+s4|one reconcile commit, end-of-run site|spec: reconcile capability record (end-of-run)
+s4|a failed call anywhere in the scan restores every STAGE= path|last line reads `failed=` above 0
+s4|so does a failed commit|or the commit fails
+s4|the restore is the HEAD form|git checkout HEAD -- <path>
+s4|flips are reported from COMPLETED= lines|`COMPLETED=<slug>\t<capability text>`
+s4|held features are reported from HELD= lines|`HELD=<slug>\t<reason>`
+s4|failed calls are reported|`CAPABILITIES=<slug>\tfailed`
+s4|the unjudgeable count is still stated|State the trailing `unjudgeable=<n>` count
+adopt|the call names the members and restores from HEAD|--tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore head
+adopt|--feature is passed only when the handoff exists|**only when that file exists**
+adopt|a drifted member is noted by name|`TASK_DRIFT=<member>\t<reason>`
+adopt|a halted call escalates|**escalate to the human** naming the member
+adopt|the no-slug-no-handoff skip|`RECORD_COMPLETION=skipped`
+adopt|is stated in the kickoff|say so in the kickoff
+adopt|a held feature is named|`HELD=<slug>\t<reason>`
+adopt|a failed call is reported, never escalated|`CAPABILITIES=<slug>\tfailed`** — report it by name — never escalate
+adopt|the restore is at the path the handoff's PRD= line names|the path the handoff's `PRD=` line names
+commit|every STAGE= path is staged|Stage every `STAGE=` path
+commit|it commits only when staging changed something|git diff --cached --quiet
+commit|the adopt reconcile commit|spec: reconcile capability record (adopt)
+commit|never an amend|**never an amend of the orphan commit**
+RC_NEEDLES
+
+# Absent: the table and the decisions the subcommand now owns, over every site's span.
+# `exit 1` is safe to pin absent: the sites say the CALL "exits 1" on a halt, which is
+# record-completion's own exit, and "exits 1" does not contain "exit 1".
+for rc_pair in "§1 preflight scan|$rc_s1" "§3.6 Land|$rc_land" "§4 end-of-run scan|$rc_s4" \
+               "resume adopt|$rc_adopt $rc_adopt_commit"; do
+  rc_name="${rc_pair%%|*}"; rc_span="${rc_pair#*|}"
+  while IFS='|' read -r rc_label rc_needle; do
+    [ -n "$rc_label" ] || continue
+    case "$rc_span" in
+      *"$rc_needle"*) bad "$rc_name carries no copy of: $rc_label" "still present: $rc_needle" ;;
+      *) ok "$rc_name carries no copy of: $rc_label" ;;
+    esac
+  done <<'RC_ABSENT'
+the exit-0 reading|exit 0
+the exit-1 reading|exit 1
+the exit-4 reading|exit 4
+the complete-capabilities summary-line reading|COMPLETE_CAPABILITIES=
+the FILE= staging test|FILE=
+the completed=<n> staging test|completed=<n>
+the CHECKED=none skip rule|CHECKED=none
+the FEATURE= fallback wording|fall back to
+the per-slug loop|one call per slug
+RC_ABSENT
+done
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -304,92 +304,67 @@ Act on the `DECISION=` it prints:
   `MEMBERS=<cursor>`, byte-identical to a single-member adoption). Then adopt
   it: set `last_green_commit` to that SHA and **remove every member of
   `$MEMBERS` from `pending`** — there
-  is no `done` list to move them into (ADR 0025). For each member, in the
-  same trailer order, check whether it already carries the gspec checkbox
-  flip (it should — §3.6 lands every member's flip in the same commit;
-  `git show --stat <sha> -- gspec/` tells you) and flip it now if not:
-  `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh check-task <member>`, same
-  exit-code rules as §3.6 (`CHECKED=none` is skipped, not failed, for a
-  non-gspec backlog; exit 4 is drift — note it by name, do not halt, and
-  move on to the next member — the commit already landed regardless of
-  whether its own checkbox could be flipped; exit 1 is a malformed id, a
-  real usage error §3.6 treats as grounds to stop before committing — here
-  the commit is already made, so instead **escalate to the human** naming
-  the member, since an already-landed trailer failing `check-task` this way
-  is not expected and should not be guessed past). Note any exit-0
-  `CHECKED=<feature>#T<n>` line as you go — the capability step just below
-  needs it.
-
-  **Complete the feature's capabilities.** Once every member above has been
-  flipped or drifted, run `${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh
-  complete-capabilities <slug>` once for the adopted feature — an adopted
-  commit is always one feature, same as a fresh land. Take the slug from any
-  member's own `CHECKED=<feature>#T<n>` line noted above; when none was
-  printed (every member read `CHECKED=already`, or read `CHECKED=none` at
-  exit 4), fall back to the cursor's own `FEATURE=` line in
-  `$RUN_DIR/<cursor>/handoff.md`, the same fallback §3.6 uses for a fresh
-  land. Skip the call entirely only when every member returned `CHECKED=none`
-  **at exit 0** — nothing gspec-sourced resolved for any member, so there is
-  no capability to complete. `CHECKED=none` on its own does not mean that: an
-  **exit-4** drift member prints the same line (the plan no longer names its
-  task id), and that member *is* gspec-sourced — it takes the `FEATURE=`
-  fallback just above, so the call still runs. One member at exit 4 is
-  enough; the skip needs every member at exit 0.
-
-  **Skip the call too when that fallback has nothing to read** — no member
-  printed a `CHECKED=<feature>#T<n>` line **and**
-  `$RUN_DIR/<cursor>/handoff.md` does not exist (a crash before §4 ever wrote
-  that handoff, or a run directory pruned since). There is then no slug to
-  pass and no `PRD=` path to restore from, so make **no call, no restore and
-  no commit** for capabilities here, and say so in the kickoff. Nothing is
-  lost by skipping: the resumed run's own `run-loop` §4 end-of-run scan
-  reconciles this feature's judgeable capability drift when the run
-  terminates, exactly as §1 above leaves any capability finished mid-run but
-  not by an adopted commit to that same scan.
-
-  - **exit 0** — stage the `FILE=` PRD into the commit below **only when
-    that call's own summary line reads `completed=<n>` with `n` greater than
-    0** — equivalently, it printed at least one `COMPLETED=` line. This is
-    the same test §3.6 applies at a fresh land, and §1 and §4 at their
-    scans. `FILE=` alone does not mean anything flipped: it is printed
-    whenever the feature resolved, including a `blocked` hold and a
-    `completed=0` resolve, so staging on `FILE=` presence would stage a PRD
-    nothing changed on.
-  - **`COMPLETE_CAPABILITIES=blocked` — a held feature.** An unchecked
-    task's `covers:` quote matches no capability, so every flip for that
-    feature is held until it is fixed. **Nothing is flipped, restored or
-    committed for a held feature**: `blocked` is exit 0 with `completed=0`,
-    so it stages no PRD, joins no commit, and leaves nothing to restore. It
-    is **neither a failure nor a flip** — name the feature in the kickoff
-    below, carrying that call's own `REASON=` text, the same per-row form
+  is no `done` list to move them into (ADR 0025). **Record whatever
+  completion the commit missed** — §3.6 lands every member's flip in the
+  same commit, but check it again here — in one call, restoring from
+  `HEAD`:
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh record-completion \
+    --tasks "$MEMBERS" --feature <the handoff's FEATURE= value> --restore head
+  ```
+  passing `--feature`, from the cursor's own `$RUN_DIR/<cursor>/handoff.md`,
+  **only when that file exists**. It runs
+  `check-task` for each member in trailer order (a member already flipped
+  reads `CHECKED=already`), then `complete-capabilities` once for the
+  adopted feature — an adopted commit is always one feature, same as a
+  fresh land — reads both commands' exit codes, and restores a failed
+  capability call's PRD itself.
+  - **`TASK_DRIFT=<member>\t<reason>`** — note it by name and do not halt:
+    the commit already landed regardless of whether its own checkbox could
+    be flipped.
+  - **`HALT=<member>\t<reason>`** (the call exits 1) — a malformed id, a
+    real usage error §3.6 treats as grounds to stop before committing; here
+    the commit is already made, so instead **escalate to the human** naming
+    the member, since an already-landed trailer failing `check-task` this
+    way is not expected and should not be guessed past.
+  - **No slug and no handoff** — `$RUN_DIR/<cursor>/handoff.md` does not
+    exist (a crash before §4 ever wrote that handoff, or a run directory
+    pruned since) and no member printed a `CHECKED=<feature>#T<n>` value,
+    so the call reads `RECORD_COMPLETION=skipped` with a `REASON=` naming
+    no feature slug: no capability call ran, so there is **no restore and
+    no commit** for capabilities here — say so in the kickoff. Nothing is
+    lost by skipping: the resumed run's own `run-loop` §4 end-of-run scan
+    reconciles this feature's judgeable capability drift when the run
+    terminates, exactly as §1 above leaves any capability finished mid-run
+    but not by an adopted commit to that same scan.
+  - **`HELD=<slug>\t<reason>` — a held feature.** An unchecked task's
+    `covers:` quote matches no capability, so every flip for that feature
+    is held until it is fixed. It stages nothing and leaves nothing to
+    restore, and is **neither a failure nor a flip** — name the feature in
+    the kickoff below, carrying that reason, the same per-row form
     `run-loop` §1 and §4 name a held feature in.
-  - **exit 4, exit 1, or anything else** — report it by name — never
-    escalate for this, and never change anything already decided above —
-    then, since no `FILE=` line is ever printed on a failure, restore the
-    PRD with `git checkout HEAD -- <path>`, taking `<path>` from the `PRD=`
-    line in `$RUN_DIR/<cursor>/handoff.md`, the same file the `FEATURE=`
-    fallback above already reads, so a partial write from the failed call
+  - **`CAPABILITIES=<slug>\tfailed`** — report it by name — never escalate
+    for this, and never change anything already decided above. The call
+    has already restored that PRD from `HEAD` (`RESTORED=`, the path the
+    handoff's `PRD=` line names), so a partial write from the failed call
     never rides into the commit below. That is the `HEAD` form §1 and §4
-    use, not §3.6's `git checkout -- <path>`: this step runs outside any
-    packet and stages the PRD itself, so the index entry is precisely the
-    thing that has to go.
+    use, not §3.6's index form: this step runs outside any packet and
+    stages the PRD itself, so the index entry is precisely the thing that
+    has to go.
 
-  **Commit the flips.** When the per-member loop above already needed its
-  own follow-up commit, stage this capability flip's PRD into that same
-  commit before making it. When it did not, but this step flipped a
-  capability anyway, make a small commit for the capability flip alone. When
-  neither flipped anything, make no commit here — a held feature, a
-  `completed=0` resolve, a skipped call and a failure all land here, and
-  none of them is a reason to commit. Either way — task flips and
-  capability flip together when combined, or the capability flip alone —
-  that commit uses the reconciliation form (the same form `run-loop`
-  §1/§4 use for preflight and end-of-run reconciliation) with site `adopt`:
-  `spec: reconcile capability record (adopt)`. It is **never an amend of the
+  **Commit the flips.** Stage every `STAGE=` path, then commit only when
+  that left a change against `HEAD` (`git diff --cached --quiet` exits 1):
+  a `CHECKED=already` member's plan file is named on a `STAGE=` line but
+  unchanged, and a held feature, a `completed=0` resolve, a skipped call
+  and a failure add nothing, so none of them is a reason to commit. That
+  one commit — task flips and capability flip together, or either alone —
+  uses the reconciliation form (the same form `run-loop` §1/§4 use for
+  preflight and end-of-run reconciliation) with site `adopt`: `spec:
+  reconcile capability record (adopt)`. It is **never an amend of the
   orphan commit** — the orphan commit is already recorded, so amending it
-  would rewrite history, the same reason the task-flip commit above is never
-  an amend — and it carries **no `[orch packet:]` trailer**, so run metrics
-  count no packet for it. A failure in the call or in this commit is
-  reported by name as stated above — never escalated, never halting — and
+  would rewrite history — and it carries **no `[orch packet:]` trailer**,
+  so run metrics count no packet for it.
+  A failure in the call or in this commit is reported by name as stated above — never escalated, never halting — and
   never changes the `green` attestation below: the packet already landed
   regardless of whether its capability could be flipped, so a crash between
   landing and recording this leaves no capability drift this step has to

@@ -80,6 +80,12 @@ separate variance figure for `cc_shape` itself.
 
 ## Changed sweep assertions
 
+- **T4 (record-completion at the four sites):** no existing assertion changed.
+  No sweep pinned the prose the four sites gave up. `test-report-conventions.sh`
+  gains one section: each site calls `record-completion` with its own restore
+  source, keeps its own staging, commit, restore and report rules, and carries
+  no copy of the exit-code table.
+
 ## Loop-skill rule review
 
 ## One-shot skill rule review

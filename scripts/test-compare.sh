@@ -2722,7 +2722,7 @@ printf '\n== record: an ended replay'"'"'s outcome, verdict, fix rounds, sweeps 
 RDOUT_STORE="$SWSTORE"
 rd_run() {  # rd_run <replay> [store]: OUT/ERR/RC for `compare.sh record`
   OUT="$(ORCH_COMPARE_STORE="${2:-$RDSTORE}" ORCH_COMPARE_PRICES="${RD_PRICES_FILE:-$WORK/rd-prices.json}" \
-    "$COMPARE" record "$1" 2>"$WORK/err")"; RC=$?
+    ORCH_METRICS_PROJECTS_DIR="$WORK/rdproj" "$COMPARE" record "$1" 2>"$WORK/err")"; RC=$?
   ERR="$(cat "$WORK/err")"
 }
 cat > "$WORK/rd-prices.json" <<'EOF'
@@ -3031,6 +3031,78 @@ assert_eq "record, an unknown replay: exit 1, nothing on stdout" "1:" "$RC:$OUT"
 # The records are the ones `estimate --remaining` counts: its reader parses them.
 OUT="$(ORCH_COMPARE_STORE="$RDSTORE" ORCH_COMPARE_PRICES="$WORK/rd-prices.json" "$COMPARE" estimate "$RDEXP" --remaining 2>"$WORK/err")"
 assert_eq "record: estimate --remaining reads the appended records (the one replay recorded)" "1:0" "$(line RECORDED):$(line REPLAYS)"
+
+printf '\n== record: denials read from each session'"'"'s transcript, or unmeasured ==\n'
+# Each case is a replay that ended crashed (so it records invalid whatever its
+# denials), its one STEP line naming a session whose transcripts are written
+# under $WORK/rdproj in the layout metrics.sh reads (<proj>/<dir>/<id>.jsonl and
+# <proj>/<dir>/<id>/subagents/agent-*.jsonl). RDTR_OK is a tool result in the
+# form a real transcript records one (a user record whose message.content holds a
+# tool_result, a top-level toolUseResult and sourceToolAssistantUUID); RDTR_DENY
+# is the same with the top-level toolDenialKind Claude Code writes on a call that
+# did not run.
+RDPROJ="$WORK/rdproj"
+RDTR_OK='{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"toolUseResult":{"stdout":"ok"},"sourceToolAssistantUUID":"u1","sessionId":"s"}'
+RDTR_DENY='{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Permission to use Write has been denied.","is_error":true,"tool_use_id":"toolu_2"}]},"toolUseResult":"Error: Permission to use Write has been denied.","toolDenialKind":"permission-rule","sourceToolAssistantUUID":"u2","sessionId":"s"}'
+rdd_replay() {  # rdd_replay <session> [main-transcript-line...]: a crashed replay on <session>; no line: no transcript
+  local sid="$1"; shift
+  mkdir -p "$RDPROJ/p"
+  if [ $# -gt 0 ]; then printf '%s\n' "$@" > "$RDPROJ/p/$sid.jsonl"; fi
+  RD_TAIL="STEP n=1 agent=implementer try=1 exit=1 status=none session=$sid" rd_replay crashed pass pass
+  rd_run "$RDR"
+  RDL="$(rd_rec "$RDR")"
+}
+rdd_unmeasured() {  # rdd_unmeasured <label> <note>: recorded, DENIALS unmeasured, null with <note>, never 0
+  assert_eq "record, $1: recorded, denials unmeasured" "0:unmeasured" "$RC:$(line DENIALS)"
+  assert_has "record, $1: denials null, never 0, with the reason" "\"denials\":null,\"denial_note\":\"denials unmeasured: $2\"," "$RDL"
+}
+
+# The guard case first: a recognised tool result and no denial read 0, measured,
+# so the checks below do not simply read every transcript as unmeasured.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000001 "$RDTR_OK"
+assert_eq "record, a tool result in the recognised form and no denial: 0 denials, measured" "0:0" "$RC:$(line DENIALS)"
+assert_has "record, a tool result in the recognised form and no denial: denials 0, no note" "\"denials\":0,\"denial_note\":null," "$RDL"
+# A denial in the recognised form in the session's own transcript is counted.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000002 "$RDTR_OK" "$RDTR_DENY"
+assert_eq "record, a recognised denial in the session's own transcript: counted" "0:1" "$RC:$(line DENIALS)"
+
+# A named session with no transcript under the projects directory.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000003
+rdd_unmeasured "a named session with no transcript" \
+  "session aaaaaaaa-0000-4000-8000-000000000003 has no transcript under $RDPROJ"
+
+# A malformed session id: never used to find a file. A transcript sits where the
+# id, used as a path, would lead (<proj>/p/../evil.jsonl), so reading it would
+# measure 0.
+printf '%s\n' "$RDTR_OK" > "$RDPROJ/evil.jsonl"
+rdd_replay ../evil
+rdd_unmeasured "a malformed session id" "a session id that is not one run_session writes: ../evil"
+
+# Transcripts in an unrecognised form. Tool results whose content moved out of
+# message.content, the denial field renamed with it: tool results are held, none
+# in the recognised form.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000004 \
+  '{"type":"user","content":[{"type":"tool_result","content":"denied","is_error":true,"tool_use_id":"toolu_3"}],"toolUseResult":"Error: denied","denialKind":"permission-rule","sourceToolAssistantUUID":"u3"}'
+rdd_unmeasured "tool results in no recognised form" \
+  "session aaaaaaaa-0000-4000-8000-000000000004: transcript $RDPROJ/p/aaaaaaaa-0000-4000-8000-000000000004.jsonl holds tool results, none in the recognised form (a user record whose message.content holds a tool_result)"
+# The denial field moved off the top level (into toolUseResult): the field is read
+# where it sits, so it is not in the recognised form. Matching the text anywhere
+# on the line would count it as a denial.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000005 "$RDTR_OK" \
+  '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"denied","is_error":true,"tool_use_id":"toolu_4"}]},"toolUseResult":{"toolDenialKind":"permission-rule"},"sourceToolAssistantUUID":"u4"}'
+rdd_unmeasured "a toolDenialKind off the top level" \
+  "session aaaaaaaa-0000-4000-8000-000000000005: transcript $RDPROJ/p/aaaaaaaa-0000-4000-8000-000000000005.jsonl carries a toolDenialKind at .toolUseResult.toolDenialKind, not the top level of a tool result"
+# A tool's output quoting the field is text, not a denial: 0, measured.
+rdd_replay aaaaaaaa-0000-4000-8000-000000000006 \
+  '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_5","type":"tool_result","content":"grep found: \"toolDenialKind\":\"permission-rule\""}]},"toolUseResult":{"stdout":"x"},"sourceToolAssistantUUID":"u5"}'
+assert_eq "record, a tool output quoting the denial field: 0 denials, measured" "0:0" "$RC:$(line DENIALS)"
+# A subagent transcript with a line that is not JSON: its records cannot be read.
+mkdir -p "$RDPROJ/p/aaaaaaaa-0000-4000-8000-000000000007/subagents"
+printf '%s\n{"type":"user","message":{"role":"user","content":[{"type":"tool_res\n' "$RDTR_OK" \
+  > "$RDPROJ/p/aaaaaaaa-0000-4000-8000-000000000007/subagents/agent-x.jsonl"
+rdd_replay aaaaaaaa-0000-4000-8000-000000000007 "$RDTR_OK"
+rdd_unmeasured "a subagent transcript line that is not JSON" \
+  "session aaaaaaaa-0000-4000-8000-000000000007: transcript $RDPROJ/p/aaaaaaaa-0000-4000-8000-000000000007/subagents/agent-x.jsonl is not JSON lines, so its tool results cannot be read"
 
 printf '\n== run: an approved set, replayed in order to its records ==\n'
 # The replay fixture's packet on two models, every step real (prepare, replay
@@ -3432,8 +3504,8 @@ rk_rank() {  # rk_rank <answer-name> [again]: rank rk-t1 through the stub; OUT/E
   run_stub "file:$WORK/rank-$1.txt"
   RK_NB="$(rk_nranks)"
   OUT="$(STUB_DIR="$SD" ORCH_COMPARE_CLAUDE="$WORK/stub-claude" ORCH_COMPARE_STEP_TIMEOUT=60 \
-    ORCH_COMPARE_STORE="$RKSTORE" ORCH_METRICS_PROJECTS_DIR="$RKPROJ" STUB_SEED="$RKPROJ" STUB_ROUTING="$ROUTING" \
-    STUB_PINS="${RK_PINS:-haiku=claude-haiku-4-5}" STUB_EFF="${RK_EFF:-}" \
+    ORCH_COMPARE_STORE="$RKSTORE" ORCH_METRICS_PROJECTS_DIR="$RKPROJ" STUB_SEED="${RK_SEED-$RKPROJ}" STUB_ROUTING="$ROUTING" \
+    STUB_PINS="${RK_PINS:-haiku=claude-haiku-4-5}" STUB_EFF="${RK_EFF:-}" STUB_DENY="${RK_DENY:-}" \
     "$COMPARE" rank "$RKEXP" rk-t1 2>"$WORK/err")"; RC=$?
   ERR="$(cat "$WORK/err")"
 }
@@ -3466,6 +3538,22 @@ RK_EFF=low rk_rank valid
 rk_refused "a ranking session at another effort" "REFUSED rule=model-or-effort"
 assert_has "rank, a ranking session at another effort: the failing check is named" \
   "CHECK scope=rank check=effort result=fail value=low" "$ERR"
+
+# A valid ranking from a session on the reviewer model at the setting's effort,
+# whose reviewer had a tool call denied (in the shape a real transcript records
+# one): refused, naming the denial, as `record` reads a replay's.
+RK_DENY=1:permission-rule rk_rank valid
+rk_refused "a ranking session with a denied call" "REFUSED rule=denied count=1 kinds=permission-rule"
+assert_has "rank, a ranking session with a denied call: the denial is named as a harness fault" \
+  "session had 1 tool call(s) denied (permission-rule)" "$ERR"
+# A call a person interrupted is no denial: the valid ranking is not refused for it.
+RK_DENY=1:interrupted rk_rank valid
+assert_eq "rank, an interrupted call and no denial: recorded" "0:$((RK_NB + 1))" "$RC:$(rk_nranks)"
+# A ranking session that left no transcript: its denials are unmeasured, so the
+# ranking is not shown to be free of one, and is refused naming that.
+RK_SEED="" rk_rank valid
+rk_refused "a ranking session with no transcript" "REFUSED rule=denials-unmeasured"
+assert_has "rank, a ranking session with no transcript: the reason is named" "has no transcript under $RKPROJ" "$ERR"
 
 # A valid ranking, on the reviewer model at the setting's effort.
 rk_rank valid

@@ -234,6 +234,13 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     denial-invalid replays per model, and a rerun is not recommended when the
     same denial would stop it again
 
+- [ ] **P2**: Harness steps never act on what a session planted in its clone
+  - no harness-side step run outside the sandbox (staging, copying, landing)
+    executes a command or follows a link that a session wrote into its clone:
+    git command hooks such as `core.fsmonitor` are neutralised, the clone's
+    `.git/` is not writable from a session, and harness-side copies never
+    follow a symlink or write through a hard link
+
 ## Dependencies
 
 - `per-agent-model-routing`: the `model_routing` lookup, its model validation,

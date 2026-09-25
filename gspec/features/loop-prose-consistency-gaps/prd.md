@@ -107,7 +107,7 @@ This is new scope against a feature that shipped.
   - reverting only the worked example's two sections turns the sweep red, which is
     the mutation that leaves it green today
 
-- [ ] **P1**: The run entry point states its continuation trigger as a situation a reader can act on
+- [x] **P1**: The run entry point states its continuation trigger as a situation a reader can act on
   - the trigger is stated concretely enough to be evaluated where it is read,
     without following a pointer to a second site; today the first site defers to
     the second and the second restates it as a tautology, so neither carries a

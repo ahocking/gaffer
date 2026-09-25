@@ -1977,6 +1977,66 @@ surfacing pending questions as decisions|**Decisions for you** block
 the model resolved immediately before each dispatch|routing.sh resolve <agent>` immediately before each dispatch
 T5_KEEP
 
+printf '\n== run-loop top through §2: values by key only, reasons one clause with the rest in their ADRs (skill-prompt-trim T6) ==\n'
+# Capability 4: a loop skill names a setting by its key and the file holding its value,
+# never the value or a fallback. §1's Branch bullet stated the integration branch's
+# default in parentheses; it now names `integration_branch` in
+# `.agents/project-overrides.yaml` and points at the template comment for the fallback.
+# Capability 3: each rule keeps at most one clause of reason, and the rest moves to a
+# dated `Relocated from skills (<date>)` section of the ADR that owns the rule. Each row
+# below pins all three sides of one move -- the clause the skill kept, the moved wording
+# gone from the skill's range, and that wording present in the run-loop relocation
+# section of its ADR -- so a reason pasted back into the skill, or a move that dropped
+# the wording instead of relocating it, turns this red.
+#
+# The range runs from the top of the file to the `## 3. Loop` heading; the guard below
+# requires its last line to BE that heading, so a renamed heading -- which runs the range
+# on to end of file, over text outside the range -- fails loud. Needles are read over the
+# whitespace-squeezed span, so a markdown wrap does not fail a clause that is present;
+# each ADR needle sits on one blockquote line, since `> ` prefixes survive the squeeze.
+t6_rl="$ROOT/skills/run-loop/SKILL.md"
+t6_raw="$(sed -n '1,/^## 3\. Loop/p' "$t6_rl")"
+t6_last="$(printf '%s\n' "$t6_raw" | tail -1)"
+case "$t6_last" in
+  '## 3. Loop'*) ok 'run-loop top-through-§2 range extracted (ends at the ## 3. Loop heading)' ;;
+  *) bad 'run-loop top-through-§2 range extracted (ends at the ## 3. Loop heading)' "last line: $t6_last" ;;
+esac
+t6_range="$(_rc_sq "$t6_raw")"
+
+t6_branch="$(_rc_site "$t6_rl" '^- \*\*Branch\.\*\*' "header comment states\.")"
+[ -n "$t6_branch" ] && ok 'run-loop §1 Branch bullet extracted (anchor holds)' \
+  || bad 'run-loop §1 Branch bullet extracted (anchor holds)' 'empty -- the bullet moved or was rewritten'
+under_ceiling 'run-loop §1 Branch span stays inside its ceiling (end anchor still matches)' "$t6_branch"
+t6_branch="$(_rc_sq "$t6_branch")"
+has 'Branch: the integration base is named by its key' '`integration_branch`' "$t6_branch"
+has 'Branch: and by the file that holds its value' '.agents/project-overrides.yaml' "$t6_branch"
+has 'Branch: the absent-key fallback is pointed at, not stated' "\`templates/task-packet.yaml\`'s header comment states" "$t6_branch"
+t6_vals="$(printf '%s\n' "$t6_raw" | grep -nE '\(default |default `|else `main`')"
+[ -z "$t6_vals" ] && ok 'run-loop top through §2 states no default value' \
+  || bad 'run-loop top through §2 states no default value' "found: $(printf '%s' "$t6_vals" | head -1)"
+
+while IFS='|' read -r t6_label t6_kept t6_moved t6_adr; do
+  [ -n "$t6_label" ] || continue
+  has "run-loop keeps one clause: $t6_label" "$t6_kept" "$t6_range"
+  case "$t6_range" in
+    *"$t6_moved"*) bad "run-loop carries no copy of the moved reason: $t6_label" "still present: $t6_moved" ;;
+    *) ok "run-loop carries no copy of the moved reason: $t6_label" ;;
+  esac
+  t6_adr_file="$(ls "$ROOT"/docs/adr/"$t6_adr"-*.md 2>/dev/null | head -1)"
+  t6_sect="$(sed -n "/^## Relocated from skills ([0-9-]*) — the run-loop skill's/,\$p" "$t6_adr_file" 2>/dev/null)"
+  has "ADR $t6_adr's run-loop relocation section holds it: $t6_label" "$t6_moved" "$(_rc_sq "$t6_sect")"
+done <<'T6_MOVES'
+why the report contract is Read|unread, you render from memory.|the exact failure these files exist to prevent|0023
+why the drift scan reads every ref|usually lives in already-merged history|almost never fires|0025
+why an unknown threshold is never a number|and never a number, so the run reads as unmeasured|silence would read as a measured run|0028
+why the loop never runs unmarked|without a mark the guard's edit block has nothing to block|driver mode's whole safety property|0028
+why the lint paths are literal|which driver mode refuses:|cannot prove where the write lands|0028
+why entry routes on status|a completed run leaves its checkpoint on disk too|existence alone cannot tell|0005
+why an unrecognised status writes nothing|the checkpoint is untracked, so a guess at it cannot be undone|the least recoverable move|0005
+why the findings carry is inside the one write|a crash in between loses it|exists for any interval without the index|0022
+why runstate.sh findings is not a source|it strips the single-quoting the durable-state writer applies|tab-separated projection for one caller|0022
+T6_MOVES
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

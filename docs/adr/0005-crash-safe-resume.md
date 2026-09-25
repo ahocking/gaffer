@@ -183,3 +183,41 @@ membership-recovery reason moved with its rule into `skills/run-loop/SKILL.md` �
 
   > the sweep below would then close members the run had started as
   > `interrupted`, or silently start a member no start record covers
+
+## Relocated from skills (2026-09-25) — the run-loop skill's entry-routing reasons
+
+Moved out of `skills/run-loop/SKILL.md` §2's entry-routing bullet by
+`skill-prompt-trim`. No ADR owns the loop-entry routing rule; this one, which owns
+the resume path it routes into, is the closest. The skill keeps each rule with at
+most a one-clause reason; the fuller wording is recorded here.
+
+- **Why entry routes on the checkpoint's status, not its existence.** The skill keeps
+  "a completed run leaves its checkpoint on disk too". It used to read:
+
+  > a completed run leaves its checkpoint on disk, so existence alone cannot tell a
+  > run to continue from a run already finished.
+
+- **Why exactly `paused`, `blocked` and `running` redirect to resume.** The skill
+  keeps "(it keeps `run_id`; its `driver-mode enter` is idempotent). These are
+  exactly the three statuses resume resolves." It used to read:
+
+  > (it keeps `run_id` via its own `begin-run` call; calling `driver-mode enter`
+  > again there is harmless — idempotent). These are exactly the three that entry
+  > point's own decision table resolves: **`paused`** a run that called
+  > `/gaffer:pause` and verified a clean checkpoint, **`blocked`** the same but
+  > stopped on a blocking question, and **`running`** a run left mid-flight by a
+  > session that did not pause — a crash, which that skill reconciles before it
+  > trusts the tree.
+
+- **Why a `done` checkpoint with a cursor still takes the fresh-run branch.** The
+  skill keeps "the status is the authority". It used to read:
+
+  > A `done` checkpoint that still carries a cursor or pending packets disagrees
+  > with itself; the status is the authority, so it takes that same branch.
+
+- **Why an unrecognised status writes nothing before stopping.** The skill keeps
+  "the checkpoint is untracked, so a guess at it cannot be undone". It used to read:
+
+  > and no kickoff or lint files, since no run directory exists yet. The checkpoint
+  > is not tracked by version control, so guessing at a file whose state you cannot
+  > read is the least recoverable move available at this point in the run.

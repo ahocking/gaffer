@@ -286,3 +286,37 @@ the rework a finding was recorded to prevent". It used to read:
 > Skipping the index means a gotcha recorded specifically to prevent rework goes unseen
 > and the rework happens — which costs more than the reading would have. The index is
 > cheap and mandatory; the bodies are not free and are conditional.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's fresh-run carry reasons
+
+Moved out of `skills/run-loop/SKILL.md` §2's fresh-run carry-through clause by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **How this write relates to the packet-close write.** The skill keeps "`write`
+  REPLACES the file, so an omitted entry is unlinked, not edited out". It used to
+  read:
+
+  > It is the same consequence §3.6's packet-close write states, at the write where
+  > the file being replaced belongs to a *different* run
+
+- **Why the index is carried inside the one `write`.** The skill keeps "a crash in
+  between loses it". It used to read:
+
+  > a checkpoint that exists for any interval without the index is an interval in
+  > which a crash loses it.
+
+- **Why the index is copied from the file line-for-line.** The skill keeps "so its
+  quoting carries over". It used to read:
+
+  > The quoting the file carries is then the quoting the new file carries.
+
+- **Why `runstate.sh findings` is not a source.** The skill keeps "it strips the
+  single-quoting the durable-state writer applies (ADR 0027)". It used to read:
+
+  > that subcommand prints a tab-separated projection for one caller, and it strips
+  > the single-quoting the durable-state writer applies (ADR 0027), so re-emitting
+  > its output as index lines re-opens the `": "` corruption that quoting exists to
+  > prevent, in the one file whose parse failure is unrecoverable. This says where
+  > the index is read from, never when it lands — the carry stays inside the one
+  > `write` above.

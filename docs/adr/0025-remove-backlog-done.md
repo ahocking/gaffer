@@ -342,3 +342,25 @@ bullet described a write *"bounded to one character on one line"*. That bound st
 for `check-task`; `complete-capabilities` is the second write, bounded to the checkbox
 characters of capability lines in one feature's PRD, and capability boxes can now change
 without an operator in the path.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's preflight drift-scan reasons
+
+Moved out of `skills/run-loop/SKILL.md` §1 by `skill-prompt-trim`. The skill keeps
+each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the drifted-completion scan reads every ref** (§1's drifted completion record
+  bullet, D1). The skill keeps "a packet that landed and never got its checkbox
+  flipped usually lives in already-merged history". It used to read:
+
+  > Scan **every ref**, not just the current branch — at preflight the checkout is
+  > normally still on the integration branch, so a scan bounded to "the branch I'm
+  > on" almost never fires, and the case this exists to catch — a packet that
+  > landed, merged, and never got its checkbox flipped — usually lives in
+  > already-merged history.
+
+- **Why the capability scan's off-branch case is rare** (§1's drifted capability
+  checkboxes bullet). The skill keeps the rule — commit nothing and restore every
+  `STAGE=` path when the checkout is off the integration branch — without this
+  parenthetical, which pointed at the reason above:
+
+  > (it is normally on it here; see the task-drift bullet above for why)

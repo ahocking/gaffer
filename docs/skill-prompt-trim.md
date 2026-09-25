@@ -104,6 +104,16 @@ separate variance figure for `cc_shape` itself.
   bare section number, every heading and §3 step title resume names exists in
   run-loop, and resume keeps its own four things and the `routing.sh resolve` beside
   its dispatch.
+- **T6 (run-loop, top through `## 2. Enter driver mode`):** no existing assertion
+  changed. Every passage the sweep extracts from this range — the packet-template
+  `Read`, the compact-threshold block, §2's entry-routing bullet and fresh-run
+  carry-through clause, §1's drifted-capability site — keeps its anchors and needles
+  as they were. `test-report-conventions.sh` gains one section: §1's Branch bullet
+  names `integration_branch` and `.agents/project-overrides.yaml` and points at
+  `templates/task-packet.yaml` for the absent-key fallback; the range states no
+  default value; and for each of the nine reasons this task moved, run-loop keeps its
+  one clause, carries no copy of the moved wording, and the owning ADR's run-loop
+  relocation section (ADR 0005, 0022, 0023, 0025, 0028) holds it.
 
 ## Loop-skill rule review
 

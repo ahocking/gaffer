@@ -386,6 +386,62 @@
 #                            characters change. `check-task` remains the
 #                            adapter's only writer of a TASK line; this is the
 #                            only writer of a CAPABILITY line.
+#   record-completion --tasks <id[,id...]> [--feature <slug>] --restore index|head [root]
+#   record-completion --drift --restore index|head [root]
+#                            (skill-prompt-trim-t2) the landing and scan
+#                            decisions, held here instead of in each skill
+#                            site: CALLS `check-task` and
+#                            `complete-capabilities` (changing neither) and
+#                            reads their exit codes, so no caller carries a
+#                            copy of that table. LANDING form: `check-task`
+#                            per member, in the order given --
+#                              exit 0  TASK=<id>\t<CHECKED value>
+#                              exit 4  TASK_DRIFT=<id>\t<REASON>  (reported,
+#                                      never a halt)
+#                              exit 1  HALT=<id>\t<reason>, then the summary
+#                                      line and exit 1: nothing further is
+#                                      called and no STAGE= line is printed
+#                                      (any other non-zero exit halts too)
+#                            then ONE `complete-capabilities` call, for the
+#                            slug of the first `CHECKED=<feature>#T<n>`, else
+#                            `--feature`. That call is skipped -- REASON= plus
+#                            `RECORD_COMPLETION=skipped` -- when every member
+#                            read `CHECKED=none` at exit 0 (even with
+#                            `--feature`), or when there is neither a slug nor
+#                            `--feature`. SCAN form: reads `capability-drift`
+#                            output on stdin, passes every line through
+#                            unchanged, then calls `complete-capabilities`
+#                            once per distinct `DRIFT=` slug, first-seen
+#                            order -- no `check-task`, no `--feature` (refused
+#                            with `--drift`). BOTH forms, per call:
+#                              CAPABILITIES=<slug>\t<ok|blocked|failed>\tcompleted=<n>
+#                              COMPLETED=<slug>\t<capability text>  (its lines)
+#                              HELD=<slug>\t<REASON>        (a blocked call)
+#                              RESTORED=<relprd>\tfrom=<index|head>  (any
+#                                      non-zero exit: the PRD
+#                                      `_resolve_prd_path` gives is restored
+#                                      -- index: `git checkout -- <prd>`;
+#                                      head: `git checkout HEAD -- <prd>`,
+#                                      which resets the index copy too)
+#                              RESTORED=none\t<reason>      (instead, when the
+#                                      slug fails the path-separator/'..'
+#                                      guard, no PRD resolves, or git fails:
+#                                      no path is touched)
+#                            then, once each and in first-queued order,
+#                              STAGE=<path>   every plan file an exit-0
+#                                             `CHECKED=<feature>#T<n>` or
+#                                             `CHECKED=already` names, and
+#                                             every PRD whose call completed
+#                                             more than 0
+#                            and LAST, always:
+#                              RECORD_COMPLETION=<ok|halt|skipped> staged=<n> completed=<n> held=<n> failed=<n>
+#                            A failed `complete-capabilities` call is reported
+#                            and restored, never a halt (still `ok`).
+#                            Never stages, never commits, never infers the
+#                            restore source: a missing or unknown `--restore`
+#                            is a usage error (exit 1), as is a missing
+#                            `--tasks`/`--drift` or an empty member. Exit 0
+#                            otherwise, except 1 on a halt.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -2224,6 +2280,239 @@ cmd_complete_capabilities() {
   rm -f "$texts"
 }
 
+# --- record-completion: the landing and scan decisions, in one place --------
+# (skill-prompt-trim-t2). Holds what four skill sites used to spell out in
+# prose -- which exit code of which command means what, which slug to
+# complete, the `--feature` fallback, what to stage and what to restore -- by
+# CALLING `cmd_check_task` and `cmd_complete_capabilities` and changing
+# neither: `check-task` stays the only writer of a task line and
+# `complete-capabilities` the only writer of a capability line. This function
+# writes nothing into gspec/ itself; its one side effect is the PRD restore
+# after a failed `complete-capabilities` call, from the source the caller
+# names. It never stages or commits -- it prints `STAGE=` paths for the caller.
+# See the header's Subcommands entry for the full output contract.
+
+# _recc_run <out> <err> <fn> [args...] -- run one existing subcommand function
+# in a subshell with its own `set -e` (so it behaves exactly as when dispatched
+# directly: errexit is ignored in a `||`/`&&`/`if` context, which is why the
+# exit code is captured with errexit off in THIS shell instead), stdout and
+# stderr to files, and leave its exit code in the global `_RECC_RC`.
+_recc_run() {
+  local o="$1" e="$2"; shift 2
+  set +e
+  ( set -e; "$@" ) > "$o" 2> "$e"
+  _RECC_RC=$?
+  set -e
+}
+
+# _recc_val <KEY> <file> -- the value after the first `KEY=` line, or nothing.
+_recc_val() {
+  K="$1" awk 'index($0, ENVIRON["K"] "=") == 1 { print substr($0, length(ENVIRON["K"]) + 2); exit }' "$2"
+}
+
+# _recc_stage <path> -- queue one STAGE= path, once. `_RECC_STAGE` holds them
+# newline-separated, in first-queued order.
+_recc_stage() {
+  local p="$1" q
+  [ -n "$p" ] || return 0
+  while IFS= read -r q; do
+    [ "$q" = "$p" ] && return 0
+  done <<< "$_RECC_STAGE"
+  _RECC_STAGE="${_RECC_STAGE}${p}"$'\n'
+}
+
+# _recc_finish <ok|halt|skipped> -- print the queued STAGE= lines, then the
+# summary line, which is always the last line of output.
+_recc_finish() {
+  local p staged=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'STAGE=%s\n' "$p"
+    staged=$((staged + 1))
+  done <<< "$_RECC_STAGE"
+  printf 'RECORD_COMPLETION=%s staged=%d completed=%d held=%d failed=%d\n' \
+    "$1" "$staged" "$_RECC_COMPLETED" "$_RECC_HELD" "$_RECC_FAILED"
+}
+
+# _recc_restore <slug> <root> <index|head> -- put a slug's PRD back after a
+# failed `complete-capabilities` call. The path is `_resolve_prd_path`'s, and
+# only for a slug that passes the same guard `complete-capabilities` and
+# `_resolve_task_id` apply (a path separator or '..' component is refused);
+# otherwise no path is touched.
+_recc_restore() {
+  local slug="$1" root="$2" src="$3" relprd
+  case "$slug" in
+    ''|*/*|*'..'*)
+      printf 'RESTORED=none\tslug %s refused: empty, or a path separator or '"'"'..'"'"' component (ADR 0025 D1)\n' "$slug"
+      return 0
+      ;;
+  esac
+  relprd="$(_resolve_prd_path "$slug" "$root" | cut -f2)"
+  if [ -z "$relprd" ]; then
+    printf 'RESTORED=none\tfeature %s has no PRD in any gspec layout\n' "$slug"
+    return 0
+  fi
+  local rc=0
+  if [ "$src" = "index" ]; then
+    git -C "$root" checkout -- "$relprd" >/dev/null 2>&1 || rc=$?
+  else
+    git -C "$root" checkout HEAD -- "$relprd" >/dev/null 2>&1 || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    printf 'RESTORED=%s\tfrom=%s\n' "$relprd" "$src"
+  else
+    printf 'RESTORED=none\tgit could not restore %s from %s (exit %d)\n' "$relprd" "$src" "$rc"
+  fi
+}
+
+# _recc_capabilities <slug> <root> <index|head> -- one `complete-capabilities`
+# call, reported as CAPABILITIES= plus its COMPLETED= lines; HELD= for a
+# blocked call; the PRD queued for staging when it completed above 0; and the
+# PRD restored on ANY non-zero exit, which is reported and never a halt.
+_recc_capabilities() {
+  local slug="$1" root="$2" src="$3" o e summary status n
+  o="$(mktemp)"; e="$(mktemp)"
+  _recc_run "$o" "$e" cmd_complete_capabilities "$slug" "$root"
+  if [ "$_RECC_RC" -ne 0 ]; then
+    printf 'CAPABILITIES=%s\tfailed\tcompleted=0\n' "$slug"
+    _RECC_FAILED=$((_RECC_FAILED + 1))
+    rm -f "$o" "$e"
+    _recc_restore "$slug" "$root" "$src"
+    return 0
+  fi
+  summary="$(_recc_val COMPLETE_CAPABILITIES "$o")"
+  status="${summary%% *}"
+  n="${summary##*completed=}"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$status" = "blocked" ]; then
+    printf 'CAPABILITIES=%s\tblocked\tcompleted=0\n' "$slug"
+    printf 'HELD=%s\t%s\n' "$slug" "$(_recc_val REASON "$o")"
+    _RECC_HELD=$((_RECC_HELD + 1))
+  else
+    printf 'CAPABILITIES=%s\tok\tcompleted=%d\n' "$slug" "$n"
+    awk 'index($0, "COMPLETED=") == 1' "$o"
+    _RECC_COMPLETED=$((_RECC_COMPLETED + n))
+    [ "$n" -gt 0 ] && _recc_stage "$(_recc_val FILE "$o")"
+  fi
+  rm -f "$o" "$e"
+  return 0
+}
+
+cmd_record_completion() {
+  local tasks="" feature="" restore="" drift=0 root_arg="" tasks_given=0 feature_given=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --tasks)   [ "$#" -ge 2 ] || die "record-completion: --tasks needs a value"
+                 tasks="$2"; tasks_given=1; shift 2 ;;
+      --feature) [ "$#" -ge 2 ] || die "record-completion: --feature needs a value"
+                 feature="$2"; feature_given=1; shift 2 ;;
+      --restore) [ "$#" -ge 2 ] || die "record-completion: --restore needs a value (index|head)"
+                 restore="$2"; shift 2 ;;
+      --drift)   drift=1; shift ;;
+      --*)       die "record-completion: unknown option $1" ;;
+      *)         [ -z "$root_arg" ] || die "record-completion: unexpected argument $1"
+                 root_arg="$1"; shift ;;
+    esac
+  done
+  case "$restore" in
+    index|head) ;;
+    '') die "record-completion: --restore index|head is required -- the caller states the restore source; it is never inferred" ;;
+    *)  die "record-completion: --restore must be index or head, not '$restore'" ;;
+  esac
+  if [ "$drift" = "1" ]; then
+    { [ "$tasks_given" = "0" ] && [ "$feature_given" = "0" ]; } \
+      || die "record-completion: --drift takes no --tasks and no --feature (the scan form has no fallback)"
+  else
+    [ -n "$tasks" ] || die "record-completion: need --tasks <id[,id...]> (landing form) or --drift (scan form)"
+    case ",$tasks," in *,,*) die "record-completion: --tasks has an empty member: $tasks" ;; esac
+  fi
+  local root; root="$(_root "$root_arg")"
+
+  _RECC_STAGE=""; _RECC_COMPLETED=0; _RECC_HELD=0; _RECC_FAILED=0
+
+  # --- scan form: capability-drift output on stdin, passed through ----------
+  if [ "$drift" = "1" ]; then
+    local line s slugs="" seen q
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf '%s\n' "$line"
+      case "$line" in
+        DRIFT=*)
+          s="${line#DRIFT=}"; s="${s%%$'\t'*}"
+          seen=0
+          while IFS= read -r q; do
+            [ "$q" = "$s" ] && { seen=1; break; }
+          done <<< "$slugs"
+          [ "$seen" = "1" ] || slugs="${slugs}${s}"$'\n'
+          ;;
+      esac
+    done
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      _recc_capabilities "$s" "$root" "$restore"
+    done <<< "$slugs"
+    _recc_finish ok
+    return 0
+  fi
+
+  # --- landing form: check-task per member, then one complete-capabilities --
+  local -a members
+  IFS=',' read -r -a members <<< "$tasks"
+  local o e id val reason slug="" allnone=1
+  o="$(mktemp)"; e="$(mktemp)"
+  for id in "${members[@]}"; do
+    _recc_run "$o" "$e" cmd_check_task "$id" "$root"
+    case "$_RECC_RC" in
+      0)
+        val="$(_recc_val CHECKED "$o")"
+        printf 'TASK=%s\t%s\n' "$id" "$val"
+        case "$val" in
+          none) ;;
+          already)
+            allnone=0
+            _recc_stage "$(_recc_val FILE "$o")" ;;
+          *'#'*)
+            allnone=0
+            [ -n "$slug" ] || slug="${val%%#*}"
+            _recc_stage "$(_recc_val FILE "$o")" ;;
+          *) allnone=0 ;;
+        esac
+        ;;
+      4)
+        allnone=0
+        printf 'TASK_DRIFT=%s\t%s\n' "$id" "$(_recc_val REASON "$o")"
+        ;;
+      *)
+        # exit 1 (a refused id) -- or any other failure -- is returned to the
+        # caller: nothing more is called, and no STAGE= line is printed, so a
+        # caller staging every STAGE= path stages nothing from a halted call.
+        reason="$(awk 'NF { l = $0 } END { print l }' "$e")"
+        reason="${reason#gspec-backlog.sh: }"
+        [ -n "$reason" ] || reason="check-task exited $_RECC_RC"
+        printf 'HALT=%s\t%s\n' "$id" "$reason"
+        rm -f "$o" "$e"
+        _RECC_STAGE=""
+        _recc_finish halt
+        return 1
+        ;;
+    esac
+  done
+  rm -f "$o" "$e"
+
+  if [ "$allnone" = "1" ]; then
+    printf 'REASON=every member read CHECKED=none at exit 0 -- no gspec task to record\n'
+    _recc_finish skipped
+    return 0
+  fi
+  [ -n "$slug" ] || slug="$feature"
+  if [ -z "$slug" ]; then
+    printf 'REASON=no CHECKED=<feature>#T<n> line and no --feature -- no feature slug to complete\n'
+    _recc_finish skipped
+    return 0
+  fi
+  _recc_capabilities "$slug" "$root" "$restore"
+  _recc_finish ok
+}
+
 # _handoff_one <packet-id> [root] — the block for exactly ONE task id, byte-
 # identical to what `cmd_handoff` printed before bundling existed (packet-
 # bundling-t5 renamed this function; its body is otherwise untouched). See the
@@ -3409,5 +3698,6 @@ case "${1:-}" in
   group)      shift; cmd_group "$@" ;;
   capability-drift) shift; cmd_capability_drift "$@" ;;
   complete-capabilities) shift; cmd_complete_capabilities "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift|complete-capabilities <slug>} [root]" ;;
+  record-completion) shift; cmd_record_completion "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift|complete-capabilities <slug>|record-completion --tasks <id[,id...]> [--feature <slug>] --restore index|head|record-completion --drift --restore index|head} [root]" ;;
 esac

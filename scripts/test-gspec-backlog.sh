@@ -4190,6 +4190,237 @@ want:
 $expected"
 
 # =============================================================================
+# record-completion (skill-prompt-trim-t2). Holds the landing and scan decisions
+# by calling check-task and complete-capabilities. Each case below pins ONE
+# branch: a check-task exit code, a complete-capabilities outcome, a restore
+# source, the --feature fallback, a skip, the scan form, or the --restore
+# refusal. Fixtures are git repos where staging or restoring is observable.
+rc_git() { # rc_git <root> -- init a repo and commit everything in it
+  git -C "$1" init -q; git -C "$1" config user.email t@t; git -C "$1" config user.name t
+  git -C "$1" add -A; git -C "$1" commit -q -m fixture
+}
+rc_last()   { printf '%s\n' "$1" | tail -n 1; }
+rc_count()  { printf '%s\n' "$2" | grep -c "$1" || true; }
+rc_staged() { git -C "$1" diff --cached --name-only; }
+rc_status() { git -C "$1" status --porcelain --untracked-files=all; }
+
+rc_fixture() { # rc_fixture <root> <slug> -- flat layout: cap 1 covered by open T1 alone; cap 2 by done T2 + open T3
+  mkdir -p "$1"
+  mk_prd "$1" "$2" 0 2
+  mk_plan "$1" "$2" <<'EOF'
+- [ ] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+  rc_git "$1"
+}
+
+printf '\n== record-completion: check-task flipped + complete-capabilities completed above 0 -- both staged, nothing staged by the command ==\n'
+R="$TMPROOT/recc-flip"; rc_fixture "$R" rcf
+out="$("$ADAPTER" record-completion --tasks rcf#T1 --restore index "$R" 2>&1)"; rc=$?
+check 'the flipped member prints TASK=<id> with its CHECKED value' "$(printf 'TASK=rcf#T1\trcf#T1')" "$out"
+check 'the one call is for the flipped slug and completed above 0' "$(printf 'CAPABILITIES=rcf\tok\tcompleted=1')" "$out"
+check 'the call is followed by its COMPLETED= line' "$(printf 'COMPLETED=rcf\topen capability 1')" "$out"
+check 'the flipped plan file is named for staging' 'STAGE=gspec/tasks/rcf.md' "$out"
+check 'the PRD that completed above 0 is named for staging' 'STAGE=gspec/features/rcf.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=2 completed=1 held=0 failed=0' ] \
+  && ok 'the summary is the last line and counts both stages and the one completion' \
+  || bad 'the summary is the last line and counts both stages and the one completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ -z "$(rc_staged "$R")" ] && ok 'the command itself stages nothing' || bad 'the command itself stages nothing' "$(rc_staged "$R")"
+
+printf '\n== record-completion: check-task already + --feature fallback; complete-capabilities completed 0 is not staged ==\n'
+R="$TMPROOT/recc-already"; rc_fixture "$R" rca
+out="$("$ADAPTER" record-completion --tasks rca#T2 --feature rca --restore index "$R" 2>&1)"; rc=$?
+check 'the already member prints TASK=<id> already' "$(printf 'TASK=rca#T2\talready')" "$out"
+check 'the already plan file is named for staging' 'STAGE=gspec/tasks/rca.md' "$out"
+check 'with no flipped slug, the call falls back to --feature' "$(printf 'CAPABILITIES=rca\tok\tcompleted=0')" "$out"
+refute 'a PRD that completed 0 is never named for staging' 'STAGE=gspec/features/rca.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=0 held=0 failed=0' ] \
+  && ok 'the summary counts the one plan stage and no completion' \
+  || bad 'the summary counts the one plan stage and no completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: every member already and no --feature -- no slug, the call is skipped ==\n'
+R="$TMPROOT/recc-noslug"; rc_fixture "$R" rcn
+out="$("$ADAPTER" record-completion --tasks rcn#T2 --restore index "$R" 2>&1)"; rc=$?
+refute 'no complete-capabilities call is made' 'CAPABILITIES=' "$out"
+check 'the skip says why' 'REASON=' "$out"
+check 'the already plan is still named for staging' 'STAGE=gspec/tasks/rcn.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=skipped staged=1 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads skipped' || bad 'the summary reads skipped' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: every member CHECKED=none at exit 0 skips even with --feature ==\n'
+R="$TMPROOT/recc-none"; rc_fixture "$R" rco
+out="$("$ADAPTER" record-completion --tasks not-a-gspec-id,other-thing --feature rco --restore head "$R" 2>&1)"; rc=$?
+check 'a none member prints TASK=<id> none' "$(printf 'TASK=not-a-gspec-id\tnone')" "$out"
+refute 'no complete-capabilities call is made, despite --feature' 'CAPABILITIES=' "$out"
+refute 'nothing is named for staging' 'STAGE=' "$out"
+check 'the skip says why' 'REASON=' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=skipped staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads skipped' || bad 'the summary reads skipped' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a drift member (exit 4) is reported, never a halt, and the --feature fallback still runs ==\n'
+R="$TMPROOT/recc-drift"; rc_fixture "$R" rcd
+out="$("$ADAPTER" record-completion --tasks rcd#T99,not-a-gspec-id --feature rcd --restore index "$R" 2>&1)"; rc=$?
+check 'the drift member prints TASK_DRIFT=<id> with its REASON' "$(printf 'TASK_DRIFT=rcd#T99\trcd has no task T99')" "$out"
+check 'the next member still runs' "$(printf 'TASK=not-a-gspec-id\tnone')" "$out"
+refute 'a drift member is never a halt' 'HALT=' "$out"
+check 'drift is not none: the call falls back to --feature' "$(printf 'CAPABILITIES=rcd\tok\tcompleted=0')" "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads ok' || bad 'the summary reads ok' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a refused member (exit 1) halts -- no capability call, the earlier flip left unstaged ==\n'
+R="$TMPROOT/recc-halt"; rc_fixture "$R" rch
+out="$("$ADAPTER" record-completion --tasks rch#T1,../evil#T1,rch#T3 --feature rch --restore index "$R" 2>&1)"; rc=$?
+check 'the earlier member flipped' "$(printf 'TASK=rch#T1\trch#T1')" "$out"
+check 'the refused member prints HALT=<id> with the reason' "$(printf 'HALT=../evil#T1\tcheck-task: refusing')" "$out"
+refute 'no later member runs' 'rch#T3' "$out"
+refute 'no complete-capabilities call is made' 'CAPABILITIES=' "$out"
+refute 'no STAGE= line is printed on a halt' 'STAGE=' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=halt staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads halt' || bad 'the summary reads halt' "last: $(rc_last "$out")"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+check 'the earlier flip is on disk' '- [x] **T1** finish capability one' "$(cat "$R/gspec/tasks/rch.md")"
+[ -z "$(rc_staged "$R")" ] && ok 'the earlier flip is left unstaged' || bad 'the earlier flip is left unstaged' "$(rc_staged "$R")"
+check 'the PRD was not completed (no capability call ran)' '- [ ] **P1**: open capability 1' "$(cat "$R/gspec/features/rch.md")"
+
+printf '\n== record-completion: a blocked call is held -- no stage, no restore ==\n'
+R="$TMPROOT/recc-blocked"; mkdir -p "$R"
+mk_prd "$R" rcb 0 1
+mk_plan "$R" rcb <<'EOF'
+- [ ] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** an unchecked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+rc_git "$R"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcb.md"
+out="$("$ADAPTER" record-completion --tasks rcb#T1 --restore head "$R" 2>&1)"; rc=$?
+check 'the call reads blocked' "$(printf 'CAPABILITIES=rcb\tblocked\tcompleted=0')" "$out"
+check 'a blocked call prints HELD=<slug> with its REASON' "$(printf 'HELD=rcb\trcb has an unchecked task')" "$out"
+refute 'a blocked PRD is never named for staging' 'STAGE=gspec/features/rcb.md' "$out"
+refute 'a blocked call restores nothing' 'RESTORED=' "$out"
+check 'the PRD edit survives (no restore ran)' 'uncommitted PRD edit' "$(cat "$R/gspec/features/rcb.md")"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=0 held=1 failed=0' ] \
+  && ok 'the summary counts the hold' || bad 'the summary counts the hold' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: exit 4 with a PRD present restores it from HEAD ==\n'
+R="$TMPROOT/recc-exit4-prd"; mkdir -p "$R"; mk_prd "$R" rcg 0 1; rc_git "$R"
+prd_head="$(cat "$R/gspec/features/rcg.md")"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcg.md"
+out="$(printf 'DRIFT=rcg\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'a non-zero call reads failed' "$(printf 'CAPABILITIES=rcg\tfailed\tcompleted=0')" "$out"
+check 'the PRD is restored and named' "$(printf 'RESTORED=gspec/features/rcg.md\tfrom=head')" "$out"
+[ "$(cat "$R/gspec/features/rcg.md")" = "$prd_head" ] && ok 'the PRD is back to HEAD' || bad 'the PRD is back to HEAD' "$(cat "$R/gspec/features/rcg.md")"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=0 completed=0 held=0 failed=1' ] \
+  && ok 'a failure is counted, never a halt' || bad 'a failure is counted, never a halt' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: restore source index keeps a staged PRD edit ==\n'
+R="$TMPROOT/recc-src-index"; mkdir -p "$R"; mk_prd "$R" rcs 0 1; rc_git "$R"
+printf 'staged PRD edit\n' >> "$R/gspec/features/rcs.md"; git -C "$R" add gspec/features/rcs.md
+printf 'worktree PRD edit\n' >> "$R/gspec/features/rcs.md"
+out="$(printf 'DRIFT=rcs\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore index "$R" 2>&1)"; rc=$?
+check 'the restore names its source' "$(printf 'RESTORED=gspec/features/rcs.md\tfrom=index')" "$out"
+prd_after="$(cat "$R/gspec/features/rcs.md")"
+check 'the staged edit is kept' 'staged PRD edit' "$prd_after"
+refute 'the unstaged edit is dropped' 'worktree PRD edit' "$prd_after"
+check 'the staged edit is still in the index' 'gspec/features/rcs.md' "$(rc_staged "$R")"
+
+printf '\n== record-completion: restore source head resets a staged PRD edit ==\n'
+R="$TMPROOT/recc-src-head"; mkdir -p "$R"; mk_prd "$R" rcs 0 1; rc_git "$R"
+printf 'staged PRD edit\n' >> "$R/gspec/features/rcs.md"; git -C "$R" add gspec/features/rcs.md
+printf 'worktree PRD edit\n' >> "$R/gspec/features/rcs.md"
+out="$(printf 'DRIFT=rcs\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the restore names its source' "$(printf 'RESTORED=gspec/features/rcs.md\tfrom=head')" "$out"
+prd_after="$(cat "$R/gspec/features/rcs.md")"
+refute 'the staged edit is reset' 'staged PRD edit' "$prd_after"
+refute 'the unstaged edit is dropped' 'worktree PRD edit' "$prd_after"
+[ -z "$(rc_staged "$R")" ] && ok 'nothing is left staged' || bad 'nothing is left staged' "$(rc_staged "$R")"
+
+printf '\n== record-completion: exit 1 (a refused slug) restores nothing and touches no path outside gspec/ ==\n'
+# `../../victim` resolves, through _resolve_prd_path's flat pattern, to
+# <root>/victim.md -- outside gspec/. Only the slug guard keeps it untouched.
+R="$TMPROOT/recc-exit1"; mkdir -p "$R"; mk_prd "$R" rcv 0 1
+printf 'committed\n' > "$R/victim.md"; rc_git "$R"
+printf 'uncommitted victim edit\n' >> "$R/victim.md"
+status_before="$(rc_status "$R")"
+out="$(printf 'DRIFT=../../victim\tx\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the refused call reads failed' "$(printf 'CAPABILITIES=../../victim\tfailed\tcompleted=0')" "$out"
+check 'the restore is refused, with a reason' "$(printf 'RESTORED=none\tslug ../../victim refused')" "$out"
+check 'the file outside gspec/ keeps its edit' 'uncommitted victim edit' "$(cat "$R/victim.md")"
+[ "$status_before" = "$(rc_status "$R")" ] && ok 'the working tree is unchanged' || bad 'the working tree is unchanged' "$(rc_status "$R")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: exit 4 with no PRD restores nothing and touches no path ==\n'
+R="$TMPROOT/recc-exit4-noprd"; mkdir -p "$R"; mk_prd "$R" rcw 0 1; rc_git "$R"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcw.md"
+status_before="$(rc_status "$R")"
+out="$(printf 'DRIFT=ghost\tx\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the call reads failed' "$(printf 'CAPABILITIES=ghost\tfailed\tcompleted=0')" "$out"
+check 'no PRD resolves, so nothing is restored' "$(printf 'RESTORED=none\tfeature ghost has no PRD')" "$out"
+[ "$status_before" = "$(rc_status "$R")" ] && ok 'the working tree is unchanged' || bad 'the working tree is unchanged' "$(rc_status "$R")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: the scan form passes stdin through and calls once per distinct DRIFT= slug, first-seen order ==\n'
+R="$TMPROOT/recc-scan"; mkdir -p "$R"
+mk_prd "$R" rcx 0 2
+mk_plan "$R" rcx <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** finish capability two
+  - deps: —
+  - covers: open capability 2
+EOF
+mk_prd "$R" rcy 0 1
+mk_plan "$R" rcy <<'EOF'
+- [ ] **T1** not done yet
+  - deps: —
+  - covers: open capability 1
+EOF
+rc_git "$R"
+stdin="$(printf 'DRIFT=rcy\topen capability 1\nUNJUDGEABLE=uncovered-capability\trcz\topen capability 9\nDRIFT=rcx\topen capability 1\nDRIFT=rcy\topen capability 2\nCAPABILITY_DRIFT=attention drift=3 unjudgeable=1')"
+out="$(printf '%s\n' "$stdin" | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+[ "$(printf '%s\n' "$out" | head -n 5)" = "$stdin" ] \
+  && ok 'every stdin line is passed through unchanged, first' \
+  || bad 'every stdin line is passed through unchanged, first' "$out"
+[ "$(rc_count '^CAPABILITIES=rcy' "$out")" = 1 ] && ok 'a repeated slug is called once' || bad 'a repeated slug is called once' "$out"
+[ "$(printf '%s\n' "$out" | grep '^CAPABILITIES=' | cut -f1 | tr '\n' ' ')" = 'CAPABILITIES=rcy CAPABILITIES=rcx ' ] \
+  && ok 'calls run in first-seen order' || bad 'calls run in first-seen order' "$out"
+refute 'an UNJUDGEABLE= slug is never called' 'CAPABILITIES=rcz' "$out"
+check 'the completing slug is staged' 'STAGE=gspec/features/rcx.md' "$out"
+refute 'no plan file is staged -- the scan form runs no check-task' 'STAGE=gspec/tasks/' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=1 held=0 failed=0' ] \
+  && ok 'the summary counts the one completion' || bad 'the summary counts the one completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a missing --restore is refused before anything runs ==\n'
+R="$TMPROOT/recc-norestore"; rc_fixture "$R" rcr
+plan_before="$(cat "$R/gspec/tasks/rcr.md")"
+out="$("$ADAPTER" record-completion --tasks rcr#T1 "$R" 2>&1)"; rc=$?
+check 'the landing form refuses, naming --restore' '--restore index|head is required' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+[ "$(cat "$R/gspec/tasks/rcr.md")" = "$plan_before" ] && ok 'no check-task ran' || bad 'no check-task ran' "$(cat "$R/gspec/tasks/rcr.md")"
+out="$(printf 'DRIFT=rcr\tx\n' | "$ADAPTER" record-completion --drift "$R" 2>&1)"; rc=$?
+check 'the scan form refuses too' '--restore index|head is required' "$out"
+refute 'and passes nothing through' 'DRIFT=' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+
+# =============================================================================
 printf '\n== source guard: no pipe-fed `grep` that can exit early used as a condition in the adapter ==\n'
 # next-state-reporting-integrity T3. The construct this feature removed is a
 # pipeline whose final stage is an early-exiting reader used as a condition:

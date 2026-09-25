@@ -2249,6 +2249,62 @@ case "$t8_pr" in
   *) ok 'run-loop periodic-review paragraph claims no identical wording with loop-driver' ;;
 esac
 
+printf '\n== the loop skills state each rule once; the other sites point at it (skill-prompt-trim T13) ==\n'
+# T13 shortened the three loop skills by stating once a rule a skill had stated in
+# several places. Each row pins both halves of one such move: the one statement is
+# still there, and the site that used to restate it now points at it instead of
+# carrying a second copy. A copy pasted back turns the count red; a pointer or the
+# one statement removed turns the presence pin red. Counts and needles are read
+# over the whitespace-squeezed file, so a markdown wrap neither hides a copy nor
+# fails a statement that is present. Each file is guarded non-empty first, since
+# every absence check passes over an empty file.
+t13_rl="$(_squeeze "$ROOT/skills/run-loop/SKILL.md")"
+t13_pa="$(_squeeze "$ROOT/skills/pause/SKILL.md")"
+[ -n "$t13_rl" ] && [ -n "$t13_pa" ] && ok 'run-loop and pause are readable for the stated-once checks' \
+  || bad 'run-loop and pause are readable for the stated-once checks' 'empty or missing skill file'
+_t13_count() { # needle, haystack -> occurrences
+  local hay="$2" n=0
+  while :; do
+    case "$hay" in *"$1"*) n=$((n + 1)); hay="${hay#*"$1"}" ;; *) break ;; esac
+  done
+  printf '%s' "$n"
+}
+_t13_once() { # label, needle, haystack -- exactly one statement
+  local n; n="$(_t13_count "$2" "$3")"
+  [ "$n" = 1 ] && ok "$1" || bad "$1" "found $n occurrences of: $2"
+}
+_t13_once 'run-loop states the lint-finding consequences once (the kickoff lint)' \
+  'A finding records nothing, blocks nothing, rolls back nothing, flips nothing and halts nothing' "$t13_rl"
+has "run-loop's stop-report lint points at the kickoff lint's rule" \
+  'change nothing, as at §2' "$t13_rl"
+_t13_once "run-loop states the Land cursor rule's removal once (the Land step)" \
+  'remove every member of `$MEMBERS` from `pending` wherever it sits' "$t13_rl"
+has "run-loop's hand-off-feature arm points at the Land step's cursor rule" \
+  "by §3.6's cursor rule" "$t13_rl"
+_t13_once 'run-loop defines a held feature once (the preflight drift bullet)' \
+  'stages nothing and leaves nothing to restore' "$t13_rl"
+has "run-loop's end-of-run scan points at §1 for the held-feature definition" \
+  'a held feature is as §1 defines it' "$t13_rl"
+has 'run-loop step 4 states the model-resolution rule for every dispatch' \
+  'non-empty result is passed as `model`; an empty one means `model` is omitted' "$t13_rl"
+# The attempt and continue arms keep their own copy: they are read against
+# agents/loop-driver.md by the continuation section above, so the count is taken
+# outside that span.
+t13_arm="$(_rc_sq "$(_extract_cont_arm "$ROOT/skills/run-loop/SKILL.md")")"
+t13_mr_all="$(_t13_count 'non-empty → `model`' "$t13_rl")"
+t13_mr_arm="$(_t13_count 'non-empty → `model`' "$t13_arm")"
+[ -n "$t13_arm" ] && [ "$((t13_mr_all - t13_mr_arm))" = 0 ] \
+  && ok 'no other dispatch site in run-loop restates the model-resolution rule' \
+  || bad 'no other dispatch site in run-loop restates the model-resolution rule' \
+      "outside the attempt/continue arms: $((t13_mr_all - t13_mr_arm)) (arm span empty: $([ -n "$t13_arm" ] && echo no || echo yes))"
+case "$t13_pa" in
+  *'blocks nothing, rolls back nothing'*) bad 'pause carries no copy of the lint-finding consequences' \
+    'still present: blocks nothing, rolls back nothing' ;;
+  *) ok 'pause carries no copy of the lint-finding consequences' ;;
+esac
+has "pause reads the lint's result by run-loop's ## 4. Termination" \
+  'act on its result as that section states' "$t13_pa"
+
 printf '\n----------------------------------------\n'
 printf 'report-conventions: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

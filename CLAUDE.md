@@ -263,7 +263,15 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   checkout). Each step is a **headless session in the clone**, pinned to the harness
   checkout by `--plugin-dir` (from the operator's session, a dispatch counts as a
   model override). Every session gets the `effort` setting **with
-  `CLAUDE_CODE_EFFORT_LEVEL` unset**. The reviewer sees only a redacted view.
+  `CLAUDE_CODE_EFFORT_LEVEL` unset**, and **`--permission-mode bypassPermissions`**
+  (nobody can answer a headless prompt; the clone is disposable and `guard.sh`'s
+  hard-deny tier is meant to keep applying), on a fresh `--session-id` its `STEP` line names.
+  **A tool call denied in any replay session makes the replay `invalid`**: read by
+  `record` from a top-level `toolDenialKind` in the sessions' transcripts, except
+  `interrupted` and `cancelled`. It is rerun and never counted against the model. A
+  session with no transcript leaves `denials` null, never 0. No bypass-mode session
+  has been observed yet, so neither its hard deny nor its ask-tier kind is confirmed
+  (ADR 0030 §2). The reviewer sees only a redacted view.
   Results live in `.agents/metrics/comparisons/`, **never `.agents/loop/`**
   (`begin-run` prunes it). `run` needs a single-use `estimate` token. The required
   sweeps are every `scripts/test-*.sh` path the handoff names. **The proposal is

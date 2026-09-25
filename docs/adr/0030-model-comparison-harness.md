@@ -74,7 +74,7 @@ There is a second reason. The reviewer cannot run in a checkout whose
 
 So `compare.sh replay` drives the replay itself. Every agent step is a separate
 non-interactive session, time-limited by `ORCH_COMPARE_STEP_TIMEOUT`, with stdin
-from `/dev/null` (`scripts/compare.sh:2778-2779`). Its working directory is the
+from `/dev/null` (`run_session` in `scripts/compare.sh`). Its working directory is the
 work clone for the varied role, or a review view for the reviewer. The session
 dispatches the step's agent once, with the model that
 `routing.sh --root <dir> resolve <agent>` prints. `ORCH_COMPARE_CLAUDE` names
@@ -88,6 +88,55 @@ repository, a clone at a parent commit carries older copies of `agents/`,
 `hooks/` and `scripts/`, or none. Its committed `.claude/settings.json` also
 disables the plugin. A session that is not pinned to the harness checkout would
 run the old loop, or no loop at all.
+
+Every session `run_session` starts (each replay step, each review view and each
+`rank` session) runs with `--permission-mode bypassPermissions`. A headless
+session has nobody to answer a permission prompt, so a step that reached one
+would stall until its time limit. The bypass is confined to a disposable
+directory: the session's working directory is its clone or view. The
+guardrail is meant to keep applying inside it: `--plugin-dir` loads the
+harness's `hooks/guard.sh`, and its hard deny is a `PreToolUse` hook's exit 2,
+not a permission prompt. No bypass-mode session has yet been observed to
+confirm that (see the list below).
+
+A tool call denied in any of a replay's sessions makes the replay `invalid`.
+That covers a guard denial, its ask tier included (nobody can answer an ask in
+a headless session), and a permission-system denial. It is a harness fault:
+the replay is rerun and left out of the pass rate, and it is never counted
+against the varied model. `record` reads the denials from the sessions'
+transcripts. Each session is started on a fresh `--session-id`, which its
+`STEP` line names. Its transcript is `<projects>/*/<id>.jsonl`, and its
+subagents' transcripts are `<projects>/*/<id>/subagents/agent-*.jsonl`, found as
+`metrics.sh` finds them (`ORCH_METRICS_PROJECTS_DIR`, else
+`~/.claude/projects`). A denied call is a transcript record carrying a top-level
+`toolDenialKind`. Every kind counts except `interrupted` (a person's interrupt)
+and `cancelled` (a response stopped by a safety classifier). A kind not yet seen
+also counts. The count is stored as `denials`. When a `STEP` line names no
+session, or a session has no transcript, the count is `null` (unmeasured, never
+0), `denial_note` says why, and the outcome is decided without it.
+
+This detection was read from real transcripts, not from a live replay. The
+evidence was the machine's own `~/.claude/projects` on Claude Code 2.1.202 to
+2.1.281, read on 2026-09-24. There, every tool_result a `PreToolUse` hook
+denied carried `toolDenialKind: "permission-rule"` (1,054 records), with no
+counter-example. The other kinds seen were `user-rejected` (among them a real
+`claude -p` session's refused edit), `automode-blocked`, `automode-unavailable`,
+`interrupted` and `cancelled`. No transcript on the machine came from a
+bypass-mode session. Five cases were not observed:
+
+- a guard hard deny inside a bypass-mode session;
+- a guard ask-tier decision inside a bypass-mode `claude -p` session, and the
+  kind it records;
+- any denial inside a `-p` session's subagent transcript;
+- the transcript a `-p` session writes under a given `--session-id`;
+- a denial reported on a `-p` session's stdout.
+
+A live probe (a bypass-mode `claude -p` session attempting a guard-denied and
+an ask-tier write) was refused by the environment it was tried from. The first
+live experiment must confirm that the steps run unprompted and that a denied
+call is scored `invalid`. It should also confirm that the guard still hard-denies
+in that mode, and read one bypass-mode replay's transcripts for the kind an
+ask-tier decision records.
 
 ### 3. A replay copies `run-loop` §3's sequence, so the two are amended together
 
@@ -108,7 +157,7 @@ session follows, and no script exists for `compare.sh` to invoke. A change to
 vocabulary it reads must therefore be made in `compare.sh replay` and
 `scripts/test-compare.sh` in the same change. If it is not, replays measure a
 loop that no longer runs. `scripts/compare.sh:281` and the replayable-role set
-at `scripts/compare.sh:917` name the section they copy.
+at `scripts/compare.sh:936` name the section they copy.
 
 ### 4. The reviewer reviews a blinded view, with named channels redacted
 
@@ -130,7 +179,7 @@ only read. Each channel through which a model could be identified is handled:
 - **Handoff and result file.** The view gets copies in which every word
   containing an identifier of the settings' models is replaced by `[model]`,
   matched case-insensitively and together with a directly following version
-  number (`scripts/compare.sh:2525`). The header's paths are pointed at the
+  number (`scripts/compare.sh:2544`). The header's paths are pointed at the
   view's own.
 - **Routing-check metrics.** `routing-check` collects each view's metrics only
   after that view's review session has ended, and writes them beside the
@@ -161,7 +210,7 @@ ranking.
 `scripts/compare.sh` `replay` usage). Left in the operator's environment, it
 would carry into every child session, and one experiment could run
 at a level its settings do not name. The launcher unsets it before starting each
-session (`scripts/compare.sh:2778`). The fixed effort is also checked
+session (`run_session` in `scripts/compare.sh`). The fixed effort is also checked
 afterwards. `routing-check`, and the model-and-effort check `rank` runs, fail
 when the collected `totals.by_effort` names any level other than the setting. A
 model that takes no effort names none, and passes.
@@ -169,10 +218,10 @@ model that takes no effort names none, and passes.
 ### 6. The store is `.agents/metrics/comparisons/`, outside `.agents/loop/`
 
 The results are kept in `.agents/metrics/comparisons/` in the main checkout of
-the repository the harness runs from (`scripts/compare.sh:1595`;
+the repository the harness runs from (`scripts/compare.sh:1614`;
 `ORCH_COMPARE_STORE` overrides it). The location is outside `.agents/loop/`
 because `begin-run` prunes `.agents/loop/` to the current run plus one
-(`scripts/runstate.sh:3562-3567`). A store there would lose an experiment's
+(`cmd_begin_run` in `scripts/runstate.sh`). A store there would lose an experiment's
 records to the next loop run, and a stopped experiment could not resume. All of
 `.agents/metrics/` is already gitignored as bookkeeping in both `.gitignore`
 files.
@@ -224,7 +273,7 @@ estimate shown in the same session.
 ### 9. The required sweeps are every `scripts/test-*.sh` path the handoff names
 
 `sweeps` treats every `scripts/test-<name>.sh` path that the replay's handoff
-names as a required sweep (`scripts/compare.sh:3423`). It reads them from the
+names as a required sweep (`scripts/compare.sh:3457`). It reads them from the
 experiment's handoff cache: the bytes every model's replay of that packet was
 first given. It never reads the work clone's handoff, into which a continuation
 or a fix round may have spliced a partial-work block. A glob such as
@@ -238,7 +287,7 @@ which means not run and never a pass.
 
 Two renders of the same stored results must match byte for byte (PRD, P1), and
 only a deterministic rule can give that. `report` reads only the store, starts
-no session and prints no timestamp. Its proposal (`scripts/compare.sh:4734`)
+no session and prints no timestamp. Its proposal (`scripts/compare.sh:4823`)
 picks one model for the varied role. The model with the highest pass rate over
 both classes wins. On a tie the lowest mean rank decides, then the lowest mean
 dollars. Each later figure decides only among the models tied on every figure

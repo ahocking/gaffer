@@ -114,3 +114,20 @@ one.
   and fail-open unless an in-flight run exists; the guardrail's hard/soft gates
   (ADR 0004) are unchanged — reconcile only ever discards scratch or adopts a
   branch commit, never touches `main` or a hard-gate path.
+
+## Relocated from skills (2026-09-25) — the pause skill's write-ahead and atomic-write reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the pause's work-in-progress commit carries the trailer** (pause step 1):
+
+  > Put the write-ahead trailer `[orch packet:<cursor>]` in the commit message (its
+  > own line), so that if a crash strikes between this commit and the run-state
+  > write below, a later resume can *adopt* the commit instead of escalating (ADR
+  > 0005).
+
+- **How the run-state write is atomic** (pause step 3):
+
+  > compose the full file and pipe it through the run-state helper (it writes to a
+  > temp file and renames)

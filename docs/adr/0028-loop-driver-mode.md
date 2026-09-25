@@ -774,3 +774,41 @@ written into the handoff only: no routing, outcomes or metrics record names them
 Where the block and the budget line sit relative to the `REQUIRED` block, and why, is
 recorded in [ADR 0029](0029-handoff-verification-contract.md)'s amendment of the same
 date.
+
+## Relocated from skills (2026-09-25) — the pause skill's driver-mode reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the loop-driver, not the Chief Engineer, runs the pause** (the pause
+  skill's preamble):
+
+  > the Chief Engineer is only ever dispatched, per packet, as the interim
+  > escalation-decider stand-in.
+
+- **Why the driver may make the pause's work-in-progress commit** (pause step 1):
+
+  > (this is the driver's soft-gate commit — `git commit` is not a write the
+  > guard's driver-mode edit block refuses)
+
+- **Why the cursor's handoff exists when the `stop` action reaches the pause**
+  (pause step 3):
+
+  > already exists whenever the `stop` action reaches here (it always follows a
+  > dispatched packet)
+
+- **Why the stop report reads the whole-run digest** (pause step 4):
+
+  > its `packet` lines name every packet the run began, with its outcome,
+  > whichever session ran each one, so this report reads the same right after
+  > landing or after a compaction
+
+- **Where the tally figures are counted** (pause step 4):
+
+  > counted by the core from the same whole-run digest with the 🔀 dedup already
+  > applied
+
+- **Why a pause exits driver mode** (pause step 4):
+
+  > driver mode ends whenever the loop renders its stop report, whether it
+  > stopped, paused, or finished (ADR 0028), and a pause is exactly that: a stop.

@@ -204,3 +204,23 @@ Nothing above is changed by this section. These points were carried only in the 
   glyph vocabulary, the indentation contract and the decision block, but a tally on a
   metrics summary is decoration, and decoration is what teaches a reader to stop trusting
   the glyphs.
+
+## Relocated from skills (2026-09-25) — the pause skill's report reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the report contract is `Read`, not named** (the pause skill's preamble):
+
+  > Naming a path is not reading it, and unread they produce free prose.
+
+- **Why Shipped lines are not a packet-id list** (pause step 4):
+
+  > Not a packet-id list: `wbr-t14` means nothing to the human a week later,
+  > **Rate-limit auto-pause** (`wbr-t14`) does.
+
+- **Why each blocking question is rewritten as an answerable choice** (pause
+  step 4):
+
+  > A question the human must go reading to understand is a question that stalls
+  > the run.

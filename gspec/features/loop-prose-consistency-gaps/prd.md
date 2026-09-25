@@ -94,7 +94,7 @@ This is new scope against a feature that shipped.
     leaves the case is a red sweep, and a change that retires the case and leaves
     the prose is the same defect with its evidence removed
 
-- [ ] **P1**: The stop report shape's worked example is pinned to the order its shape is pinned to
+- [x] **P1**: The stop report shape's worked example is pinned to the order its shape is pinned to
   - the section-order assertion covers the worked example's rendered body as well
     as the shape's own, so the half an agent copies is pinned by the same case as
     the half it copies from
@@ -122,7 +122,7 @@ This is new scope against a feature that shipped.
     it: one statement with a reference is in scope, two references and no
     statement is the defect
 
-- [ ] **P0**: Every case this change touches in the sweep that owns this surface can fail
+- [x] **P0**: Every case this change touches in the sweep that owns this surface can fail
   - no case is left asserting a statement the system contradicts: a case pinning
     prose expires when the reason for that prose does
   - every case added or changed here is verified by reverting the content it pins

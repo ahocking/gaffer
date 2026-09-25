@@ -415,11 +415,18 @@ nothing. Read the result exactly as §4 states it for the stop report.
    line per id, plus `FINISHED=<csv>`); the `gone` set is every id whose state
    reads `gone`. Comma-join those into `GONE="<id,id,...>"` and pass it to
    `--gone`, then sweep for real — passing `--paused-cursor "$MEMBERS"`
-   exactly when this session is about to continue it (§3.3 below is about to
-   call `record-start "$MEMBERS" --continue` rather than beginning it
-   fresh); the cursor's whole bundle is what this session is about to
-   continue, not what the sweep should close — capturing the sweep's own
-   output: `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (add
+   exactly when this session is about to continue the cursor's bundle rather
+   than start it fresh. **That is decided here, from the `--list` output
+   already in hand** (this `--list` call omits `--paused-cursor`, so it lists
+   every open packet, the cursor included): the cursor's id appearing among
+   its `OPEN=` lines means its start is still open — no outcome recorded
+   against it since — and this is a continuation; the cursor's id absent
+   (including when `--list` printed nothing) means it was never started or
+   its prior attempt already closed with a recorded outcome, and this is a
+   fresh start. On a continuation the cursor's whole bundle is what this
+   session is about to continue, not what the sweep should close. Capture
+   the real sweep's own output:
+   `SWEEP="$(runstate.sh sweep-open --gone "$GONE")"` (add
    `--paused-cursor "$MEMBERS"` per that rule when it applies; omit `--gone`
    and skip `task-status` entirely when `--list` printed nothing — no open
    packets means nothing for the real sweep to close either — and leave
@@ -502,9 +509,9 @@ nothing. Read the result exactly as §4 states it for the stop report.
    §3.5/§3.6's shape-A report can later scope `run-digest --since "$SINCE"`
    to only the decisions made during THIS packet's own attempts, never one
    already reported for an earlier packet — then `runstate.sh record-start
-   "$MEMBERS"` for a fresh beginning, or `runstate.sh record-start
-   "$MEMBERS" --continue` when this session is about to continue the
-   cursor's bundle rather than beginning it anew — one start (or
+   "$MEMBERS"` for a fresh start, or `runstate.sh record-start
+   "$MEMBERS" --continue` for a continuation, as §3.2's sweep clause
+   decided from its `--list` output — one start (or
    continuation) record per member, sharing a single timestamp and session,
    written in one call (T3); a lone `<cursor>` in `$MEMBERS` prints the same
    single `RECORDED=yes`/`PACKET=`/`KIND=` block as today.

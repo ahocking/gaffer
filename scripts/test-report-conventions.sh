@@ -1006,6 +1006,52 @@ else
       "expected: $EXPECTED_ORDER -- got: $ACTUAL_ORDER"
 fi
 
+printf '\n== shape B worked example section order matches the conventions fixed tally order (loop-prose-consistency-gaps T2) ==\n'
+# The worked example is the half an agent copies, so it is pinned by the same
+# authority as the shape: compared to the order DERIVED from $CONV's fixed-tally line
+# above, never to shape B's own body -- a shape and an example that drift together
+# still fail. The conventions omit zero buckets and the example renders no ⛔ section,
+# so the expected order is restricted to the sections the example renders; what is
+# asserted is their relative order.
+# Anchored on the example's comment-prefixed lines (`#   ⏸️ **PAUSED**` ...
+# `#   ▶ **Next**`), which no other text in the file carries.
+BODY_B_EX="$(sed -n '/^#   ⏸️ \*\*PAUSED\*\*/,/^#   ▶ \*\*Next\*\*/p' "$SHAPES")"
+if [ -n "$BODY_B_EX" ]; then
+  ok 'shape B worked-example block extracted (anchor holds)'
+  under_ceiling 'shape B worked-example block ends at its ▶ Next anchor' "$BODY_B_EX"
+
+  EX_ACTUAL_ORDER=""
+  while IFS=$'\t' read -r _ g; do
+    EX_ACTUAL_ORDER="$EX_ACTUAL_ORDER $g"
+  done < <(
+    for g in $CANDIDATE_GLYPHS; do
+      heading="#   $(_heading_text "$g")"
+      ln="$(printf '%s\n' "$BODY_B_EX" | grep -n -F -- "$heading" | head -1 | cut -d: -f1)"
+      [ -n "$ln" ] && printf '%s\t%s\n' "$ln" "$g"
+    done | sort -n
+  )
+  EX_ACTUAL_ORDER="${EX_ACTUAL_ORDER# }"
+
+  # The authority's order, restricted to the glyphs whose section the example renders.
+  EX_EXPECTED_ORDER=""
+  for g in $EXPECTED_ORDER; do
+    case " $EX_ACTUAL_ORDER " in *" $g "*) EX_EXPECTED_ORDER="$EX_EXPECTED_ORDER $g" ;; esac
+  done
+  EX_EXPECTED_ORDER="${EX_EXPECTED_ORDER# }"
+
+  [ -n "$EX_ACTUAL_ORDER" ] && ok "a section order was derived from the worked example's headings" \
+    || bad "a section order was derived from the worked example's headings" 'derived nothing -- no section heading found in the extracted block'
+
+  if [ -n "$EXPECTED_ORDER" ] && [ -n "$EX_ACTUAL_ORDER" ] && [ "$EX_ACTUAL_ORDER" = "$EX_EXPECTED_ORDER" ]; then
+    ok "shape B's worked example section headings appear in the conventions' fixed tally order ($EX_ACTUAL_ORDER)"
+  else
+    bad "shape B's worked example section headings appear in the conventions' fixed tally order" \
+        "expected: $EX_EXPECTED_ORDER -- got: $EX_ACTUAL_ORDER"
+  fi
+else
+  bad 'shape B worked-example block extracted (anchor holds)' 'empty -- anchor moved or renamed'
+fi
+
 printf '\n== report-lint checks a rendered report against its digest (report-render-conformance T2) ==\n'
 # Every rule gets a CONFORMING fixture that yields no finding of that rule and a
 # VIOLATING fixture that yields it BY NAME -- so no rule can pass by the lint

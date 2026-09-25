@@ -316,8 +316,8 @@
 #                     recognises). A refusal by the hook is a denied call like
 #                     any other, so `record` scores the replay `invalid`; a
 #                     write the sandbox blocks fails inside its command, and
-#                     whether a transcript records that as a denied call has
-#                     not been observed.
+#                     its transcript records no denied call (ADR 0030 §2,
+#                     the live probe).
 #                     Refused (exit 2) before any session when
 #                     compare-confine.sh is missing or not executable.
 #                     where <effort> is the stored selection's settings
@@ -2923,8 +2923,8 @@ confine_settings() {
 
 # session_tmp <dir>: a fresh, empty temp directory for one session in <dir>,
 # printed physical: `mktemp -d` directly under /tmp (mode 0700). /tmp, not
-# $TMPDIR: Claude Code 2.1.281 (read from its binary, not observed in a live
-# session) places the temp directory its sandboxed commands get at
+# $TMPDIR: Claude Code 2.1.281 (read from its binary, then observed by ADR
+# 0030 §2's live probe) places the temp directory its sandboxed commands get at
 # ${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>, and falls back to the shared
 # /tmp/claude-<uid> when that path is longer than 44 bytes; a macOS $TMPDIR
 # already is. Refused (return 1, nothing printed, nothing left behind) when it

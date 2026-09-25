@@ -271,6 +271,12 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   clone or view, and `scripts/compare-confine.sh`, a harness-only `PreToolUse` hook
   that is the file tools' only confinement. It refuses writes resolving outside the
   root, into the root's `.claude`/`.mcp.json` config, or unresolvable (fail closed).
+  **The hook and the sandbox allow one boundary**: the clone or view plus the
+  session's own temp directory (`session_tmp`: a fresh `mktemp -d` under `/tmp`,
+  outside every checkout, made before launch, set as `TMPDIR` and
+  `CLAUDE_CODE_TMPDIR`), passed as the same string to `allowWrite` and to the hook.
+  Never allow a temp path in one half only. Another session's temp directory and a bare
+  `/tmp` path stay refused.
   **Never register it in `hooks/hooks.json` or fold it into `guard.sh`.** Residual
   risk (ADR 0030 §2): none of it has been observed in bypass mode; MCP tools and
   the network are unconfined; existing settings entries can widen the sandbox; and
@@ -278,8 +284,12 @@ PHI, …) is declared per-repo via `.agents/guard-extra-*`. First consumer: a
   clone that the harness's own unsandboxed steps later act on.
 - **A tool call denied in any replay session makes the replay `invalid`**: read by
   `record` from a top-level `toolDenialKind` on a recognised tool-result record,
-  parsed as JSON, except `interrupted` and `cancelled`. It is a rerun candidate,
-  never counted against the model. A missing or unrecognised transcript leaves `denials`
+  parsed as JSON, except `interrupted` and `cancelled`. It is never counted against
+  the model, and its rerun question leans against a rerun: the same rule would deny it again. **A
+  denial outlasts cause precedence**: a replay whose stored cause is an earlier one
+  (routing, crash or timeout, fixed role refused) but whose `denials` is above 0 says
+  so on `UNRANKABLE` (`denials=`) and in `report`, and gets the same no-rerun lean.
+  A missing or unrecognised transcript leaves `denials`
   null, never 0. `rank` reads its session the same way and refuses to record on a
   denied or unmeasured call. **The reason reaches the operator**: `invalid_cause`
   in the record, `cause=` on `UNRANKABLE` (plus `kinds=` and `tools=`, the denied

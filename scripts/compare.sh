@@ -295,13 +295,23 @@
 #                     the session's clone or view, physical, adding: Claude
 #                     Code's OS-level Bash sandbox (`sandbox.enabled`,
 #                     `failIfUnavailable`, no unsandboxed retry, filesystem
-#                     writes allowed in <dir> and the session's own temp
-#                     directory), which confines a shell write however it is
+#                     writes allowed in <dir> and <tmp>, the `allowWrite`
+#                     list), which confines a shell write however it is
 #                     made; `disableAllHooks: false`; and one `PreToolUse`
 #                     hook on Edit, MultiEdit, Write, NotebookEdit and Bash:
-#                     `<harness>/scripts/compare-confine.sh <dir>`. The hook
+#                     `<harness>/scripts/compare-confine.sh <dir> <tmp>`. <tmp>
+#                     is the session's own temp directory: a fresh `mktemp -d`
+#                     under /tmp, physical, made before launch, outside the
+#                     clone or view, the source checkout and the harness's
+#                     main checkout (else the session is not started, and
+#                     reads as a crash), set as the session's TMPDIR and
+#                     CLAUDE_CODE_TMPDIR, and removed when it ends. The hook
+#                     and the sandbox are given the same two strings, so a
+#                     scratch write one allows the other allows too; any other
+#                     temp directory (another session's, a bare /tmp path) is
+#                     outside both. The hook
 #                     refuses a write whose target does not resolve inside
-#                     <dir>, and one whose target it cannot resolve, failing
+#                     <dir> or <tmp>, and one whose target it cannot resolve, failing
 #                     closed (compare-confine.sh's header states what it
 #                     recognises). A refusal by the hook is a denied call like
 #                     any other, so `record` scores the replay `invalid`; a
@@ -523,8 +533,12 @@
 #                                        the guard, its ask tier included, or by
 #                                        the permission system; rd_denials
 #                                        below says how it is read). A harness
-#                                        fault, not the model's: rerun, and
-#                                        left out of the pass rate.
+#                                        fault, not the model's: left out of
+#                                        the pass rate, and rerun, unless a
+#                                        call was denied in it (`denials`
+#                                        above 0, whatever the cause): the same
+#                                        rule would deny the rerun again until
+#                                        the harness configuration changes.
 #                       escalated        a routing record's token is `escalate`
 #                                        (the reviewer returned it), or the
 #                                        replay ended at the decider or a stop,
@@ -677,15 +691,21 @@
 #                     that does not is named on stderr, one line each:
 #                       UNRANKABLE packet=<id> model=<m> reason=missing
 #                       UNRANKABLE packet=<id> model=<m> reason=invalid cause=<c> replay=<r>
+#                       UNRANKABLE packet=<id> model=<m> reason=invalid cause=<c> denials=<n> kinds=<k,...> tools=<t,...> replay=<r>
 #                       UNRANKABLE packet=<id> model=<m> reason=invalid cause=denial kinds=<k,...> tools=<t,...> replay=<r>
 #                       UNRANKABLE packet=<id> model=<m> reason=outcome(<o>) replay=<r>
 #                     where <c> is the record's `invalid_cause` (`routing`,
 #                     `crashed`, `timed-out`, `error`, `fixed-role-refused`),
 #                     `unrecorded` for a record that stores none, <k> the
 #                     denied calls' kinds and <t> the tools they asked for
-#                     (each `unrecorded` when the record stores none).
+#                     (each `unrecorded` when the record stores none). The
+#                     second form is an earlier cause whose record also counts
+#                     denials above 0 (<n>, its `denials`): `record` tests the
+#                     cause first, so the denial is not the cause it stored,
+#                     but it happened all the same.
 #                     An `invalid` replay is re-run (`run --rerun`) first, unless
-#                     its cause is a denial: the same rule stops a rerun again
+#                     a call was denied in it (its cause is a denial, or it
+#                     carries `denials=`): the same rule stops a rerun again
 #                     until the harness configuration changes. Then:
 #                       1. each model's final diff: the tree `sweeps` tests
 #                          (land_tree: metrics, run directory, run-state,
@@ -880,7 +900,14 @@
 #                                    unrecorded for <n>`). It is a count beside
 #                                    the cells, which already exclude those
 #                                    replays, so no figure changes; a model
-#                                    with none prints no line.
+#                                    with none prints no line. Then one line
+#                                    per model whose latest records hold a
+#                                    replay invalid for another cause whose
+#                                    `denials` is above 0: how many, those
+#                                    causes, the kinds and the tools, and that
+#                                    a rerun would meet the same denial (the
+#                                    cause is tested first, so the denial did
+#                                    not decide it, but it happened).
 #                       Packets      one line per selected packet: its title,
 #                                    class, handoff source (`original` or
 #                                    `rebuilt`, as the selection stored it and
@@ -2860,13 +2887,15 @@ new_session_id() {
 # sh_quote <s>: <s> as one single-quoted shell word.
 sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# confine_settings <dir>: the `--settings` JSON every session run_session starts
-# is given, <root> being <dir> physical. Three parts:
+# confine_settings <dir> <tmp>: the `--settings` JSON every session run_session
+# starts is given, <root> being <dir> physical and <tmp> the session's own temp
+# directory (session_tmp's, already physical). Three parts:
 #   - `sandbox`: Claude Code's OS-level Bash sandbox, on, with filesystem writes
-#     allowed in <root> (the session's working directory, also named in
-#     `allowWrite`) and in the session's own temp directory, which the sandbox
-#     always opens and `$TMPDIR` names for sandboxed commands. It is what
-#     confines a shell write this harness cannot parse (`python3 -c`, a script).
+#     allowed in <root> (the session's working directory) and <tmp>, the two
+#     paths `allowWrite` names. run_session sets <tmp> as the session's TMPDIR
+#     and CLAUDE_CODE_TMPDIR, so the temp directory the sandbox opens for its
+#     commands lies inside it. It is what confines a shell write this harness
+#     cannot parse (`python3 -c`, a script).
 #     `failIfUnavailable` makes a session whose sandbox cannot start exit
 #     instead of running unsandboxed; `allowUnsandboxedCommands: false` removes
 #     the `dangerouslyDisableSandbox` retry, which the bypass mode would
@@ -2874,19 +2903,44 @@ sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 #     that turns the filesystem layer off.
 #   - `disableAllHooks: false`, outranking a replayed repo's own settings.
 #   - One `PreToolUse` hook on the write tools and Bash,
-#       '<harness>/scripts/compare-confine.sh' '<root>'
-#     which refuses a write whose target does not resolve inside <root> (the
-#     harness's own hook: never hooks/guard.sh or hooks/hooks.json, which the
-#     live loop runs). The sandbox covers Bash only; the file tools are this
-#     hook's alone.
-# Return 1, printing nothing, when <dir> cannot be entered.
+#       '<harness>/scripts/compare-confine.sh' '<root>' '<tmp>'
+#     which refuses a write whose target does not resolve inside <root> or
+#     <tmp>, the same two strings `allowWrite` holds, so the hook and the
+#     sandbox allow one boundary (the harness's own hook: never hooks/guard.sh
+#     or hooks/hooks.json, which the live loop runs). The sandbox covers Bash
+#     only; the file tools are this hook's alone.
+# Return 1, printing nothing, when <dir> cannot be entered or <tmp> is not an
+# absolute directory.
 confine_settings() {
-  local root
+  local root tmp="$2"
   root="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
   [ -n "$root" ] || return 1
-  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":[%s]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":%s}]}]}}' \
-    "$(rd_json_str "$root")" \
-    "$(rd_json_str "$(sh_quote "$_CMP_HARNESS/scripts/compare-confine.sh") $(sh_quote "$root")")"
+  case "$tmp" in /?*) [ -d "$tmp" ] || return 1 ;; *) return 1 ;; esac
+  printf '{"disableAllHooks":false,"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"filesystem":{"disabled":false,"allowWrite":[%s,%s]}},"hooks":{"PreToolUse":[{"matcher":"Edit|MultiEdit|Write|NotebookEdit|Bash","hooks":[{"type":"command","command":%s}]}]}}' \
+    "$(rd_json_str "$root")" "$(rd_json_str "$tmp")" \
+    "$(rd_json_str "$(sh_quote "$_CMP_HARNESS/scripts/compare-confine.sh") $(sh_quote "$root") $(sh_quote "$tmp")")"
+}
+
+# session_tmp <dir>: a fresh, empty temp directory for one session in <dir>,
+# printed physical: `mktemp -d` directly under /tmp (mode 0700). /tmp, not
+# $TMPDIR: Claude Code 2.1.281 (read from its binary, not observed in a live
+# session) places the temp directory its sandboxed commands get at
+# ${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>, and falls back to the shared
+# /tmp/claude-<uid> when that path is longer than 44 bytes; a macOS $TMPDIR
+# already is. Refused (return 1, nothing printed, nothing left behind) when it
+# lies inside <dir>, the harness's main checkout or the source checkout
+# (_CMP_SRC, when the caller set it), or one of those lies inside it.
+session_tmp() {
+  local d p top
+  d="$(mktemp -d /tmp/cmp.XXXXXXXX 2>/dev/null)" || return 1
+  p="$(cd "$d" 2>/dev/null && pwd -P)" || { rm -rf "$d"; return 1; }
+  for top in "$(cd "$1" 2>/dev/null && pwd -P)" "$(main_checkout)" \
+             "$( [ -n "${_CMP_SRC:-}" ] && cd "$_CMP_SRC" 2>/dev/null && pwd -P)"; do
+    [ -n "$top" ] || continue
+    case "$p/" in "$top/"*) rm -rf "$d"; return 1 ;; esac
+    case "$top/" in "$p/"*) rm -rf "$d"; return 1 ;; esac
+  done
+  printf '%s' "$p"
 }
 
 # run_session <dir> <prompt-file> <out> <err>: one non-interactive session in
@@ -2899,12 +2953,18 @@ confine_settings() {
 # the call or stalls the step), and `--plugin-dir` still loads the harness's
 # hooks/guard.sh, whose hard-deny tier is meant to keep applying. A working
 # directory confines nothing, so `--settings` adds confine_settings' Bash
-# sandbox and hook, which keep writes inside <dir>; a session whose settings
-# cannot be built is not started (its exit reads as a crash).
+# sandbox and hook, which keep writes inside <dir> and the session's own temp
+# directory STEP_TMP (session_tmp's, set as its TMPDIR and CLAUDE_CODE_TMPDIR,
+# known before launch and removed once the session has ended); a session whose
+# temp directory or settings cannot be built is not started (its exit reads as
+# a crash).
 run_session() {
   local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
   STEP_SESSION="$(new_session_id)"
-  ( cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL && cset="$(confine_settings "$dir")" \
+  STEP_TMP="$(session_tmp "$dir")" || STEP_TMP=""
+  ( [ -n "$STEP_TMP" ] && cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL \
+      && cset="$(confine_settings "$dir" "$STEP_TMP")" \
+      && TMPDIR="$STEP_TMP" && CLAUDE_CODE_TMPDIR="$STEP_TMP" && export TMPDIR CLAUDE_CODE_TMPDIR \
       && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" \
            --permission-mode bypassPermissions --settings "$cset" \
            --session-id "$STEP_SESSION" -p "$(cat "$pf")" ) </dev/null >"$out" 2>"$err" &
@@ -2923,6 +2983,7 @@ run_session() {
   done
   wait "$pid" 2>/dev/null; rc=$?
   [ -n "$STEP_EXIT" ] || STEP_EXIT="$rc"
+  if [ -n "$STEP_TMP" ]; then rm -rf "$STEP_TMP"; fi
 }
 
 # step_prompt <agent> <dir> <brief-file> <refusal-or-empty>: the session's prompt.
@@ -3133,6 +3194,8 @@ cmd_replay() {
   _RP_RS="$(sed -n 's/^RUN_STATE=//p' "$env" | head -1)"
   run_id="$(sed -n 's/^RUN_ID=//p' "$env" | head -1)"
   handoff="$(sed -n 's/^HANDOFF=//p' "$env" | head -1)"
+  # The source checkout, which no session's temp directory may lie in (session_tmp).
+  _CMP_SRC="$(sed -n 's/^SOURCE_REPO=//p' "$env" | head -1)"
   case "$_RP_PKT" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's packet is malformed: [$_RP_PKT]" ;; esac
   case "$_RP_ROLE" in ''|*[!a-z-]*) die "replay: the replay record's role is malformed: [$_RP_ROLE]" ;; esac
   case "$_RP_MODEL" in ''|*[!A-Za-z0-9._-]*) die "replay: the replay record's model is malformed: [$_RP_MODEL]" ;; esac
@@ -4235,7 +4298,7 @@ cmd_record() {
 # --- run ---------------------------------------------------------------------------
 
 # run_records <records.jsonl> <experiment>: one
-# `<line>\t<replay>\t<packet>\t<model>\t<outcome>\t<cause>\t<kinds>\t<tools>` row per
+# `<line>\t<replay>\t<packet>\t<model>\t<outcome>\t<cause>\t<kinds>\t<tools>\t<denials>` row per
 # record of that experiment, in file order, so the last row for a packet and
 # model is its latest record (THE LATEST-RECORD RULE). <cause> is the record's
 # `invalid_cause`, `unrecorded` when it holds none (a record written before the
@@ -4244,7 +4307,8 @@ cmd_record() {
 # written before the field existed read alike; a `denial` cause always has a
 # kind); <tools> its `denial_tools` likewise (a `denial` cause always has one,
 # `unrecorded` when the transcript did not name the call). Each is reduced to
-# [A-Za-z0-9._-] per name (both are transcript text).
+# [A-Za-z0-9._-] per name (both are transcript text). <denials> is the record's
+# `denials` count, `unrecorded` when it holds none (null: unmeasured, never 0).
 # Exit 1 on a file it cannot read.
 run_records() {
   local flat
@@ -4260,8 +4324,9 @@ run_records() {
     $2 == ".invalid_cause" && $3 == "s" { c[$1] = safe($4) }
     $2 ~ /^\.denial_kinds\[[0-9]+\]$/ && $3 == "s" { k[$1] = k[$1] (k[$1] == "" ? "" : ",") safe($4) }
     $2 ~ /^\.denial_tools\[[0-9]+\]$/ && $3 == "s" { t[$1] = t[$1] (t[$1] == "" ? "" : ",") safe($4) }
+    $2 == ".denials" && $3 == "n" && $4 ~ /^[0-9]+$/ { dn[$1] = $4 }
     END { for (d = 1; d <= n; d++) if ((d in e) && e[d] == ENVIRON["EXP"] && (d in p) && (d in m))
-            print d "\t" r[d] "\t" p[d] "\t" m[d] "\t" o[d] "\t" ((d in c) ? c[d] : "unrecorded") "\t" ((d in k) ? k[d] : "unrecorded") "\t" ((d in t) ? t[d] : "unrecorded") }'
+            print d "\t" r[d] "\t" p[d] "\t" m[d] "\t" o[d] "\t" ((d in c) ? c[d] : "unrecorded") "\t" ((d in k) ? k[d] : "unrecorded") "\t" ((d in t) ? t[d] : "unrecorded") "\t" ((d in dn) ? dn[d] : "unrecorded") }'
 }
 
 # run_pause: is a pause requested? Returns 0 and prints the reason when it is.
@@ -4495,7 +4560,8 @@ cmd_run() {
 # --- rank-prepare --------------------------------------------------------------------
 
 # The outcomes a packet is ranked with: each one the replayed model's own work
-# decided. `invalid` is a harness fault, so that replay is re-run first.
+# decided. `invalid` is a harness fault, so that replay is re-run first, unless
+# a call was denied in it: the same rule would deny the rerun again.
 _CMP_RANKABLE="passed escalated failed-at-limit"
 # Where a ranking clone holds its letter-labelled final diffs, and the labels.
 _CMP_RANK_DIR=".agents/ranking"
@@ -4558,7 +4624,7 @@ cmd_rank_prepare() {
     run_records "$records" "$exp" > "$tmp/recs" \
       || die "rank-prepare: the records file is not readable JSONL, so which replays are recorded cannot be read: $records"
   fi
-  local m latest lrep lout lcause lkinds ltools nbad=0
+  local m latest lrep lout lcause lkinds ltools lden nbad=0
   : > "$tmp/ranked"
   while IFS= read -r m; do
     latest="$(P="$pkt" M="$m" awk -F'\t' '$3 == ENVIRON["P"] && $4 == ENVIRON["M"]' "$tmp/recs" | tail -1)"
@@ -4577,8 +4643,13 @@ cmd_rank_prepare() {
           lcause="$(printf '%s\n' "$latest" | cut -f6)"
           lkinds="$(printf '%s\n' "$latest" | cut -f7)"
           ltools="$(printf '%s\n' "$latest" | cut -f8)"
+          lden="$(printf '%s\n' "$latest" | cut -f9)"
           if [ "$lcause" = denial ]; then
             printf 'UNRANKABLE packet=%s model=%s reason=invalid cause=denial kinds=%s tools=%s replay=%s\n' "$pkt" "$m" "${lkinds:-unrecorded}" "${ltools:-unrecorded}" "$lrep" >&2
+          elif case "$lden" in ''|0|*[!0-9]*) false ;; *) true ;; esac; then
+            # An earlier cause decided the outcome, but the record counts calls
+            # denied too: a rerun would meet the same denial.
+            printf 'UNRANKABLE packet=%s model=%s reason=invalid cause=%s denials=%s kinds=%s tools=%s replay=%s\n' "$pkt" "$m" "${lcause:-unrecorded}" "$lden" "${lkinds:-unrecorded}" "${ltools:-unrecorded}" "$lrep" >&2
           else
             printf 'UNRANKABLE packet=%s model=%s reason=invalid cause=%s replay=%s\n' "$pkt" "$m" "${lcause:-unrecorded}" "$lrep" >&2
           fi
@@ -4589,7 +4660,7 @@ cmd_rank_prepare() {
     esac
   done < "$tmp/models"
   [ "$nbad" -eq 0 ] \
-    || die "rank-prepare: packet $pkt is not ranked until every model's latest record is passed, escalated or failed-at-limit; $nbad of $nmod models' are not (an invalid replay is re-run first, through \`compare.sh run --rerun\`)"
+    || die "rank-prepare: packet $pkt is not ranked until every model's latest record is passed, escalated or failed-at-limit; $nbad of $nmod models' are not (an invalid replay is re-run first, through \`compare.sh run --rerun\`, unless a call was denied in it, named by kinds= above: the same rule would deny the rerun again until the harness configuration changes)"
 
   # --- each model's final diff: the tree `sweeps` tests, the work clone only read -------
   # land_tree's tree: _CMP_LAND_EXCLUDED (metrics, run directory, run-state,
@@ -4836,6 +4907,8 @@ cmd_rank() {
   sexp="$(awk -F'\t' '$2 == ".experiment" { print $4; exit }' "$tmp/sel")"
   [ "$sexp" = "$exp" ] || die "rank: the stored selection names experiment [$sexp], not $exp: $sel"
   rmodel="$(awk -F'\t' '$2 == ".settings.reviewer_model" { print $4; exit }' "$tmp/sel")"
+  # The source checkout, which the session's temp directory may not lie in (session_tmp).
+  _CMP_SRC="$(awk -F'\t' '$2 == ".settings.source_repo" { print $4; exit }' "$tmp/sel")"
   case "$rmodel" in ''|*[!A-Za-z0-9._-]*) die "rank: the stored selection's reviewer model is malformed: [$rmodel]" ;; esac
   _RC_PINS="$tmp/pins"
   awk -F'\t' 'index($2, ".settings.model_ids.") == 1 && $3 == "s" && $4 != "" {
@@ -5157,6 +5230,7 @@ cmd_report() {
       else if ($2 == ".invalid_cause" && $3 == "s") rc[d] = $4
       else if ($2 ~ /^\.denial_kinds\[[0-9]+\]$/ && $3 == "s") { v = $4; gsub(/[^A-Za-z0-9._-]/, "?", v); rk[d] = rk[d] (rk[d] == "" ? "" : ",") v }
       else if ($2 ~ /^\.denial_tools\[[0-9]+\]$/ && $3 == "s") { v = $4; gsub(/[^A-Za-z0-9._-]/, "?", v); rtl[d] = rtl[d] (rtl[d] == "" ? "" : ",") v }
+      else if ($2 == ".denials" && $3 == "n" && $4 ~ /^[0-9]+$/) rdn[d] = $4 + 0
       else if ($2 == ".fix_rounds" && $3 == "n" && $4 ~ /^[0-9]+$/) rf[d] = $4 + 0
       else if ($2 ~ /^\.tokens\.(input|output|cache_creation|cache_read)$/ && $3 == "n" && $4 ~ /^[0-9]+$/) { rt[d] += $4; rtn[d]++ }
       else if ($2 == ".dollars_min" && $3 == "n" && $4 ~ /^[0-9]+(\.[0-9]+)?$/) rdl[d] = $4 + 0
@@ -5281,6 +5355,16 @@ cmd_report() {
                 nkd = split(rtl[d], kd, ",")
                 for (t = 1; t <= nkd; t++) if (!((m, kd[t]) in DNtseen)) { DNtseen[m, kd[t]] = 1; DNt[m] = DNt[m] (DNt[m] == "" ? "" : ", ") kd[t] }
               }
+            } else if (rdn[d] > 0) {
+              # An earlier cause decided it, but its record counts calls denied
+              # too: counted apart, naming the causes, the kinds and the tools.
+              ECn[m]++
+              cz = (rc[d] == "" ? "unrecorded" : rc[d])
+              if (!((m, cz) in ECcseen)) { ECcseen[m, cz] = 1; ECc[m] = ECc[m] (ECc[m] == "" ? "" : ", ") cz }
+              nkd = split((rk[d] == "" ? "unrecorded" : rk[d]), kd, ",")
+              for (t = 1; t <= nkd; t++) if (!((m, kd[t]) in ECkseen)) { ECkseen[m, kd[t]] = 1; ECk[m] = ECk[m] (ECk[m] == "" ? "" : ", ") kd[t] }
+              nkd = split((rtl[d] == "" ? "unrecorded" : rtl[d]), kd, ",")
+              for (t = 1; t <= nkd; t++) if (!((m, kd[t]) in ECtseen)) { ECtseen[m, kd[t]] = 1; ECt[m] = ECt[m] (ECt[m] == "" ? "" : ", ") kd[t] }
             }
             continue
           }
@@ -5324,6 +5408,14 @@ cmd_report() {
         tl = (DNt[m] == "" ? "" : "tools: " DNt[m])
         if (DNtu[m] > 0) tl = tl (tl == "" ? "" : "; ") "tools unrecorded for " DNtu[m]
         printf "> ⚠️ **%s** — %d replay(s) invalid for a denial (denied: %s; %s), excluded from its cells as a harness fault\n", m, DNn[m], r, tl
+      }
+      # Per model, the latest replays invalid for an earlier cause whose record
+      # also counts denials above 0: the cause is not a denial, but a rerun
+      # would meet the same denial. A count beside the cells, changing no figure.
+      for (mi = 1; mi <= nm; mi++) {
+        m = mod[mi]
+        if (ECn[m] == 0) continue
+        printf "> ⚠️ **%s** — %d replay(s) invalid for another cause (%s) that also had a call denied (denied: %s; tools: %s), excluded from its cells as a harness fault; a rerun would meet the same denial\n", m, ECn[m], ECc[m], ECk[m], ECt[m]
       }
 
       printf "\n**Packets**\n"

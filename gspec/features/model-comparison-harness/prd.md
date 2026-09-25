@@ -234,7 +234,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     denial-invalid replays per model, and a rerun is not recommended when the
     same denial would stop it again
 
-- [ ] **P0**: The confinement hook and the Bash sandbox allow the same write boundary
+- [x] **P0**: The confinement hook and the Bash sandbox allow the same write boundary
   - the session's own temp directory is writable under both halves of the
     confinement or under neither, never one, so an ordinary scratch write is
     not scored as a denial

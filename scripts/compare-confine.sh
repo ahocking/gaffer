@@ -4,22 +4,30 @@
 # =============================================================================
 # A `PreToolUse` hook that `compare.sh` hands to every session `run_session`
 # launches (each replay step, each review view, each `rank` session) through
-# `--settings`, with that session's clone or view as its one argument:
+# `--settings`, with that session's clone or view and its own temp directory
+# as its two arguments:
 #
-#   compare-confine.sh <root>        (the payload on stdin, as Claude Code sends it)
+#   compare-confine.sh <root> <tmp>  (the payload on stdin, as Claude Code sends it)
 #
 # Those sessions run in the bypass permission mode, and a working directory
 # confines nothing. The same `--settings` turns on Claude Code's OS-level Bash
-# sandbox with writes allowed only in <root> and the session's temp directory:
-# the sandbox is what confines a shell write this scanner cannot read
+# sandbox with writes allowed only in <root> and <tmp>, the two paths its
+# `allowWrite` names, byte for byte, so the two halves of the confinement allow
+# the same places: a scratch write the sandbox allows is never a denial here.
+# <tmp> is the directory compare.sh makes for that one session, outside every
+# checkout, and names as the session's TMPDIR and CLAUDE_CODE_TMPDIR. Any other
+# temp directory (another session's, a bare /tmp path, Claude Code's shared
+# per-uid one) is outside both, and refused. Given <root> alone, it allows
+# <root> alone.
+# The sandbox is what confines a shell write this scanner cannot read
 # (`python3 -c`, a script, `git -C`), and it covers Bash alone. This hook is the
 # only confinement of the file tools (`Edit`, `Write`, `NotebookEdit`), and a
 # first line for the shell writes it recognises.
 # It belongs to the harness alone: it is not registered in hooks/hooks.json and
 # the live loop never runs it.
 #
-# THE RULE. A write whose target does not physically resolve inside <root> is
-# refused (exit 2, the reason on stderr, which Claude Code shows the model and
+# THE RULE. A write whose target does not physically resolve inside <root> or
+# <tmp> is refused (exit 2, the reason on stderr, which Claude Code shows the model and
 # records as a denied call). Everything else is allowed (exit 0, no output).
 #   - `Edit`, `MultiEdit`, `Write`: `tool_input.file_path`; `NotebookEdit`:
 #     `tool_input.notebook_path`. These tools take a path as it stands, so a
@@ -92,7 +100,8 @@
 #     `-exec`, `-delete` or a `-fprint` form is such a construct on its own;
 #   - a payload that is not a JSON object, or no working JSON reader (`jq`,
 #     else `python3`, each probed by running it);
-#   - a <root> that is missing, relative or `/`;
+#   - a <root> or <tmp> that is missing, relative or `/` (a <tmp> given but
+#     unusable refuses every write, never falls back to <root> alone);
 #   - anything that stops the decision before it completes: only an explicit
 #     ALLOW from the decision exits 0.
 #
@@ -226,7 +235,14 @@ judge() {
   while [ "${phys%/}" != "$phys" ] && [ -n "${phys%/}" ]; do phys="${phys%/}"; done
   case "$phys" in
     "$ROOT"|"$ROOT"/*) ;;
-    *) REASON="a write outside the session's clone ($ROOT): $t"; return 1 ;;
+    *)
+      # The session's own temp directory, the second place the sandbox's
+      # `allowWrite` names. Nothing in it is configuration a session loads, so
+      # only the hard-link check below applies there.
+      case "${TMPROOT:+x}:$phys" in
+        x:"$TMPROOT"|x:"$TMPROOT"/*) ;;
+        *) REASON="a write outside the session's clone ($ROOT)${TMPROOT:+ and its temp directory ($TMPROOT)}: $t"; return 1 ;;
+      esac ;;
   esac
   # What Claude Code loads configuration and code from, at the root: a write
   # there could add a hook, an MCP server or a sandbox path that runs or
@@ -701,21 +717,38 @@ decide() {
   exit 0
 }
 
-ROOT_ARG="${1:-}"
-ROOT=""
-if [ $# -eq 1 ]; then
-  case "$ROOT_ARG" in
-    /*) ROOT="$(cd "$ROOT_ARG" 2>/dev/null && pwd -P)" || ROOT="" ;;
+# phys_root <arg>: <arg> placed physically, when it is an absolute, existing
+# directory other than `/`; nothing otherwise.
+phys_root() {
+  local r=""
+  case "$1" in
+    /*) r="$(cd "$1" 2>/dev/null && pwd -P)" || r="" ;;
   esac
-  [ "$ROOT" = / ] && ROOT=""
+  [ "$r" = / ] && r=""
+  printf '%s' "$r"
+}
+
+ROOT_ARG="${1:-}"
+TMP_ARG="${2:-}"
+ROOT=""
+TMPROOT=""
+if [ $# -eq 1 ] || [ $# -eq 2 ]; then
+  ROOT="$(phys_root "$ROOT_ARG")"
+  if [ $# -eq 2 ]; then
+    TMPROOT="$(phys_root "$TMP_ARG")"
+    # A temp directory named but unusable leaves no root at all: every write is
+    # refused, as for an unusable <root>.
+    if [ -z "$TMPROOT" ]; then ROOT=""; ROOT_ARG="$ROOT_ARG (temp directory: ${TMP_ARG:-<none>})"; fi
+  fi
 fi
 PAYLOAD="$(cat)"
 CWD=""
 
 VERDICT="$(decide 2>/dev/null | tail -n 1)"
 if [ "$VERDICT" = ALLOW ]; then exit 0; fi
+WHERE="${ROOT:-its clone}${TMPROOT:+ and its temp directory $TMPROOT}"
 case "$VERDICT" in
-  'REFUSE '*) printf '%s: %s. This session may write only inside %s.\n' "$REFUSE_PREFIX" "${VERDICT#REFUSE }" "${ROOT:-its clone}" >&2 ;;
-  *) printf '%s: the confinement check did not complete, so the call is refused. This session may write only inside %s.\n' "$REFUSE_PREFIX" "${ROOT:-its clone}" >&2 ;;
+  'REFUSE '*) printf '%s: %s. This session may write only inside %s.\n' "$REFUSE_PREFIX" "${VERDICT#REFUSE }" "$WHERE" >&2 ;;
+  *) printf '%s: the confinement check did not complete, so the call is refused. This session may write only inside %s.\n' "$REFUSE_PREFIX" "$WHERE" >&2 ;;
 esac
 exit 2

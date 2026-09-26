@@ -177,7 +177,7 @@ evidence moves to the ADRs.
   - the sweep that extracts either passage keeps passing, under capability 5's
     rule for a changed assertion
 
-- [ ] **P1**: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+- [x] **P1**: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - a `/gaffer:resume` started directly reads `templates/task-packet.yaml`
     before it writes a handoff, so the conditional REQUIRED lines run-loop
     §3.3 appends are never left out on that path

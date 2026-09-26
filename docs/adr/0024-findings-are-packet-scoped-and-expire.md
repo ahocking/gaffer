@@ -456,8 +456,8 @@ one-clause reason; the fuller wording is recorded here.
   > unaffected, `$MEMBERS` being `<cursor>` alone.)
 
 - **Why a termination finding's `--packets` is truthful and adds no expiry rule.** The
-  skill keeps "`--packets` is mandatory, so each finding names the packet or packets
-  the note is about, and expiry stays the positive-evidence rule (ADR 0024)". It used
+  skill keeps "`--packets` is mandatory, naming the packet(s) the note is about, and
+  expiry stays the positive-evidence rule (ADR 0024)". It used
   to add:
 
   > at termination those are landed packets, which is truthful, and expiry stays the

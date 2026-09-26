@@ -278,8 +278,9 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
 ## Relocated from skills (2026-09-25) — the resume skill's index-before-bodies reason
 
 Moved out of `skills/resume/SKILL.md` §1 by `skill-prompt-trim`. The skill keeps
-"the index is mandatory and the bodies conditional, since skipping the index repeats
-the rework a finding was recorded to prevent". It used to read:
+"The index is mandatory — skipping it repeats the rework a finding was recorded to
+prevent — and a body is opened **only** when its summary bears on the packet you are
+about to run". It used to read:
 
 > Both failure modes are real, so neither instinct is safe on its own. Reading every
 > body rebuilds the 41k-token run-state this design took apart, just in another file.

@@ -254,8 +254,8 @@ fuller wording is recorded here.
   > produce free prose, which is the exact failure these files exist to prevent.
 
 - **Why a fresh run's kickoff plans from the backlog it just resolved** (§2's
-  kickoff). The skill keeps "a fresh run's digest has no `packet` lines yet". It
-  used to read:
+  kickoff). The skill keeps "a fresh digest has no `packet` lines". It used to
+  read:
 
   > a fresh run's digest has no `packet` lines yet, so the forward plan is the
   > backlog you just resolved above, a file read moments old.
@@ -318,7 +318,7 @@ one-clause reason; the fuller wording is recorded here.
 
 - **Why a landed bundle's one line must name every member.** The skill keeps "A bundle
   is ONE packet — one `packet` line in `run-digest`, one ✅ line, never one per member —
-  but `<title>` on that line is only the cursor's own `TEXT=` line (§3.3)". It used to
+  but that line's `<title>` is only the cursor's `TEXT=` line (§3.3)". It used to
   read:
 
   > a bundle's several members share the one directory keyed to its own id,
@@ -328,8 +328,8 @@ one-clause reason; the fuller wording is recorded here.
   > so rendering it as-is would read a four-task bundle as one task, and the header
   > tally would read `✅ 1` for four landed tasks.
 
-- **Why membership is confirmed from the branch.** The skill keeps "since that line
-  records the intent at §3.3 and the commit's own trailers record what landed". It
+- **Why membership is confirmed from the branch.** The skill keeps "that line
+  records the intent at §3.3; the commit's own trailers record what landed". It
   used to read:
 
   > This session may not be the one that landed it (a compaction, or a resumed session

@@ -249,6 +249,14 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     `.git/` is not writable from a session, and harness-side copies never
     follow a symlink or write through a hard link
 
+- [ ] **P0**: The report renders identically under every awk the sweeps run on
+  - `compare.sh report` prints the same bytes for the same store under BSD awk,
+    mawk and GNU awk, with every `n=` figure a real count (0 when nothing was
+    measured), never uninitialized memory
+  - a model unranked in some ranking set never makes the render abort or come
+    out empty; the harness sweep's byte-identical and decided-by cases pass on
+    the GitHub Ubuntu runner as they do on macOS
+
 ## Dependencies
 
 - `per-agent-model-routing`: the `model_routing` lookup, its model validation,

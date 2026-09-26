@@ -154,3 +154,8 @@ feature: model-comparison-harness
   - covers: Harness steps never act on what a session planted in its clone
   - arch: —
   - files: scripts/compare.sh, scripts/test-compare.sh
+- [ ] **T29** **P0** In `scripts/compare.sh`'s `report` awk, never pass a never-assigned array element into a user function and then read it again in the same expression: GNU awk (the `awk` on the GitHub Ubuntu runner) creates the element untyped on the first read and mishandles it on the second, printing uninitialized memory as the `n=` figure (`rank unmeasured (n=1.19815e-315)`) or aborting with `fatal: internal error: file eval.c ... unexpected parameter type Node_illegal`, which leaves the render empty. At the two cell-rendering lines that call `mean(Rs[m, c, t], Rn[m, c, t], ...)` and print `Rn[m, c, t]`, and in `agg()` where `Rs[m, a[k], RSET]`/`Rn[m, a[k], RSET]` are summed with `RSET` possibly 0, read each element through an `in` guard into a plain numeric local first (0 when absent) and use only that local. Change no figure, wording or rule of the report. Filed from the failing `develop` CI (`test-compare.sh` cases "accumulate: a second render of the same stored results is byte-identical" and "ranking sets: the one set that ranked every tied model decides, named"), reproduced under gawk 5 on Ubuntu 24.04; BSD awk and mawk read the missing element as 0 and hide it. Verify: `scripts/test-compare.sh` passes with `awk` resolving to GNU awk (e.g. in an Ubuntu container with `gawk` installed) as well as on macOS, with no case loosened; and two renders of the same store are byte-identical there.
+  - deps: —
+  - covers: The report renders identically under every awk the sweeps run on
+  - arch: —
+  - files: scripts/compare.sh, scripts/test-compare.sh

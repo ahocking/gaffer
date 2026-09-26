@@ -167,7 +167,7 @@ evidence moves to the ADRs.
     instructions, prohibitions or traps, recorded in the same tracked file as
     capability 5's results
 
-- [ ] **P1**: Agent prompts that restate a rule this trim changed agree with the trimmed skill
+- [x] **P1**: Agent prompts that restate a rule this trim changed agree with the trimmed skill
   - `agents/chief-engineer.md` gives the integration base the way run-loop §1
     **Branch** now does, with no `main`/`master` fallback arm (removed from
     run-loop by the operator's decision recorded in `docs/skill-prompt-trim.md`)

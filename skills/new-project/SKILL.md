@@ -11,11 +11,9 @@ first commit — you do not commit. Work through the stages in order; skip one o
 if it is genuinely unnecessary and say why.
 
 **Before the closing summary and approval request, `Read`
-`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
-indentation contract, and the decision block that every human-facing report in this
-plugin owes. That summary has **no shape of its own**, so those conventions *are* its
-format; naming the path is not reading it, and unread they produce free prose. You do
-**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`.** That summary has **no shape
+of its own**, so those conventions *are* its format; naming the path is not reading it.
+You do **not** need `report-templates.md`: it holds the guided loop's shapes, which this never
 emits.
 
 The **authoritative setup brief is `spec-setup.md`**, which the overlay ships to
@@ -27,9 +25,7 @@ Spec Kit was removed ([ADR 0013](../../docs/adr/0013-remove-speckit-gspec-only-b
 this chain installs **gspec only**. Do not install `.specify/` / `speckit-*`.
 
 **gspec is version-PINNED** ([ADR 0020](../../docs/adr/0020-gspec-boundary-and-version-pin.md)
-D3) — it changes rapidly, and a fixed known-good target means each upstream change
-is adapted to deliberately rather than arriving as a silent breakage. Read the pin
-from the adapter, never hardcode it here:
+D3), since it changes rapidly. Read the pin from the adapter, never hardcode it here:
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/gspec-backlog.sh pin
@@ -73,8 +69,7 @@ npx --yes "gspec@${PIN}" --target claude
 ```
 
 State the version you installed in your step-6 report. If `PIN` resolves empty,
-**stop** — an unpinned install is the failure mode ADR 0020 D3 exists to prevent,
-and it will not announce itself.
+**stop** — an unpinned install is the failure mode ADR 0020 D3 exists to prevent.
 
 This creates the `gspec/` docs directory and installs gspec as **Skills** under
 `.claude/skills/`. If the installer prompts interactively despite `--target`,
@@ -82,17 +77,15 @@ report what it asked and pause — do not blindly accept seeding from `~/.gspec`
 
 Also record the pin in the new repo so a human can see it without reading the
 plugin: add `gspec@<PIN>` as a `devDependency` if the project has a `package.json`,
-otherwise note it in the repo's `README.md`. gspec does not stamp its own version
-into a project (that is upstream proposal `U4`), so this is the only durable local
-record of which gspec produced the specs.
+otherwise note it in the repo's `README.md`.
 
 ## 4. Seed the sequencing overlay
 gspec owns the specs and the per-feature plans — everything about a feature lives
 in `gspec/features/<slug>/` (`prd.md`, `tasks.md`, and `arch.md` / `design.html`
 where they exist). It has **no cross-feature ordering**, so this plugin
-supplies one — as a plugin-owned file, deliberately **outside `gspec/`**
-(ADR 0020 D2: anything under `gspec/` is governed by gspec's `spec-integrity`
-floor, which would flag a file gspec does not own).
+supplies one — as a plugin-owned file, **outside `gspec/`**, since gspec's
+`spec-integrity` floor flags a file under `gspec/` that gspec does not own (ADR 0020
+D2).
 
 `.agents/roadmap.yaml` ships in the overlay (`templates/spec-driven-base/.agents/`)
 and is copied with the rest of it in step 2 — seeded with `features: []` and its
@@ -101,19 +94,14 @@ own explanatory header. Confirm it landed; do not hand-write it.
 Four fields per entry, added later as features are scoped: `slug` (matches
 `gspec/features/<slug>.md`), `order`, `why` (one line of rationale, required), and
 an interim `depends_on` that moves into PRD frontmatter once upstream proposal U5
-lands. **Do not add `status` or `parallel_group`** — completion is derived from the
-PRD's capability checkboxes, and `parallel_group` named a scheduling mechanism
-(ADR 0016) that is now retired; storing either is a drift source. Do **not**
-install Spec Kit (`.specify/` / `speckit-*`) — removed in
+lands. **Do not add `status` or `parallel_group`** — storing either is a drift
+source. Do **not** install Spec Kit (`.specify/` / `speckit-*`) — removed in
 [ADR 0013](../../docs/adr/0013-remove-speckit-gspec-only-backlog.md).
 
 There is a second plugin-owned file, **`.agents/task-files.yaml`**, which is
-deliberately **not** seeded: it optionally records per-task file scope for
-`allowed_files` resolution (ADR 0020 `U1-local`). Nothing writes it
-automatically any more — the skill that used to populate it for `--parallel`
-mode is retired along with that mode (ADR 0016). An absent file already means
-"no scope known", which serializes conservatively, so leaving it unseeded costs
-nothing.
+**not** seeded: it optionally records per-task file scope for `allowed_files`
+resolution (ADR 0020 `U1-local`), and an absent file already means "no scope
+known".
 
 ## 5. Wire orchestration & verify (Chief Engineer)
 - Confirm the `gaffer` plugin is enabled for this repo (via the user's

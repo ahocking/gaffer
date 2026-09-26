@@ -375,3 +375,43 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
   > contract. This is the layer that makes reports come out in the house format *without
   > the human asking each session*; a repo without it gets free prose on every turn that
   > is not inside a gaffer skill.
+
+## Relocated from skills (2026-09-25) — the metrics, new-project and review-change skills' report reasons
+
+Moved out of `skills/metrics/SKILL.md`, `skills/new-project/SKILL.md` and
+`skills/review-change/SKILL.md` by `skill-prompt-trim`. Each skill keeps each rule with at
+most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the conventions are `Read` first** (all three skills). Each keeps "no shape of
+  its own**, so those conventions *are* its format; naming the path is not reading it".
+  Each used to add, after the `Read`:
+
+  > — the glyph vocabulary, the indentation contract, and the decision block that every human-facing report in this
+
+  > plugin owes.
+
+  and, after "naming the path is not reading it":
+
+  > and unread they produce free prose.
+
+- **Why `show` takes no header tally** (metrics §3). The skill keeps "since there is
+  nothing to count here". It used to read:
+
+  > This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
+
+  > the tally means "this is a run and here is its state", and there is nothing to count
+
+- **Why a trade-off is a decision block** (metrics §5). The skill keeps "A bullet that
+  hides a cost reads as free". It used to add:
+
+  > — the same form every other ask in this plugin takes.
+
+- **Why a risk is a decision block** (review-change §5). The skill keeps "A risk worth
+  reporting is a choice". It used to add:
+
+  > "Things a human should weigh" is the shape that gets skimmed and forgotten.
+
+- **Why a verdict takes no header tally** (review-change §5). The skill keeps "a review
+  is not a run and has nothing to count". It used to add:
+
+  > The tally means "this is a run and here is its state" — bolting it onto a verdict is decoration, and decoration is what teaches a reader to stop trusting the glyphs.

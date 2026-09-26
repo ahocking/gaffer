@@ -11,11 +11,9 @@ verdict the human acts on. The scope is one of two modes; decide from $ARGUMENTS
 in step 1.
 
 **Before you write the verdict in step 5, `Read`
-`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
-indentation contract, and the decision block that every human-facing report in this
-plugin owes. The verdict has **no shape of its own**, so those conventions *are* its
-format; naming the path is not reading it, and unread they produce free prose. You do
-**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`.** The verdict has **no shape
+of its own**, so those conventions *are* its format; naming the path is not reading it.
+You do **not** need `report-templates.md`: it holds the guided loop's shapes, which this never
 emits.
 
 ## 1. Collect the diff (Chief Engineer)
@@ -89,15 +87,12 @@ omitted rather than written as "none", and no diff or test-output dumps:
   the required change (described, not applied). Lead with the consequence, not the
   severity label: "silently drops the last page of results" tells the human whether
   to care; `Important` does not. Order by severity, but let the sentence carry it.
-- **🔀 Risks — as decision blocks, not observations.** "Things a human should weigh" is
-  the shape that gets skimmed and forgotten. A risk worth reporting is a choice: the
+- **🔀 Risks — as decision blocks, not observations.** A risk worth reporting is a choice: the
   two real options, what follows from each, your lean, and what happens by default if
   they say nothing. If it is genuinely not a choice — a fact they should simply know —
   it belongs in an issue line or nowhere.
 - **▶ Recommended next step** — the single best next action.
 
-No header tally here: a review is not a run and has nothing to count. The tally means
-"this is a run and here is its state" — bolting it onto a verdict is decoration, and
-decoration is what teaches a reader to stop trusting the glyphs.
+No header tally here: a review is not a run and has nothing to count.
 
 Stop there. Any commit or merge is the human's call.

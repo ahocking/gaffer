@@ -1129,3 +1129,63 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
   > A single-task packet has no `BUNDLE=` line, so `$MEMBERS` is `<cursor>` alone
   > and this reads exactly as `record-outcome <cursor> blocked` — the single-task
   > `blocked` record run-loop §3.6 already names, unchanged in shape.
+
+## Relocated from skills (2026-09-25) — the metrics skill's collection and analysis reasons
+
+Moved out of `skills/metrics/SKILL.md` §2, §3 and §5 by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+The skill also carried task ids (loop-measurement T4 and T6, thin-loop-driver T21,
+retire-unused-loop-modes T3, dispatch-progress-metrics T9), a crossover's revision
+history ("raised from 20 in its v2 revision"), the story that a `0` read as clean "is
+the exact failure v3.3 already had to fix once", and the note that before
+loop-measurement T4 failed and rolled-back work was structurally absent from the
+packet. Those are history and are deleted, not relocated. Its `metrics:` example block
+stated the settings' values and defaults; capability 4 removes those rather than
+relocating them (this ADR's Tier 1 section keeps its own example).
+
+- **Why packet boundaries stay within the session's run window.** The skill keeps "so a
+  prior run's committed packets are not folded in". It used to add:
+
+  > (zero-migration; run-state is left untouched — ADR 0019 revision)
+
+- **Why main-session context is measured.** It used to open:
+
+  > **Main-session context is the "Long runs compact" success metric**
+
+- **Why the kickoff baseline disagrees with `run-digest`.** The skill keeps "This
+  run-KICKOFF baseline is expected to disagree with `run-digest`". It used to read:
+
+  > This fixed, run-KICKOFF baseline is deliberately different from `run-digest`'s reading of the same driver-mode logs,
+
+  > `run-digest` answers what setting is in effect *now* for a run that can span sessions, while this measurement judges the run against the number the operator was shown at kickoff, so the two are expected to disagree.
+
+- **Why the report leaves the threshold setting alone.** The skill keeps "whether and
+  what to set is the operator's call". It used to add:
+
+  > not this report's to open.
+
+- **Why a low cache ratio matters.** The skill keeps "means agents are re-loading
+  context instead of reusing it". It used to add:
+
+  > — the loop's biggest suspected hidden cost.
+
+- **Why same-file overlap is measured.** The skill keeps "It tells the operator whether
+  concurrent editing guidance is holding". It used to read:
+
+  > It replaces parallel mode's mechanical file-disjointness guarantee with observability now that the guarantee is gone
+
+- **Why `cc_shape` beats cacheCreation totals.** The skill keeps "which are too noisy to
+  steer by". The measurement behind it (v3.4 §1) used to sit in the skill:
+
+  > (measured: 1.76x spread across untouched same-regime runs, 9x overall)
+
+- **Why `context_invalidations` is worth naming.** The skill keeps "which re-caches the
+  whole prefix" and the packet-boundary fix. The measurement behind it used to sit in
+  the skill:
+
+  > Measured at 16 events / 3.35M cacheC in one repo, ~3.2% of its lifetime cacheCreation, firing in **both** directions and propagating into dispatched subagents.
+
+- **Why self-host and consumer runs are never averaged.** The skill keeps "since the
+  populations are incomparable". It used to add:
+
+  > since this repo's loop feeds the measurement corpus that benchmarks the plugin

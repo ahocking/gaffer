@@ -485,3 +485,38 @@ carries the untrimmed wording.
   used to add:
 
   > the record, not the line, decides whether the review counted.
+
+## Relocated from skills (2026-09-25) — the migrate skill's finding-triage reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §5f by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why `apply` never deletes a finding.** The skill keeps "since it may hold the only
+  copy of something undecided" (§3) and "since the index may hold the only copy of
+  something undecided" (§5f). It used to read:
+
+  > because a finding may hold the only copy of something nobody has decided about yet
+
+  > the index may hold the only copy of something nobody has decided about, so the triage is a
+  > conversation with the user, not a batch prompt
+
+- **What a spent finding and a gate note are.** The skill keeps each outcome. It used
+  to add:
+
+  > (it turned out to be spent)
+
+  > is not durable knowledge and
+
+- **Why a repaired scope is written in flow form.** The skill keeps "`runstate.sh`
+  reads this key as an inline value only, so a block-form repair silently leaves the
+  entry `unknown`". It used to read:
+
+  > A YAML *block* sequence (`packets:` then indented `- <id>` lines) is valid YAML and parses cleanly, but
+  > `runstate.sh` reads this key as an inline value only, so a block-form repair yields
+  > an empty scope and the entry reads `unknown` forever — the repair fails silently, which is the one
+  > outcome this triage exists to prevent.
+
+- **Why every drop goes through `drop-finding`.** The skill keeps "which removes the
+  index entry and its body together". It used to add:
+
+  > — there is no path that leaves one orphaned.

@@ -250,6 +250,18 @@ group, named under T5 below. Every other sweep is unchanged since the baseline.
   attempt and continue arms restates it), and pause's lint reading (pause carries no
   copy of the consequences and points at run-loop's `## 4. Termination`).
 - **T9 (gate closed, rule review):** no sweep changed. T9 edits only this ledger.
+- **T10 (migrate trimmed):** no existing assertion changed. `scripts/test-migrate.sh`'s
+  only reads of `skills/migrate/SKILL.md` — the runbook pointer, the no-literal-pinned-
+  version case and the `gspec-backlog.sh pin` read — are unchanged and pass, because
+  the skill keeps all three. `test-migrate.sh` gains one appended section: for each of
+  the thirty-four reasons this task moved, the skill keeps its one clause, carries no
+  copy of the moved wording, and the owning ADR's migrate relocation section (ADR
+  0004, 0020, 0023, 0024, 0025, 0028) holds it; the skill states no default value, no
+  task id and no retired feature's slug; and seventeen of its prohibitions and traps,
+  most of them beside a moved reason, keep their wording. The skill measures 24294 bytes with `wc -c` after T10 (29622 at the
+  baseline). One task id ("T4's per-repo setting") and two retired-feature slugs
+  were history and are deleted, not relocated. The skill stated no setting value
+  at the baseline, so capability 4 removed nothing from it.
 
 ## Loop-skill rule review
 

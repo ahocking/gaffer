@@ -352,3 +352,26 @@ one-clause reason; the fuller wording is recorded here.
   (§3.6 writes it first)". It used to add:
 
   > and that ordering is load-bearing there for orphan-adopt — see that step
+
+## Relocated from skills (2026-09-25) — the migrate skill's report and conventions-card reasons
+
+Moved out of `skills/migrate/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the conventions are `Read` before the summary.** The skill keeps "that summary
+  has **no shape of its own**, so those conventions *are* its format; naming the path
+  is not reading it". It used to add:
+
+  > the glyph vocabulary, the indentation contract, and the decision block that every human-facing report in this
+  > plugin owes.
+
+  > and unread they produce free prose.
+
+- **Why the stamped card is left exactly as inserted.** The skill keeps "since a
+  paraphrase drifts from the plugin's own contract". It used to read:
+
+  > The marker is what stops `hooks/report-conventions.sh` injecting the
+  > same text again at every session start, and a paraphrase drifts from the plugin's own
+  > contract. This is the layer that makes reports come out in the house format *without
+  > the human asking each session*; a repo without it gets free prose on every turn that
+  > is not inside a gaffer skill.

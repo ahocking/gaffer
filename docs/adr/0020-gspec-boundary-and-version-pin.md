@@ -813,3 +813,183 @@ fuller wording is recorded here.
   > from another session driving right now; `claim-driver` runs once at §2, so a key
   > dropped here is not re-made, and `driver-status` reads the run as never claimed
   > from that point on.
+
+## Relocated from skills (2026-09-25) — the migrate skill's layout, sequencing and verify reasons
+
+Moved out of `skills/migrate/SKILL.md` by `skill-prompt-trim`. This ADR owns the
+migration (the gspec boundary, the layouts the adapter reads, and `verify`'s packet
+count). The skill keeps each rule with at most a one-clause reason; the fuller wording
+is recorded here.
+
+- **Why a migration is done only when packets come out.** The skill keeps "a plan
+  whose task lines cannot be parsed reads as "nothing to do", not as "unreadable"".
+  It used to read:
+
+  > Every layout change here is a file move, and a file move *looks* migrated the
+  > instant it finishes. If the moved plans' task lines cannot be parsed, the backlog
+  > reads as **"nothing to do"** rather than as "unreadable", and the loop cheerfully
+  > reports a finished project.
+  > Measured on two production repos: a pure rename yielded **0 packets from 31 plan files**.
+
+  The report section repeated it:
+
+  > A migration is not done when the files have moved; it is done when packets come
+  > out the other end, so lead with that number rather than the file count.
+
+- **Why §2b is read before anything runs.** The skill keeps "the wrong order makes
+  the repo worse". It used to read:
+
+  > Doing both in the wrong order is the one way to make this worse rather than better, so
+  > read §2b before running anything. The human-facing version of the same sequence,
+  > for a person driving it across sessions, is the runbook
+
+- **Why the tree must be clean.** The skill keeps "so the migration reads as one
+  reviewable, revertable `git diff`". It used to read:
+
+  > and that is deliberate: a migration you cannot read as one `git diff` is not one you can review or revert.
+
+- **Why never on `main`.** The skill keeps the rule without this reason:
+
+  > You are about to move a lot of files; that belongs on a branch.
+
+- **Why an install-version mismatch is never a finding, and why the `why` is
+  relayed.** The skill keeps "since a stale install reads fine" and "since several
+  findings look cosmetic and are not". It used to read:
+
+  > because a stale install reads fine and merely runs the old briefs
+
+  > (a roadmap left under `gspec/` trips gspec's own spec-integrity floor on every write,
+  > and hard-blocks every turn on Codex)
+
+- **Why a flat layout is not breakage.** The skill keeps "the adapter reads all three
+  gspec layouts". It used to add:
+
+  > so the loop works exactly as before. What has changed is that the repo's *gspec commands* have moved on without it
+
+- **Why a half-moved feature is reported.** The skill keeps the next-`/gspec-plan`
+  consequence. It used to add:
+
+  > Unambiguous, because both files exist: one moved and one did not.
+
+  > (the adapter reads the plan where it is)
+
+- **Why a plan without a PRD is not diagnosed.** The skill keeps "it may be an
+  interrupted `/gspec-migrate` or a deliberate infra plan". It used to read:
+
+  > It is equally an interrupted `/gspec-migrate` *and* a deliberate infra plan that was
+  > never a product capability — one real consumer repo documents exactly that in its
+  > `.agents/roadmap.yaml`, with every task already checked and nothing depending on it.
+
+- **Why the feature-folder move is gspec's.** The skill keeps "gspec owns spec
+  **format and layout**, this plugin owns **execution**". It used to read:
+
+  > and that is a decision rather than a gap
+  > Three things make it gspec's move to make. It has to repair the relative links the
+  > relocation breaks — in *both* directions, including inbound links from specs that
+  > did not move, which is a judgment no glob makes. It has to reformat each file to the
+  > v2 body, which gspec does per file through its own `spec-migrator` agent. And it
+  > edits the files gspec's `task-immutability` floor is watching, so a shell `mv` racing that
+  > floor is a fight this plugin would lose loudly and intermittently.
+
+  > **Run these in order. The order is the whole point:**
+
+- **Why gspec is upgraded before `/gspec-migrate` runs.** The skill keeps "an old
+  gspec's `/gspec-migrate` migrates **toward `gspec/tasks/`**, the layout you are
+  leaving, and reports success". It used to read:
+
+  > A repo on old gspec has the *old* `/gspec-migrate` sitting in `.claude/commands/`,
+  > and that version migrates **toward `gspec/tasks/`** — the exact layout you are trying
+  > to leave. It will report success. You would then have to migrate twice, the second
+  > time over files the first pass had already rewritten.
+  > Reinstalling first re-stamps the command, the agents, the skills and the hook floors to the pinned version so `/gspec-migrate`
+  > means the right thing when you call it.
+
+- **Why `/gspec-migrate` writes no `arch.md` or `design.html`.** The skill keeps the
+  rule and the `/gspec-architect` pointer. It used to add:
+
+  > A v2 feature folder holds four files and migration relocates only the two that already existed; the other two
+  > are a judgment call, not a reformat.
+
+- **Why placeholder `arch:` lines are declined.** The skill keeps "with no `arch.md`
+  yet, gspec's own `plan-lint` floor rejects every such anchor". It used to read:
+
+  > The v2 plan bar adds one required field to a task — an `arch:` line naming anchors
+  > in the feature's `arch.md`. Migration never writes `arch.md`, so those anchors do
+  > not exist yet, and gspec's own `plan-lint` floor rejects an `arch:` whose anchor
+  > does not resolve. If the migrator offers to add placeholder `arch:` lines
+  > (its brief tells it to add placeholders "where the current format requires them"), decline:
+  > it produces files gspec itself then refuses.
+
+  > because "migrated" and "v2-conformant" are not the same state and a reader will assume they are.
+
+- **Why architecture altitude is only relayed.** The skill keeps "splitting it is
+  `/gspec-architect`'s job on a later pass". It used to read:
+
+  > but splitting it rewrites specs the user has already reviewed, so it is
+
+- **Why the spec relocation is committed before §3.** The skill keeps
+  "`migrate.sh apply` refuses on a dirty tree". It used to add:
+
+  > and you want the spec relocation readable as its own diff regardless.
+
+- **Why `apply` usually finds the plan move done.** The skill keeps "in one hop". It
+  used to add:
+
+  > rather than via the intermediate `gspec/tasks/` this plugin's own retrofit used.
+
+- **Why approval is awaited, and why two keys are dropped.** The skill keeps "this
+  rewrites a repo's spec layout" and "so a stored copy drifts". It used to add:
+
+  > it is not a routine edit.
+
+  > — storing either is how they drift
+
+- **Why a converted roadmap entry needs its `why`.** The skill keeps "`why` is what a
+  human needs to re-sequence later". It used to read:
+
+  > `why` is required precisely because it is the one thing a human needs when
+  > re-sequencing later.
+
+- **Why a vestigial `gspec/tasks/**` allow-path is dropped.** The skill keeps the
+  rule. It used to add:
+
+  > — PRD, plan, `arch.md`, `design.html` —
+
+  > an allow-path for a directory that no longer exists is the kind of line nobody removes later because nobody remembers what it was for.
+
+- **Why the repo's `CLAUDE.md` describes one layout only.** The skill keeps "since an
+  agent trusts this file without checking". It used to read:
+
+  > This one outlives the file move and matters most:
+
+  > since the whole value of this file is that an agent can trust it without checking.
+
+- **Why `verify`'s figures read as they do.** The skill keeps each rule. It used to
+  add:
+
+  > The plans moved but nothing can read them.
+
+  > , so a mostly-finished repo legitimately yields few packets.
+
+  > and making it a failure would mean refusing to pass a repo with nothing wrong. It is
+  > there so a half-finished `/gspec-migrate` is visible rather than silent.
+
+  > is the fastest way to see *which* features were left behind.
+
+- **Why legacy task lines are never rewritten.** The skill keeps "that edits
+  **checked** tasks, which gspec's immutability floor blocks". It used to add:
+
+  > not by `/gspec-plan`
+
+  > (that is what makes migration a safe move)
+
+  > and which destroys the record of what was built.
+
+- **Why the report's ⚠️ items are alerts, and why it has no tally.** The skill keeps
+  "an unrecognized capability line leaves a feature, and everything depending on it,
+  blocked forever" and "a migration is not a run". It used to read:
+
+  > an unrecognized capability line means a feature can never read as done, so
+  > everything depending on it stays blocked forever and the backlog quietly reports nothing to do.
+
+  > a migration is not a run and has nothing to count.

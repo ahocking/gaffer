@@ -55,7 +55,8 @@ evidence moves to the ADRs.
   decision is written, never what it decides.
 - The behaviour of `check-task`, `capability-drift` and `complete-capabilities`
   themselves: what each flips, prints and exits with.
-- `agents/*.md` and `templates/`.
+- `agents/*.md` and `templates/`, except the two agent passages capability 7
+  aligns with rules this feature's trim changed.
 - Any edit to an existing line of an ADR; relocations append only.
 - Checked task lines and capability blocks under `gspec/`.
 - The gspec-installed preamble in `CLAUDE.md`.
@@ -165,6 +166,16 @@ evidence moves to the ADRs.
   - the reviewer's rule-by-rule comparison of these four skills names zero lost
     instructions, prohibitions or traps, recorded in the same tracked file as
     capability 5's results
+
+- [ ] **P1**: Agent prompts that restate a rule this trim changed agree with the trimmed skill
+  - `agents/chief-engineer.md` gives the integration base the way run-loop §1
+    **Branch** now does, with no `main`/`master` fallback arm (removed from
+    run-loop by the operator's decision recorded in `docs/skill-prompt-trim.md`)
+  - `agents/loop-driver.md`'s periodic-review section claims no more than it
+    holds — the same rule as run-loop §3.8, not the same words — and states
+    nothing that run-loop §3.8 no longer does
+  - the sweep that extracts either passage keeps passing, under capability 5's
+    rule for a changed assertion
 
 ## Dependencies
 

@@ -145,3 +145,13 @@ size, not by criterion.
   - covers: The loop skills together meet the size gate
   - arch: —
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md, skills/pause/SKILL.md, scripts/test-report-conventions.sh, docs/skill-prompt-trim.md
+- [ ] **T14** **P1** [P] In `agents/chief-engineer.md`'s packet-branch bullet, give the integration base the way run-loop §1 **Branch** now does: drop the `else main/master` arm, which T7 removed from run-loop by the operator's decision recorded in `docs/skill-prompt-trim.md` (it contradicts never running on `main`/`master`). Name the setting by key only, never a value or default. Change nothing else in the file. Filed from the end-of-run whole-run review (finding `chief-engineer-integration-base-drift`). Verify: the passage names no `main`/`master` fallback, and `scripts/test-report-conventions.sh`, `scripts/test-routing.sh` and `scripts/test-runstate.sh` pass.
+  - deps: —
+  - covers: Agent prompts that restate a rule this trim changed agree with the trimmed skill
+  - arch: —
+  - files: agents/chief-engineer.md
+- [ ] **T15** **P1** [P] In `agents/loop-driver.md` §The periodic review, stop claiming the section is stated "in the same words" as run-loop §3.8 — T8 trimmed the run-loop copy, so it is the same rule, not the same words — and bring the section in line with run-loop §3.8 as it now stands, removing anything run-loop §3.8 no longer states. Move no rule out of the agent. If a sweep extracts this passage, change its case only to follow the rewording, never loosened, and list it with its reason under `Changed sweep assertions` in `docs/skill-prompt-trim.md`. Filed from the end-of-run whole-run review (finding `loop-driver-same-words-claim-stale`). Verify: no "same words" claim remains in the section, and `scripts/test-report-conventions.sh`, `scripts/test-routing.sh` and `scripts/test-runstate.sh` pass.
+  - deps: —
+  - covers: Agent prompts that restate a rule this trim changed agree with the trimmed skill
+  - arch: —
+  - files: agents/loop-driver.md, scripts/test-report-conventions.sh, docs/skill-prompt-trim.md

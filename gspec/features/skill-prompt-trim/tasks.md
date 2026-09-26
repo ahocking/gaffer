@@ -180,7 +180,7 @@ size, not by criterion.
   - covers: The follow-ups the T14–T19 packet reviews raised are closed
   - arch: —
   - files: agents/chief-engineer.md
-- [ ] **T21** **P2** [P] In `docs/adr/0024-findings-are-packet-scoped-and-expire.md`, the sentence saying "`agents/loop-driver.md` §The periodic review still carries the untrimmed wording" became false when T15 landed. Rewrite that one sentence to say the loop-driver section now carries the same one-clause reasons as run-loop §3.8 and that the fuller wording is recorded only in this ADR. Change no relocated rationale, no rule and nothing else in the file. Filed from the T15 packet review's non-blocking note, at the operator's call. Verify: the ADR makes no claim that the loop-driver section carries untrimmed or fuller wording, and `scripts/test-report-conventions.sh` passes.
+- [x] **T21** **P2** [P] In `docs/adr/0024-findings-are-packet-scoped-and-expire.md`, the sentence saying "`agents/loop-driver.md` §The periodic review still carries the untrimmed wording" became false when T15 landed. Rewrite that one sentence to say the loop-driver section now carries the same one-clause reasons as run-loop §3.8 and that the fuller wording is recorded only in this ADR. Change no relocated rationale, no rule and nothing else in the file. Filed from the T15 packet review's non-blocking note, at the operator's call. Verify: the ADR makes no claim that the loop-driver section carries untrimmed or fuller wording, and `scripts/test-report-conventions.sh` passes.
   - deps: —
   - covers: The follow-ups the T14–T19 packet reviews raised are closed
   - arch: —

@@ -469,8 +469,9 @@ one-clause reason; the fuller wording is recorded here.
 Moved out of `skills/run-loop/SKILL.md` §3's **Advance** step (the periodic review
 checked at the packet boundary, per this ADR's 2026-09-21 amendment) by
 `skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
-fuller wording is recorded here. `agents/loop-driver.md` §The periodic review still
-carries the untrimmed wording.
+fuller wording is recorded here. `agents/loop-driver.md` §The periodic review now
+carries the same one-clause reasons as run-loop §3.8; the fuller wording is recorded
+only in this ADR.
 
 - **Why the driver records nothing after a periodic review.** The skill keeps "record
   nothing yourself, since the review writes its own `record-review` record". It used

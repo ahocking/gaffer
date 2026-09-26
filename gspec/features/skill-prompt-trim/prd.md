@@ -190,6 +190,19 @@ evidence moves to the ADRs.
   - the sweep that extracts any changed passage keeps passing, under
     capability 5's rule for a changed assertion
 
+- [ ] **P2**: The follow-ups the T14–T19 packet reviews raised are closed
+  - `agents/chief-engineer.md`'s integration-workflow paragraph names the
+    integration base by its setting key alone, with no default value, the same
+    way its packet-branch bullet does after T14
+  - ADR 0024's note on `agents/loop-driver.md` §The periodic review describes the
+    section as it stands after T15 — the same one-clause reasons as run-loop, with
+    the fuller wording recorded only in the ADR
+  - `docs/skill-prompt-trim.md` records the rule changes T16 and T17 made after
+    its pinned review, so its P28 entry for the pause skill is not read as
+    current; no pinned entry or byte figure is rewritten
+  - the sweep that extracts any changed passage keeps passing, under
+    capability 5's rule for a changed assertion
+
 ## Dependencies
 
 - `loop-prose-consistency-gaps` — **blocking**: edits run-loop and resume

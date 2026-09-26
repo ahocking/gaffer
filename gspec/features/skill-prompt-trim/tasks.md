@@ -175,3 +175,18 @@ size, not by criterion.
   - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - arch: —
   - files: docs/adr/0022-findings-index-not-content.md, docs/adr/0023-report-conventions-delivered-not-referenced.md, docs/adr/0024-findings-are-packet-scoped-and-expire.md, docs/adr/0026-post-completion-findings-route-by-scope.md
+- [ ] **T20** **P2** [P] In `agents/chief-engineer.md`'s integration-workflow paragraph (the one reading "`.agents/project-overrides.yaml` → `integration_branch`, else `develop`"), give the integration base by its setting key alone, dropping the `else develop` default value, the same way T14 did for the packet-branch bullet. Name the setting by key only, never a value or default. Change nothing else in the file. Filed from the T14 packet review's non-blocking note, at the operator's call. Verify: no passage in the file names a default value for `integration_branch`, and `scripts/test-report-conventions.sh`, `scripts/test-routing.sh` and `scripts/test-runstate.sh` pass.
+  - deps: —
+  - covers: The follow-ups the T14–T19 packet reviews raised are closed
+  - arch: —
+  - files: agents/chief-engineer.md
+- [ ] **T21** **P2** [P] In `docs/adr/0024-findings-are-packet-scoped-and-expire.md`, the sentence saying "`agents/loop-driver.md` §The periodic review still carries the untrimmed wording" became false when T15 landed. Rewrite that one sentence to say the loop-driver section now carries the same one-clause reasons as run-loop §3.8 and that the fuller wording is recorded only in this ADR. Change no relocated rationale, no rule and nothing else in the file. Filed from the T15 packet review's non-blocking note, at the operator's call. Verify: the ADR makes no claim that the loop-driver section carries untrimmed or fuller wording, and `scripts/test-report-conventions.sh` passes.
+  - deps: —
+  - covers: The follow-ups the T14–T19 packet reviews raised are closed
+  - arch: —
+  - files: docs/adr/0024-findings-are-packet-scoped-and-expire.md
+- [ ] **T22** **P2** [P] In `docs/skill-prompt-trim.md`, record the rule changes made after the pinned rule review: T16 added the `templates/task-packet.yaml` read to `skills/resume/SKILL.md`, and T17 removed the commit-run-state half of the pause skill's P28 entry ("commit run-state only on the feature branch or leave it staged"), which the skill no longer carries. Add this as a dated post-pin section, or a per-entry supersession note beside P28, so a reader does not take P28 as current; rewrite no pinned entry, change no byte figure, count or verdict. Filed from the T17 packet review's non-blocking note, at the operator's call. Verify: the ledger names both changes against the tasks that made them, every pinned section is byte-identical apart from the added note, and every byte figure still matches `git show <commit>:<path> | wc -c` for the commit and file it names.
+  - deps: —
+  - covers: The follow-ups the T14–T19 packet reviews raised are closed
+  - arch: —
+  - files: docs/skill-prompt-trim.md

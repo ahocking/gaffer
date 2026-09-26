@@ -160,7 +160,7 @@ size, not by criterion.
   - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - arch: —
   - files: skills/resume/SKILL.md
-- [ ] **T17** **P1** [P] In `skills/pause/SKILL.md` step 3, remove the claim that `.agents/run-state.yaml` is tracked and may be committed on the feature branch: it is gitignored (`.gitignore`), which the same skill already says in step 1. Keep the rule that nothing is ever committed on `main`/`master`. Change nothing else in the file. Filed from the periodic findings review of the `model-comparison-harness` run (finding `pause-run-state-tracked-contradiction`), at the operator's call. Verify: no passage in the pause skill calls run-state tracked or committable, and `scripts/test-report-conventions.sh` and `scripts/test-pause.sh` pass.
+- [x] **T17** **P1** [P] In `skills/pause/SKILL.md` step 3, remove the claim that `.agents/run-state.yaml` is tracked and may be committed on the feature branch: it is gitignored (`.gitignore`), which the same skill already says in step 1. Keep the rule that nothing is ever committed on `main`/`master`. Change nothing else in the file. Filed from the periodic findings review of the `model-comparison-harness` run (finding `pause-run-state-tracked-contradiction`), at the operator's call. Verify: no passage in the pause skill calls run-state tracked or committable, and `scripts/test-report-conventions.sh` and `scripts/test-pause.sh` pass.
   - deps: —
   - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - arch: —

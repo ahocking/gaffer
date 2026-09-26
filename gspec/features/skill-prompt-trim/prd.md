@@ -153,7 +153,7 @@ evidence moves to the ADRs.
     finding count is zero, and the result is recorded in the same tracked file
     as the starting byte figure
 
-- [ ] **P1**: The one-shot skills get the same relocation and value removal, last
+- [x] **P1**: The one-shot skills get the same relocation and value removal, last
   - `skills/migrate/SKILL.md`, `skills/metrics/SKILL.md`,
     `skills/new-project/SKILL.md` and `skills/review-change/SKILL.md` meet
     capability 3's relocation and one-clause rule and capability 4's

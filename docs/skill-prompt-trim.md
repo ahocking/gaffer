@@ -591,3 +591,277 @@ Preamble, flags, report contract:
 - **Rules gone with nowhere a session would read them: 0.**
 
 ## One-shot skill rule review
+
+Every instruction, prohibition and trap in the four skills at the baseline commit
+(`git show 48de82d11040cbee0374a0601a30f7faaff59ead:skills/<name>/SKILL.md`), each
+beside where a session reads it at `7e831e9` (T11's `develop` merge; the last edit to
+any of the four is `1f6bfdf`, T11, and before it `2568634`, T10). The same rule applies
+as in the loop-skill review: a reason, a history note, a piece of evidence or a
+description of what a script does is not a rule and is not listed. Reasons moved under
+T10 and T11 to the relocation sections those entries name; history and task ids were
+deleted. "Same" means the same skill, same section. Where a rule sat beside a reason
+or a value that was moved or removed, the entry says what went and where.
+
+### `skills/migrate/SKILL.md`
+
+Preamble:
+- MG1 Your job is the judgment around `migrate.sh`: approval, the prose no converter translates, reading the verification honestly. → same.
+- MG2 A migration is done when packets come out, not when files have moved; every path ends at `verify`; lead the report with the packet count. → same (the "0 packets from 31 plan files" evidence is in ADR 0020's migrate relocation section).
+- MG3 Two migrations: the plugin retrofit is `migrate.sh`'s; the gspec upgrade into `gspec/features/<slug>/` is `/gspec-migrate`'s, and this skill does not do it. → same.
+- MG4 Read the pinned version with `gspec-backlog.sh pin`; never assume it. → same.
+- MG5 Read §2b before running anything; the wrong order makes the repo worse. → same.
+- MG6 The human-facing sequence is the runbook `docs/gspec-migration.md`. → same.
+- MG7 `Read` `report-conventions.md` before the closing summary; it has no shape of its own; naming the path is not reading it; `report-templates.md` is not needed. → same.
+
+§1 Preflight:
+- MG8 Resolve the target from `$ARGUMENTS`, else the working directory. → same.
+- MG9 The tree must be clean; dirty → say so and stop, offer to continue once committed or stashed. → same.
+- MG10 Never migrate `main`/`master`; ask the user to branch first. → same.
+
+§2 Detect and explain:
+- MG11 Run `detect`; a `GSPEC_INSTALLED=` mismatch is information, never a finding. → same.
+- MG12 Relay each `FINDING=` in plain language, the `why` included; several look cosmetic and are not. → same (the roadmap/Codex example is in ADR 0020's migrate relocation section).
+- MG13 `FINDINGS=0` → say the repo is current and stop. → same.
+- MG14 The gspec-layout findings route to §2b, not to `apply`. → same.
+- MG15 `gspec-v2-layout` is not breakage and must never be relayed as breakage; the reason to migrate is that the next replan strands the old plan; say that, not "your backlog is broken". → same.
+- MG16 `half-moved`: nothing breaks today; the next `/gspec-plan` leaves two plans for one feature. → same.
+- MG17 `plan-without-prd`: report the fact, let the user supply the cause, do not diagnose; ask which; deliberate and undocumented → a line in the roadmap. → same.
+
+§2b The gspec upgrade:
+- MG18 Skip §2b when `detect` reported neither finding. → same.
+- MG19 `migrate.sh` will not move a feature into its folder; that is gspec's move. → same (the three reasons are in ADR 0020's migrate relocation section).
+- MG20 Run the steps in order. → same.
+- MG21 Upgrade gspec first, to exactly the pin read from `GSPEC_PINNED_VERSION=`, with `npx --yes gspec@<pinned version> --target claude`. → same.
+- MG22 Trap: never skip straight to `/gspec-migrate`; an old gspec's `/gspec-migrate` migrates toward `gspec/tasks/` and reports success. → same (the migrate-twice consequence and the re-stamp list are in ADR 0020's migrate relocation section).
+- MG23 Confirm the pin matches before and after. → same.
+- MG24 Commit the upgrade on its own. → same.
+- MG25 Run `/gspec-migrate`; it asks before it moves anything. → same.
+- MG26 Only from the main conversation; a dispatched agent has no `Skill` tool, so stop and hand the step back with the command. → same.
+- MG27 What it will not do goes in the report as ⚠️ items, not failures. → same.
+- MG28 It never writes `arch.md`/`design.html`: name `/gspec-architect`; the folder is simply incomplete, nothing breaks; a feature with no UI gets no `design.html`. → same.
+- MG29 Decline placeholder `arch:` lines (`plan-lint` rejects the unresolved anchor); the order is migrate → `/gspec-architect` → `/gspec-plan`; say "migrated" and "v2-conformant" are not the same state. → same.
+- MG30 Architecture altitude: relay the warning, do not act on it. → same.
+- MG31 Commit the `/gspec-migrate` result too, before §3. → same.
+- MG32 Then continue with §3; `apply` will usually find the plan move already satisfied. → same.
+
+§3 Approval:
+- MG33 Show `migrate.sh plan` and wait. → same.
+- MG34 Name the plan-file count; the roadmap converted, not deleted; `status`/`parallel_group` dropped on purpose; `backlog.done` deleted, with unchecked ids reported first; a finding never deleted. → same.
+- MG35 Name the parallel-mode/rate-limit-pause cleanup; worktrees only listed, never deleted; `statusLine` and `CLAUDE.md` lines only reported. → same.
+- MG36 Name the autonomy-level cleanup; `CLAUDE.md`, `spec-setup.md` and an `ORCH_AUTONOMY` settings entry only reported, never edited. → same.
+
+§4 Apply:
+- MG37 Run `apply`; relay every listed line, the decision-needing ones as such and the rest as informational. → same.
+- MG38 `SKIP=`: the user reconciles; never resolve one by deleting. → same.
+- MG39 `DROPPED=`: informational. → same.
+- MG40 `UNCHECKED=`: the user's call; `apply` will not flip it. → same.
+- MG41 `UNRECOGNIZED_BACKLOG_DONE=`: point at the line range; the user drops it by hand after review. → same.
+- MG42 `CLEANED=` names only the keys that were there; read it, never assume all three. → same.
+- MG43 `REMOVED=`: a tracked `packet-graph.yaml` is a change the user must commit (`apply` never commits); `.agents/autonomy` tracked or untracked, relay which, do not assume; a removed `statusLine` still carries a `NOTE=`. → same.
+- MG44 `FOUND=`: never removed without explicit say-so; ask before `--remove-statusline`; always relay the `NOTE=`; never phrase a same-run removal as "now safe". → same.
+- MG45 `WORKTREES=`: informational; `apply` deletes none; removing one is the user's call. → same.
+- MG46 `CLAUDEMD_ROUTES=` is only reported by `apply`; rewriting is §5c. → same.
+- MG47 `SPECSETUP_ROUTES=`/`SETTINGS_AUTONOMY=`: reported, never edited; show the lines and offer the rewrite. → same.
+
+§5 The parts no script can do:
+- MG48 (a) Read the untranslated roadmap prose and fold what is still true into the entry's `why:`. → same.
+- MG49 (a) A placeholder `why` → fill it in or ask. → same.
+- MG50 (a) Roadmap entries with no PRD: report them; never invent PRDs. → same.
+- MG51 (b) `allowed_paths` covers `gspec/features/**` and `.agents/roadmap.yaml`; drop `gspec/roadmap.md`. → same.
+- MG52 (b) A `gspec/tasks/**` entry is kept only while some feature is unmigrated; say which. → same.
+- MG53 (c) Describe the current backlog model in `CLAUDE.md`, the layout actually on disk and never both; the template's wording as reference; keep everything project-specific. → same.
+- MG54 (c) `CLAUDEMD_ROUTES=` lines: show them and rewrite them in the same pass (one sequential mode; one fixed rule set, saying what the guard allows). → same.
+- MG55 (c) `spec-setup.md` and `settings.json`: `apply` edits neither; offer and let the user decide; never delete a key from their `settings.json`. → same.
+- MG56 (c) Leave the stamped conventions card exactly as inserted; never reword or summarize it. → same (the marker-stops-the-hook reason is in ADR 0023's migrate relocation section).
+- MG57 (c) An older-version marker: replace the whole section with the current card, never merge. → same.
+- MG58 (d) References to removed skills: point feature work at the chief-engineer or `/gaffer:run-loop`, testing method at `gspec/practices.md`. → same.
+- MG59 (e) Ensure `.agents/pause`, `.agents/pause.*`, `.agents/run-state.yaml`, `.agents/metrics/` are ignored. → same.
+- MG60 (e) `driver-mode-ignore`: add the line(s) the finding names. → same.
+- MG61 (e) `compact-threshold` fires only when `.claude/settings.json` exists and lacks `autoCompactWindow`; `apply` never writes that file; add the key by hand to share one; an operator-scope value still takes precedence. → same (the task id "T4's per-repo setting" was deleted as history under T10).
+- MG62 (f) `findings-audit` is read-only; `apply` acts on none of it; triage is a conversation, one entry at a time, reading the summary and a load-bearing body. → same.
+- MG63 (f) `live` → no action. → same.
+- MG64 (f) `dead` → capture then drop: file the backlog task first when unfiled; an owner-gate or scoping note needs no capture; drop once decided. → same.
+- MG65 (f) `unknown` → the user, never a rule; "demonstrably finished" is the checkbox or a trailer, never the dropped `done:` block; the three outcomes. → same.
+- MG66 (f) Repair scope by hand in the flow form `packets: [<id>, <id>]`. → same.
+- MG67 (f) Trap: never the block form; `runstate.sh` reads the key inline only, so the repair silently leaves `unknown`. → same, as "**Never the block form**". The clause that the block form is valid YAML that parses cleanly is in ADR 0024's migrate relocation section.
+- MG68 (f) Re-run `findings-audit` and confirm the `VERDICT` moved off `unknown`. → same.
+- MG69 (f) Every drop is `runstate.sh drop-finding`. → same.
+
+§6 Verify:
+- MG70 Run `verify`; the packet count is the line that matters. → same.
+- MG71 Plans above 0 and packets 0 is a failed migration: never report success; inspect a plan's task lines. → same.
+- MG72 A low count can be correct; confirm from the `features` table, never assume. → same.
+- MG73 The layout line is informational and `VERIFY=ok` passes through it; `plans` is the census. → same.
+- MG74 Never "fix" legacy task shapes by rewriting task lines; regenerate with `/gspec-plan <slug>` when the feature next comes up. → same (the destroys-the-record reason is in ADR 0020's migrate relocation section).
+
+§7 Report:
+- MG75 The conventions apply; no header tally. → same.
+- MG76 ✅ what moved; ⚠️ each listed leftover, as alerts, not chores. → same.
+- MG77 Quote the verification line with the packet count, leading with that number. → same.
+- MG78 ▶ one next action; never commit the migration yourself; a genuine choice is a decision block. → same.
+
+### `skills/metrics/SKILL.md`
+
+Preamble:
+- MT1 The Chief Engineer runs this; every verb is read-only and crosses no gate. → same.
+- MT2 `Read` `report-conventions.md` before printing anything; no shape of its own; naming the path is not reading it. → same.
+- MT3 `report-templates.md` is not needed; this report takes no header tally. → same.
+
+§1 Resolve intent:
+- MT4 Resolve the verb (trim, lowercase); `spend` flags passed through verbatim; anything else → name the valid verbs. → same.
+
+§2 `collect`:
+- MT5 Run `metrics.sh collect`; `jq` is required. → same.
+- MT6 A multi-session run: pass `--session` ids or `--since` to roll up the whole run; `--all-sessions` folds in every log. → same.
+
+§3 `show`:
+- MT7 Relay the run/window/tokens/cache-ratio, the per-role split and the per-packet table. → same.
+- MT8 Outcome coverage is a label, never a green count; none of its three readings softened or hidden; `unmeasured` → infer no completeness; `incomplete` → name the count and packets; `complete` is not all green, relay `outcome_counts`; relay verbatim, never "the run succeeded". → same (the task id was deleted as history under T11).
+- MT9 The driver-mode context's two fields are `null` independently; a real `max_context` is never paired against an invented threshold. → same.
+- MT10 Trap: the kickoff baseline is expected to disagree with `run-digest`'s most-recent `enter`; a later re-entry is assumed, not verified, to carry the kickoff's setting. → same (why the two differ is in ADR 0019's metrics relocation section).
+- MT11 Relay the driver-mode line verbatim, its `autoCompactWindow` remedy clause unparaphrased; never rewrite it into an instruction to set the key or a recommended value; that is the operator's call. → same.
+- MT12 No header tally and no glyph gutter; titles before ids, one line per finding, empty sections omitted, no restated JSON. → same.
+- MT13 An unmeasured number is said in words, never as `0`. → same (the "v3.3 already had to fix once" story was deleted as history under T11).
+
+§4 `status`:
+- MT14 Run `metrics.sh status`; use it to explain a `token_source: none` packet. → same. The enablement chain now names `ORCH_METRICS`, then `metrics.enabled` in `.agents/project-overrides.yaml`, then `metrics.sh`'s own fallback; the baseline's value ("default on") was removed under capability 4. Checked against `metrics_enabled()` in `scripts/metrics.sh`, which reads the env var, then the key, then falls back.
+
+§5 `analyze`:
+- MT15 Ensure a fresh packet, read the whole `run-metrics.json`, and answer where the compute goes and what would reduce it, citing figures. → same.
+- MT16 Look at cache efficiency and where spend concentrates. → same.
+- MT17 `same_file_overlaps`: `null` is unmeasured, never a clean `0`; say so in words. → same (the retired-guarantee reason is in ADR 0019's metrics relocation section).
+- MT18 The relay-vs-inline crossover: a run below it cannot unseat it; never read one arm as a verdict. → same (the revision note was deleted as history).
+- MT19 Prefer `cc_shape` over cacheCreation totals; a flat median with a large max is a re-cached payload, fixed by scoping what the role reads, not by dispatching less. → same (the spread measurement is in ADR 0019's metrics relocation section).
+- MT20 `context_invalidations`: if any appear, say so; the fix is behavioural, at a packet boundary. → same (the measurement, both directions and the subagent propagation are in ADR 0019's metrics relocation section).
+- MT21 `outcome`/`edits`: `null` is unmeasured; read `outcome_coverage` first; never infer a rate from an `unmeasured` run; name an open packet; `complete` is not all green; `contended_files` is the rework signal. → same.
+- MT22 Dispatch rows: name the top zero-progress dispatches by tokens; trap: `landed` can read on a zero-edit last dispatch; `null` is never `0` and a null row is never ranked as a zero; say so in words. → same.
+- MT23 `self_host`: never average self-host and consumer runs; an absent key is unmeasured. → same.
+- MT24 Honesty about the token source is mandatory: `none`/`transcript` → say so and scope the token claims. → same.
+- MT25 A ranked, concrete list, most impactful first, each tied to its metric. → same.
+- MT26 A trade-off recommendation is a decision block: two options, consequences, lean, default. → same.
+- MT27 Deep analysis → the architect via `Task` with the packet path to `Read`, never the command. → same.
+- MT28 `routing.sh resolve architect` immediately before that dispatch; non-empty → `model`, empty → omit. → same.
+
+§6 `spend`:
+- MT29 Pass the window flags straight through; an unrecognised flag is a usage error. → same. The baseline's default window length was removed under capability 4; the skill now points at `spend.sh`'s usage text and the report's `window`. Checked by running `scripts/spend.sh --help`, which prints "(default: the last 7 days)".
+- MT30 Relay the report, not the raw JSON; no header tally; titles over ids, one line per finding. → same.
+- MT31 Lead with the price-table date and the label; every figure an estimate, not a bill, said once up front. → same.
+- MT32 Never fold `unpriced_tokens` into a dollar figure; its own line, never "$0" or silence. → same.
+- MT33 Name every `unmeasured[]` entry in words. → same.
+- MT34 Report the dedup and exclusion counts; an `absent` scan directory is said as not found, never zero spend. → same.
+- MT35 Across machines: save each over the same window, then `--combine`. → same.
+- MT36 `--machine` is required and never defaulted from the hostname. → same.
+- MT37 Render a combined report like a single one, naming every machine with its window and price-table date. → same.
+- MT38 Relay every `warnings[]` entry as a ⚠️ line above the totals; a mismatch reads "differs by machine", never one machine's value. → same.
+- MT39 A superseded file: name it and say it was not counted; different windows are both counted and the overlap is counted twice. → same.
+- MT40 A combined report's missing cache-read shape and cache-write causes are not measured, never zero. → same.
+
+Config:
+- MT41 The settings live under `metrics:` in `.agents/project-overrides.yaml`; `ORCH_METRICS` overrides `enabled` for a session. → same. The baseline's example values were removed under capability 4; each key is named, and `metrics.sh status` prints the result.
+- MT42 `.agents/metrics/` is gitignored; archive a run by copying its `run-metrics.json` out, never by committing the live directory. → same.
+
+### `skills/new-project/SKILL.md`
+
+Preamble:
+- NP1 The human approves the first commit; you do not commit. → same.
+- NP2 Work the stages in order; skip one only when genuinely unnecessary, and say why. → same.
+- NP3 `Read` `report-conventions.md` before the closing summary; no shape of its own; naming the path is not reading it; `report-templates.md` is not needed. → same.
+- NP4 `spec-setup.md` is authoritative; on a conflict it wins. → same.
+- NP5 Install gspec only; never `.specify/`/`speckit-*`. → same.
+- NP6 Read the pin from `gspec-backlog.sh pin`; never hardcode it. → same (the known-good-target reason is in ADR 0020's new-project relocation section).
+- NP7 Raising the pin is a reviewable plugin change plus an ADR 0020 amendment, never a per-project decision. → same.
+
+§1 Gather inputs:
+- NP8 `routing.sh resolve chief-engineer` immediately before the dispatch; non-empty → `model`, empty → omit. → same.
+- NP9 Determine the name (kebab-case), the purpose and the parent directory; confirm them in one line. → same.
+- NP10 An existing non-empty target → stop and ask; never scaffold over it. → same.
+
+§2 Overlay:
+- NP11 Copy the overlay including dotfiles; substitute the three placeholders in every copied file. → same.
+- NP12 Verify no `{{...}}` placeholder remains. → same.
+
+§3 Install gspec:
+- NP13 Install exactly the pin through the `PIN` block; never bare `npx gspec`. → same.
+- NP14 State the installed version in the step-6 report. → same.
+- NP15 `PIN` empty → stop. → same.
+- NP16 An interactive prompt despite `--target` → report what it asked and pause; never blindly accept seeding from `~/.gspec`. → same.
+- NP17 Record the pin: a `devDependency` with a `package.json`, else the `README.md`. → same (the no-version-stamp reason is in ADR 0020's new-project relocation section).
+
+§4 Sequencing overlay:
+- NP18 The cross-feature order lives outside `gspec/`. → same.
+- NP19 Confirm `.agents/roadmap.yaml` landed from the overlay; never hand-write it. → same.
+- NP20 Four fields per entry; `why` required. → same.
+- NP21 Never add `status` or `parallel_group`. → same (the derived-completion and retired-mechanism reasons are in ADR 0020's new-project relocation section).
+- NP22 Never install Spec Kit. → same.
+- NP23 `.agents/task-files.yaml` is not seeded. → same (the retired populating skill was deleted as history under T11).
+
+§5 Wire and verify:
+- NP24 Confirm the plugin is enabled through the user's plugin config; never hardcode a machine path. → same.
+- NP25 brooks-lint: surface enabling it as a next action; never run `/plugin` yourself. → same.
+- NP26 Sanity-check against the setup checklist and report the listed tree, including `CHECK=ok` and no Spec Kit. → same.
+- NP27 Assert the overlay stayed stack-agnostic. → same.
+
+§6 Summarize:
+- NP28 The conventions apply; no header tally; ✅/⚠️/▶; the approval request is a decision block. → same.
+- NP29 Report the path, what was installed, the pinned version, installer prompts, one next action and the optional brooks-lint setup. → same.
+- NP30 Stop and ask for approval of `git init` and the initial commit; never commit, push or merge. → same.
+
+### `skills/review-change/SKILL.md`
+
+Preamble:
+- RC1 Read-only: never fix, commit or merge; produce a verdict. → same.
+- RC2 Decide the scope mode from `$ARGUMENTS` in step 1. → same.
+- RC3 `Read` `report-conventions.md` before the verdict; no shape of its own; naming the path is not reading it; `report-templates.md` is not needed. → same (the "unread they produce free prose" reason is in ADR 0023's review-change relocation section).
+
+§1 Collect the diff:
+- RC4 Delegate to the chief-engineer to gather the change set and the contract to check against. → same.
+- RC5 `routing.sh resolve chief-engineer` immediately before the dispatch; non-empty → `model`, empty → omit. → same.
+- RC6 Branch-range mode on a named base or range: `git diff <base>...HEAD`, or the range as given, plus `git log --oneline <base>..HEAD`. → same.
+- RC7 Uncommitted changes in branch-range mode are noted and out of scope. → same.
+- RC8 Working-tree mode by default: `git status`, `git diff`, `git diff --staged`. → same.
+- RC9 A named focus is prioritised, but scan the rest. → same.
+
+§2 Build and test:
+- RC10 Run the build and tests; report failures verbatim. → same.
+- RC11 Branch-range mode runs against the range's head; check it out first. → same.
+- RC12 Unknown commands: ask or infer; run nothing that mutates state beyond building and testing. → same.
+
+§3 Review:
+- RC13 `routing.sh resolve reviewer` immediately before the dispatch, same rule. → same.
+- RC14 The reviewer checks acceptance criteria, spec↔code drift, security and correctness, with extra scrutiny on auth, secrets/PII and `.agents/domain-rules.md` paths. → same.
+
+§3b Decay-risk lens:
+- RC15 brooks-lint installed → `/brooks-review` over the same diff. → same.
+- RC16 Its findings are advisory: dedupe; the reviewer stays authoritative on security and correctness; never auto-apply `/brooks-sweep` fixes. → same.
+- RC17 Not installed → skip silently, never a failure. → same.
+
+§4 Design check:
+- RC18 The architect checks consistency and flags ADRs; `routing.sh resolve architect` immediately before the dispatch. → same.
+
+§5 Verdict:
+- RC19 One report owing every convention: glyphs, indentation contract, titles first, one line per thing, empty sections omitted, no dumps. → same.
+- RC20 ✅ or ⚠️ Issues, one line each with `file:line` and the change described, not applied; lead with the consequence, not the severity label. → same.
+- RC21 🔀 Risks as decision blocks; a non-choice goes in an issue line or nowhere. → same (the skimmed-and-forgotten reason is in ADR 0023's review-change relocation section).
+- RC22 ▶ the single best next step. → same.
+- RC23 No header tally. → same (the decoration reason is in ADR 0023's review-change relocation section).
+- RC24 Stop; any commit or merge is the human's. → same.
+
+### Result
+
+- **Restored in this packet:** none. No baseline rule was found without a place a
+  session reads it, so no skill was edited.
+- **Removed as values, not rules (capability 4):** the metrics skill's enablement
+  default, `ORCH_METRICS` value, `metrics:` example values and `spend` default window
+  length (MT14, MT29, MT41). Each rule beside them is kept, and each setting is named
+  by its key and file or by the script output that shows it.
+- **Rules gone with nowhere a session would read them: 0.**
+
+### Sweeps at `7e831e9`
+
+Run once each on 2026-09-25, working tree clean:
+
+- `test-migrate.sh`: 456 passed, 0 failed, exit 0. Includes "the skill carries no
+  literal pinned version".
+- `test-routing.sh`: 258 passed, 0 failed, exit 0. Includes "every dispatching file
+  names routing.sh resolve", "dispatching set includes skills/review-change/SKILL.md"
+  and "review-change: every dispatch has routing.sh resolve in its own section".

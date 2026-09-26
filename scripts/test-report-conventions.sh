@@ -2249,6 +2249,46 @@ case "$t8_pr" in
   *) ok 'run-loop periodic-review paragraph claims no identical wording with loop-driver' ;;
 esac
 
+printf '\n== loop-driver §The periodic review carries run-loop §3.8 rule, not its words (skill-prompt-trim T15) ==\n'
+# The agent's mirror of the paragraph above: it keeps every rule the run-loop paragraph
+# keeps, claims no identical wording, and carries neither reason the trim moved to
+# ADR 0024. Read by heading to the next heading; guarded non-empty and under the span
+# ceiling, so a renamed heading cannot pass by scanning nothing or the rest of the file.
+t15_raw="$(sed -n '/^## The periodic review — at the packet boundary/,/^## Operator questions and mid-run edits/p' "$ROOT/agents/loop-driver.md")"
+case "$t15_raw" in
+  *'## The periodic review'*'## Operator questions'*) ok 'loop-driver periodic-review section extracted' ;;
+  *) bad 'loop-driver periodic-review section extracted' 'heading or ## Operator questions and mid-run edits not found' ;;
+esac
+under_ceiling 'the loop-driver periodic-review span stays inside its ceiling' "$t15_raw"
+t15_pr="$(_rc_sq "$t15_raw")"
+while IFS='|' read -r t15_label t15_needle; do
+  [ -n "$t15_label" ] || continue
+  has "loop-driver periodic-review section keeps: $t15_label" "$t15_needle" "$t15_pr"
+done <<'T15_KEPT'
+only between packets|Between packets — never while one is open — run `runstate.sh review-due`
+the decider dispatch's model resolution|routing.sh resolve chief-engineer` (non-empty → `model`; empty → omit `model`)
+an unmeasured count is due|On `DUE=yes` — **including when any of the four reads `unmeasured`**
+the driver records nothing|and record nothing yourself, since the review writes its own `record-review` record
+a second refusal carries on|On a second `check-status` refusal, carry on to the next packet
+unmeasured is never rendered as 0|with `unmeasured` rendered as the word `unmeasured` and never as `0`
+the review's counts come through run-digest|through `run-digest`'s `review` line, never from its status line or its result file
+the same-rule claim|and carries the same rule as that step
+T15_KEPT
+case "$t15_pr" in
+  *'same words'*) bad 'loop-driver periodic-review section claims no identical wording with run-loop' 'still claims the same words' ;;
+  *) ok 'loop-driver periodic-review section claims no identical wording with run-loop' ;;
+esac
+while IFS='|' read -r t15_label t15_moved; do
+  [ -n "$t15_label" ] || continue
+  case "$t15_pr" in
+    *"$t15_moved"*) bad "loop-driver periodic-review section carries no copy of the moved reason: $t15_label" "still present: $t15_moved" ;;
+    *) ok "loop-driver periodic-review section carries no copy of the moved reason: $t15_label" ;;
+  esac
+done <<'T15_MOVED'
+why the driver records nothing|is already on disk when the line returns
+why a second refusal carries on|the record, not the line, decides whether the review counted
+T15_MOVED
+
 printf '\n== the loop skills state each rule once; the other sites point at it (skill-prompt-trim T13) ==\n'
 # T13 shortened the three loop skills by stating once a rule a skill had stated in
 # several places. Each row pins both halves of one such move: the one statement is

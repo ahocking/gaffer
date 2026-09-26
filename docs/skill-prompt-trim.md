@@ -289,6 +289,19 @@ group, named under T5 below. Every other sweep is unchanged since the baseline.
   New-project and review-change stated no setting value. The skills measure, with
   `wc -c` after T11: metrics 20369 (22028 at the baseline), new-project 8448 (9373),
   review-change 6104 (6512).
+- **T15 (`agents/loop-driver.md` §The periodic review follows run-loop §3.8):** no
+  existing assertion changed. No sweep extracted that section before this task (T8's
+  note above), so there was no case to reword; T8's run-loop periodic-review case is
+  unchanged and passes. The section now says it carries the same rule as run-loop §3.8
+  instead of stating it "in the same words", and drops the two reasons T8 moved to ADR
+  0024 and the longer `unmeasured` reason, keeping each rule with run-loop's one-clause
+  reason. Its `routing.sh resolve chief-engineer` keeps the empty/non-empty clause:
+  the agent has no single statement of that rule, so removing it here would take the
+  rule out of the agent. `test-report-conventions.sh` gains one section: the section
+  is extracted by heading to `## Operator questions and mid-run edits` under the span
+  ceiling, keeps every rule the run-loop paragraph's case pins plus its between-packets
+  opening and the same-rule claim, claims no "same words", and carries neither
+  ADR 0024 reason.
 
 ## Loop-skill rule review
 

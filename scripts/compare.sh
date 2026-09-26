@@ -2407,15 +2407,26 @@ first_dispatch() {
 # diff.external the repository's own configuration (local or worktree scope,
 # includes followed) defines emptied, its filter not required. An emptied diff
 # command fails rather than runs, so the harness's own diffs on a clone also
-# pass --no-ext-diff --no-textconv. The overrides travel in GIT_CONFIG_COUNT /
+# pass --no-ext-diff --no-textconv. Lazy fetch and the transports it opens are
+# neutralised too: a promisor remote (remote.<name>.promisor or
+# .partialclonefilter, or extensions.partialClone) makes any git that looks up a
+# missing object (`git log` on a sha that does not exist) fetch it, running the
+# remote's uploadpack program; GIT_NO_LAZY_FETCH=1 turns that fetch off (git
+# 2.45 on), and git_own_repo refuses a repository whose own configuration names a
+# promisor remote at all, for an older git that ignores the variable. A
+# command-scope protocol.allow=never is no substitute: a planted
+# protocol.<name>.allow outranks it. The overrides travel in GIT_CONFIG_COUNT /
 # GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>, git's environment form of `-c`, so
 # the git that runstate.sh, routing.sh and metrics.sh run in the clone is covered
-# too; run_session takes them back off, so a session's own git is as its
-# repository sets it. _CMP_GIT_BASE is the count the operator's own environment
-# held (`none`: unset), exported so a compare.sh this one starts appends at the
-# same place.
+# too, and GIT_NO_LAZY_FETCH with them; run_session takes both back off, so a
+# session's own git is as its repository sets it. _CMP_GIT_BASE is the count the
+# operator's own environment held (`none`: unset), and _CMP_GIT_NOLAZY its
+# GIT_NO_LAZY_FETCH (empty: unset; `=<value>`: set), exported so a compare.sh
+# this one starts appends at the same place and restores the same value.
 _CMP_GIT_BASE="${_CMP_GIT_BASE:-${GIT_CONFIG_COUNT:-none}}"
 export _CMP_GIT_BASE
+_CMP_GIT_NOLAZY="${_CMP_GIT_NOLAZY-${GIT_NO_LAZY_FETCH+=$GIT_NO_LAZY_FETCH}}"
+export _CMP_GIT_NOLAZY
 _CMP_GIT_REPOS=""
 
 # git_own_repo <dir>: 0 when <dir> is a repository of its own: `.git` a real
@@ -2426,13 +2437,26 @@ _CMP_GIT_REPOS=""
 # other repository inside it: no `.git` (directory, file or link, any case) below
 # <dir> outside its own `.git`, since git runs a nested repository's commands (a
 # gitlink's filters on `git status`) from that repository's own configuration,
-# which git_neutral does not list.
+# which git_neutral does not list. And no promisor remote: its own configuration
+# (local or worktree scope, includes followed) sets no extensions.partialClone and
+# no remote.<name>.promisor or remote.<name>.partialclonefilter, any one of which
+# makes git lazily fetch a missing object through that remote's uploadpack
+# program, which a git before 2.45 does even with GIT_NO_LAZY_FETCH set.
 git_own_repo() {
-  local d g c t n
+  local d g c t n scope name
   d="$(cd "$1" 2>/dev/null && pwd -P)" && [ -n "$d" ] || return 1
   [ -d "$d/.git" ] && [ ! -L "$d/.git" ] || return 1
   n="$(cd "$d" && find . -path ./.git -prune -o -iname .git -print 2>/dev/null)" || return 1
   [ -z "$n" ] || return 1
+  # Names only, one per line (a configuration name holds no newline): the section
+  # and key lowercased by git, the scope before a tab.
+  n="$(git -C "$d" config --list --show-scope --name-only 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r scope name; do
+    case "$scope" in local|worktree) ;; *) continue ;; esac
+    case "$name" in
+      extensions.partialclone|remote.?*.promisor|remote.?*.partialclonefilter) return 1 ;;
+    esac
+  done <<< "$n"
   g="$(cd "$d" && cd "$(git rev-parse --absolute-git-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
   c="$(cd "$d" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
   t="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
@@ -2451,6 +2475,9 @@ git_neutral() {
   for r in "$@"; do _CMP_GIT_REPOS="$_CMP_GIT_REPOS$r"$'\n'; done
   case "$_CMP_GIT_BASE" in none) base=0 ;; ''|*[!0-9]*) return 1 ;; *) base="$_CMP_GIT_BASE" ;; esac
   [ -n "$_CMP_TMP" ] || return 1
+  # No lazy fetch from here on, before this function's own git runs: the listing
+  # below, and every git after it.
+  export GIT_NO_LAZY_FETCH=1
   # The fixed overrides: the commands no driver name selects. Signature checks and
   # signing run gpg.program (log.showSignature makes every `git log` and `git show`
   # check each commit it prints, commit.gpgSign makes commit-tree sign), so those
@@ -2501,9 +2528,11 @@ git_neutral() {
 }
 
 # git_session_env: in a session's own (sub)shell, the operator's git environment
-# back as it was: git_neutral's overrides taken off.
+# back as it was: git_neutral's overrides and GIT_NO_LAZY_FETCH taken off.
 git_session_env() {
   local i=0
+  case "$_CMP_GIT_NOLAZY" in =*) export GIT_NO_LAZY_FETCH="${_CMP_GIT_NOLAZY#=}" ;; *) unset GIT_NO_LAZY_FETCH ;; esac
+  unset _CMP_GIT_NOLAZY
   case "$_CMP_GIT_BASE" in none) unset GIT_CONFIG_COUNT ;; *) export GIT_CONFIG_COUNT="$_CMP_GIT_BASE"; i="$_CMP_GIT_BASE" ;; esac
   while [ -n "$(eval "printf '%s' \"\${GIT_CONFIG_KEY_$i+x}\"")" ]; do
     unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
@@ -2892,7 +2921,7 @@ cmd_review_view() {
   trap _cmp_view_cleanup EXIT
   local tmp="$_CMP_TMP"
   git_neutral "$clone" \
-    || die "review-view: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $clone"
+    || die "review-view: the work clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $clone"
 
   # Every identifier of the settings' models: each model as the settings name
   # it (which is also its routing alias) and the reviewer's. A resolved id
@@ -3448,7 +3477,7 @@ cmd_replay() {
   # only where no session has left a link.
   _neutral() {
     git_neutral "$_RP_CLONE" \
-      || _fail "the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
+      || _fail "the work clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $_RP_CLONE"
     runtime_links "$_RP_CLONE" \
       || _fail "the work clone's .agents runtime paths hold a symlink or a hard link, where runstate.sh would write through it: $_RP_CLONE"
   }
@@ -3795,10 +3824,10 @@ cmd_routing_check() {
     [ -d "$view" ] || continue
     view="$(cd "$view" && pwd -P)"
     case "$pdir/" in "$view/"*) die "routing-check: the metrics output would lie inside a review view: $pdir" ;; esac
-    git_neutral "$view" || die "routing-check: a review view is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $view"
+    git_neutral "$view" || die "routing-check: a review view is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $view"
   done < "$vlist"
   # metrics.sh runs git in the clone and each view: with their command hooks off.
-  git_neutral "$clone" || die "routing-check: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $clone"
+  git_neutral "$clone" || die "routing-check: the work clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $clone"
 
   _RC_OUT="$(dirname "$env")/$rid.routing"
   : > "$_RC_OUT" 2>/dev/null || die "routing-check: cannot write $_RC_OUT"
@@ -3958,7 +3987,7 @@ cmd_sweeps() {
   trap _cmp_sweeps_cleanup EXIT
   local tmp="$_CMP_TMP" required
   git_neutral "$_RP_CLONE" \
-    || die "sweeps: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
+    || die "sweeps: the work clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $_RP_CLONE"
   sw_required "$cache" > "$tmp/required" || die "sweeps: cannot read the cached handoff: $cache"
   required="$(paste -sd, - < "$tmp/required")"
 
@@ -4912,7 +4941,7 @@ cmd_rank_prepare() {
     git -C "$_RP_CLONE" cat-file -e "${start}^{commit}" 2>/dev/null \
       || die "rank-prepare: replay $rid's start commit is not in its work clone: $start"
     git_neutral "$_RP_CLONE" \
-      || die "rank-prepare: replay $rid's work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
+      || die "rank-prepare: replay $rid's work clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $_RP_CLONE"
     cobj="$(cd "$_RP_CLONE" && cd "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null && pwd -P)" \
       || die "rank-prepare: cannot find replay $rid's work clone object store: $_RP_CLONE"
     tstart="$(git -C "$_RP_CLONE" rev-parse "${start}^{tree}" 2>/dev/null)" || die "rank-prepare: cannot read the start's tree"
@@ -5185,7 +5214,7 @@ cmd_rank() {
   # harness runs on it (routing.sh's, and metrics.sh's in the reviewer check) runs
   # with its command hooks off, recomputed once the session has ended.
   git_neutral "$rdir" \
-    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $rdir"
+    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $rdir"
   local L r_rev
   for L in $(printf '%s' "$labels" | tr ',' ' '); do
     case "$L" in [A-Z]) ;; *) die "rank: ranking $rkid's label is not one letter: [$L]" ;; esac
@@ -5206,7 +5235,7 @@ cmd_rank() {
     die "rank: the ranking session exited $STEP_EXIT; nothing recorded"
   fi
   git_neutral "$rdir" \
-    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $rdir"
+    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it, or names a promisor remote), or its git command hooks cannot be neutralised: $rdir"
 
   # --- the tool calls denied in the ranking session, read as `record` reads a replay's
   local den dcount dkinds dtools

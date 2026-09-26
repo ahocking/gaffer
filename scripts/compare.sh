@@ -2392,6 +2392,193 @@ first_dispatch() {
   printf '%s' "$c" > "$2"
 }
 
+# --- what a session leaves in its clone: harness-side git, copies and reads ----------
+# A session can rewrite its clone's git configuration: compare-confine.sh refuses
+# the file tools and the shell writes it recognises under `.git/`, but `git config`
+# in Bash is no write it sees, and the sandbox allows the whole clone. What that
+# configuration names, git runs, outside the sandbox when the harness runs it:
+# core.fsmonitor, a hook under core.hooksPath or .git/hooks (reference-transaction
+# on update-ref, post-index-change on any index write), a filter, diff or merge
+# driver an attribute assigns. So every harness-side git command on a clone or
+# view runs with those overridden at git's command scope, which outranks every
+# configuration file: core.fsmonitor off, core.hooksPath at /dev/null (no hook of
+# any name is found there), signature checks and signing off and every signing
+# program emptied, submodules ignored, and every filter, diff and merge driver and any
+# diff.external the repository's own configuration (local or worktree scope,
+# includes followed) defines emptied, its filter not required. An emptied diff
+# command fails rather than runs, so the harness's own diffs on a clone also
+# pass --no-ext-diff --no-textconv. The overrides travel in GIT_CONFIG_COUNT /
+# GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>, git's environment form of `-c`, so
+# the git that runstate.sh, routing.sh and metrics.sh run in the clone is covered
+# too; run_session takes them back off, so a session's own git is as its
+# repository sets it. _CMP_GIT_BASE is the count the operator's own environment
+# held (`none`: unset), exported so a compare.sh this one starts appends at the
+# same place.
+_CMP_GIT_BASE="${_CMP_GIT_BASE:-${GIT_CONFIG_COUNT:-none}}"
+export _CMP_GIT_BASE
+_CMP_GIT_REPOS=""
+
+# git_own_repo <dir>: 0 when <dir> is a repository of its own: `.git` a real
+# directory (not a symlink, not a `gitdir:` file), git's directory and common
+# directory both that one (no `commondir` file sending refs and configuration
+# elsewhere), and its work tree <dir> itself (no core.worktree). Otherwise every
+# harness command on it would act on some other repository or directory. And no
+# other repository inside it: no `.git` (directory, file or link, any case) below
+# <dir> outside its own `.git`, since git runs a nested repository's commands (a
+# gitlink's filters on `git status`) from that repository's own configuration,
+# which git_neutral does not list.
+git_own_repo() {
+  local d g c t n
+  d="$(cd "$1" 2>/dev/null && pwd -P)" && [ -n "$d" ] || return 1
+  [ -d "$d/.git" ] && [ ! -L "$d/.git" ] || return 1
+  n="$(cd "$d" && find . -path ./.git -prune -o -iname .git -print 2>/dev/null)" || return 1
+  [ -z "$n" ] || return 1
+  g="$(cd "$d" && cd "$(git rev-parse --absolute-git-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
+  c="$(cd "$d" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
+  t="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+  t="$(cd "$t" 2>/dev/null && pwd -P)" || return 1
+  [ "$g" = "$d/.git" ] && [ "$c" = "$d/.git" ] && [ "$t" = "$d" ]
+}
+
+# git_neutral [<repo>...]: add each <repo> to the repositories this process acts
+# on, then export the overrides for every one of them, recomputed from their
+# configuration as it now stands (a session may have added a driver since the
+# last call). Return 1 when a repository fails git_own_repo, its configuration
+# cannot be listed, or git does not read the overrides back (a git before 2.31
+# ignores the environment form): the caller stops rather than run git unguarded.
+git_neutral() {
+  local r base i n scope name sub s
+  for r in "$@"; do _CMP_GIT_REPOS="$_CMP_GIT_REPOS$r"$'\n'; done
+  case "$_CMP_GIT_BASE" in none) base=0 ;; ''|*[!0-9]*) return 1 ;; *) base="$_CMP_GIT_BASE" ;; esac
+  [ -n "$_CMP_TMP" ] || return 1
+  # The fixed overrides: the commands no driver name selects. Signature checks and
+  # signing run gpg.program (log.showSignature makes every `git log` and `git show`
+  # check each commit it prints, commit.gpgSign makes commit-tree sign), so those
+  # are off and every signing program is emptied; submodules are ignored and never
+  # recursed into, since a nested repository's own configuration is not listed here
+  # (git_own_repo refuses a repository with one).
+  local -a k=(core.fsmonitor core.hooksPath log.showSignature commit.gpgSign tag.gpgSign
+              merge.verifySignatures gpg.program gpg.openpgp.program gpg.x509.program
+              gpg.ssh.program gpg.ssh.defaultKeyCommand diff.ignoreSubmodules submodule.recurse)
+  local -a v=(false /dev/null false false false false "" "" "" "" "" all false)
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    git_own_repo "$r" || return 1
+    # Listed with only the operator's own overrides in force.
+    GIT_CONFIG_COUNT="$base" git -C "$r" config --list --show-scope --name-only -z > "$_CMP_TMP/gn.cfg" 2>/dev/null \
+      || return 1
+    while IFS= read -r -d '' scope && IFS= read -r -d '' name; do
+      case "$scope" in local|worktree) ;; *) continue ;; esac
+      case "$name" in
+        filter.?*.clean|filter.?*.smudge|filter.?*.process|filter.?*.required)
+          sub="${name#filter.}"; sub="${sub%.*}"
+          for s in clean smudge process; do k+=("filter.$sub.$s"); v+=(""); done
+          k+=("filter.$sub.required"); v+=(false) ;;
+        diff.?*.command|diff.?*.textconv)
+          sub="${name#diff.}"; sub="${sub%.*}"
+          k+=("diff.$sub.command" "diff.$sub.textconv"); v+=("" "") ;;
+        merge.?*.driver)
+          sub="${name#merge.}"; sub="${sub%.*}"
+          k+=("merge.$sub.driver"); v+=("") ;;
+        diff.external) k+=(diff.external); v+=("") ;;
+      esac
+    done < "$_CMP_TMP/gn.cfg"
+  done <<< "$_CMP_GIT_REPOS"
+  n=${#k[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    export "GIT_CONFIG_KEY_$((base + i))=${k[$i]}" "GIT_CONFIG_VALUE_$((base + i))=${v[$i]}"
+    i=$((i + 1))
+  done
+  export GIT_CONFIG_COUNT=$((base + n))
+  # Read back as text: `--type=bool` checks every value, and dies on the planted
+  # path the override outranks.
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(git -C "$r" config core.hooksPath 2>/dev/null)" = /dev/null ] \
+      && [ "$(git -C "$r" config core.fsmonitor 2>/dev/null)" = false ] || return 1
+  done <<< "$_CMP_GIT_REPOS"
+}
+
+# git_session_env: in a session's own (sub)shell, the operator's git environment
+# back as it was: git_neutral's overrides taken off.
+git_session_env() {
+  local i=0
+  case "$_CMP_GIT_BASE" in none) unset GIT_CONFIG_COUNT ;; *) export GIT_CONFIG_COUNT="$_CMP_GIT_BASE"; i="$_CMP_GIT_BASE" ;; esac
+  while [ -n "$(eval "printf '%s' \"\${GIT_CONFIG_KEY_$i+x}\"")" ]; do
+    unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
+    i=$((i + 1))
+  done
+  unset _CMP_GIT_BASE
+}
+
+# plain_file <file> <root>: 0 when <file> is a regular file that is neither a
+# symlink nor one name of several (a hard link), in a directory that lies,
+# physically, inside <root>: so reading it reads the clone's own bytes, never a
+# file a session linked in from elsewhere.
+plain_file() {
+  local r d n
+  r="$(cd "$2" 2>/dev/null && pwd -P)" && [ -n "$r" ] || return 1
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+  case "$d/" in "$r/"*) ;; *) return 1 ;; esac
+  n="$(ls -ld -- "$1" 2>/dev/null | awk 'NR == 1 { print $2 }')"
+  [ "$n" = 1 ]
+}
+
+# runtime_links <clone>: 0 when no symlink and no file with another hard link
+# stands where runstate.sh writes in <clone> (`.agents` itself, its run-state
+# files, and the loop, metrics and findings trees, all of them runtime paths no
+# commit carries), so its writes there land in the clone and nowhere else.
+runtime_links() {
+  local a="$1/.agents" p out
+  for p in "$a" "$a/loop" "$a/metrics" "$a/findings" "$a/run-state.yaml" "$a/run-state-prev.yaml"; do
+    [ ! -L "$p" ] || return 1
+  done
+  for p in "$a/run-state.yaml" "$a/run-state-prev.yaml"; do
+    [ ! -e "$p" ] || [ "$(ls -ld -- "$p" 2>/dev/null | awk 'NR == 1 { print $2 }')" = 1 ] || return 1
+  done
+  for p in "$a/loop" "$a/metrics" "$a/findings"; do
+    [ -e "$p" ] || continue
+    out="$(find "$p" \( -type l -o \( -type f -links +1 \) \) -print 2>/dev/null)" || return 1
+    [ -z "$out" ] || return 1
+  done
+}
+
+# safe_copy <src> <src-root> <dest> <dest-root>: <src> copied to <dest>, where
+# each side may be a clone or view a session has written in. <src> must be a
+# plain_file of <src-root>. <dest>'s directory is made only below an existing
+# ancestor that lies physically inside <dest-root>, and must itself lie there;
+# an existing <dest> must be a writable regular file. The bytes go to a fresh
+# file beside <dest> (created exclusively), which is then renamed over it. An
+# existing <dest> that is a symlink or one name of several (a hard link) is
+# refused; the rename is the second line: it replaces whatever name stands at
+# <dest> rather than writing through it. Return 1, writing nothing through a
+# link, when any check fails. A process a session left running could still
+# move a name between these checks and the rename; the harness does not stop
+# such a process.
+safe_copy() {
+  local s="$1" d="$3" dr dd a t
+  plain_file "$s" "$2" || return 1
+  dr="$(cd "$4" 2>/dev/null && pwd -P)" && [ -n "$dr" ] || return 1
+  dd="$(dirname "$d")"
+  a="$dd"
+  while [ ! -e "$a" ] && [ ! -L "$a" ]; do a="$(dirname "$a")"; done
+  a="$(cd "$a" 2>/dev/null && pwd -P)" || return 1
+  case "$a/" in "$dr/"*) ;; *) return 1 ;; esac
+  mkdir -p "$dd" 2>/dev/null || return 1
+  dd="$(cd "$dd" 2>/dev/null && pwd -P)" || return 1
+  case "$dd/" in "$dr/"*) ;; *) return 1 ;; esac
+  if [ -L "$d" ]; then return 1; fi
+  if [ -e "$d" ]; then
+    [ -f "$d" ] && [ -w "$d" ] && [ "$(ls -ld -- "$d" 2>/dev/null | awk 'NR == 1 { print $2 }')" = 1 ] || return 1
+  fi
+  t="$(mktemp "$dd/.cmp-copy.XXXXXXXX" 2>/dev/null)" || return 1
+  if cat -- "$s" > "$t" 2>/dev/null && mv -f -- "$t" "$dd/$(basename "$d")" 2>/dev/null; then return 0; fi
+  rm -f -- "$t"
+  return 1
+}
+
 # opaque_clone <cmd> <src> <start> <dest> <branch> <tmp>: a `git clone --shared
 # --no-checkout` of <src> at <dest>, with <start> checked out on the new local
 # <branch>, every other local branch and the `origin` remote dropped, so its
@@ -2704,6 +2891,8 @@ cmd_review_view() {
   _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "review-view: cannot create a temp root"
   trap _cmp_view_cleanup EXIT
   local tmp="$_CMP_TMP"
+  git_neutral "$clone" \
+    || die "review-view: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $clone"
 
   # Every identifier of the settings' models: each model as the settings name
   # it (which is also its routing alias) and the reviewer's. A resolved id
@@ -2733,6 +2922,9 @@ cmd_review_view() {
   fi
   set_routing "$tmp/ov.start" "$tmp/ov.base" "" "" "$rmodel" \
     || die "review-view: the start commit's model_routing cannot be read, so it cannot be reduced: $ov"
+  if [ -L "$clone/$ov" ] || { [ -e "$clone/$ov" ] && ! plain_file "$clone/$ov" "$clone"; }; then
+    die "review-view: the work clone's $ov is a symlink or has another hard link, so it is not read into the view"
+  fi
   set_routing "$clone/$ov" "$tmp/ov.head" "" "" "$rmodel" \
     || die "review-view: the work clone's model_routing cannot be read, so it cannot be reduced: $clone/$ov"
   for p in base head; do
@@ -2753,7 +2945,7 @@ cmd_review_view() {
   done
   tbase="$(_gw base write-tree 2>/dev/null)" || die "review-view: cannot write the view's base tree"
   thead="$(_gw head write-tree 2>/dev/null)" || die "review-view: cannot write the view's reviewed tree"
-  _gw head diff --binary --no-renames "$tbase" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
+  _gw head diff --binary --no-renames --no-ext-diff --no-textconv "$tbase" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
     || die "review-view: cannot diff the reviewed change: $(head -1 "$tmp/git.err")"
 
   # --- 2. the view: a second opaque clone of the source at the start ------------------
@@ -2832,10 +3024,16 @@ cmd_review_view() {
   vh="$vdir/handoff.md"; vres="$vdir/$role.md"; vrev="$vdir/review.md"
   mkdir -p "$vdir" || die "review-view: cannot create $vdir"
   [ -f "$handoff" ] || die "review-view: the replay's handoff is missing from its work clone: $handoff"
+  # The handoff and result file are read out of the clone into the view: only
+  # as the clone's own files, never through a link a session left.
+  plain_file "$handoff" "$clone" \
+    || die "review-view: the replay's handoff is a symlink, has another hard link, or lies outside its work clone: $handoff"
   redact "$tmp/ids" "$handoff" "$tmp/handoff.red" || die "review-view: cannot redact the handoff"
   view_header "$tmp/handoff.red" "$vh" "$rs" "$vres" "$vrev" || die "review-view: cannot write the view's handoff: $vh"
   wres="$clone/.agents/loop/$run_id/$pkt/$role.md"
-  if [ -f "$wres" ]; then
+  if [ -f "$wres" ] || [ -L "$wres" ]; then
+    plain_file "$wres" "$clone" \
+      || die "review-view: the work clone's result file is a symlink or has another hard link: $wres"
     redact "$tmp/ids" "$wres" "$vres" || die "review-view: cannot write the view's result file: $vres"
   else
     vres="none"
@@ -2957,12 +3155,13 @@ session_tmp() {
 # directory STEP_TMP (session_tmp's, set as its TMPDIR and CLAUDE_CODE_TMPDIR,
 # known before launch and removed once the session has ended); a session whose
 # temp directory or settings cannot be built is not started (its exit reads as
-# a crash).
+# a crash). git_session_env takes git_neutral's overrides off in the session's
+# own shell: they are the harness's, not the replayed loop's.
 run_session() {
   local dir="$1" pf="$2" out="$3" err="$4" pid t0 rc
   STEP_SESSION="$(new_session_id)"
   STEP_TMP="$(session_tmp "$dir")" || STEP_TMP=""
-  ( [ -n "$STEP_TMP" ] && cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL \
+  ( [ -n "$STEP_TMP" ] && cd "$dir" && unset CLAUDE_CODE_EFFORT_LEVEL && git_session_env \
       && cset="$(confine_settings "$dir" "$STEP_TMP")" \
       && TMPDIR="$STEP_TMP" && CLAUDE_CODE_TMPDIR="$STEP_TMP" && export TMPDIR CLAUDE_CODE_TMPDIR \
       && exec "$_CMP_CLAUDE" --plugin-dir "$_CMP_HARNESS" --effort "$_CMP_EFFORT" \
@@ -3092,7 +3291,8 @@ unset_routing() {
 # needs are written wherever git's object environment points (the clone's own
 # store for `land_commit`, a temp store for `sweeps`). Sets LAND_TREE. Returns 1
 # on a git failure, 3 when the packet's own edit to the routing configuration
-# cannot be separated from the replay's.
+# cannot be separated from the replay's, 4 when that file is a symlink or has
+# another hard link (plain_file). Its git runs under the caller's git_neutral.
 land_tree() {
   local c="$_RP_CLONE" s="$_RP_START" idx="$_CMP_TMP/land.idx" ov=".agents/project-overrides.yaml" p blob
   _gl() { GIT_INDEX_FILE="$idx" git -C "$c" "$@"; }
@@ -3114,6 +3314,9 @@ land_tree() {
   else
     set_routing /dev/null "$_CMP_TMP/ov.prepared" "$_RP_ROLE" "$_RP_MODEL" "$_RP_RMODEL" || return 3
   fi
+  # Read only as the clone's own file: a symlink or hard link a session left
+  # there would carry another file's bytes into the landed tree.
+  if [ -L "$c/$ov" ] || { [ -e "$c/$ov" ] && ! plain_file "$c/$ov" "$c"; }; then return 4; fi
   if [ ! -f "$c/$ov" ]; then
     _gl rm --cached -q --ignore-unmatch -- "$ov" >/dev/null 2>&1 || return 1
   elif cmp -s "$c/$ov" "$_CMP_TMP/ov.prepared"; then
@@ -3128,7 +3331,7 @@ land_tree() {
 
 # land_commit: land_tree's tree as one commit on the start; the replay's branch
 # moved to it. Sets LAND_COMMIT (a sha, or `none` for an empty change). Returns
-# land_tree's 1 or 3, or 1 on a failed commit.
+# land_tree's 1, 3 or 4, or 1 on a failed commit.
 land_commit() {
   local c="$_RP_CLONE" s="$_RP_START" tree commit rc
   land_tree; rc=$?
@@ -3239,6 +3442,17 @@ cmd_replay() {
     if [ -n "${2:-}" ]; then printf 'compare.sh: replay: %s\n' "$2" >&2; fi
   }
   _fail() { _end error "$1"; exit 1; }
+  # Every git command the harness runs on the clone (its own, and runstate.sh's
+  # and routing.sh's) runs with the clone's command hooks off, recomputed after
+  # each session, which may have added one; and runstate.sh writes in the clone
+  # only where no session has left a link.
+  _neutral() {
+    git_neutral "$_RP_CLONE" \
+      || _fail "the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
+    runtime_links "$_RP_CLONE" \
+      || _fail "the work clone's .agents runtime paths hold a symlink or a hard link, where runstate.sh would write through it: $_RP_CLONE"
+  }
+  _neutral
 
   (cd "$_RP_CLONE" && CLAUDE_PROJECT_DIR="$_RP_CLONE" "$RUNSTATE" record-start "$_RP_PKT" "$rid") >/dev/null 2>"$tmp/rs.err" \
     || _fail "runstate.sh record-start failed in the work clone: $(head -1 "$tmp/rs.err")"
@@ -3257,6 +3471,7 @@ cmd_replay() {
       1) if [ "$D_EXIT" = timeout ]; then _end timed-out; else _end crashed; fi; return 0 ;;
       2) _end refused "$_RP_ROLE's status line was refused twice: $D_REASON"; return 0 ;;
     esac
+    _neutral
     if [ "$D_TOKEN" = continue ]; then
       route_in_clone "$_RP_ROLE" continue "$D_LINE" \
         || _fail "runstate.sh route failed in the work clone: $(head -1 "$tmp/rs.err")"
@@ -3285,7 +3500,10 @@ cmd_replay() {
     printf 'Handoff: %s\n' "$vh" > "$tmp/brief"
     rm -f "$tmp/review.seed"
     if [ -n "$review" ]; then
-      [ -n "$vrev" ] && mkdir -p "$(dirname "$vrev")" && cp "$review" "$vrev" && cp "$review" "$tmp/review.seed" \
+      # Out of the clone, where the last session could have left a link in its
+      # place, into the view: safe_copy follows no symlink and writes through no
+      # hard link on either side.
+      [ -n "$vrev" ] && safe_copy "$review" "$_RP_CLONE" "$vrev" "$view" && cp "$vrev" "$tmp/review.seed" \
         || _fail "cannot copy the previous review into the review view: $vrev"
       printf 'review: %s\n' "$vrev" >> "$tmp/brief"
     fi
@@ -3302,8 +3520,10 @@ cmd_replay() {
     # A review file this session left as it was seeded is the previous round's,
     # not this one's, so the next attempt is briefed with no review then.
     review=""
-    if [ -f "$vrev" ] && ! { [ -f "$tmp/review.seed" ] && cmp -s "$vrev" "$tmp/review.seed"; }; then
-      mkdir -p "$pktdir" && cp "$vrev" "$pktdir/review.md" \
+    # A symlink at either end (the reviewer's in the view, the implementer's in
+    # the clone) or a hard link is refused by safe_copy, never followed.
+    if { [ -f "$vrev" ] || [ -L "$vrev" ]; } && ! { [ -f "$tmp/review.seed" ] && cmp -s "$vrev" "$tmp/review.seed"; }; then
+      safe_copy "$vrev" "$view" "$pktdir/review.md" "$_RP_CLONE" \
         || _fail "cannot copy the review into the work clone: $pktdir/review.md"
       review="$pktdir/review.md"
     fi
@@ -3315,6 +3535,7 @@ cmd_replay() {
         case $? in
           0) _end land; return 0 ;;
           3) _fail "the work clone's .agents/project-overrides.yaml cannot be read (a second model_routing key), so the replay's routing cannot be taken out of the commit" ;;
+          4) _fail "the work clone's .agents/project-overrides.yaml is a symlink or has another hard link, so it is not read into the commit" ;;
           *) _fail "the land commit could not be made in the work clone" ;;
         esac ;;
       attempt)
@@ -3574,7 +3795,10 @@ cmd_routing_check() {
     [ -d "$view" ] || continue
     view="$(cd "$view" && pwd -P)"
     case "$pdir/" in "$view/"*) die "routing-check: the metrics output would lie inside a review view: $pdir" ;; esac
+    git_neutral "$view" || die "routing-check: a review view is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $view"
   done < "$vlist"
+  # metrics.sh runs git in the clone and each view: with their command hooks off.
+  git_neutral "$clone" || die "routing-check: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $clone"
 
   _RC_OUT="$(dirname "$env")/$rid.routing"
   : > "$_RC_OUT" 2>/dev/null || die "routing-check: cannot write $_RC_OUT"
@@ -3733,6 +3957,8 @@ cmd_sweeps() {
   _CMP_TMP="$(mktemp -d 2>/dev/null)" || die "sweeps: cannot create a temp root"
   trap _cmp_sweeps_cleanup EXIT
   local tmp="$_CMP_TMP" required
+  git_neutral "$_RP_CLONE" \
+    || die "sweeps: the work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
   sw_required "$cache" > "$tmp/required" || die "sweeps: cannot read the cached handoff: $cache"
   required="$(paste -sd, - < "$tmp/required")"
 
@@ -3759,12 +3985,13 @@ cmd_sweeps() {
   case "$rc" in
     0) ;;
     3) die "sweeps: the work clone's .agents/project-overrides.yaml cannot be read (a second model_routing key), so the replay's routing cannot be taken out of the final diff" ;;
+    4) die "sweeps: the work clone's .agents/project-overrides.yaml is a symlink or has another hard link, so it is not read into the final diff" ;;
     *) die "sweeps: cannot build the final diff's tree from the work clone" ;;
   esac
   thead="$(cat "$tmp/tree")"
   tstart="$(git -C "$_RP_CLONE" rev-parse "${_RP_START}^{tree}" 2>/dev/null)" || die "sweeps: cannot read the start's tree"
   GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj" \
-    git -C "$_RP_CLONE" diff --binary --no-renames "$tstart" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
+    git -C "$_RP_CLONE" diff --binary --no-renames --no-ext-diff --no-textconv "$tstart" "$thead" > "$tmp/change.patch" 2>"$tmp/git.err" \
     || die "sweeps: cannot diff the final change: $(head -1 "$tmp/git.err")"
   sw_emit "TREE=$thead"
 
@@ -4684,17 +4911,20 @@ cmd_rank_prepare() {
       || die "rank-prepare: replay $rid's work clone is not a git repository: $_RP_CLONE"
     git -C "$_RP_CLONE" cat-file -e "${start}^{commit}" 2>/dev/null \
       || die "rank-prepare: replay $rid's start commit is not in its work clone: $start"
+    git_neutral "$_RP_CLONE" \
+      || die "rank-prepare: replay $rid's work clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $_RP_CLONE"
     cobj="$(cd "$_RP_CLONE" && cd "$(git rev-parse --git-path objects 2>/dev/null)" 2>/dev/null && pwd -P)" \
       || die "rank-prepare: cannot find replay $rid's work clone object store: $_RP_CLONE"
     tstart="$(git -C "$_RP_CLONE" rev-parse "${start}^{tree}" 2>/dev/null)" || die "rank-prepare: cannot read the start's tree"
     rm -rf "$tmp/objects" && mkdir -p "$tmp/objects" || die "rank-prepare: cannot create a temp object store"
     ( export GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$cobj"
       land_tree || exit $?
-      git -C "$_RP_CLONE" diff --no-color --no-ext-diff --no-renames "$tstart" "$LAND_TREE" > "$tmp/diff.$k" 2>"$tmp/git.err" || exit 1
+      git -C "$_RP_CLONE" diff --no-color --no-ext-diff --no-textconv --no-renames "$tstart" "$LAND_TREE" > "$tmp/diff.$k" 2>"$tmp/git.err" || exit 1
     ); rc=$?
     case "$rc" in
       0) ;;
       3) die "rank-prepare: replay $rid's .agents/project-overrides.yaml cannot be read (a second model_routing key), so its routing cannot be taken out of the final diff" ;;
+      4) die "rank-prepare: replay $rid's .agents/project-overrides.yaml is a symlink or has another hard link, so it is not read into the final diff" ;;
       *) die "rank-prepare: cannot build replay $rid's final diff from its work clone: $(head -1 "$tmp/git.err" 2>/dev/null)" ;;
     esac
   done < "$tmp/ranked"
@@ -4950,6 +5180,12 @@ cmd_rank() {
   fi
   [ -n "$rdir" ] && git -C "$rdir" rev-parse --git-dir >/dev/null 2>&1 \
     || die "rank: ranking $rkid's clone is not a git repository: $rdir"
+  # A ranking session may already have run in this clone (one that crashed or was
+  # refused leaves it for a rerun), and this one will: every git command the
+  # harness runs on it (routing.sh's, and metrics.sh's in the reviewer check) runs
+  # with its command hooks off, recomputed once the session has ended.
+  git_neutral "$rdir" \
+    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $rdir"
   local L r_rev
   for L in $(printf '%s' "$labels" | tr ',' ' '); do
     case "$L" in [A-Z]) ;; *) die "rank: ranking $rkid's label is not one letter: [$L]" ;; esac
@@ -4969,6 +5205,8 @@ cmd_rank() {
     printf 'REFUSED rule=session-crashed exit=%s\n' "$STEP_EXIT" >&2
     die "rank: the ranking session exited $STEP_EXIT; nothing recorded"
   fi
+  git_neutral "$rdir" \
+    || die "rank: ranking $rkid's clone is not a repository of its own (or holds another repository inside it), or its git command hooks cannot be neutralised: $rdir"
 
   # --- the tool calls denied in the ranking session, read as `record` reads a replay's
   local den dcount dkinds dtools

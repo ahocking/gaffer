@@ -1917,6 +1917,8 @@ fi
 printf 'call=%s agent=%s tmp=%s cctmp=%s tmpstate=%s cwd=%s settings=%s\n' "$n" "$agent" "${TMPDIR-(unset)}" \
   "${CLAUDE_CODE_TMPDIR-(unset)}" "$ts" "$(pwd -P)" "$settings" >> "$d/confine"
 printf '%s\n' "$prompt" > "$d/prompt.$n"
+# A file outside every clone and view, which a planted link names.
+[ -e "$d/outside.txt" ] || printf 'outside, untouched\n' > "$d/outside.txt"
 line="$(sed -n "${n}p" "$d/script")"
 case "$line" in
   crash) echo boom >&2; exit 3 ;;
@@ -1954,8 +1956,83 @@ else
       git add -A >/dev/null 2>&1
       git -c user.name=agent -c user.email=agent@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
         commit -q -m "the agent's own commit" >/dev/null 2>&1 ;;
+    # A session attacking the harness through its clone's git configuration, the
+    # way Bash's `git config` (no write the hook recognises) would: every command
+    # git runs from configuration, pointed at STUB_EVIL (which logs its own name
+    # and first argument to STUB_EVIL_LOG), with an attribute assigning the filter
+    # and diff driver to every path.
+    gitcfg+*)
+      line="${line#gitcfg+}"
+      git config core.fsmonitor "$STUB_EVIL"
+      git config core.hooksPath "$STUB_EVIL_HOOKS"
+      git config filter.ev.clean "$STUB_EVIL clean"; git config filter.ev.smudge "$STUB_EVIL smudge"
+      git config filter.ev.required true
+      git config diff.ev.textconv "$STUB_EVIL textconv"; git config diff.ev.command "$STUB_EVIL diffcmd"
+      mkdir -p .git/info && printf '* filter=ev diff=ev\n' >> .git/info/attributes ;;
+    # core.worktree pointed out of the clone: the harness's git would then read
+    # and index another directory.
+    worktree+*)
+      line="${line#worktree+}"
+      mkdir -p "$d/elsewhere" && git config core.worktree "$d/elsewhere" ;;
+    # The clone's review copy replaced by a symlink to a file outside the clone,
+    # or by a hard link to one: the harness's copy of the next review must not
+    # write through it.
+    symrev+*|hardrev+*)
+      res="$(printf '%s\n' "$prompt" | sed -n 's/^result: //p' | head -1)"
+      mkdir -p "$(dirname "$res")"
+      case "$line" in
+        symrev+*) line="${line#symrev+}"; ln -s "$d/outside.txt" "$(dirname "$res")/review.md" ;;
+        *) line="${line#hardrev+}"; ln "$d/outside.txt" "$(dirname "$res")/review.md" ;;
+      esac ;;
+    # The routing configuration replaced by a symlink to a file outside the clone.
+    symov+*)
+      line="${line#symov+}"
+      rm -f .agents/project-overrides.yaml && ln -s "$d/outside.txt" .agents/project-overrides.yaml ;;
+    # A repository nested in the clone, committed as a gitlink, with a required
+    # filter (STUB_EVIL) in its own configuration assigned to every path, and a
+    # file touched so git must run the filter to tell whether it changed. The
+    # filter is planted after the commit, so the session's own git never runs it.
+    nest+*)
+      line="${line#nest+}"
+      git init -q sub >/dev/null 2>&1
+      (cd sub && printf 'x\n' > f && git add f && git -c user.name=agent -c user.email=agent@example.invalid \
+        -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m sub) >/dev/null 2>&1
+      git add sub >/dev/null 2>&1
+      git -c user.name=agent -c user.email=agent@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+        commit -q -m "a nested repository" >/dev/null 2>&1
+      (cd sub && git config filter.ev.clean "$STUB_EVIL clean" && git config filter.ev.required true \
+        && mkdir -p .git/info && printf '* filter=ev\n' > .git/info/attributes && sleep 1 && touch f) ;;
   esac
 fi
+# STUB_PLANT_SIG=1: every session plants what makes git run gpg.program on a
+# plain `git log` or `git show`: log.showSignature and gpg.program (STUB_EVIL) in
+# its clone's or view's configuration, and its branch moved to a commit carrying
+# a gpgsig header (written as an object, so no signing program runs here).
+if [ -n "${STUB_PLANT_SIG:-}" ]; then
+  git config log.showSignature true && git config gpg.program "$STUB_EVIL"
+  st="$(git rev-parse 'HEAD^{tree}')"; sp="$(git rev-parse HEAD)"; sn="$(date +%s)"
+  sc="$(printf 'tree %s\nparent %s\nauthor agent <agent@example.invalid> %s +0000\ncommitter agent <agent@example.invalid> %s +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQ\n -----END PGP SIGNATURE-----\n\nsigned by the session\n' \
+    "$st" "$sp" "$sn" "$sn" | git hash-object -t commit -w --stdin)"
+  git update-ref HEAD "$sc"
+  # STUB_PLANT_GREEN=1 as well (an implementer): the run-state's last_green_commit
+  # names that commit and the handoff loses its FILES= line, so refresh-handoff,
+  # left with no scope, reads that commit's time with `git log`.
+  if [ -n "${STUB_PLANT_GREEN:-}" ] && [ "$agent" = implementer ]; then
+    h="$(printf '%s\n' "$prompt" | sed -n 's/^Handoff: //p' | head -1)"
+    rs="$(printf '%s\n' "$prompt" | sed -n 's/^run-state: //p' | head -1)"
+    { grep -v '^last_green_commit:' "$rs"; printf "last_green_commit: '%s'\n" "$sc"; } > .stub.tmp && mv .stub.tmp "$rs"
+    grep -v '^FILES=' "$h" > .stub.tmp && mv .stub.tmp "$h"
+  fi
+fi
+# The git overrides the harness runs its own git under, as each session saw its
+# environment: they must be taken off before a session starts.
+printf 'call=%s count=%s key0=%s\n' "$n" "${GIT_CONFIG_COUNT-(unset)}" "${GIT_CONFIG_KEY_0-(unset)}" >> "$d/gitenv"
+# The reviewer's own review file replaced by a symlink to a file outside the view.
+case "$line" in
+  symview+*)
+    line="${line#symview+}"
+    if [ -n "${r:-}" ]; then rm -f "$r"; ln -s "$d/outside.txt" "$r"; fi ;;
+esac
 # `run` cases only. STUB_PAUSE_AT=<call>: that call requests a pause (writes the
 # sentinel STUB_PAUSE_FILE names), as an operator would while a replay runs.
 # STUB_SEED=<projects dir>: the session leaves what a real one would for the
@@ -2286,6 +2363,114 @@ assert_eq "replay, an uncopyable review: exit 1, ends in error, no further attem
   "1:error:implementer reviewer" "$RC:$(line END):$RPAGENTS"
 assert_has "replay, an uncopyable review: named" "cannot copy the review into the work clone" "$ERR"
 rp_commits "replay, an uncopyable review" 0
+
+printf '\n== replay: what a session plants in its clone is never run or followed ==\n'
+# STUB_EVIL logs its own name and first argument each time it runs, under every
+# name git could run it by: core.fsmonitor, a filter or diff driver, and every
+# hook in STUB_EVIL_HOOKS. It passes a filter's or textconv's input through.
+RPEVIL_LOG="$WORK/evil.log"
+STUB_EVIL="$WORK/evil.sh"; STUB_EVIL_HOOKS="$WORK/evil-hooks"; export STUB_EVIL STUB_EVIL_HOOKS
+cat > "$STUB_EVIL" <<EOF
+#!/bin/sh
+printf '%s %s\n' "\$(basename "\$0")" "\${1:-}" >> '$RPEVIL_LOG'
+case "\${1:-}" in clean|smudge|textconv) cat ;; esac
+exit 0
+EOF
+chmod +x "$STUB_EVIL"
+mkdir -p "$STUB_EVIL_HOOKS"
+for h in post-index-change reference-transaction post-checkout pre-commit post-commit pre-auto-gc; do
+  cp "$STUB_EVIL" "$STUB_EVIL_HOOKS/$h"
+done
+# The implementer sets core.fsmonitor, core.hooksPath, a required filter and a
+# diff driver in the clone's .git/config, assigned to every path through
+# .git/info/attributes; the replay then runs its review view, route and land
+# (land_tree, update-ref, reset) on that clone.
+: > "$RPEVIL_LOG"
+rp_run "gitcfg+$IMPL_DONE" "$REV_PASS"
+RPEVIL="$(cat "$RPEVIL_LOG")"
+assert_eq "replay, planted git configuration: exit 0, ends landed" "0:land" "$RC:$(line END)"
+assert_eq "replay, planted git configuration: nothing it names ran in the harness's git (land_tree, review-view, runstate.sh)" "" "$RPEVIL"
+rp_commits "replay, planted git configuration" 1
+assert_eq "replay, planted git configuration: the commit is the packet's diff alone" "scripts/a.sh" \
+  "$(git -C "$RPC" -c core.fsmonitor=false -c core.hooksPath=/dev/null diff --name-only "$RP0" "refs/heads/$RPB" | paste -sd' ' -)"
+# The overrides are the harness's: every session saw the environment as this
+# sweep has it, never the harness's GIT_CONFIG_COUNT.
+assert_eq "replay, planted git configuration: no session was started under the harness's git overrides" \
+  "2" "$(grep -c "^call=[0-9]* count=${GIT_CONFIG_COUNT-(unset)} key0=${GIT_CONFIG_KEY_0-(unset)}$" "$SD/gitenv")"
+# Fixture check: the planted configuration is live, so its absence above is the
+# harness's doing: the clone's own git, without the overrides, runs it.
+git -C "$RPC" status --porcelain >/dev/null 2>&1
+assert_has "replay, planted git configuration (fixture check): the clone's own git status runs the planted fsmonitor" \
+  "evil.sh " "$(cat "$RPEVIL_LOG")"
+
+# core.worktree pointed out of the clone: the harness's git would index another
+# directory, so the clone is refused before any of it runs.
+rp_run "worktree+$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, core.worktree out of the clone: exit 1, ends in error, no review" "1:error:implementer" \
+  "$RC:$(line END):$RPAGENTS"
+assert_has "replay, core.worktree out of the clone: named" "not a repository of its own" "$ERR"
+assert_eq "replay, core.worktree out of the clone: nothing written where it points" "" "$(ls -A "$SD/elsewhere")"
+rp_commits "replay, core.worktree out of the clone" 0
+
+# The clone's review copy is a symlink (or a hard link) to a file outside the
+# clone, left under .agents/loop where the harness copies the review and
+# runstate.sh writes: refused as soon as the session that left it has ended,
+# before any review is copied or routed, and never written through.
+for RPLK in symrev hardrev; do
+  rp_run "$RPLK+$IMPL_DONE" "$REV_FIX" "$IMPL_DONE"
+  assert_eq "replay, a $RPLK review copy: exit 1, ends in error before the review" \
+    "1:error:implementer" "$RC:$(line END):$RPAGENTS"
+  assert_has "replay, a $RPLK review copy: named" "runtime paths hold a symlink or a hard link" "$ERR"
+  assert_eq "replay, a $RPLK review copy: the file outside the clone is untouched" "outside, untouched" "$(cat "$SD/outside.txt")"
+  rp_commits "replay, a $RPLK review copy" 0
+done
+# The reviewer leaves a symlink to a file outside the view where its review goes:
+# it is not followed into the work clone.
+rp_run "$IMPL_DONE" "symview+$REV_FIX" "$IMPL_DONE"
+assert_eq "replay, a symlinked review in the view: exit 1, ends in error, no further attempt" \
+  "1:error:implementer reviewer" "$RC:$(line END):$RPAGENTS"
+assert_has "replay, a symlinked review in the view: named" "cannot copy the review into the work clone" "$ERR"
+assert_eq "replay, a symlinked review in the view: the file it names is not copied into the clone" "absent" \
+  "$(if [ -e "$(dirname "$RPH")/review.md" ]; then cat "$(dirname "$RPH")/review.md"; else echo absent; fi)"
+# The routing configuration is a symlink to a file outside the clone: it is not
+# read into the review view (or a landed tree).
+rp_run "symov+$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, a symlinked project-overrides.yaml: exit 1, ends in error, no review" "1:error:implementer" \
+  "$RC:$(line END):$RPAGENTS"
+assert_has "replay, a symlinked project-overrides.yaml: named" "is a symlink or has another hard link" "$ERR"
+rp_commits "replay, a symlinked project-overrides.yaml" 0
+
+# Every session plants a signature check (log.showSignature and gpg.program, with
+# its branch moved to a signed commit), and each implementer points
+# last_green_commit at that commit with the handoff's FILES= line gone, through a
+# continuation and a fix round, so refresh-handoff reads the signed commit with
+# `git log`, and route, both review views and land run on it: nothing it names runs.
+: > "$RPEVIL_LOG"
+STUB_PLANT_SIG=1 STUB_PLANT_GREEN=1 rp_run "$IMPL_CONT" "$IMPL_DONE" "$REV_FIX" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, a planted signature check: exit 0, ends landed after a continuation and a fix round" \
+  "0:land:implementer implementer reviewer implementer reviewer" "$RC:$(line END):$RPAGENTS"
+assert_eq "replay, a planted signature check: gpg.program never ran in the harness's git" "" "$(cat "$RPEVIL_LOG")"
+# Fixture check: the clone's own git log, without the overrides, runs it (on the
+# signed commits its reflog keeps, since the land has moved the branch on).
+git -C "$RPC" log --reflog >/dev/null 2>&1
+assert_has "replay, a planted signature check (fixture check): the clone's own git log runs gpg.program" \
+  "evil.sh --keyid-format=long" "$(cat "$RPEVIL_LOG")"
+
+# A repository nested in the clone as a gitlink, whose own configuration assigns a
+# required filter: git_neutral cannot list that configuration, so the clone is
+# refused as soon as the session that left it has ended, and the filter never runs.
+# The session stops at its budget, so what would follow is refresh-handoff's
+# `git status` in the clone.
+: > "$RPEVIL_LOG"
+rp_run "nest+$IMPL_CONT" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, a nested repository: exit 1, ends in error, no review" "1:error:implementer" \
+  "$RC:$(line END):$RPAGENTS"
+assert_has "replay, a nested repository: named" "holds another repository inside it" "$ERR"
+assert_eq "replay, a nested repository: its filter never ran in the harness's git" "" "$(cat "$RPEVIL_LOG")"
+# Fixture check: the clone's own git status, without the overrides, runs it.
+git -C "$RPC" status --porcelain >/dev/null 2>&1
+assert_has "replay, a nested repository (fixture check): the clone's own git status runs the nested filter" \
+  "evil.sh clean" "$(cat "$RPEVIL_LOG")"
 
 printf '\n== replay: a crashed step, a timed-out step ==\n'
 rp_run "$IMPL_DONE" crash
@@ -2628,6 +2813,32 @@ assert_eq "routing-check, a replay that has not ended: exit 1, nothing on stdout
 assert_has "routing-check, a replay that has not ended: named" "has not ended" "$ERR"
 assert_eq "routing-check, a replay that has not ended: nothing is recorded" "no" \
   "$(if [ -e "$RCREPLAYS/$RCR.routing" ]; then echo yes; else echo no; fi)"
+
+# A session planted a signature check in the work clone and in the view (what
+# STUB_PLANT_SIG plants): metrics.sh's git log in each prints the signed commit,
+# and must not run gpg.program on it.
+rc_plant_sig() {  # rc_plant_sig <dir>
+  ( cd "$1" && git config log.showSignature true && git config gpg.program "$STUB_EVIL" \
+    && st="$(git rev-parse 'HEAD^{tree}')" && sp="$(git rev-parse HEAD)" && sn="$(date +%s)" \
+    && sc="$(printf 'tree %s\nparent %s\nauthor agent <agent@example.invalid> %s +0000\ncommitter agent <agent@example.invalid> %s +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQ\n -----END PGP SIGNATURE-----\n\nsigned by the session\n' \
+      "$st" "$sp" "$sn" "$sn" | git hash-object -t commit -w --stdin)" \
+    && git update-ref HEAD "$sc" )
+}
+rc_reset
+rc_seed "$RCC" W1 implementer fable fable claude-fable-5-1
+rc_seed "$RCV" V1 reviewer haiku haiku claude-haiku-4-5
+rc_plant_sig "$RCC"; rc_plant_sig "$RCV"
+: > "$RPEVIL_LOG"
+rc_run
+assert_eq "routing-check, a planted signature check: exit 0, passes" "0:pass" "$RC:$(line ROUTING_CHECK)"
+assert_eq "routing-check, a planted signature check: gpg.program never ran in the harness's git" "" "$(cat "$RPEVIL_LOG")"
+git -C "$RCC" log -n 1 >/dev/null 2>&1
+assert_has "routing-check, a planted signature check (fixture check): the work clone's own git log runs gpg.program" \
+  "evil.sh --keyid-format=long" "$(cat "$RPEVIL_LOG")"
+: > "$RPEVIL_LOG"
+git -C "$RCV" log -n 1 >/dev/null 2>&1
+assert_has "routing-check, a planted signature check (fixture check): the view's own git log runs gpg.program" \
+  "evil.sh --keyid-format=long" "$(cat "$RPEVIL_LOG")"
 
 printf '\n== sweeps: the required sweeps on the final diff ==\n'
 # A source whose start commit carries four sweeps: test-a passes only when
@@ -3754,6 +3965,16 @@ assert_eq "rank, a ranking already recorded: exit 1, nothing on stdout, nothing 
 assert_has "rank, a ranking already recorded: named" "is already recorded" "$ERR"
 assert_eq "rank, a ranking already recorded: no session started" "0" "$(run_calls)"
 
+# The ranking session plants a signature check in its clone (STUB_PLANT_SIG): the
+# reviewer check's git (metrics.sh's log of the ranking clone) must not run it.
+: > "$RPEVIL_LOG"
+STUB_PLANT_SIG=1 rk_rank valid
+assert_eq "rank, a planted signature check: exit 0, recorded" "0:$((RK_NB + 1))" "$RC:$(rk_nranks)"
+assert_eq "rank, a planted signature check: gpg.program never ran in the harness's git" "" "$(cat "$RPEVIL_LOG")"
+git -C "$RKD" log -n 1 >/dev/null 2>&1
+assert_has "rank, a planted signature check (fixture check): the ranking clone's own git log runs gpg.program" \
+  "evil.sh --keyid-format=long" "$(cat "$RPEVIL_LOG")"
+
 # The append fails (the rankings file cannot be written): refused, and no label
 # is resolved, since resolution only follows the append.
 RK_SAVED="$RKSTORE/rankings.saved"
@@ -4425,6 +4646,19 @@ cf_refuse "a Write to the clone's .mcp.json" Write "$CFR/.mcp.json" "a write to 
 cf_refuse "a Write into the clone's .claude/hooks" Write "$CFR/.claude/hooks/h.sh" "a write to the Claude Code configuration"
 cf_refuse "mkdir .claude/ with a trailing slash" Bash 'mkdir .claude/' "a write to the Claude Code configuration"
 cf_allow "a Write elsewhere under the clone's .claude" Write "$CFR/.claude/notes.md"
+# The clone's own git directory, in any case: its config, hooks and info name
+# commands the harness's own git steps would run outside the sandbox.
+mkdir -p "$CFR/.git/hooks" "$CFR/.git/info"; printf '[core]\n' > "$CFR/.git/config"
+cf_refuse "a Write to the clone's .git/config" Write "$CFR/.git/config" "a write into the clone's git directory"
+cf_refuse "an Edit of the clone's .git/config" Edit "$CFR/.git/config" "a write into the clone's git directory"
+cf_refuse "a shell append to .git/config" Bash 'printf "[core]\n\tfsmonitor = ./x\n" >> .git/config' "a write into the clone's git directory"
+cf_refuse "a Write into the clone's .git/hooks" Write "$CFR/.git/hooks/post-index-change" "a write into the clone's git directory"
+cf_refuse "cp into .git/hooks" Bash 'cp in.txt .git/hooks/reference-transaction' "a write into the clone's git directory"
+cf_refuse "a shell write to .git/info/attributes" Bash 'echo "* filter=x" > .git/info/attributes' "a write into the clone's git directory"
+cf_refuse "rm -rf of the clone's .git" Bash 'rm -rf .git' "a write into the clone's git directory"
+cf_refuse "a Write to .GIT/config, whatever its case" Write "$CFR/.GIT/config" "a write into the clone's git directory"
+cf_allow "a Write to the clone's .gitignore" Write "$CFR/.gitignore"
+cf_allow "a Write to a .git directory below the root, not the clone's own" Write "$CFR/sub/.git/config"
 CF_OUT="$(printf 'not json' | "$CONFINE" "$CFR" 2>/dev/null)"; CF_RC=$?
 assert_eq "compare-confine, refused: a payload that is not JSON" "2|" "$CF_RC|$CF_OUT"
 cf_run Write "$CFR/a.txt" "$CFR" relative/clone

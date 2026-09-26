@@ -77,6 +77,11 @@
 # MCP server that runs outside the sandbox, or widen the sandbox's paths, in
 # this session or the next step's in the same clone; the sandbox protects the
 # same paths from Bash, but the bypass mode lets the file tools write them.
+# So is the root's own `.git` and everything under it (any case): its config,
+# hooks and info name commands the harness's own git steps would run outside
+# the sandbox. A `git config` or `git commit` a session runs is no write this
+# hook recognises; compare.sh's git_neutral is what keeps the harness from
+# running what such a command leaves there.
 #
 # ASSUMED, NOT VERIFIED HERE: that the payload's `cwd` is the directory the
 # `Bash` tool's shell is in when the command runs. Claude Code keeps that
@@ -256,6 +261,16 @@ judge() {
     "$ROOT/.claude/commands"|"$ROOT/.claude/commands/"*|"$ROOT/.claude/hooks"|"$ROOT/.claude/hooks/"*|\
     "$ROOT/.claude/workflows"|"$ROOT/.claude/workflows/"*)
       REASON="a write to the Claude Code configuration a session in this clone loads: $t"; return 1 ;;
+  esac
+  # The clone's own git directory: its config, hooks and info name commands
+  # (core.fsmonitor, a hook, a filter or diff driver) that the harness's own git
+  # steps, outside the sandbox, would otherwise run. Matched without regard to
+  # case, since a case-insensitive file system writes `.GIT/config` there too.
+  case "$phys" in
+    "$ROOT"/*)
+      case "$(printf '%s' "${phys#"$ROOT"}" | tr '[:upper:]' '[:lower:]')" in
+        /.git|/.git/*) REASON="a write into the clone's git directory, whose configuration and hooks the harness's own git would run: $t"; return 1 ;;
+      esac ;;
   esac
   # A hard link places one file in two directories, and no path says where the
   # other name is, so an existing file with more than one link is refused even

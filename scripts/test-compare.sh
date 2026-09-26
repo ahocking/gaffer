@@ -1974,6 +1974,20 @@ else
     worktree+*)
       line="${line#worktree+}"
       mkdir -p "$d/elsewhere" && git config core.worktree "$d/elsewhere" ;;
+    # The clone made a partial clone: a promisor remote whose uploadpack is
+    # STUB_EVIL, which any git looking up a missing object runs to fetch it. The
+    # run-state's last_green_commit names a sha no object has and the handoff loses
+    # its FILES= line, so refresh-handoff, left with no scope, looks that sha up.
+    promisor+*)
+      line="${line#promisor+}"
+      git config core.repositoryFormatVersion 1; git config extensions.partialClone ev
+      git config remote.ev.promisor true; git config remote.ev.url "$(pwd -P)"
+      git config remote.ev.uploadpack "$STUB_EVIL"
+      h="$(printf '%s\n' "$prompt" | sed -n 's/^Handoff: //p' | head -1)"
+      rs="$(printf '%s\n' "$prompt" | sed -n 's/^run-state: //p' | head -1)"
+      { grep -v '^last_green_commit:' "$rs"; printf "last_green_commit: '%s'\n" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; } > .stub.tmp \
+        && mv .stub.tmp "$rs"
+      grep -v '^FILES=' "$h" > .stub.tmp && mv .stub.tmp "$h" ;;
     # The clone's review copy replaced by a symlink to a file outside the clone,
     # or by a hard link to one: the harness's copy of the next review must not
     # write through it.
@@ -2026,7 +2040,8 @@ if [ -n "${STUB_PLANT_SIG:-}" ]; then
 fi
 # The git overrides the harness runs its own git under, as each session saw its
 # environment: they must be taken off before a session starts.
-printf 'call=%s count=%s key0=%s\n' "$n" "${GIT_CONFIG_COUNT-(unset)}" "${GIT_CONFIG_KEY_0-(unset)}" >> "$d/gitenv"
+printf 'call=%s count=%s key0=%s nolazy=%s\n' "$n" "${GIT_CONFIG_COUNT-(unset)}" "${GIT_CONFIG_KEY_0-(unset)}" \
+  "${GIT_NO_LAZY_FETCH-(unset)}" >> "$d/gitenv"
 # The reviewer's own review file replaced by a symlink to a file outside the view.
 case "$line" in
   symview+*)
@@ -2396,7 +2411,7 @@ assert_eq "replay, planted git configuration: the commit is the packet's diff al
 # The overrides are the harness's: every session saw the environment as this
 # sweep has it, never the harness's GIT_CONFIG_COUNT.
 assert_eq "replay, planted git configuration: no session was started under the harness's git overrides" \
-  "2" "$(grep -c "^call=[0-9]* count=${GIT_CONFIG_COUNT-(unset)} key0=${GIT_CONFIG_KEY_0-(unset)}$" "$SD/gitenv")"
+  "2" "$(grep -c "^call=[0-9]* count=${GIT_CONFIG_COUNT-(unset)} key0=${GIT_CONFIG_KEY_0-(unset)} nolazy=${GIT_NO_LAZY_FETCH-(unset)}$" "$SD/gitenv")"
 # Fixture check: the planted configuration is live, so its absence above is the
 # harness's doing: the clone's own git, without the overrides, runs it.
 git -C "$RPC" status --porcelain >/dev/null 2>&1
@@ -2471,6 +2486,59 @@ assert_eq "replay, a nested repository: its filter never ran in the harness's gi
 git -C "$RPC" status --porcelain >/dev/null 2>&1
 assert_has "replay, a nested repository (fixture check): the clone's own git status runs the nested filter" \
   "evil.sh clean" "$(cat "$RPEVIL_LOG")"
+
+# The implementer makes its clone a partial clone (core.repositoryFormatVersion 1,
+# extensions.partialClone, and a promisor remote with a local url and STUB_EVIL as
+# its uploadpack), points last_green_commit at a sha no object has and drops the
+# handoff's FILES= line, then stops at its budget: what would follow is
+# refresh-handoff's `git log` on that sha, a lazy fetch. The clone is refused as
+# soon as the session has ended, and the uploadpack never runs.
+RPMISSING=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+: > "$RPEVIL_LOG"
+rp_run "promisor+$IMPL_CONT" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, a planted promisor remote: exit 1, ends in error, no continuation" "1:error:implementer" \
+  "$RC:$(line END):$RPAGENTS"
+assert_has "replay, a planted promisor remote: named" "names a promisor remote" "$ERR"
+assert_eq "replay, a planted promisor remote: its uploadpack never ran in the harness's git" "" "$(cat "$RPEVIL_LOG")"
+rp_commits "replay, a planted promisor remote" 0
+# Fixture checks: the plant is live, so the empty log above is the harness's
+# doing. GIT_NO_LAZY_FETCH=1 alone stops the fetch (git 2.45 on; an older git
+# ignores it, which is why the clone is refused as well), and the clone's own
+# git cat-file -e on the missing sha, without it, runs the uploadpack.
+RPGITV="$(git version | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')"
+if [ -n "$RPGITV" ] && [ "${RPGITV% *}" -gt 2 -o \( "${RPGITV% *}" -eq 2 -a "${RPGITV#* }" -ge 45 \) ]; then
+  GIT_NO_LAZY_FETCH=1 git -C "$RPC" cat-file -e "$RPMISSING" >/dev/null 2>&1
+  assert_eq "replay, a planted promisor remote (fixture check): GIT_NO_LAZY_FETCH=1 keeps git cat-file -e from running the uploadpack" \
+    "" "$(cat "$RPEVIL_LOG")"
+else
+  printf 'skip replay, a planted promisor remote (fixture check): GIT_NO_LAZY_FETCH needs git 2.45 or later, this is [%s]\n' "$(git version)"
+fi
+git -C "$RPC" cat-file -e "$RPMISSING" >/dev/null 2>&1
+assert_has "replay, a planted promisor remote (fixture check): the clone's own git cat-file -e on the missing sha runs the uploadpack" \
+  "evil.sh " "$(cat "$RPEVIL_LOG")"
+
+# Every harness-side git runs with GIT_NO_LAZY_FETCH=1 alongside the overrides,
+# through a continuation and a fix round (runstate.sh's refresh-handoff and route,
+# both review views, the land): a git on PATH ahead of the real one records the
+# environment each git ran in. A git under the harness's overrides is the
+# harness's; a session's own git sees the environment as this sweep has it.
+RPSHIM="$WORK/gitshim"; RPSHIM_LOG="$WORK/gitshim.log"; mkdir -p "$RPSHIM"; : > "$RPSHIM_LOG"
+cat > "$RPSHIM/git" <<EOF
+#!/bin/sh
+printf 'count=%s nolazy=%s\n' "\${GIT_CONFIG_COUNT-(unset)}" "\${GIT_NO_LAZY_FETCH-(unset)}" >> '$RPSHIM_LOG'
+exec '$(command -v git)' "\$@"
+EOF
+chmod +x "$RPSHIM/git"
+PATH="$RPSHIM:$PATH" rp_run "$IMPL_CONT" "$IMPL_DONE" "$REV_FIX" "$IMPL_DONE" "$REV_PASS"
+assert_eq "replay, GIT_NO_LAZY_FETCH: exit 0, ends landed after a continuation and a fix round" \
+  "0:land:implementer implementer reviewer implementer reviewer" "$RC:$(line END):$RPAGENTS"
+RPHARN="$(grep -v "^count=${GIT_CONFIG_COUNT-(unset)} " "$RPSHIM_LOG")"
+assert_eq "replay, GIT_NO_LAZY_FETCH: harness-side git ran under the overrides (the check below is not vacuous)" "yes" \
+  "$(if [ "$(printf '%s\n' "$RPHARN" | grep -c .)" -gt 10 ]; then echo yes; else echo no; fi)"
+assert_eq "replay, GIT_NO_LAZY_FETCH: every git under the harness's overrides ran with GIT_NO_LAZY_FETCH=1" "" \
+  "$(printf '%s\n' "$RPHARN" | grep -v ' nolazy=1$' | sort -u)"
+assert_eq "replay, GIT_NO_LAZY_FETCH: no session was started with it (or the overrides) set" \
+  "5" "$(grep -c "^call=[0-9]* count=${GIT_CONFIG_COUNT-(unset)} key0=${GIT_CONFIG_KEY_0-(unset)} nolazy=${GIT_NO_LAZY_FETCH-(unset)}$" "$SD/gitenv")"
 
 printf '\n== replay: a crashed step, a timed-out step ==\n'
 rp_run "$IMPL_DONE" crash

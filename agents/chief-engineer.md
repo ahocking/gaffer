@@ -212,7 +212,7 @@ is yours, since the hook does not and cannot run the suite: run the packet's
 build/test commands, read the real output, then commit. You also own the
 integration workflow on non-`main` branches: **merge** a green feature branch
 into the integration branch (`.agents/project-overrides.yaml` →
-`integration_branch`, else `develop`), **rebase** a non-`main` branch, and
+`integration_branch`), **rebase** a non-`main` branch, and
 **push** feature/integration branches. The invariants the guard enforces and
 you own: the merge/rebase target is never `main`/`master`; a push is never to
 `main` and never forced; a merge carrying a hard-gate path (plus any domain

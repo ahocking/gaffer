@@ -540,9 +540,9 @@ with at most a one-clause reason, and the fuller wording is recorded here.
   > run that found this defect, branch-vs-base was 211 files and about 30,000
   > insertions, against only the files that run actually landed.
 
-- **When the branch-vs-base fallback applies.** The skill keeps "whether the digest
-  names no packet or every packet ended failed, rolled-back, blocked or interrupted;
-  such a run has no narrower boundary to offer". It used to read:
+- **When the branch-vs-base fallback applies.** The skill keeps "the digest names
+  no packet, or every packet ended failed, rolled-back, blocked or interrupted" and
+  "such a run has no narrower boundary to offer". It used to read:
 
   > This includes, but is not limited to, a digest that names no packet at all — it
   > also covers a run whose packets all ended failed, rolled-back, blocked or

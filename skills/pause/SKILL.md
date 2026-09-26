@@ -166,8 +166,7 @@ finding already in the index through the heredoc verbatim; dropping a line
 unlinks a body still on disk.
 
 Steps 1–2 come **before** this write — a run-state saying `paused` must be true
-when written. This file is tracked; committing it is fine (not a hard-gate path)
-on the feature branch, or leave it staged for the human — never on `main`.
+when written. Nothing is ever committed on `main`/`master`.
 
 **Then clear the pause sentinel** so the fulfilled request cannot re-halt a later
 resume: `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh clear-pause .agents/pause`

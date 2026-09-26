@@ -12,24 +12,12 @@ task_id: <feature-000-scope>            # e.g. feature-004-backend
 # Which agent runs this packet.
 role: <implementer | architect | reviewer>
 
-# Where the work happens: normally the SINGLE local checkout, on the packet's
+# Where the work happens: the SINGLE local checkout, on the packet's
 # `orch/<task_id>` feature branch cut from the integration base
 # (`.agents/project-overrides.yaml` → `integration_branch`, default `develop`).
 # The Chief Engineer runs `git switch -c orch/<task_id> <base>` before delegating.
-# There is no separate worktree (ADR 0009) — EXCEPT in parallel mode
-# (`/gaffer:run-loop --parallel`, ADR 0016), where this packet runs as one
-# concurrent LANE in its own git worktree at `../<repo>-worktrees/<task_id>` on the
-# same `orch/<task_id>` branch. Either way the packet targets that one branch.
-
-# How much the Chief Engineer may do without a human on this packet. See ADR 0004
-# and ADR 0006. Precedence at runtime: env ORCH_AUTONOMY > .agents/autonomy > this
-# default, then clamped DOWN to `autonomy_ceiling` in .agents/project-overrides.yaml.
-#   interactive (default) — human approves every mutation gate
-#   supervised            — CE may auto-commit on a feature branch when green
-#   autonomous            — CE drives the loop across packets; hard gates only
-#   full-autonomy         — same, plus merge/rebase/push onto NON-main branches
-#                           (main / releases / deploys / danger floor stay human)
-autonomy: interactive
+# There is no separate worktree for a loop packet (ADR 0009) — a worktree is for
+# self-contained work off the default branch, never for this contract.
 
 # One sentence: what this task must accomplish.
 goal: <e.g. Add recurring transaction detection service>
@@ -125,6 +113,13 @@ context:
 # guard/policy script, CI logic — the matching regression sweep MUST be listed
 # here as its own acceptance criterion — not implied by "tests pass". A sweep is
 # what makes a change to enforcement code reviewable, so this is not optional.
+#
+# Six further REQUIRED lines — the verification contract — reach every handoff
+# by construction, not by anyone copying them: `runstate.sh handoff` appends
+# the block itself, read from `templates/handoff-required.md`, which is the
+# block's one source. Nothing from it is restated here or written by whoever
+# fills this packet in; the sweep rule above and `session_boundary` are the
+# driver's own two conditional lines and stay in the task text as they are.
 acceptance_criteria:
   - <detects monthly recurring transactions>
   - <supports merchant normalization>

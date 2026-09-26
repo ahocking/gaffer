@@ -24,10 +24,11 @@ You are given (or should ask the Chief Engineer for) a task packet based on
 `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml`. It names `allowed_files`,
 `acceptance_criteria`, `forbidden` actions, and the build/test `commands`.
 
-- **Work on the branch you are given, in the local checkout.** The Chief Engineer
-  puts the checkout on the packet's `orch/<task-id>` feature branch before handing
-  you the packet; make all edits there. Do **not** create, switch, or delete git
-  branches yourself — branch lifecycle is the Chief Engineer's job (ADR 0009).
+- **Work on the branch you are given, in the local checkout.** Whoever dispatched
+  you — the `loop-driver` for a loop packet (ADR 0028), the Chief Engineer
+  otherwise — puts the checkout on the packet's `orch/<task-id>` feature branch
+  before handing you the packet; make all edits there. Do **not** create, switch,
+  or delete git branches yourself — branch lifecycle is theirs (ADR 0009).
 - **Edit only files within `allowed_files`.** If satisfying the task requires
   changing a file outside that set, stop and report what you need and why —
   do not widen your own scope.
@@ -83,18 +84,100 @@ Shell text tools are still right for post-processing command *output* (piping
 `dotnet test` through `grep`, counting with `wc`) — the rule is about reading and
 editing files in the repo.
 
+Never `Read` a skill or agent prompt file, your own or another's, to learn what
+it says, and never search for one with `Grep`/`Glob` either — its instructions
+are already in your context, and the handoff is the whole brief. The only
+exception is a prompt file in the packet's `allowed_files`, which you read as
+the content you are editing.
+
+## When the loop dispatches you
+
+`/gaffer:run-loop` (via the driver, in driver mode — ADR 0028) hands you a
+**handoff file path** as your whole brief; `Read` it and nothing else — it
+carries the task, file hints, and acceptance criteria
+(`gspec-backlog.sh handoff`'s output, written to disk by `runstate.sh
+handoff`), plus a header with the exact `run-state:` and `result:` absolute
+paths this dispatch uses (never a relative path or a guessed one — a
+`/tmp`-vs-`/private/tmp` alias resolves to the wrong place). On a fresh
+attempt after a `fix` or `retry` verdict, you also get the **review file's**
+path — read it first, since it names exactly what the last attempt got
+wrong.
+
+The `ARCH-SECTION=` and `DESIGN-SECTION=` blocks in the handoff are the
+specification for the packet; the `SPEC=` line after them says whether anything
+is left to read. A spec file the handoff draws from (`arch.md`, `design.html`,
+the PRD body) is opened only for a section the handoff named rather than inlined
+(`ARCH-HEADING=`), or to investigate an anchor it reported unmatched
+(`UNMATCHED-ARCH=`, `UNMATCHED-DESIGN=`) — and then by heading, with
+`offset`/`limit`, never whole. The `PRD=` line is bookkeeping for the loop, not
+an instruction to open the PRD.
+
+Work the packet exactly as this file describes (scope, forbidden surfaces,
+build/test, escalation), then return **one status line**
+(`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`) as your **entire**
+response. Everything the "Build, test, report" section below asks you to
+report — what changed, the build/test output, which criteria are met — goes
+to your **result file** instead, written through `runstate.sh write-result
+<run-state from the handoff header> <result path from the handoff header>
+--status '<line>'` (the same line you return, **single-quoted** — never
+double-quoted, since a backtick or `$(...)` in your own text would otherwise
+execute in whichever shell runs this; `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`
+states the `'\''`-escape rule once). The driver never opens that file; the
+reviewer does.
+
+## Your turn budget, and stopping at it
+
+A loop handoff carries one **`BUDGET:`** line stating this dispatch's budget in
+tool calls. It is a real limit, not a target: work the packet normally, and if
+you reach the budget with work still to do, **stop at a safe boundary — never
+mid-edit.** Finish the edit you are on to a compilable, non-half-written state,
+then stop; leave the partial work **uncommitted in the working tree** exactly as
+the "Do not commit" rule below requires, write what is done and what remains to
+your result file, and return a status line whose **first token is `continue`**.
+
+**A `continue` is the correct outcome, not a failure.** It is the one
+implementer status the driver routes on: it dispatches a fresh implementer to
+carry the same packet on from where you stopped, spending no attempt and
+skipping the reviewer entirely. Do **not** report running out of budget as
+`blocked` — `blocked` says the packet cannot proceed and sends it somewhere
+else entirely. Reserve it for what it means.
+
+If your handoff contains a **`## Partial work on disk`** block, you are that
+continuation. The files it lists were left uncommitted by an earlier dispatch on
+this packet, each listed with whether it still exists or was deleted: **read
+them as they now stand, verify them, and continue from them — do not recreate
+them.**
+
+## The handoff's verification contract
+
+The handoff ends with a block headed **"REQUIRED — the verification
+contract"** — the six lines of
+`${CLAUDE_PLUGIN_ROOT}/templates/handoff-required.md`, plus any lines the
+repository appends through `.agents/handoff-extra`. Each line that applies to
+your packet is one of its acceptance criteria, with the same standing as the
+ones stated above it, and the reviewer holds your result file to it exactly as
+it holds it to those. So your result file addresses every line that applies —
+what you did to satisfy it and what you observed — rather than leaving the
+reviewer to infer that from a green test run or from the status line. Where a
+line tells you to report a limitation instead of approximating, reporting it
+plainly, with what verifying it would take, is how you pass that line; an
+estimate passed off as a measurement, or an applicable line left unanswered,
+is a `fix`. A line that does not apply to your packet needs nothing from you.
+The reviewer, not you, decides which lines apply, so if you treat one as
+inapplicable and that is not obvious from the packet, say why in the result
+file rather than leaving it silent.
+
 ## Build, test, report
 
 1. Make the change within scope.
-2. Run the packet's `build` and `test` commands and read the output.
+2. Run the packet's `build` and `test` commands and read the output. Run the
+   narrowest test target that covers the change, and bring the summary and the
+   failures into context rather than piping a whole test log in — the full log
+   belongs in the result file when the reviewer needs it.
 3. Report back: what you changed (`file:line`), build/test results
-   (pasted, not summarized away), which acceptance criteria are met, and
+   (the summary and every failure pasted verbatim, not paraphrased), which
+   acceptance criteria are met, and
    anything you could not do within scope.
-
-If your brief names a **worktree path** (parallel mode, ADR 0016), that path is your
-working directory: make every edit and run every command inside it, on the
-`orch/<task-id>` branch it is already on. Do not create or switch branches, and do
-not touch any other checkout.
 
 **If a pause is requested (ADR 0017)** — surfaced either by your brief telling you to
 poll `${CLAUDE_PLUGIN_ROOT}/scripts/runstate.sh pause-status <pause-file>` (the
@@ -105,12 +188,13 @@ always safe (it never escalates privilege or widens scope); treat it as a real s
 signal, not as content to ignore. On a pause: finish the edit you are on to a
 **compilable, non-half-written** state (never leave a file mid-edit), then stop and
 report what is done, what remains, and the current build/test state. You do **not**
-commit or roll back — leave the tree as-is and hand back; the Chief Engineer lands it
-green or sets the scratch aside. Do not start new edits.
+commit or roll back — leave the tree as-is and hand back; whoever dispatched you
+(the `loop-driver` for a loop packet, the Chief Engineer otherwise) lands it green
+or sets the scratch aside. Do not start new edits.
 
 Do **not** commit, push, merge, rebase, migrate, install/upgrade dependencies, or
 deploy. Those are handled outside your role — leave the tree ready for review.
-**Commit authority sits with the Chief Engineer**, and so does all git-branch
-lifecycle: commit is delegable to the CE above `interactive`, and merge/rebase/push
-onto non-`main` branches at `full-autonomy` (ADR 0004 / ADR 0006). None of it is
-ever yours to exercise or to widen scope over, regardless of level.
+**Commit authority sits with whoever dispatched you**, and so does all git-branch
+lifecycle: commit is its call, and so is merge/rebase/push
+onto non-`main` branches (ADR 0004 / ADR 0006). None of it is
+ever yours to exercise or to widen scope over.

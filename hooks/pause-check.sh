@@ -2,12 +2,11 @@
 # =============================================================================
 # pause-check.sh — cooperative-pause advisory (PreToolUse hook, ADR 0017)
 # =============================================================================
-# Runs before every Bash / Edit / Write tool call, in the main session AND inside
-# every dispatched lane (the guard already proves PreToolUse fires inside lane
-# worktrees — ADR 0016 #8). If a pause SENTINEL exists, it injects an advisory
-# telling the agent to land at a green checkpoint and stop. It NEVER blocks and
-# NEVER emits a permissionDecision, so it cannot weaken guard.sh or any soft gate:
-# its only effect is to add context. Exit is always 0.
+# Runs before every Bash / Edit / Write tool call, in the main session. If a
+# pause SENTINEL exists, it injects an advisory telling the agent to land at a
+# green checkpoint and stop. It NEVER blocks and NEVER emits a
+# permissionDecision, so it cannot weaken guard.sh or any soft gate: its only
+# effect is to add context. Exit is always 0.
 #
 # BEST-EFFORT, by design. The GUARANTEED pause is the prompt-poll checkpoint the
 # skills/agents run (`runstate.sh pause-status …`); this hook is reinforcement.
@@ -23,13 +22,12 @@
 # It CANNOT interrupt a single long-running command — only the boundary between
 # tool calls — so a pause is seen at the next checkpoint, never mid-process.
 #
-# Sentinel resolution (works uniformly from the main checkout and any lane):
+# Sentinel resolution:
 #   1. $ORCH_PAUSE_FILE if the driver exported it (fast-path, no git).
 #   2. else <main-checkout>/.agents/pause, where <main-checkout> is derived from
-#      `git rev-parse --git-common-dir` — a lane worktree's common git dir points
-#      at the MAIN repo's .git, so the canonical sentinel is found without any env.
-# Scope: an all-run sentinel (<base>) OR this lane's own (<base>.<task-id>, where
-# <task-id> comes from the orch/<task-id> branch).
+#      `git rev-parse --git-common-dir`.
+# Whole-run only (retire-unused-loop-modes T1 removed the per-lane sentinel that
+# parallel mode used): there is exactly one sentinel path to check.
 # =============================================================================
 
 set -uo pipefail
@@ -47,25 +45,45 @@ if [ -z "$base" ]; then
   base="${main_root}/.agents/pause"
 fi
 
-# --- this lane's task id, if we are on an orch/<task-id> branch ---------------
-id=""
-br="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-case "$br" in orch/*) id="${br#orch/}" ;; esac
+# --- is a pause requested? ----------------------------------------------------
+# unwrap_yaml_scalar <value already stripped of its "reason:" prefix>
+#   THE SAME decode rule as runstate.sh's _yaml_decode_value / rs_decode, in a
+#   third expression (runstate-write-integrity-gaps T5). Deliberately a copy and
+#   not a source of runstate.sh: this hook runs per tool call, must stay
+#   self-contained and dependency-free, and sourcing a 4k-line script on every
+#   Bash/Edit/Write call to strip two quote characters is the wrong trade.
+#   `request-pause` now writes the reason as a single-quoted YAML scalar, so
+#   without this the advisory below would read (reason: 'wrap up') -- quote
+#   characters the human never typed, injected into every agent's context. The
+#   three branches, in order:
+#     '...'  strip the wrapping pair, un-double `''` back to `'` (what
+#            request-pause writes today);
+#     "..."  LEGACY, stripped verbatim with no escape processing, matching the
+#            runstate.sh rule exactly;
+#     bare   everything else UNCHANGED -- including every sentinel written by a
+#            version of request-pause older than this one, which is the only
+#            reason no consumer repo has to clear a pause before upgrading.
+#   Pinned against drift by scripts/test-pause.sh, which drives this hook and
+#   `pause-status` over the same hostile reasons and demands the same answer.
+unwrap_yaml_scalar() {
+  local body
+  case "$1" in
+    \'*\') body="${1#\'}"; body="${body%\'}"; printf '%s' "$body" | sed "s/''/'/g" ;;
+    \"*\") body="${1#\"}"; body="${body%\"}"; printf '%s' "$body" ;;
+    *)     printf '%s' "$1" ;;
+  esac
+}
 
-# --- is a pause requested (all-scope wins over lane-scope)? -------------------
-scope=""; reason=""
+reason=""
 if [ -f "$base" ]; then
-  scope="the whole run"
   reason="$(grep -E '^reason:' "$base" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
-elif [ -n "$id" ] && [ -f "${base}.${id}" ]; then
-  scope="this lane (${id})"
-  reason="$(grep -E '^reason:' "${base}.${id}" 2>/dev/null | head -1 | sed -E 's/^reason:[[:space:]]*//')"
+  reason="$(unwrap_yaml_scalar "$reason")"
 else
   exit 0                                        # no pause requested -> silent allow
 fi
 
 # --- emit a context-only advisory (no permissionDecision) --------------------
-msg="ORCHESTRATION PAUSE REQUESTED for ${scope}"
+msg="ORCHESTRATION PAUSE REQUESTED for the whole run"
 [ -n "$reason" ] && msg="${msg} (reason: ${reason})"
 msg="${msg}. Bring the current step to a SAFE rest at the earliest opportunity: finish it to a green commit with the [orch packet:<id>] trailer if you can, otherwise leave the last green commit untouched and set aside uncommitted scratch — never stop mid-edit. Then write your check-in noting the pause and STOP; do not start new work."
 

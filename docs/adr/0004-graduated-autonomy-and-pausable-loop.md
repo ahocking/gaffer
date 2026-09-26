@@ -19,6 +19,17 @@
   "Phase 3 worktree isolation is a prerequisite" no longer holds — isolation is now
   a per-packet `orch/<task-id>` branch in the one checkout, and a pause sets scratch
   aside with `git stash` rather than resetting a throwaway worktree.
+- Superseded in part by: the `retire-autonomy-levels` feature (2026-09-20), which
+  removes the **four level definitions** — §2's `interactive` / `supervised` /
+  `autonomous` and ADR 0006's `full-autonomy` — and the graduated dial that
+  selected among them (`ORCH_AUTONOMY`, `.agents/autonomy`, the `autonomy_ceiling`
+  clamp, `/gaffer:set-autonomy`). `hooks/guard.sh` now enforces one fixed rule set
+  in every repository: what `full-autonomy` allowed. The **hard/soft gate split**
+  (§1), the Chief Engineer's ownership of routine commits (§3, now unconditional
+  rather than "above `interactive`"), the pausable loop and its durable checkpoints
+  (§4), and the check-in contract (§5) all stand. Every mention below of a level,
+  a ceiling, or "at every level" is the historical record of how the gates were
+  selected, not of what they gate.
 
 ## Context
 
@@ -144,3 +155,43 @@ transport is built into the plugin.
   Mitigation: branch isolation (nothing reaches `main`), the whole run is in git
   history and fully revertible, and `.agents/project-overrides.yaml` can cap the
   ceiling.
+
+## Relocated from skills (2026-09-25) — the pause skill's reasons for stashing scratch and for who delivers the report
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why unsafe scratch is set aside with `git stash`** (pause step 1). The skill
+  keeps "never `reset --hard`/`clean -f`, which the guardrail hard-denies". It
+  used to read:
+
+  > Use `git stash`, which is recoverable (nothing is destroyed) and guard-safe —
+  > unlike `reset --hard`/`clean -f`, which the guardrail hard-denies
+
+- **Who delivers the stop report** (pause step 4). A parenthetical restating §5
+  above:
+
+  > (the plugin produces reports; the frontend delivers them — ADR 0004)
+
+## Relocated from skills (2026-09-25) — the migrate skill's autonomy-leftover reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §4 by `skill-prompt-trim`. Autonomy
+levels were retired (`retire-autonomy-levels`); this ADR introduced them and is the
+closest owner. The skill keeps each rule with at most a one-clause reason; the fuller
+wording is recorded here.
+
+- **Why `apply` deletes `.agents/autonomy` and strips `autonomy_ceiling:`.** The skill
+  keeps "since the guard resolves no level any more". It used to read:
+
+  > The guard resolves no level any more, so neither changes a decision — they only tell their next reader that a setting
+  > exists which does not.
+
+  Its `REMOVED=` paragraph repeated it:
+
+  > (autonomy levels are retired and the guard no longer reads it —
+
+- **Why `SPECSETUP_ROUTES=` and `SETTINGS_AUTONOMY=` lines are offered for rewriting.**
+  The skill keeps "since the guard reads no level any more". It used to go on:
+
+  > so an `ORCH_AUTONOMY` entry sets nothing and a level named in prose is describing a
+  > setting that no longer exists.

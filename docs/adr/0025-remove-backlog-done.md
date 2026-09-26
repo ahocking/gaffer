@@ -260,3 +260,171 @@ so `apply` reports and does not flip. `cmd_verify` asserts `done:` is gone.
   indistinguishable from a correct one.
 - **Keep a bounded tail of the last N ids.** Still a list re-emitted from memory every
   packet, still drifts, `N` arbitrary, and it implies a recency guarantee nothing needs.
+
+## Revision 2026-09-17 — D1's in-commit flip extends to capability boxes
+
+Source: the `capability-auto-complete` feature
+(`gspec/features/capability-auto-complete/prd.md`), on the operator's decision of
+2026-09-17 that a complete feature should be marked complete.
+
+**D1 is extended, not replaced.** D1's sentence *"This is the plugin's one write into
+`gspec/`"* stays above as the record of what was decided on 2026-08-10; it is no longer
+true on its own. There is now a **second, separately named write**:
+`gspec-backlog.sh complete-capabilities <slug>`. It sits beside `check-task` and leaves it
+unchanged — the task flip is still one id, one line. The new write is bounded the same way
+D1 bounds the first:
+
+- **Only the checkbox characters of capability lines change.** Never capability text,
+  never acceptance-criteria sub-bullets, and never a task line.
+- **It never unflips.** A checked capability is not even considered.
+- **It flips only what the drift rule can judge.** A capability flips only when at least
+  one task covers it and every covering task is checked, and a feature with any unchecked
+  task whose `covers:` quote is unmatched flips **no** capability. Completion is still
+  derived from the checkbox alone, never from criterion text or counts.
+
+Where it runs, extending D1's atomicity:
+
+- **At land**, inside the packet commit, after the per-task flips — so a feature's
+  capabilities read complete in the same commit as the work that completes them.
+- **On adopt** (D5's orphan-adoption site in `skills/resume/SKILL.md`), as its own commit,
+  since the adopted commit already exists.
+- **At preflight and at end of run**, the loop **reconciles** judgeable capability drift
+  as one commit per scan, outside any packet and carrying no packet trailer. The drift
+  detector (`capability-drift`) stays read-only; all capability writing lives in
+  `complete-capabilities`.
+- **Unjudgeable rows** — an unmatched `covers:` quote, a capability no task covers, a
+  capability line the matcher does not recognize — are **reported to the operator and
+  never flipped**. That is the reconciliation work left for a human, and the only part
+  where human judgement adds something.
+- **A held feature** — one where an unchecked task's `covers:` quote matches no
+  capability, so the subcommand holds back every flip for that feature and its summary
+  line reads `COMPLETE_CAPABILITIES=blocked` — is **named, never flipped**: once at the
+  kickoff and once in the stop report's next steps, carrying the subcommand's own
+  `REASON=` text. **Nothing is flipped, restored or committed for it** — `blocked` is
+  exit 0 with `completed=0`, so it stages no PRD, joins no commit, and leaves nothing to
+  restore — which makes it **neither a failure nor a flip**, but a feature the run
+  cannot complete yet, named so the operator can fix the quote rather than left silent.
+  Before this, the drift scan named these rows; the flip rule's hold-back made them
+  silent.
+
+A failed flip is reported and never halts the run; in a repo with no `gspec/`, every site
+is a silent no-op (ADR 0020 D4).
+
+### Reversed: `completion-record-drift`'s "never flip a capability"
+
+Kept as history, the same way superseded ADR revisions are kept. The parent feature
+`completion-record-drift` (`gspec/features/completion-record-drift/prd.md`) put this in
+its **Out** scope:
+
+> Flipping a capability checkbox, automatically, ever: today's failure is loud and safe —
+> re-picked, zero packets, noticed — while an auto-flip's is silent and unblocks everything
+> behind a feature wrongly marked done.
+
+and stated as its central constraint that the feature *"DETECTS and never flips"*, with the
+operator as *"the only party allowed to flip a capability box"* and reconciling a drifted
+record *"the human's call"*.
+
+**That reasoning is reversed as of 2026-09-17**, by `capability-auto-complete`. The
+justification: the flip uses the same mechanical rule a human applies when reconciling the
+drift report — at least one covering task, every covering task checked, no unchecked task
+with an unmatched `covers:` quote — so the loop sees everything the report showed the
+human, and in practice the operator flipped on that report without gathering further
+evidence (`packet-bundling` needed five capabilities flipped by hand, `b47d5cd`; the
+parent's own two observed misses were `4a33ae3` and `28c387e`). The silent-wrong-flip risk
+the parent feared remains for exactly one case — a wrong `covers:` quote that still
+matches verbatim — and that is as wrong as a human flipping on the same report, with the
+packet's review as the gate for plan text. What the rule cannot judge is still reported
+and never flipped. The parent PRD carries a reversed-by pointer beside its `Out` bullet;
+its capabilities are not re-opened and its completion is unchanged.
+
+Consequence, amending this ADR's own Consequences: the "plugin now writes into `gspec/`"
+bullet described a write *"bounded to one character on one line"*. That bound still holds
+for `check-task`; `complete-capabilities` is the second write, bounded to the checkbox
+characters of capability lines in one feature's PRD, and capability boxes can now change
+without an operator in the path.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's preflight drift-scan reasons
+
+Moved out of `skills/run-loop/SKILL.md` §1 by `skill-prompt-trim`. The skill keeps
+each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the drifted-completion scan reads every ref** (§1's drifted completion record
+  bullet, D1). The skill keeps "a packet that landed and never got its checkbox
+  flipped usually lives in already-merged history". It used to read:
+
+  > Scan **every ref**, not just the current branch — at preflight the checkout is
+  > normally still on the integration branch, so a scan bounded to "the branch I'm
+  > on" almost never fires, and the case this exists to catch — a packet that
+  > landed, merged, and never got its checkbox flipped — usually lives in
+  > already-merged history.
+
+- **Why the capability scan's off-branch case is rare** (§1's drifted capability
+  checkboxes bullet). The skill keeps the rule — commit nothing and restore every
+  `STAGE=` path when the checkout is off the integration branch — without this
+  parenthetical, which pointed at the reason above:
+
+  > (it is normally on it here; see the task-drift bullet above for why)
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and end-of-run scan reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination`'s end-of-run capability-drift scan by `skill-prompt-trim`. The
+skill keeps each rule with at most a one-clause reason; the fuller wording is recorded
+here.
+
+- **What `record-completion` does with `--feature`.** The skill keeps "It flips each
+  member's task in plan order, then the landed feature's capabilities, and restores a
+  failed capability call's PRD itself". It used to read:
+
+  > It runs `check-task` for each member in plan order, then `complete-capabilities`
+  > once for the landed feature (a bundle is always one feature; `--feature`, from
+  > §3.3's handoff still in this session's context, is the fallback slug), reads both
+  > commands' exit codes, and restores a failed capability call's PRD itself.
+
+- **What a `HALT=` leaves uncommitted.** The skill keeps "do not commit, so no part of
+  the bundle lands on its own". It used to read:
+
+  > do not commit (no `STAGE=` line is printed, and a member flipped before the halt
+  > stays an uncommitted edit on the branch, so no part of the bundle lands on its own)
+
+- **Why the landing restore is from the index.** The skill keeps "so the packet's own
+  staged PRD edit survives". It used to read:
+
+  > the index already holds the packet's own staged files, and the PRD may be one of
+  > them, so the index form undoes only this failed call's unstaged write where `HEAD`
+  > would discard the packet's own staged PRD edit too. §1 and §4 restore from `HEAD`
+  > for the mirror of this reason: their scan runs outside any packet and stages the
+  > PRD itself, so there the index entry is the thing that has to go.
+
+- **Why the end-of-run reconcile commit follows the merge.** The skill keeps "so a flip
+  never reaches the integration branch ahead of the work it records". It used to add:
+
+  > since checking a branch out to merge into it leaves the checkout on that branch
+
+- **Why the end-of-run restore is the `HEAD` form.** The skill keeps the rule —
+  restore every `STAGE=` path with `git checkout HEAD -- <path>` — without this
+  reason:
+
+  > (this resets the index as well as the working tree, since the path is already
+  > staged)
+
+- **Why a feature is held.** The skill keeps the rule — one unglyphed line per
+  `HELD=<slug>\t<reason>` line, carrying that reason — without this explanation:
+
+  > (an unchecked task's `covers:` quote matches no capability, so every flip for that
+  > feature is held until it is fixed)
+
+## Relocated from skills (2026-09-25) — the migrate skill's `backlog.done` reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §5f by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why `apply` deletes the `backlog.done` block.** The skill keeps "dead state since
+  completion is derived from the gspec checkbox (ADR 0025)". It used to read:
+
+  > completion is derived from the gspec checkbox now (ADR 0025), so the block is dead state with no reader left
+
+- **Why the dropped `done:` block never shows a packet finished.** The skill keeps
+  the rule ("never the `done:` block dropped in step 4"). It used to add:
+
+  > which carried no fresher a signal than the boxes it mirrored.

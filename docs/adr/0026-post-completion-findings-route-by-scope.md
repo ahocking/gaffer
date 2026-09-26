@@ -2,6 +2,22 @@
 
 - Status: Accepted
 - Date: 2026-08-10
+- Revision (2026-09-17): **arm 2 always terminates at an operator question — no
+  agent files the feature.** D2's split stands, but the half that let the
+  main-context session author the PRD itself is withdrawn. See
+  [Revision — 2026-09-17](#revision--2026-09-17--arm-2-terminates-at-the-operator-never-at-gspec-feature)
+  below; the accepted text above it is unchanged.
+- Revision (2026-09-20): **an end-of-run arm-2 proposal now leaves a routing record and
+  is counted in the stop report's tally; the operator gate is unchanged.** See
+  [Revision — 2026-09-20](#revision--2026-09-20--an-end-of-run-arm-2-proposal-leaves-a-routing-record-and-is-counted)
+  below; nothing above it is rewritten.
+- Amendment (2026-09-22): **the end-of-run routing step is retired.** `run-loop` §4 no
+  longer dispatches an architect to route the whole-branch review's findings by these
+  arms, and writes no `end-of-run-review` routing record; the review itself is unchanged
+  and each note it reports becomes a finding. Both arms survive where they are still
+  reachable — the escalation decider's `append-task`/`hand-off-feature` and the periodic
+  review. See [Amendment — 2026-09-22](#amendment--2026-09-22--the-end-of-run-routing-step-is-retired)
+  at the end; the 2026-09-17 and 2026-09-20 revisions above are not rewritten.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) (its routing table is unchanged;
   this supplies the destination that made the "backlog, not a finding" rule un-followable
@@ -325,3 +341,220 @@ precisely because the cheap answer and the correct answer differ.
   dispatched agent has no `Skill` tool, and hand-writing a PRD around `/gspec-feature`
   would be authoring an unvalidated spec through the exact bypass this repo already
   refuses for the gspec skills.
+
+## Revision — 2026-09-17 — arm 2 terminates at the operator, never at `/gspec-feature`
+
+**Operator decision, this date.** D2 above splits arm 2 across the seam: the loop hands
+the routing decision off, and "the main-context session (or the human) runs
+`/gspec-feature` and adds the roadmap entry." **The parenthetical is withdrawn.** Arm 2
+now always ends at a question in the stop report, and **no agent files the feature** —
+not the architect that routed it, and not the session driving the loop, whether or not
+driver mode has exited. Only the operator decides that a proposal becomes a feature.
+
+### Why
+
+D2 read the constraint as *reachability* — a dispatched context has no `Skill` tool, so
+arm 2 must be handed to something that does. Under ADR 0028 the loop driver **is** the
+main context, so the hand-off found a capable recipient inside the run and completed
+there. The effect is that **finishing a feature files its successor**: a run terminates,
+the whole-branch review finds something outside every open capability, and the same
+session that just landed the work writes the next feature into the backlog with no
+operator in the path. Five of this repo's 28 `.agents/roadmap.yaml` entries name arm 2 as
+their own origin (`loop-prose-consistency`, `loop-prose-consistency-gaps`,
+`loop-entry-routing`, `completion-record-drift-gaps`, `guard-write-target-detection`), and
+several more were spawned by a whole-run review without naming the arm — so the backlog
+was growing at review events, not at operator decisions. ADR 0026's own consequence
+"feature count grows with distinct scopes, not with review events" was being satisfied
+only in the arm-1 direction.
+
+Reachability was never the *only* reason arm 2 stops short of authoring. The
+"Alternatives considered" entry above gives the second, and it does not depend on which
+context is holding the `Skill` tool: an autonomously-authored PRD is a spec nobody
+approved, entering the ordered backlog the loop will later execute unattended. What the
+`Skill`-tool argument concealed is that **the operator gate was the point, and
+reachability was just what was enforcing it**. This revision states the gate directly, so
+it no longer moves when the harness does.
+
+### What is unchanged
+
+- **Arm 1 is untouched.** An unchecked capability that covers the finding still takes an
+  appended task line, committed in-run. The operator gate applies to *creating a
+  destination*, not to using one that already exists and is already approved.
+- **The arm ordering, the arm-1 scope test, and every write bound in D1.**
+- **The carrier.** The routing decision still travels as a `normal`-severity question, and
+  the architect still names the proposed slug, its scope in a sentence, and its parent in
+  its result file and status line. What it feeds is a stop-report question, never a
+  command.
+- **D3 and D4.** Regeneration through `/gspec-plan` and a hook allowance stay rejected for
+  their own reasons.
+
+### Consequences of the revision
+
+- **A run can end with an unfiled proposal, and that is the intended state.** The cost is
+  that a proposal can be lost if the operator does not act on the stop report; the stop
+  report carries `handoff-feature` lines for the whole run precisely so it is visible
+  there. That exposure is accepted as cheaper than a backlog that writes itself.
+- **Arm 2's pay-back is slower.** D2 notes that arm 2 creates the destinations arm 1 later
+  uses; that now waits on an operator turn. Accepted.
+- **Sites that must agree:** `skills/run-loop/SKILL.md` §4 (arm 2), `agents/chief-engineer.md`
+  (`hand-off-feature`), `agents/architect.md`, and this repo's `CLAUDE.md` ADR 0026
+  bullet. `agents/loop-driver.md` and `templates/report-templates.md` already describe
+  hand-off as a stop-report question only, and needed no change.
+
+## Revision — 2026-09-20 — an end-of-run arm-2 proposal leaves a routing record and is counted
+
+`loop-driver-run-gaps` T5 (`ee8b869`). The 2026-09-17 revision above says the stop
+report "carries `handoff-feature` lines for the whole run precisely so it is visible
+there", and that what the architect's proposal feeds "is a stop-report question, never a
+command". Both stand. What that revision did not say — because nothing wrote it — is
+where the `handoff-feature` line for an **end-of-run** proposal comes from. A mid-run
+`hand-off-feature` from the decider reaches the digest through `runstate.sh route`, and
+so is counted; the proposal the end-of-run architect makes in `run-loop` §4 had no
+record at all, so the stop report rendered its decision block beside a `DECISIONS`
+figure that did not count it.
+
+**Now the proposal is recorded through the core, under a fixed id that is not a
+packet.** When the architect's status line reports an arm-2 proposal in its free-text
+clause — the driver judges that from the line it already relays; arm 2 introduces no new
+status token — the driver calls
+`runstate.sh route <run-state> end-of-run-review hand-off-feature --status '<that line>'`
+before the stop report reads `run-tally`. `end-of-run-review` names the run's termination
+review: it fits the packet-id charset, reads as a title in the stop report, and cannot
+collide with a packet. The printed `ACTION` is not acted on — the record is the purpose
+of the call — and no outcome is ever recorded for the id, since it has no handoff file
+and no start record. `run-digest` then emits one `handoff-feature` line for it carrying
+the architect's status line, `run-tally`'s `DECISIONS` includes it once, and the stop
+report's 🔀 section carries exactly that many blocks. An architect that routed everything
+to arm 1, or found nothing to route, records nothing and changes no figure. ADR 0028
+carries the matching amendment on the routing log's shape.
+
+### What is unchanged
+
+- **The operator gate.** The record counts the proposal; it files nothing. No agent runs
+  `/gspec-feature` in the run, and a run can still end with an unfiled proposal — the
+  record only makes the tally honest about how many there are.
+- **The carrier.** The proposal still travels as the architect's status line and result
+  file, and still lands as a stop-report question. The routing record carries that same
+  status line; it is a second reader of the line, not a second line.
+- **Arm 1, the arm ordering, the arm-1 scope test, D3 and D4.**
+
+> **Retired 2026-09-22 — the end-of-run routing step this revision extends no longer
+> exists.** The architect dispatch it records a routing record for is gone, and with it
+> the `end-of-run-review` id and that record. See the amendment below; the text above
+> stands as the record of what shipped on 2026-09-20.
+
+## Amendment — 2026-09-22 — the end-of-run routing step is retired
+
+**Operator decision, this date.** `run-loop` §4 dispatched the `architect` over the
+whole-branch review's file to route each Critical/Important finding by D1 and D2, and
+(since the 2026-09-20 revision) recorded an arm-2 proposal through `route` under the
+fixed id `end-of-run-review`. **That whole step is deleted.** The whole-branch review
+itself is untouched — the bounded diff, the reviewer dispatch, its `write-result` and
+its one status line all stay exactly as they are.
+
+### Why: arm 1 is structurally unreachable at §4, so the step could only ever propose
+
+Arm 1 requires an **incomplete** feature with an unchecked task line to anchor on and an
+unchecked capability covering the finding. By the time §4 runs, §3.6 has flipped every
+task checkbox of the feature just finished at each land, and `complete-capabilities` has
+flipped its capabilities — so for the feature the run was about, arm 1 fails its anchor
+test on every run, by construction. Arm 2 is therefore the only arm the end-of-run
+architect can reach, and since the 2026-09-17 revision arm 2 terminates at a question
+for the operator to decline or accept. The step's entire reachable output was one
+proposal per run.
+
+The cost was measured on the run that prompted this retirement: the architect dispatch
+cost **70,695 tokens** (operator's measurement) and produced **one proposal, declined**.
+The prose removed from `skills/run-loop/SKILL.md` is **649 words**, and the replacement
+below is 312, so §4 falls from 2,905 words to 2,553 and the skill from 12,493 to 12,156
+(measured with `wc -w` against the pre-change file). The dispatch, not the prose, was
+the expensive half. This is a deliberate subtraction for token cost, not a redesign —
+nothing replaces the step with a mechanism of similar size.
+
+### What replaces it: one durable record, and nothing else
+
+Where §4 relays the review's status line, the driver now records **one finding per note
+that line reports**, through `runstate.sh add-finding`. The reason is durability, not
+routing: the findings index is the only thing §2's fresh-run write carries into the next
+run, and `begin-run` prunes the run directory holding the review file after two runs, so
+a note left only in that file is gone within two runs. Nothing new is built for this —
+`add-finding` already exists and `scripts/runstate.sh` is unchanged by this retirement.
+
+- The summary is **what the status line says**. The driver still never opens a result
+  file (ADR 0028), so it can only record what it has read; inventing a finding about a
+  file it has not read is the failure this constraint forbids.
+- **`--packets` is mandatory**, so each finding names the packet or packets the note is
+  about. At termination those are **landed** packets — that is truthful, and it is
+  stated rather than worked around. **Expiry is unchanged**: the positive-evidence rule
+  (ADR 0024, ADR 0025) governs these findings exactly as it governs every other one, and
+  this amendment adds no expiry behaviour, no knob and no exemption.
+- **A review reporting no notes records nothing.** No call, no finding, no figure moves.
+- The driver relays the reviewer's own status line in the stop report and names the
+  review file's path beside it, so the operator can open what the driver did not.
+
+### What is unchanged
+
+- **D1 and D2 themselves, the arm ordering, the arm-1 scope test and its write bounds,
+  D3 and D4.** The arms are retired only at `run-loop` §4. They remain live where they
+  are still reachable: the escalation decider's `append-task` (arm 1) and
+  `hand-off-feature` (arm 2) triggers mid-run, and the Chief Engineer's periodic review
+  of the findings index — both operate while a feature is still incomplete, which is
+  exactly the condition §4 cannot satisfy.
+- **The operator gate.** No agent files a feature, here or anywhere; the 2026-09-17
+  revision's rule survives its own carrier.
+- **A rejection from the immutability hook is still a signal, and the shell append is
+  still forbidden.**
+
+### Consequences
+
+- **A `handoff-feature` line in the stop report now comes only from the decider or the
+  periodic review.** `run-tally`'s `DECISIONS` no longer has a termination proposal to
+  count, and `end-of-run-review` is written by nothing. `scripts/runstate.sh` never
+  special-cased the id — it is an ordinary packet id to the core — so no code changed.
+- **The end-of-run review's output is now durable rather than routed.** A note that
+  really is "this should be built/fixed" reaches the operator as a finding and a relayed
+  status line, and the operator decides whether it becomes backlog. That is slower than
+  an in-run proposal and is accepted: the proposal was declined at the operator gate
+  anyway, so the gate was always where the decision happened.
+- **Sites that had to agree:** `skills/run-loop/SKILL.md` §4 (and §3.6's cross-reference
+  to the arms), `agents/architect.md` (its termination duty), `agents/loop-driver.md`
+  (the never-open-a-result-file rule, which is now absolute with no exception to
+  explain), this repo's `CLAUDE.md` (the ADR 0026 section and the `end-of-run-review`
+  bullet, replaced by one line under Retired features),
+  `scripts/test-report-conventions.sh` (the two sections pinning the deleted clause,
+  replaced by one pinning the review, the relay and the per-note finding), and
+  [ADR 0028](0028-loop-driver-mode.md)'s matching amendment on the routing log's shape.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's whole-branch review reasons
+
+Moved out of `skills/run-loop/SKILL.md` `## 4. Termination` by `skill-prompt-trim`.
+The amendment above keeps the whole-branch review; the skill keeps each of its rules
+with at most a one-clause reason, and the fuller wording is recorded here.
+
+- **Why the review's diff is bounded to this run's own work.** The skill keeps "since
+  a branch-vs-base diff re-presents earlier runs' already-reviewed commits". It used to
+  read, the measurement being the reason for the rule:
+
+  > A long-lived integration branch already carries earlier runs' already-reviewed
+  > commits, so a plain branch-vs-base diff re-presents all of them: measured on the
+  > run that found this defect, branch-vs-base was 211 files and about 30,000
+  > insertions, against only the files that run actually landed.
+
+- **When the branch-vs-base fallback applies.** The skill keeps "the digest names
+  no packet, or every packet ended failed, rolled-back, blocked or interrupted" and
+  "such a run has no narrower boundary to offer". It used to read:
+
+  > This includes, but is not limited to, a digest that names no packet at all — it
+  > also covers a run whose packets all ended failed, rolled-back, blocked or
+  > interrupted, which has a non-empty digest and still no such commit. Either way,
+  > there is no run-owned trailer to anchor a parent on, so the base comparison is the
+  > only diff available — it may re-present already-reviewed work from earlier runs,
+  > but a run that landed nothing traceable has no narrower boundary to offer instead.
+
+- **Why each note becomes a finding.** The skill keeps "since the findings index, not
+  the review file, is what the next run can see". It used to read:
+
+  > so the note survives this run: the findings index is the only thing §2's
+  > fresh-run write carries forward, and `begin-run` prunes the run directory holding
+  > the review file after two runs, so a note left only in that file is a note the
+  > next run cannot see.

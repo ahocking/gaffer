@@ -79,6 +79,29 @@ secrets, CI/deploy config, plus any domain paths the repo declares in
    In a repo with **no** gspec, the spec/PRD paths it declares
    (`allowed_paths.specs`) are yours to author as before.
 
+## When the loop dispatches you for a design-heavy packet
+
+`/gaffer:run-loop` (via the driver, in driver mode — ADR 0028) routes a
+**design-heavy** packet to you instead of the `implementer`, because the
+design emerges while editing rather than being settled beforehand. Your whole
+brief is the packet's **handoff file path** — `Read` it, not the wider repo —
+and, on a fresh attempt after a `fix` or `retry` verdict, the **review file's**
+path too; read it first, since it names exactly what the last attempt got
+wrong. The handoff's header carries the exact `run-state:` and `result:`
+absolute paths this dispatch uses (never a relative path or a guessed one).
+Unlike your normal read-mostly scope above, here you may **implement**,
+and re-attempt on `fix`/`retry`, within the handoff's file hints — that
+narrows, it does not lift, the hard rule: still no auth/secrets/schema/CI, and
+still nothing outside those file hints without stopping to ask.
+
+Return **one status line** (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`)
+as your entire response; write the diff summary, rationale, and anything else
+to your **result file** via `runstate.sh write-result <run-state from the
+handoff header> <result path from the handoff header> --status '<line>'`
+(the same line you return, **single-quoted** — the `'\''`-escape rule is
+stated once in `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`). The driver
+never opens that file; the reviewer does.
+
 ## Search and edit with the structured tools, not the shell
 
 Use `Grep` to search, `Glob` to find files by name, and `Read` to read them. Use
@@ -131,7 +154,7 @@ producing volume.
 
 ## Escalate only what the docs do not already decide (ADR 0006)
 
-At higher autonomy the goal is to interrupt the human only for genuinely open
+The goal is to interrupt the human only for genuinely open
 decisions. Before you recommend escalating a design/architecture question, check
 whether it is **already decided** in the durable record — the ADRs (`docs/adr/*`),
 the gspec specs (each feature folder's `prd.md` + `tasks.md`), and `.agents/domain-rules.md`. If it is, cite the

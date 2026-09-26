@@ -5,11 +5,11 @@
 # The deterministic, zero-token half of the metrics feature. The PostToolUse hook
 # (hooks/metrics-log.sh) COLLECTS a per-session event spine as a run goes; this
 # script JOINS that spine with (a) packet boundaries derived from the
-# `[orch packet:<id>]` commit trailers that already exist in git, (b) the parallel
-# wave map in .agents/packet-graph.yaml if present, and (c) best-effort token/cost
-# from the Claude Code session transcripts — into ONE self-contained, portable
-# rollup: .agents/metrics/<run-id>/run-metrics.json. That packet is the artifact a
-# human reads or hands to Claude (/gaffer:metrics analyze) for optimization.
+# `[orch packet:<id>]` commit trailers that already exist in git, and (b) best-effort
+# token/cost from the Claude Code session transcripts — into ONE self-contained,
+# portable rollup: .agents/metrics/<run-id>/run-metrics.json. That packet is the
+# artifact a human reads or hands to Claude (/gaffer:metrics analyze) for
+# optimization.
 #
 # WHY DERIVE PACKET BOUNDARIES FROM GIT (not run-state, cf. ADR 0019 revision):
 #   run-state's packets[] is a nested structure with a strict single-writer/atomic
@@ -91,12 +91,53 @@ warn() { printf 'metrics.sh: %s\n' "$*" >&2; }
 # callers' `|| echo <default>` fallbacks still fire on a jq error.
 jqr() { jq -r "$@" | tr -d '\r'; }
 
-# --- portable ISO-8601(Z) -> epoch seconds -----------------------------------
+# --- shared jq fragment: parse a T1-shaped timestamp into a COMPARABLE ms key --
+# runstate.sh's record-start/record-outcome/sweep-open (loop-measurement T1/T3)
+# stamp sub-second UTC times ("...:08.311Z"), which do NOT sort correctly as
+# strings against a whole-second stamp in the same second ("...:08.311Z" sorts
+# BELOW "...:08Z" because "." (0x2E) sorts before "Z" (0x5A)). A live site did
+# exactly this raw string compare (the outcomes-window filter below, pre-T4) and
+# silently dropped same-second records. Every join over the outcomes log must
+# compare PARSED times instead — this is the one definition, spliced (via bash
+# concatenation) into every jq program below that needs it, so it cannot drift
+# out of step with runstate.sh's own `_rs_ts_key`/`_rs_frac_ms` (same algorithm:
+# epoch seconds * 1000 + the first 3 fractional digits, zero-padded). No fraction
+# present (a pre-T1 whole-second record) reads as ms=0, matching `_rs_frac_ms`.
+JQ_TS_MS='def ts_ms:
+  . as $t
+  | (($t | index("."))) as $dot
+  | (if $dot == null then {bare: $t, frac: "0"}
+     else {bare: ($t[0:$dot] + "Z"), frac: $t[$dot+1:-1]} end) as $p
+  # RESILIENT, not throwing (M1): fromdateiso8601 throws on one unparseable
+  # value, and this def runs unconditionally over EVERY record in a slurped
+  # array before any window filter narrows it -- one malformed ts anywhere in
+  # the outcomes log would abort the whole jq program, and the caller-side
+  # `2>/dev/null || echo [] `/`{}` fallback then silently zeroes every
+  # packet outcome for the run, not just the bad record. `?` degrades a
+  # malformed bare-seconds value to epoch 0 instead, which sorts before any
+  # real window and so drops out on its own rather than taking the run with it.
+  | ($p.bare | fromdateiso8601? // 0) as $secs
+  | (($p.frac + "000")[0:3] | tonumber) as $ms
+  | $secs * 1000 + $ms;
+'
+
+# --- portable ISO-8601(Z) [+ optional .fff] -> epoch seconds -----------------
+# STRIPS an optional fractional-seconds component before handing the timestamp to
+# `date` (loop-measurement T4 finding): GNU `date -u -d` accepts the fraction fine,
+# but the BSD/macOS `-j -f "%Y-%m-%dT%H:%M:%SZ"` arm REJECTS it outright and this
+# function's un-fixed form returned 0 for any sub-second stamp on macOS while
+# working on a GNU runner — a silent, platform-dependent wrong answer, since 0 is a
+# valid-looking epoch. `runstate.sh record-start`/`record-outcome` (T1/T3) now stamp
+# sub-second UTC times (`_rs_now_ts`), so any caller handing this function one of
+# those records' `ts` fields would otherwise hit exactly this. Mirrors
+# `runstate.sh`'s own `_rs_epoch_secs` (same fix, deliberately a separate copy — see
+# that function's comment for why it is not a shared call).
 epoch() {
-  local t="${1:-}"; [ -n "$t" ] || { echo 0; return; }
+  local t="${1:-}" bare; [ -n "$t" ] || { echo 0; return; }
+  bare="$(printf '%s' "$t" | sed -E 's/\.[0-9]+Z$/Z/')"
   # GNU date first, then BSD/macOS.
-  date -u -d "$t" +%s 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$t" +%s 2>/dev/null \
+  date -u -d "$bare" +%s 2>/dev/null \
+    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$bare" +%s 2>/dev/null \
     || echo 0
 }
 
@@ -178,6 +219,27 @@ resolve_idle_gap() {
   case "$v" in ''|*[!0-9]*) echo 300 ;; *) echo "$v" ;; esac
 }
 
+# --- dispatch_waste turn threshold (dispatch-progress-metrics T6) -------------
+# The repository's `implementer_turn_budget` (tool calls) when it is a positive
+# integer, else 150, the baseline's own cutoff. Prints "<value> <source>", where
+# source is `implementer_turn_budget` or `default`. The value is read by
+# runstate.sh's `turn-budget` subcommand -- the ONE strict reader of that key,
+# shared with the handoff's budget line (dispatch-progress-metrics T14), so the
+# two can no longer disagree about what the key says. Only the fallback is this
+# rollup's own: 150, not the handoff's 120. runstate.sh is resolved beside this
+# script; when it cannot be run the value reads as the default.
+resolve_turn_threshold() {
+  local main_root="$1" v="" here=""
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P 2>/dev/null || true)"
+  fi
+  if [ -n "$here" ] && [ -f "$here/runstate.sh" ]; then
+    v="$(bash "$here/runstate.sh" turn-budget "$main_root" 2>/dev/null \
+         | awk -F= '$1 == "TURN_BUDGET" { print $2; exit }' | tr -d '\r')"
+  fi
+  case "$v" in ''|0|*[!0-9]*) echo "150 default" ;; *) echo "$v implementer_turn_budget" ;; esac
+}
+
 # =============================================================================
 # collect
 # =============================================================================
@@ -204,7 +266,6 @@ cmd_collect() {
   local agents="${main_root}/.agents"
   local evdir="${agents}/metrics/events"
   local rs="${agents}/run-state.yaml"
-  local graph="${agents}/packet-graph.yaml"
 
   # --- run identity ----------------------------------------------------------
   local mode="unknown" branch="" integ=""
@@ -214,19 +275,13 @@ cmd_collect() {
     integ="$(awk -F: '/^integration_branch:/{sub(/^[^:]*:[[:space:]]*/,"",$0); gsub(/[[:space:]]/,"",$0); print; exit}' "$rs" 2>/dev/null)"
     [ -n "$mode" ] || mode="unknown"
   fi
-  # Autonomy level (env > .agents/autonomy > unknown). Recorded so two runs are
-  # COMPARABLE: a `supervised` run (human answering questions, editing inline) is not
-  # comparable to `full-autonomy`, and reading a before/after across the two is how a
-  # measurement lies. Resolved at collect time — it is not in run-state.
-  local autonomy="${ORCH_AUTONOMY:-}"
-  if [ -z "$autonomy" ] && [ -f "${agents}/autonomy" ]; then
-    # The file is COMMENTED (the template documents the levels inline), so take the
-    # first non-blank, non-`#` line only — slurping the whole file yields the manual.
-    autonomy="$(awk 'NF && $0 !~ /^[[:space:]]*#/ {
-                       gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' \
-                   "${agents}/autonomy" 2>/dev/null || true)"
-  fi
-  [ -n "$autonomy" ] || autonomy="unknown"
+  # Autonomy level is resolved AFTER session selection, from the per-session
+  # `_state/<sid>.fixed-rules` marker the event hook writes — see the block just
+  # below the sids.txt build. It is deliberately NOT read from ORCH_AUTONOMY or
+  # `.agents/autonomy` any more (retire-autonomy-levels): there is one fixed rule
+  # set now, and a level read from either source would describe a policy that is no
+  # longer in force. Declared here only so the emit below always has a value.
+  local autonomy="unknown"
   # run_id from an explicit flag or an orch/<task-id> branch; the "adhoc" fallback
   # is DEFERRED to after session selection so it can be disambiguated by session id.
   if [ -z "$run_id" ]; then
@@ -392,15 +447,6 @@ cmd_collect() {
     by_role: (group_by(.agent_type)|map({key:.[0].agent_type, value:(map(.duration_ms//0)|add)})|from_entries)
   }' "$tmp/events.json" > "$tmp/durations.json" 2>/dev/null || echo '{"total":0,"by_role":{}}' > "$tmp/durations.json"
 
-  # by_lane (ADR 0019 v2 / P5-M): per-worktree-lane spend, for parallel runs. Empty on
-  # sequential runs (no lane_id). Sum of lane durations >> wall means lanes overlapped
-  # (real concurrency); ~= wall means the "parallel" run actually serialized.
-  jq '
-    [ .[] | select(.lane_id != null) ] | group_by(.lane_id)
-    | map({key:.[0].lane_id, value:{tool_calls:length, duration_ms:(map(.duration_ms//0)|add)}})
-    | from_entries
-  ' "$tmp/events.json" > "$tmp/bylane.json" 2>/dev/null || echo '{}' > "$tmp/bylane.json"
-
   # --- run window: the [start,end] the trailer scan and packet chaining use ---
   # Prefer explicit flags, else the selected-events span. win_start is the lower
   # bound that excludes prior runs' commit trailers; win_end is only enforced when
@@ -429,6 +475,33 @@ cmd_collect() {
   # RULE: any future `jq -r … > file` that a `read` loop consumes must be piped
   # through `tr -d '\r'` the same way.
   jq -r '[.[].session_id]|unique|.[]' "$tmp/events.json" 2>/dev/null | tr -d '\r' > "$tmp/sids.txt" || true
+  # JSON form of the same selected-session set, for the record joins below (T4):
+  # they need it as a jq array, not a line list a `while read` loop consumes, so the
+  # CRLF hazard documented above does not apply to this particular read.
+  jq -R -s 'split("\n")|map(select(length>0))' "$tmp/sids.txt" > "$tmp/sids.json" 2>/dev/null || echo '[]' > "$tmp/sids.json"
+
+  # --- autonomy: from the hook's marker, never from a level file or env ---------
+  # Autonomy levels are retired (retire-autonomy-levels): there is ONE fixed rule set,
+  # and every session that ran under a plugin carrying it leaves a zero-byte
+  # `_state/<sid>.fixed-rules` marker beside its skill state (hooks/metrics-log.sh).
+  # So the level is a property of the SESSIONS in the selected window, not of a file
+  # on disk at collect time — which is the point: `.agents/autonomy` and ORCH_AUTONOMY
+  # describe what someone configured NOW, while the question is what governed the run
+  # being measured. Claim `full-autonomy` only when EVERY selected session carries the
+  # marker; a pre-install window, a window mixing pre- and post-install sessions, and a
+  # window with no sessions at all all read `unknown` — which means UNMEASURED, never
+  # "some other level". The field name, its position in the emitted JSON and the
+  # top-level key set are unchanged, so a packet's shape does not move and `show`
+  # renders it exactly as before.
+  local _sid _seen_sid=0 _all_fixed=1
+  if [ -f "$tmp/sids.txt" ]; then
+    while IFS= read -r _sid; do
+      [ -n "$_sid" ] || continue
+      _seen_sid=1
+      if [ ! -f "${evdir}/_state/${_sid}.fixed-rules" ]; then _all_fixed=0; break; fi
+    done < "$tmp/sids.txt"
+  fi
+  if [ "$_seen_sid" -eq 1 ] && [ "$_all_fixed" -eq 1 ]; then autonomy="full-autonomy"; fi
 
   # finalize the deferred "adhoc" run_id, disambiguated so two different sessions
   # never collide on .agents/metrics/adhoc/run-metrics.json. Prefer the (first)
@@ -528,18 +601,32 @@ cmd_collect() {
         # design-heavy]` and `[orch impl:inline|delegated]` — the factual routing
         # decision recorded by the executor at the green gate. Buffer them per
         # commit and emit together with the packet trailer; absent -> empty.
+        #
+        # PACKET BUNDLING (packet-bundling T1): a commit may carry MORE THAN ONE
+        # `[orch packet:<id>]` trailer (a bundled landing of several tasks in one
+        # commit). Accumulate every id seen in MESSAGE ORDER into ids[]/n rather
+        # than overwriting a single scalar — the old `pk=v` assignment is why a
+        # bundled commit read as one packet row however many trailers it carried.
+        # flush() emits one row per id, all sharing the owning commit date/tier/
+        # impl, plus a 1-based ordinal (`i`) so rows that share one end time (the
+        # commit date) keep message order through the sort/reduction below — ties
+        # on that string are otherwise unspecified. A commit with exactly one
+        # trailer emits exactly one row with ordinal 1, byte-identical to before.
         function flush() {
           # run-window filter: win_start <= d <= we_bound. BOTH bounds are always set
           # when events exist (we_bound = win_end + grace, or --until verbatim).
-          if (pk != "" && d != "" && (ws=="" || d>=ws) && (we=="" || d<=we))
-            print pk "\t" d "\t" tier "\t" impl
-          pk=""; tier=""; impl=""
+          if (d != "" && (ws=="" || d>=ws) && (we=="" || d<=we)) {
+            for (i=1; i<=n; i++)
+              print ids[i] "\t" d "\t" tier "\t" impl "\t" i
+          }
+          n=0; delete ids; tier=""; impl=""
         }
         /^===ORCHCOMMIT===/ { flush(); d=$2; next }
         /^[[:space:]]*\[orch packet:[^]]+\][[:space:]]*$/ {
           if (match($0, /\[orch packet:[^]]+\]/)) {
             v=substr($0, RSTART+13, RLENGTH-14)     # strip "[orch packet:" .. "]"
-            gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); pk=v
+            gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+            if (v != "") { n++; ids[n]=v }
           }
         }
         /^[[:space:]]*\[orch tier:[^]]+\][[:space:]]*$/ {
@@ -555,75 +642,241 @@ cmd_collect() {
         END { flush() }' >> "$tmp/packets_raw.tsv" 2>/dev/null || true
 
   # keep the LATEST commit time per packet id, then order packets ascending.
-  # emit JSON array: [{id, end}] ordered by end.
+  # emit JSON array: [{id, end, tier, impl, seq}] ordered by (end, seq, id) — `seq`
+  # is the within-commit ordinal from flush() above, carried through so bundled
+  # siblings (same `end`) sort by message order rather than by an unspecified
+  # tie-break on the id string, and so section 5 below can tell a bundle's FIRST
+  # row (seq==1) from its siblings (seq>1) without re-deriving it from a
+  # zero-width window, which a genuine same-second coincidence between two
+  # unrelated single-trailer commits could otherwise produce too. `seq` never
+  # reaches the final packet objects section 5 emits — it is an internal
+  # ordering/branching aid only. Nor does `trailer: true`, which marks an `end`
+  # that IS a commit trailer author time (a record-only entry merged in below has
+  # no commit); section 5 reads it for a dispatch row progress `landed`.
+  # `id` is appended as a final tie-break because the `awk 'for (k in last)'` dedup above feeds jq in hash order, not file order, so
+  # without it two unrelated single-trailer commits (both seq==1) landing in the
+  # same second would sort nondeterministically — the byte-identical-for-a-
+  # single-trailer-commit guarantee depends on this being stable.
   if [ -s "$tmp/packets_raw.tsv" ]; then
     sort "$tmp/packets_raw.tsv" \
       | awk -F'\t' '{ last[$1]=$0 } END { for (k in last) print last[k] }' \
-      | sort -t$'\t' -k2,2 \
       | jq -R -s 'split("\n")|map(select(length>0))|map(split("\t"))
                   |map({id:.[0], end:.[1],
                         tier:((.[2]//"")|if .=="" then null else . end),
-                        impl:((.[3]//"")|if .=="" then null else . end)})' \
+                        impl:((.[3]//"")|if .=="" then null else . end),
+                        seq:((.[4]//"1")|tonumber), trailer:true})
+                  |sort_by([.end, .seq, .id])' \
       > "$tmp/pk_ends.json" 2>/dev/null || echo '[]' > "$tmp/pk_ends.json"
   else
     echo '[]' > "$tmp/pk_ends.json"
   fi
 
-  # --- 3. wave map from packet-graph.yaml (packet -> wave), if present --------
-  # tolerant parse: look for `wave: N` headers and `- id: <pkt>` / `<pkt>:` entries.
-  echo '{}' > "$tmp/waves.json"
-  if [ -f "$graph" ]; then
-    awk '
-      /(^|[[:space:]])wave:[[:space:]]*[0-9]+/ {
-        for (i=1;i<=NF;i++) if ($i=="wave:") { w=$(i+1) }
-      }
-      /- id:[[:space:]]*/ { id=$0; sub(/.*- id:[[:space:]]*/,"",id); gsub(/[[:space:]]/,"",id); if (w!="") print id "\t" w }
-    ' "$graph" 2>/dev/null \
-    | jq -R -s 'split("\n")|map(select(length>0))|map(split("\t"))|map({key:.[0],value:(.[1]|tonumber?)})|from_entries' \
-    > "$tmp/waves.json" 2>/dev/null || echo '{}' > "$tmp/waves.json"
-  fi
-
-  # --- 3b. ATTESTED packet outcomes (ADR 0019 v3.4) --------------------------
-  # Optional, append-only, written by the loop via `runstate.sh record-outcome` at each
-  # packet boundary — including the boundaries that do NOT produce a commit, which is
-  # the entire point. The collector cannot observe outcome: it reconstructs packets from
-  # green-commit trailers, so a rolled-back packet leaves no trace to find.
+  # --- 3. ATTESTED packet boundaries + outcomes (ADR 0019 v3.4, loop-measurement T4) -
+  # Optional, append-only, written by the loop via `runstate.sh record-start` /
+  # `record-outcome` / `sweep-open` at each packet boundary — including boundaries
+  # that do NOT produce a commit, which is the entire point. The collector cannot
+  # observe outcome from git alone: it reconstructs packets from green-commit
+  # trailers, so a rolled-back or never-committed packet leaves no trace there.
   #
   # Deliberately NOT run-state: run-state has a single writer (the driver) and this must
   # be writable from a lane without contending for it — the same reasoning that kept
   # packet boundaries on commit trailers rather than migrating run-state's schema.
   #
-  # LAST record per packet id wins: a packet that failed, was fixed and then landed
-  # green is green now. Absent file or absent id -> null, never an assumed "green".
+  # A packet has STARTED in this run when the run's window holds a start record, a
+  # continuation record, a commit trailer for it, OR an outcome record attributed to
+  # the run (loop-measurement T4). Its outcome is the LAST record attributed to the
+  # run at-or-after its latest start/continuation (falling back to the last outcome
+  # record overall when no boundary record is attributed — the pre-T1 shape, where a
+  # trailer-only packet's outcome came from whatever outcome log existed for it).
   #
-  # SCOPED TWO WAYS, exactly like every other join here — by SESSION and by the run
-  # WINDOW. `record-outcome` names its log after the same session id that names the
-  # event log, so the selected sessions in sids.txt pick the right files; the ts filter
-  # then bounds them to [win_start, we_bound]. Unscoped, this globbed every outcome ever
-  # written and took a global last-wins, so re-collecting an old run inherited a later
-  # run's verdict for a same-named packet — the identical cross-run bleed v3/v3.2 spent
-  # two revisions eliminating for commit trailers. Same bug, same fix, same bounds.
+  # ATTRIBUTION, not FILE SELECTION (the bug this section exists to avoid). An
+  # `interrupted`/`abandoned` record is written by a LATER session's `sweep-open`, into
+  # THAT session's own log file — but its `ts`/`session` fields are copied VERBATIM from
+  # the start/continuation it closes. So this run's records can legitimately live in a
+  # log file this run never wrote to, and the old file-name-based selection (loop over
+  # sids.txt, `cat "$ocdir/$_sid.jsonl"`) would silently miss them. Every outcomes log in
+  # the repo is now read (mirroring `runstate.sh sweep-open`'s own directory scan), and
+  # each record's EFFECTIVE session is `.session` when present, else the log FILE's own
+  # name (`_file_sid`) — which is exactly how a pre-T1 record (no `session` field, because
+  # `record-outcome` always wrote into its own session's file before T1) still scopes
+  # correctly. A record is attributed to this run when its effective session is one of
+  # the selected sessions (or, with no event spine at all — the structural fallback below
+  # — every file, since there is no session to select) AND its `ts` falls in
+  # [win_start, we_bound] — same two-way scoping as every other join here, so a foreign
+  # session's or an out-of-window record still cannot bleed into this run's verdict
+  # (v3/v3.2 fixed the identical cross-run bleed for commit trailers).
+  #
+  # TIMES ARE PARSED, NEVER STRING-COMPARED (loop-measurement T4 finding): boundary and
+  # outcome records carry a SUB-SECOND stamp (`runstate.sh _rs_now_ts`), and
+  # "...:08.311Z" sorts BELOW "...:08Z" as a raw string ("." is 0x2E, "Z" is 0x5A) —
+  # inverting same-second ordering. `$JQ_TS_MS` (defined above) is spliced into every
+  # program below instead.
   echo '{}' > "$tmp/outcomes.json"
   local ocdir="${agents}/metrics/outcomes"
+  : > "$tmp/records_raw.ndjson"
   if [ -d "$ocdir" ]; then
-    : > "$tmp/outcomes.ndjson"
-    if [ -s "$tmp/sids.txt" ]; then
-      while IFS= read -r _sid; do
-        [ -n "$_sid" ] && [ -e "$ocdir/$_sid.jsonl" ] && cat "$ocdir/$_sid.jsonl" >> "$tmp/outcomes.ndjson"
-      done < "$tmp/sids.txt"
-    else
-      # No event spine at all (structural fallback): there is no session to select and
-      # no window to filter by, so take everything rather than silently reporting none.
-      cat "$ocdir"/*.jsonl >> "$tmp/outcomes.ndjson" 2>/dev/null || true
-    fi
-    jq -s --arg ws "$win_start" --arg we "$we_bound" \
-      'map(select(.packet != null and .outcome != null))
-       | map(select(($ws == "" or (.ts // "") >= $ws) and ($we == "" or (.ts // "") <= $we)))
-       | group_by(.packet)
-       | map({key:(.[0].packet), value:((sort_by(.ts // ""))[-1].outcome)})
-       | from_entries' \
-      "$tmp/outcomes.ndjson" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+    local _of _ofsid
+    for _of in "$ocdir"/*.jsonl; do
+      [ -e "$_of" ] || continue
+      _ofsid="$(basename "$_of" .jsonl)"
+      # jq (no -s) streams one filtered value per input value, so this appends one
+      # annotated line per record without slurping the whole repo's outcomes history
+      # into memory at once.
+      jq -c --arg fsid "$_ofsid" '. + {_file_sid: $fsid}' "$_of" 2>/dev/null >> "$tmp/records_raw.ndjson" || true
+    done
   fi
+
+  # attributed.json: every record (boundary or terminal), from every log, scoped to
+  # THIS run by (effective session, parsed ts) as described above.
+  jq -s "${JQ_TS_MS}"'
+    ($sids[0] // []) as $sset
+    | (if $ws == "" then null else ($ws|ts_ms) end) as $wsm
+    | (if $we == "" then null else ($we|ts_ms) end) as $wem
+    | map(select(.packet != null and .ts != null))
+    | map(. + {_esess: (.session // ._file_sid // ""), _ms: (.ts|ts_ms)})
+    | map(select(($sset|length) == 0 or (._esess as $es | ($sset | index($es)) != null)))
+    | map(select($wsm == null or ._ms >= $wsm))
+    | map(select($wem == null or ._ms <= $wem))
+  ' --slurpfile sids "$tmp/sids.json" --arg ws "$win_start" --arg we "$we_bound" \
+    "$tmp/records_raw.ndjson" > "$tmp/attributed.json" 2>/dev/null || echo '[]' > "$tmp/attributed.json"
+
+  # recordjoin.json: {outcomes: {id:outcome}, started_ids: [id...], record_end: {id:ts},
+  # swept_ids: [id...], has_start: bool, record_seq: {id:seq}}. Split from the
+  # attributed stream by field shape (`kind` marks a boundary record, `outcome`
+  # marks a terminal one — same rule runstate.sh's own `_rs_open_packets` uses),
+  # never by which log file a record happened to land in.
+  #
+  # `record_seq` (packet-bundling T8): a bundle that does NOT land green has no
+  # commit and so no trailers, so its members reach section 5 only through the
+  # extra-entries merge below — and every one of them used to get `seq: 1`, which
+  # is the trailer-FIRST value, so members 2..n read as measured zeros across a
+  # window they never had (they share one boundary with member 1). `_ord` tags
+  # every attributed record with its position in `attributed.json`, which is
+  # outcomes-log line order — `record-outcome`/`record-start` write one line per
+  # bundle member, all in one call, cursor id first (packet-bundling T3) — so
+  # sibling ids sharing one boundary sort back into that same write order. The
+  # group key is the WINNING terminal record's (effective session, parsed ts):
+  # bundle siblings share one `_rs_now_ts()` call and one session (T3), so this
+  # is exactly "(session, ts) of their latest terminal record", and a lone
+  # record-only packet is a group of one, seq 1 — byte-identical to today.
+  jq '
+    (to_entries | map(.value + {_ord: .key})) as $indexed
+    | ($indexed | map(select(.kind != null))) as $boundary
+    | ($indexed | map(select(.outcome != null))) as $terminal
+    | ($boundary | group_by(.packet)
+       | map({key: .[0].packet, value: ((sort_by(._ms))[-1])}) | from_entries) as $latest_boundary
+    | ($terminal | group_by(.packet) | map(
+        . as $trecs
+        | $trecs[0].packet as $pid
+        | ($latest_boundary[$pid]._ms) as $lb
+        | (if $lb != null then ($trecs | map(select(._ms >= $lb))) else $trecs end) as $eligible
+        | if ($eligible | length) > 0
+          then {key: $pid, value: (($eligible | sort_by(._ms))[-1])}
+          else empty end
+      ) | from_entries) as $winning_terminal
+    | ($winning_terminal | map_values(.outcome)) as $outcomes
+    | ((($boundary | map(.packet)) + ($terminal | map(.packet))) | unique) as $started
+    | (($boundary + $terminal) | group_by(.packet)
+       | map({key: .[0].packet, value: ((sort_by(._ms))[-1].ts)}) | from_entries) as $record_end
+    # SWEPT (C1): sweep-open closes an open packet by copying the boundary ts
+    # VERBATIM into the terminal record it writes (that verbatim copy is what
+    # makes the close idempotent, see the comment above section 3). A terminal
+    # record whose _ms is BYTE-IDENTICAL to the latest boundary it closes
+    # therefore carries no information about how long the packet actually ran; a
+    # terminal recorded directly (record-outcome id abandoned, not via sweep)
+    # carries its own real ts and does NOT match. Detected by ts equality, not
+    # by outcome value, since abandoned can come from either path.
+    | ($winning_terminal | to_entries
+       | map(select(.value._ms == ($latest_boundary[.key]._ms)))
+       | map(.key)) as $swept_ids
+    | ($winning_terminal | to_entries | group_by([.value._esess, .value._ms])
+       | map(sort_by(.value._ord))
+       | map( . as $g | range(0; $g|length) as $i | {key: $g[$i].key, value: ($i+1)} )
+       | from_entries) as $record_seq
+    | { outcomes: $outcomes, started_ids: $started, record_end: $record_end,
+        swept_ids: $swept_ids, record_seq: $record_seq,
+        has_start: (($boundary | map(select(.kind == "start")) | length) > 0) }
+  ' "$tmp/attributed.json" > "$tmp/recordjoin.json" 2>/dev/null \
+    || echo '{"outcomes":{},"started_ids":[],"record_end":{},"swept_ids":[],"record_seq":{},"has_start":false}' > "$tmp/recordjoin.json"
+
+  jq -c '.outcomes // {}' "$tmp/recordjoin.json" > "$tmp/outcomes.json" 2>/dev/null || echo '{}' > "$tmp/outcomes.json"
+
+  # merge record-only packet ids (no trailer — never committed, or a still-open
+  # interruption) into pk_ends.json, ordered by PARSED end time (see above; a
+  # trailer's whole-second end and a record's sub-second end must not be
+  # string-compared). Trailer ids keep their trailer end/tier/impl/seq unchanged.
+  # `swept` (C1) carries forward so section 5 can null the derived metrics rather
+  # than report a lying zero for a packet whose window collapsed to a point.
+  # `seq` on a record-only entry comes from `$rj.record_seq` (packet-bundling T8):
+  # 1 for a lone record-only packet (byte-identical to today) or its within-
+  # boundary ordinal — cursor id first — when it shares a boundary with sibling
+  # bundle members that never got a commit. The tie-break below is a NUMERIC
+  # re-sort of `end`, so both trailer and record-only bundle siblings (same end,
+  # ascending seq) keep their write order even after this re-sort re-parses the
+  # timestamp string section 2 already sorted lexically.
+  jq -s "${JQ_TS_MS}"'
+    .[0] as $trailer_pk
+    | .[1] as $rj
+    | ($trailer_pk | map(.id)) as $trailer_ids
+    | (($rj.started_ids // []) | map(select(. as $i | ($trailer_ids | index($i)) == null))) as $extra_ids
+    | ($extra_ids | map({id: ., end: ($rj.record_end[.] // null), tier: null, impl: null,
+                          seq: (($rj.record_seq // {})[.] // 1),
+                          swept: ((($rj.swept_ids // []) | index(.)) != null)})
+                  | map(select(.end != null))) as $extra_entries
+    | ($trailer_pk + $extra_entries)
+    # `.id` is a final tie-break for the same reason section 2 needs one: two
+    # unrelated single-trailer commits landing in the same second (both seq==1)
+    # must not depend on the incoming array order for a deterministic sort.
+    | sort_by([(.end | ts_ms), (.seq // 1), .id])
+  ' "$tmp/pk_ends.json" "$tmp/recordjoin.json" > "$tmp/pk_ends_merged.json" 2>/dev/null \
+    && mv "$tmp/pk_ends_merged.json" "$tmp/pk_ends.json" || true
+
+  # kindjoin.json (dispatch-progress-metrics T3): the records a dispatch row's `kind`
+  # is read from. Two sources, joined per packet and never through run-state's
+  # run_id (which names the CURRENT run, not the one being collected):
+  #   - start records: the outcomes log's boundary records with kind `start` or
+  #     `continue` (`record-start` with or without --continue — a resume's
+  #     continuation record is a start for this purpose), already scoped to this
+  #     run by session and parsed ts in attributed.json above;
+  #   - routing records: EVERY `.agents/loop/*/routing.jsonl` line (`route`'s shape:
+  #     ts/packet/token/action/status), scoped by parsed ts to [win_start, we_bound]
+  #     and to this run's packet ids. Routing records carry no session, so the window
+  #     and the packet id are the only scoping they admit.
+  # `legacy`: the window holds neither record type for this run's packets.
+  # `routing_unmeasured`: at least one start record but no routing record for ANY of
+  # this run's packets — `begin-run` prunes all but the current and newest other
+  # run directory, and every reviewed packet gets at least a `pass` record, so an
+  # absent routing log is a pruned (or never-reviewed) one, not a run without
+  # verdicts. Both read every kind as null in section 5; only the latter gets a note.
+  : > "$tmp/routing_raw.ndjson"
+  if [ -d "${agents}/loop" ]; then
+    local _rf
+    for _rf in "${agents}"/loop/*/routing.jsonl; do
+      [ -e "$_rf" ] || continue
+      jq -c 'select(type == "object")' "$_rf" 2>/dev/null >> "$tmp/routing_raw.ndjson" || true
+    done
+  fi
+  jq -n "${JQ_TS_MS}"'
+    ($att[0] // []) as $a
+    | (($pke[0] // []) | map(.id)) as $ids
+    | (if $ws == "" then null else ($ws|ts_ms) end) as $wsm
+    | (if $we == "" then null else ($we|ts_ms) end) as $wem
+    | ($a | map(select(.kind == "start" or .kind == "continue"))
+          | map({packet, _ms, src: "start", token: .kind})) as $starts
+    | ($rt | map(select((.packet|type) == "string" and (.ts|type) == "string" and (.token|type) == "string"))
+          | map(. + {_ms: (.ts|ts_ms)})
+          | map(select($wsm == null or ._ms >= $wsm))
+          | map(select($wem == null or ._ms <= $wem))
+          | map(select(.packet as $p | ($ids | index($p)) != null))
+          | map({packet, _ms, src: "route", token})) as $routes
+    | { recs: ($starts + $routes),
+        start_count: ($starts | length),
+        legacy: ((($starts | length) == 0) and (($routes | length) == 0)),
+        routing_unmeasured: ((($starts | length) > 0) and (($routes | length) == 0)) }
+  ' --slurpfile att "$tmp/attributed.json" --slurpfile rt "$tmp/routing_raw.ndjson" \
+    --slurpfile pke "$tmp/pk_ends.json" --arg ws "$win_start" --arg we "$we_bound" \
+    > "$tmp/kindjoin.json" 2>/dev/null \
+    || echo '{"recs":[],"start_count":0,"legacy":true,"routing_unmeasured":false}' > "$tmp/kindjoin.json"
 
   # --- 4. tokens per turn (ADR 0019 v2) --------------------------------------
   # Emit ONE record per assistant turn: {role, ts, model, tok}. Per-turn `ts` lets us
@@ -844,25 +1097,132 @@ cmd_collect() {
     fi
   fi
 
+  # --- 4c. driver-mode context (thin-loop-driver T21, PRD "Main-session context"
+  # success metric): the largest context of one main-thread turn recorded while a
+  # selected session was in driver mode, reported beside the threshold that run's
+  # KICKOFF stated. A turn's "context" is what the model actually holds for that
+  # turn -- input + cache-write + cache-read tokens, deliberately NOT output
+  # (generated, not loaded) -- counted once per message id via the SAME deduped,
+  # window-bounded $tmp/turns.json section 4 already built (no new dedup key).
+  #
+  # WINDOWS, not one interval: driver mode can be entered/exited more than once
+  # within the sessions this collect run scopes (e.g. the loop stopped and
+  # restarted inside one session), so every enter/exit pair belonging to a
+  # selected session counts and a turn is in scope if it falls inside ANY of
+  # them. An enter with no matching exit yet (still driving) closes at $win_end
+  # instead, so its turns are still measured; a stray exit with no open enter is
+  # a no-op, not an error; a still-open window with no $win_end at all (an
+  # eventless run) is dropped rather than guessed unbounded.
+  #
+  # THRESHOLD is the run's KICKOFF value -- the EARLIEST enter record in scope,
+  # chronologically -- because that is the setting the kickoff report (run-digest)
+  # already told the operator was in effect, and this measurement judges the run
+  # against the number the operator was shown, not whatever is current when
+  # collect happens to run. `run-digest` itself reads the SAME driver-mode logs
+  # for the MOST RECENT `enter` across every session instead, because it answers
+  # "what's in effect now" for a run that can span sessions and be re-entered in
+  # each one -- a different question from this fixed baseline, so the two are
+  # expected to disagree. A later re-entry is ASSUMED, not verified, to carry the
+  # same repo/operator setting as the kickoff record, not a new one to reconcile
+  # against. `null` (never gaffer's own default) when that record's threshold is
+  # missing or "unknown" -- PRD: "A run lacking usage data or a stated threshold
+  # reports unmeasured". The two fields are null INDEPENDENTLY, not together: a
+  # null threshold forces max_context null too (never a real max_context paired
+  # against an invented threshold), but a stated threshold can still pair with a
+  # null max_context when no in-window turn carried usage data.
+  #
+  # Fails SOFT like every other join here: an unreadable/absent driver-mode log
+  # degrades this to {threshold:null, max_context:null, windows:0,
+  # turns_in_window:0} rather than aborting collect.
+  : > "$tmp/dmrecords.ndjson"
+  local dmf
+  while IFS= read -r sid; do
+    sid="$(printf '%s' "$sid" | tr -d '\r')"
+    [ -n "$sid" ] || continue
+    dmf="${agents}/metrics/driver-mode/${sid}.jsonl"
+    [ -e "$dmf" ] && cat "$dmf" >> "$tmp/dmrecords.ndjson" 2>/dev/null
+  done < "$tmp/sids.txt"
+  jq -s '.' "$tmp/dmrecords.ndjson" > "$tmp/dmrecords.json" 2>/dev/null || echo '[]' > "$tmp/dmrecords.json"
+
+  jq -n --slurpfile dm "$tmp/dmrecords.json" --slurpfile turns "$tmp/turns.json" \
+     --arg we "$win_end" \
+     "${JQ_TS_MS}"'
+    ($dm[0] // []) as $dmr
+    | ($turns[0] // []) as $trns
+    | ($dmr
+       | map(select(.kind=="enter" or .kind=="exit"))
+       | map(. + {_ms: (.ts // "" | if . == "" then null else ts_ms end)})
+       | map(select(._ms != null and .session != null))
+       | sort_by(._ms)) as $recs
+    | (if ($we // "") == "" then null else ($we | ts_ms) end) as $we_ms
+    # per-session open/close walk: an enter with a still-open prior window for
+    # the same session closes that prior window first (defensive -- two enters
+    # with no intervening exit should not silently merge into one window).
+    | (reduce $recs[] as $r ({open:{}, windows:[]};
+         if $r.kind == "enter" then
+           (if (.open[$r.session] // null) != null then
+              (.windows += [ .open[$r.session] + {end_ms: $r._ms, end: $r.ts} ])
+            else . end) as $c
+           | $c.open[$r.session] = {session: $r.session, start_ms: $r._ms, start: $r.ts,
+                                     threshold: ($r.threshold // null)}
+         elif $r.kind == "exit" then
+           if (.open[$r.session] // null) != null then
+             (.windows += [ .open[$r.session] + {end_ms: $r._ms, end: $r.ts} ])
+             | .open[$r.session] = null
+           else . end
+         else . end
+       )) as $st
+    | ($st.open | to_entries | map(.value) | map(select(. != null))
+       | map(select($we_ms != null) | . + {end_ms: $we_ms, end: $we})) as $trailing
+    | ($st.windows + $trailing | sort_by(.start_ms)) as $windows
+    | (if ($windows | length) == 0 then null
+       else ($windows[0].threshold | if (. != null and (. | test("^[0-9]+$"))) then tonumber else null end)
+       end) as $kickoff_threshold
+    | ($trns
+       | map(select(.role == "main" and .ts != null))
+       | map(. + {_ms: (.ts | ts_ms)})
+       | map(select(. as $t | $windows | any(.session as $s
+              | ($t.aid == ("main:" + $s)) and ($t._ms >= .start_ms) and ($t._ms <= .end_ms))))
+      ) as $inscope
+    | (if ($inscope | length) == 0 then null
+       else ($inscope | map(.tok.input + .tok.cache_creation + .tok.cache_read) | max)
+       end) as $max_raw
+    | {
+        threshold: $kickoff_threshold,
+        max_context: (if $kickoff_threshold == null then null else $max_raw end),
+        windows: ($windows | length),
+        turns_in_window: ($inscope | length)
+      }
+   ' > "$tmp/dmctx.json" 2>/dev/null \
+    || echo '{"threshold":null,"max_context":null,"windows":0,"turns_in_window":0}' > "$tmp/dmctx.json"
+
   # --- 5. per-packet windows + event/token rollup ----------------------------
   # Contiguous windows: start = prev end (or run_start), end = trailer commit time;
   # roll up events whose ts falls in (start, end], plus per-packet active_seconds
   # (idle-gap-aware) and per-packet tokens (from turns with a ts in the window).
+  # The dispatch_waste turn threshold is resolved once, here, so the per-packet
+  # waste:over-budget-dispatch flag (T7) and the section 7 rollup (T6) read the
+  # same value in the same unit (tool_calls).
+  local turn_threshold turn_threshold_source
+  read -r turn_threshold turn_threshold_source <<EOF
+$(resolve_turn_threshold "$main_root")
+EOF
   jq \
+     --argjson turn_threshold "$turn_threshold" \
      --slurpfile ev "$tmp/events.json" \
-     --slurpfile waves "$tmp/waves.json" \
      --slurpfile outc "$tmp/outcomes.json" \
      --slurpfile turns "$tmp/turns.json" \
+     --slurpfile kj "$tmp/kindjoin.json" \
      --argjson gap "$idle_gap" \
      --arg have_ts "$turns_have_ts" \
      --arg run_start "$win_start" \
-     '
+     --arg we_bound "$we_bound" \
+     "${JQ_TS_MS}"'
      def sumtok(f): {input:(map(f.input)|add//0), output:(map(f.output)|add//0),
                      cache_creation:(map(f.cache_creation)|add//0), cache_read:(map(f.cache_read)|add//0)};
      . as $ends
      | ($ev[0] // []) as $events
      | ($turns[0] // []) as $turns
-     | ($waves[0] // {}) as $wavemap
      | ($outc[0] // {}) as $outcomes
      | ($have_ts=="true") as $ts_ok
      # Does this run use the tier/impl convention at ALL? A run where NO packet
@@ -872,15 +1232,80 @@ cmd_collect() {
      # A run where SOME packets are labelled and others are not is the real
      # discipline gap, and those stragglers DO get flagged.
      | (. | any(.tier != null or .impl != null)) as $run_labelled
-     | reduce range(0; length) as $i ([];
+     # PER-DISPATCH JOIN (dispatch-progress-metrics T2). Every subagent context,
+     # keyed by agent_id, with the parsed time of its FIRST event and all of its
+     # events. Keyed on agent_id PRESENCE, never on agent_type: a main thread run
+     # as an agent carries agent_type with an empty or absent agent_id, and must
+     # never be attributed to a dispatch.
+     | ($events | map(select((.agent_id // "") != "" and .ts != null)) | group_by(.agent_id)
+        | map({key: .[0].agent_id, value: {first_ms: (map(.ts|ts_ms)|min), evs: .}})) as $aid_ctx
+     # Per-agent_id token sums (dispatch-progress-metrics T4): subagent turns only
+     # (a main-session aid is "main:<sid>", never an event agent_id), each message
+     # id already counted once by the section 4 dedup.
+     | ($turns | map(select(.role != "main")) | group_by(.aid)
+        | map({key: .[0].aid, value: (map(.tok)|sumtok(.))}) | from_entries) as $aid_tok
+     # Per-agent_id effort (session-effort-reporting T3), from the SAME deduped,
+     # run-window-bounded subagent turns as $aid_tok. One level -> that string; a
+     # level changed mid-dispatch -> the distinct levels in first-seen order (turns
+     # sorted by ts; a ts-less turn sorts first). Any turn with a null effort nulls
+     # the whole agent_id: a partial read is unmeasured, never the levels the other
+     # turns happened to carry. A legacy transcript (no `.effort` anywhere) and a
+     # model that takes no effort both land here as null.
+     | ($turns | map(select(.role != "main")) | group_by(.aid)
+        | map({key: .[0].aid,
+               value: (if any(.[]; .effort == null) then null
+                       else (sort_by(.ts // "") | map(.effort)
+                             | reduce .[] as $e ([]; if any(.[]; . == $e) then . else . + [$e] end)
+                             | if length == 1 then .[0] else . end)
+                       end)}) | from_entries) as $aid_eff
+     # DISPATCH KIND (dispatch-progress-metrics T3). The latest start or routing
+     # record for the packet strictly before the dispatch Agent event decides:
+     # a start (with or without --continue) -> initial, a `continue` routing record
+     # -> continuation, fix/retry -> that verdict. Only those three routing tokens
+     # are kind-bearing; pass/escalate/decider tokens never precede a re-dispatch of
+     # the same packet on their own. SAME BOUNDARY: when the latest record is a
+     # start and a `continue` routing record precedes it with NO Agent event of
+     # any role between the two (implementer-continuation writes `route continue`
+     # then `record-start --continue` back to back), the routing record decides.
+     # Only a `continue` routing record pairs with a following start: the run-loop
+     # fix/retry arm records no start, so a start after a fix/retry route with no
+     # Agent event between them is the `record-start --continue` of a resume, and the
+     # PRD reads a resume start as `initial` (latest-record rule).
+     # No prior record -> null; a legacy or routing-unmeasured run -> null on
+     # every row (kindjoin.json above), never a guessed `initial`.
+     | ($kj[0] // {recs: [], legacy: true, routing_unmeasured: false}) as $kjn
+     | ($events | map(select(.tool == "Agent" and .ts != null) | (.ts|ts_ms))) as $agent_ms
+     | ($kjn.recs | map(select(.src == "start" or .token == "continue" or .token == "fix" or .token == "retry"))) as $krecs
+     | def dkind($pid; $ams):
+         if ($kjn.legacy or $kjn.routing_unmeasured) then null
+         else ($krecs | map(select(.packet == $pid and ._ms < $ams)) | sort_by(._ms)) as $prior
+           | if ($prior | length) == 0 then null
+             else $prior[-1] as $L
+               | (if $L.src == "start" then
+                    ($prior | map(select(.src == "route" and .token == "continue" and (. as $r
+                        | ($agent_ms | any(. > $r._ms and . < $L._ms)) | not))) | last) as $R
+                    | (if $R != null then $R else $L end)
+                  else $L end) as $W
+               | if $W.src == "start" then "initial"
+                 elif $W.token == "continue" then "continuation"
+                 else $W.token end
+             end
+         end;
+     reduce range(0; length) as $i ([];
          . as $acc
          | $ends[$i] as $p
          | (if $i==0 then ($run_start // $p.end) else $ends[$i-1].end end) as $start
-         | ($events | map(select(.ts > $start and .ts <= $p.end))) as $win
+         # PARSED, not string-compared (loop-measurement T4/T8 finding, I1): $start/
+         # $p.end can be sub-second (record-only packet boundaries) while event ts is
+         # always whole-second, and "...:05Z" > "...:05.500Z" as a raw string — the
+         # same inversion $JQ_TS_MS exists to fix everywhere else in this file.
+         | ($start | ts_ms) as $start_ms
+         | ($p.end | ts_ms) as $end_ms
+         | ($events | map(select(.ts != null and ((.ts|ts_ms) > $start_ms) and ((.ts|ts_ms) <= $end_ms)))) as $win
          | (($win | map(.ts) | sort | map(fromdateiso8601)) as $wt
             | reduce range(0; ($wt|length)-1) as $k (0;
                 . + (($wt[$k+1]-$wt[$k]) as $d | if $d>$gap then 0 else $d end))) as $active
-         | ($turns | map(select($ts_ok and .ts != null and .ts > $start and .ts <= $p.end))) as $wtok
+         | ($turns | map(select($ts_ok and .ts != null and ((.ts|ts_ms) > $start_ms) and ((.ts|ts_ms) <= $end_ms)))) as $wtok
          # ROUTING AUDIT (ADR 0019): who actually wrote code, and what was dispatched,
          # so the executor self-label (tier/impl) can be cross-checked against reality.
          # Same write surface as guard.sh and hooks/metrics-log.sh — keep all three in
@@ -895,6 +1320,72 @@ cmd_collect() {
          | (($edits["main"]//0) + ($edits["gaffer:chief-engineer"]//0)) as $orch_edits
          | (($disp["gaffer:implementer"]//0) > 0) as $impl_dispatched
          | (($disp["gaffer:reviewer"]//0)) as $rev
+         # One row per implementer-role Agent event in this window. The Agent event
+         # is logged when the dispatch RETURNS (PostToolUse), after the subagent own
+         # events, so the dispatch span is back-dated: [ts - duration_ms, ts], each
+         # bound widened by 1 s and inclusive. The dispatch is the agent_id whose
+         # first event falls in that span, the earliest such when several qualify.
+         # No qualifying agent_id, or no duration_ms on the Agent event: the row
+         # still appears, resolved to nothing, and its cost fields are null (never
+         # 0, which would read as a measured dispatch that did nothing). edits
+         # counts the same four write tools as the packet-level audit above.
+         | ($win | map(select(.tool=="Agent" and .subagent_type=="gaffer:implementer"))
+            | sort_by(.ts|ts_ms)) as $iag
+         # PROGRESS (dispatch-progress-metrics T5). Each dispatch owns the interval
+         # from its start (Agent ts minus duration_ms, unwidened: the kind
+         # capability start) up to the next implementer dispatch start, the last
+         # one up to the bounded trailer window end the packet row was scanned
+         # under. A dispatch with no duration_ms has no known start; its Agent ts
+         # (the latest it can have started) bounds the intervals instead, so they
+         # still partition the packet and never overlap. `landed` goes to the ONE
+         # index whose interval holds the packet commit trailer author time --
+         # picked once per packet, so a packet has at most one landed dispatch per
+         # trailer, and a dispatch whose edits a later dispatch commit carried
+         # reads `advanced`. A record-only packet (no trailer: never committed) has
+         # no commit time and lands nothing. Tested in the PRD order: null (no
+         # bounded trailer window, a legacy run, or an unresolved dispatch), then
+         # landed, then advanced (>=1 edit event), then none (zero edit events).
+         | ($iag | map((.ts|ts_ms) - (if (.duration_ms|type) == "number" then .duration_ms else 0 end))) as $dstart
+         | (($we_bound // "") == "") as $trailer_unmeasured
+         | (if ($trailer_unmeasured or ($p.trailer != true)) then null else ($p.end|ts_ms) end) as $commit_ms
+         | (if $commit_ms == null then null
+            else ([range(0; $iag|length) | select(. as $j
+                     | ($dstart[$j] <= $commit_ms)
+                     and (if $j == (($iag|length) - 1) then ($commit_ms <= ($we_bound|ts_ms))
+                          else ($commit_ms < $dstart[$j+1]) end))] | last)
+            end) as $landed_i
+         | ([range(0; $iag|length)] | map(. as $j | $iag[$j] as $a
+                | (if ($a.duration_ms|type) == "number" then
+                     (($a.ts|ts_ms) - $a.duration_ms - 1000) as $lo
+                     | (($a.ts|ts_ms) + 1000) as $hi
+                     | ($aid_ctx | map(select(.value.first_ms >= $lo and .value.first_ms <= $hi))
+                        | sort_by(.value.first_ms, .key) | (.[0] // null))
+                   else null end) as $dres
+                | ($dres.value.evs // null) as $devs
+                | dkind($p.id; ($a.ts|ts_ms)) as $kind
+                # tokens (T4): the resolved agent_id own transcript turns, from the
+                # SAME deduped, run-window-bounded turn set the packet total and
+                # token_source are read from. Null, never a partial figure, when the
+                # packet tokens are null, the dispatch is unresolved, or no turn
+                # resolves to its agent_id (a missing transcript).
+                | (if ($ts_ok and $dres != null) then ($aid_tok[$dres.key] // null) else null end) as $dtok
+                # effort (session-effort-reporting T3): the resolved agent_id own
+                # turns ($aid_eff). Null when the dispatch is unresolved or no turn
+                # resolves to its agent_id; not gated on $ts_ok, since attribution
+                # is by agent_id, not by time.
+                | (if $dres != null then ($aid_eff[$dres.key] // null) else null end) as $deff
+                | if $devs == null then {kind: $kind, tool_calls: null, duration_ms: null, edits: null, tokens: null, effort: null, progress: null}
+                  else ($devs|map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))|length) as $dedits
+                    | {kind: $kind, tool_calls: ($devs|length),
+                        duration_ms: ($devs|map(.duration_ms//0)|add),
+                        edits: $dedits,
+                        tokens: $dtok,
+                        effort: $deff,
+                        progress: (if ($trailer_unmeasured or $kjn.legacy) then null
+                                   elif $j == $landed_i then "landed"
+                                   elif $dedits > 0 then "advanced"
+                                   else "none" end)}
+                  end)) as $dispatches
          | ([ (if ($orch_edits>0 and ($impl_dispatched|not)) then "leak:orchestrator-edited-on-opus-without-delegating(\($orch_edits))" else empty end),
               (if ($p.impl=="delegated" and ($impl_dispatched|not)) then "label-contradiction:impl=delegated-but-no-implementer-dispatch" else empty end),
               (if ($p.tier=="mechanical" and $orch_edits>0) then "waste:mechanical-tier-edited-inline-on-opus" else empty end),
@@ -906,11 +1397,50 @@ cmd_collect() {
               # silently no-ops (a null tier matches none of them). Say so
               # explicitly rather than letting an unlabelled packet read as clean.
               (if ($run_labelled and $p.tier == null) then "unlabelled:no-tier-trailer" else empty end),
-              (if ($run_labelled and $p.impl == null) then "unlabelled:no-impl-trailer" else empty end)
+              (if ($run_labelled and $p.impl == null) then "unlabelled:no-impl-trailer" else empty end),
+              # DISPATCH WASTE FLAGS (dispatch-progress-metrics T7). Counted over this
+              # packet dispatch rows with the same turn_threshold and unit (tool_calls)
+              # the totals.dispatch_waste rollup stamps. A row with a null progress or
+              # null tool_calls counts toward neither (its own nulls carry the
+              # unmeasured state), so a packet of such rows gets no flag. Suppressed
+              # wholesale on a legacy run, as the unlabelled flags are on an unlabelled
+              # one; the swept and sibling branches below strip both.
+              (if $kjn.legacy then empty
+               else ($dispatches | map(select(.progress == "none")) | length) as $zpn
+                 | if $zpn > 0 then "waste:zero-progress-dispatch(\($zpn))" else empty end
+               end),
+              (if $kjn.legacy then empty
+               else ($dispatches | map(select((.tool_calls|type) == "number" and .tool_calls > $turn_threshold)) | length) as $obn
+                 | if $obn > 0 then "waste:over-budget-dispatch(\($obn))" else empty end
+               end)
             ]) as $flags
-         | $acc + [{
+         # SWEPT (C1, loop-measurement T4/T8 finding). `sweep-open` closes an open
+         # packet by copying its boundary ts VERBATIM (that is what makes the close
+         # idempotent) — so for a swept packet $p.end == the ts it STARTED at, and
+         # $win above collapses to a zero-width window: every derived count below
+         # would read a real, honest 0. A reader cannot tell that from "this packet
+         # genuinely did nothing", which is the opposite of what an interrupted
+         # packet means. Report the derived fields as null (unmeasured), not 0 —
+         # same rule as the pre-instrumentation-run nulls elsewhere in this file.
+         | ($p.swept == true) as $is_swept
+         # BUNDLE SIBLING (packet-bundling T1, extended by T8). `seq` is the
+         # within-boundary ordinal: for a trailer row it is the within-commit
+         # ordinal the section 2 trailer scan stamped (seq==1 a commit first/only
+         # trailer, seq>1 a later trailer on the SAME commit); for a record-only
+         # row (no commit -- the bundle never landed green) it is `$rj.record_seq`
+         # from section 3, the within-boundary ordinal derived from outcomes-log
+         # write order among ids sharing one terminal record boundary (session,
+         # ts). Either way, seq>1 means this row shares one boundary with the row
+         # before it, so $start computed above collapses to $p.end (zero width)
+         # -- but that is a CONSEQUENCE of the bundle, not the detector for it:
+         # `seq` is used directly rather than re-deriving sibling-ness from the
+         # zero-width window, which two unrelated single-trailer commits (or two
+         # unrelated record-only packets) landing in the same second could also
+         # produce. (No apostrophes in here: the whole program is one
+         # single-quoted shell word.)
+         | (($p.seq // 1) > 1) as $is_sibling
+         | {
              id: $p.id,
-             wave: ($wavemap[$p.id]),
              # OUTCOME IS NOT OBSERVABLE, AND MUST NOT CLAIM TO BE (ADR 0019 v3.4).
              # This read "green" unconditionally. It was not a measurement: a packet
              # EXISTS here only because a `[orch packet:]` trailer was found, and that
@@ -968,19 +1498,144 @@ cmd_collect() {
              human_interactions: ($win|map(select(.tool=="AskUserQuestion"))|length),
              impl_edits_by_role: $edits,
              dispatched: $disp,
+             dispatches: $dispatches,
              audit: { orchestrator_impl_edits: $orch_edits, implementer_dispatched: $impl_dispatched,
                       review_dispatches: $rev, flags: $flags },
              tokens: (if $ts_ok then ($wtok|map(.tok)|sumtok(.)) else null end)
-           }]
+           } as $obj
+         | $acc + [
+             if $is_swept then
+               ($obj + {
+                 swept: true,
+                 end: null,
+                 tool_calls: null,
+                 active_seconds: null,
+                 duration_ms: null,
+                 by_agent: null,
+                 by_tool: null,
+                 edits: null,
+                 by_command_class: null,
+                 failed_tool_calls: null,
+                 human_interactions: null,
+                 impl_edits_by_role: null,
+                 dispatched: null,
+                 dispatches: null,
+                 tokens: null,
+                 audit: ($obj.audit + {
+                   orchestrator_impl_edits: null,
+                   implementer_dispatched: null,
+                   review_dispatches: null,
+                   # dispatches is null on a swept row, so no dispatch-derived flag
+                   # may survive either (dispatch-progress-metrics T7).
+                   flags: (($obj.audit.flags | map(select(
+                             (startswith("waste:zero-progress-dispatch(") or startswith("waste:over-budget-dispatch(")) | not
+                           ))) + ["unmeasured:swept-by-later-session"])
+                 })
+               })
+             elif $is_sibling then
+               # Reuses the swept branch exact null-field SHAPE (packet-bundling
+               # T1 — deliberately not a second shape) with one difference: `end`
+               # is NOT nulled, since a sibling still carries its own commit real
+               # author date, only its event-derived fields are unmeasurable (the
+               # window they would have measured belongs to the row before them,
+               # sharing this same boundary).
+               ($obj + {
+                 swept: false,
+                 tool_calls: null,
+                 active_seconds: null,
+                 duration_ms: null,
+                 by_agent: null,
+                 by_tool: null,
+                 edits: null,
+                 by_command_class: null,
+                 failed_tool_calls: null,
+                 human_interactions: null,
+                 impl_edits_by_role: null,
+                 dispatched: null,
+                 dispatches: null,
+                 tokens: null,
+                 audit: ($obj.audit + {
+                   orchestrator_impl_edits: null,
+                   implementer_dispatched: null,
+                   review_dispatches: null,
+                   # A sibling window is zero-width by construction (it shares its
+                   # boundary with the row before it), so any flag DERIVED from that
+                   # window — label-contradiction/leak/waste, all computed from
+                   # $orch_edits/$impl_dispatched/$rev above — is a measured-looking
+                   # accusation about an interval this row itself declares unmeasured.
+                   # Drop those; keep the label-based `unlabelled:` flags (still valid,
+                   # since $p.tier/$p.impl come from trailers on the commit itself, not
+                   # window-derived) and add the shared-boundary marker.
+                   flags: (($obj.audit.flags | map(select(
+                             (startswith("label-contradiction:") or startswith("leak:") or startswith("waste:")) | not
+                           ))) + ["unmeasured:shared-packet-boundary"])
+                 })
+               })
+             else ($obj + {swept: false})
+             end
+           ]
        )
      ' "$tmp/pk_ends.json" > "$tmp/packets.json" 2>/dev/null || echo '[]' > "$tmp/packets.json"
 
   # --- 6. unattributed: events in NO packet window (wasted/between-packet calls) --
-  jq --slurpfile pk "$tmp/packets.json" '
+  # PARSED, not string-compared (I1, same reasoning as section 5): a packet's
+  # start/end can be sub-second while event ts is whole-second.
+  jq --slurpfile pk "$tmp/packets.json" "${JQ_TS_MS}"'
     ($pk[0] // []) as $packets
-    | [ .[] | . as $e | select( ($packets | any(.start < $e.ts and $e.ts <= .end)) | not ) ]
+    | [ .[] | . as $e | select($e.ts != null) | select( ($packets | any(.start != null and .end != null and (($e.ts|ts_ms) > (.start|ts_ms)) and (($e.ts|ts_ms) <= (.end|ts_ms)))) | not ) ]
     | { count: length, by_agent: (group_by(.agent_type)|map({key:(.[0].agent_type),value:length})|from_entries) }
   ' "$tmp/events.json" > "$tmp/unattributed.json" 2>/dev/null || echo '{"count":0,"by_agent":{}}' > "$tmp/unattributed.json"
+
+  # --- 6b. same-file overlap between file-editing agents (retire-unused-loop-modes T3) -
+  # Parallel worktree isolation used to guarantee file-disjointness MECHANICALLY, by
+  # scheduling — that guarantee is gone, so this is the observability that replaces it:
+  # a run-level count of how often the main session and a dispatched subagent actually
+  # edited the SAME file. Derived entirely from events the hook already writes (no new
+  # hook field): a subagent's SPAN is its first-to-last recorded event (any tool, not
+  # just edits); the main session pairs with a subagent only through the main session's
+  # OWN edit events whose ts falls inside that span (inclusive); the pair counts once,
+  # however many file hashes they share, and ONLY subagent<->main pairs are counted —
+  # two subagents are never paired against each other. Ts comparison is a plain string
+  # compare here (safe: every hook event ts is the same whole-second `...Z` form; no
+  # sub-second boundary/outcome record ever enters this join).
+  #
+  # `0` and `unmeasured` must never be conflated (this repo has already shipped a `show`
+  # that rendered a null as 0 and told a legacy run it was clean): unmeasured when the
+  # run has NO events at all, or when ANY Edit/Write/MultiEdit/NotebookEdit event in the
+  # run is missing a file_hash (an older hook build, or a hash the hook could not
+  # compute) — either makes the count unreliable, so it must not read as a clean 0.
+  # Logs no file path: file_hash is the opaque 12-char token the hook already stamps,
+  # so this reports SHAPE only ("did they touch the same file?"), same rule as the
+  # edits/contended_files signal above.
+  jq '
+    def is_edit_tool: (.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit");
+    . as $all
+    | ([ $all[] | select(is_edit_tool) ]) as $edits
+    | if ($all|length) == 0 then
+        { pairs: null, reason: "no_events", edit_events: 0, edit_events_missing_hash: 0 }
+      elif ($edits | any(.file_hash == null)) then
+        { pairs: null, reason: "missing_hash",
+          edit_events: ($edits|length),
+          edit_events_missing_hash: ($edits | map(select(.file_hash == null)) | length) }
+      else
+        ( $edits | map(select((.agent_id // "") != "")) | group_by(.agent_id) ) as $sub_edit_groups
+        | ( $all | map(select((.agent_id // "") != "")) | group_by(.agent_id)
+            | map({key: .[0].agent_id, value: {start: (map(.ts)|min), end: (map(.ts)|max)}})
+            | from_entries ) as $spans
+        | ( $edits | map(select((.agent_id // "") == "")) ) as $main_edits
+        | ( $sub_edit_groups | map(.[0].agent_id) ) as $sub_ids
+        | ( [ $sub_ids[] as $sid
+              | ( $sub_edit_groups | map(select(.[0].agent_id == $sid)) | .[0] ) as $sub_own
+              | ( $sub_own | map(.file_hash) | unique ) as $sub_hashes
+              | ( $spans[$sid] ) as $span
+              | ( $main_edits | map(select(.ts >= $span.start and .ts <= $span.end))
+                  | map(.file_hash) | unique ) as $main_hashes
+              | select( $sub_hashes | any(. as $h | ($main_hashes | index($h)) != null) )
+            ] | length ) as $n
+        | { pairs: $n, reason: null, edit_events: ($edits|length), edit_events_missing_hash: 0 }
+      end
+  ' "$tmp/events.json" > "$tmp/overlap.json" 2>/dev/null \
+    || echo '{"pairs":null,"reason":"error","edit_events":0,"edit_events_missing_hash":0}' > "$tmp/overlap.json"
 
   # --- 7. assemble the packet -------------------------------------------------
   [ -n "$out" ] || out="${agents}/metrics/${run_id}/run-metrics.json"
@@ -991,6 +1646,8 @@ cmd_collect() {
   [ "$wall" -ge 0 ] 2>/dev/null || wall=0
 
   jq -n \
+    --argjson turn_threshold "$turn_threshold" \
+    --arg turn_threshold_source "$turn_threshold_source" \
     --arg run_id "$run_id" \
     --arg generated "$generated" \
     --arg token_source "$token_source" \
@@ -1018,14 +1675,18 @@ cmd_collect() {
     --slurpfile bytool "$tmp/bytool.json" \
     --slurpfile bycmd "$tmp/bycmd.json" \
     --slurpfile durations "$tmp/durations.json" \
-    --slurpfile bylane "$tmp/bylane.json" \
+    --slurpfile overlap "$tmp/overlap.json" \
     --slurpfile sids "$tmp/events.json" \
+    --slurpfile recj "$tmp/recordjoin.json" \
+    --slurpfile dmctx "$tmp/dmctx.json" \
+    --slurpfile kindj "$tmp/kindjoin.json" \
     --arg unknown_note "$unknown_note" \
-    '
+    "${JQ_TS_MS}"'
     ($roletokens[0] // {}) as $rt
     | ($activity[0] // {active:0,idle:0}) as $act
     | ($unattr[0] // {count:0,by_agent:{}}) as $un
     | ($durations[0] // {total:0,by_role:{}}) as $dur
+    | ($overlap[0] // {pairs:null,reason:null,edit_events:0,edit_events_missing_hash:0}) as $ov
     | ($rt | to_entries | map(.value.tokens) | {
         input:(map(.input//0)|add // 0), output:(map(.output//0)|add // 0),
         cache_read:(map(.cache_read//0)|add // 0), cache_creation:(map(.cache_creation//0)|add // 0)
@@ -1036,6 +1697,106 @@ cmd_collect() {
     # Report the derived counters as null (unmeasured) rather than 0/all — otherwise a
     # legacy run reads as "zero failures, every dispatch unnamed", which is a lie.
     | (($sids[0] // []) | any(has("ok"))) as $instrumented
+    # MAIN-SESSION EDITS success metric (thin-loop-driver T20 / PRD "Main-session
+    # edits"). The universe is every Edit/Write/MultiEdit/NotebookEdit event in the
+    # run (the hook stamps agents_dir/driver_mode on exactly those four); the count
+    # itself is the subset that is driver_mode=true (marked session, no agent_id --
+    # the same main-thread test guard.sh applies via driver_mode_active), ok=true,
+    # and agents_dir=false (outside .agents/). null, never 0, when the run has NO
+    # events at all, or when any edit-type event in it cannot show whether its
+    # target was under .agents/ (missing agents_dir) -- a legacy/pre-instrumentation
+    # edit is indistinguishable from a real leak, so it must not read as measured-clean.
+    # (No apostrophes in here: the whole program is one single-quoted shell word.)
+    | (($sids[0] // []) | map(select(.tool=="Edit" or .tool=="Write" or .tool=="MultiEdit" or .tool=="NotebookEdit"))) as $edit_events
+    | ($recj[0] // {outcomes:{}, started_ids:[], record_end:{}, has_start:false}) as $rj
+    | ($dmctx[0] // {threshold:null,max_context:null,windows:0,turns_in_window:0}) as $dmc
+    # DISPATCH ROUTING (per-agent-model-routing, Rule: ModelOverrideCounting). A
+    # dispatch is STAMPED when the hook recorded `routing_resolved` (what routing.sh
+    # said it should pass; "" = pass nothing). An absent stamp is UNMEASURED, never
+    # read as "". Override = the passed model differs from the stamp, so a map-routed
+    # dispatch counts 0 and a mapped agent sent back to frontmatter counts 1. The count
+    # is null when ANY dispatch is unstamped (a partial count would read as clean) or
+    # the run predates the ok capture; zero dispatches is a measured 0.
+    # configured_routing = routing_table of the LATEST stamped Agent event by PARSED
+    # ts (string order inverts sub-second vs whole-second stamps); null when none.
+    | (($sids[0] // []) | map(select(.tool=="Agent" and (.subagent_type != null)))) as $rdisp
+    | ($rdisp | map(select(has("routing_resolved")))) as $rstamped
+    | ($rdisp | map(select(has("routing_resolved") | not)) | length) as $runstamped
+    | ($rstamped | map(select((.model // "") != .routing_resolved))) as $roverrides
+    | {
+        unstamped: $runstamped,
+        total: ($rdisp | length),
+        count: (if ($instrumented | not) then null elif $runstamped > 0 then null else ($roverrides | length) end),
+        by_model: (if ($instrumented | not) then null elif $runstamped > 0 then null
+                   else ($roverrides | map(.model // "(none)") | group_by(.)
+                         | map({key:.[0],value:length}) | from_entries) end),
+        configured: (($sids[0] // []) | map(select(.tool=="Agent" and has("routing_table")))
+                     | if length == 0 then null
+                       else (map({k:(.ts // "" | ts_ms), t:.routing_table}) | sort_by(.k) | last | .t) end),
+        distinct_tables: (($sids[0] // []) | map(select(.tool=="Agent" and has("routing_table")) | .routing_table) | unique | length)
+      } as $route
+    # DISPATCH WASTE (dispatch-progress-metrics T6). Rolled up over every
+    # packets[].dispatches[] row (a swept or sibling packet carries dispatches: null
+    # and contributes no row). Each component is null, never 0, when the rows cannot
+    # support it: zero_progress when any row has a null progress (its token sum when
+    # any progress-none row has null tokens), continuations when any row has a null
+    # kind, and everything on a legacy run or a run with no implementer dispatch.
+    # over_threshold counts rows whose tool_calls exceeds the threshold; it is null,
+    # count and share alike, when any row has null tool_calls (an unresolved
+    # dispatch), and a note names each such dispatch by packet id and position --
+    # leaving the row out would report a measured-looking count (T13). The share is
+    # null when any counted row has null tokens. token_share = over-threshold
+    # tokens / all counted tokens, each dispatch total = input + output +
+    # cache_creation + cache_read. (No apostrophes in here: one single-quoted word.)
+    | (($kindj[0] // {}).legacy == true) as $dw_legacy
+    | (($packets[0] // []) | map(.dispatches // []) | add // []) as $drows
+    | def dw_tsum: {input:(map(.input)|add//0), output:(map(.output)|add//0),
+                    cache_creation:(map(.cache_creation)|add//0), cache_read:(map(.cache_read)|add//0)};
+      def dw_tot: (.input + .output + .cache_creation + .cache_read);
+      (if ($dw_legacy or ($drows|length) == 0) then
+         {zero_progress: null, continuations: null, over_threshold: null, turn_threshold: null}
+       else
+         ($drows | map(select(.progress == "none"))) as $zp
+         | ($drows | map(select((.tool_calls|type) == "number"))) as $tc
+         | ($tc | map(select(.tool_calls > $turn_threshold))) as $ot
+         | {zero_progress: (if ($drows | any(.progress == null)) then null
+                            else {count: ($zp|length),
+                                  tokens: (if ($zp | any(.tokens == null)) then null
+                                           else ($zp | map(.tokens) | dw_tsum) end)} end),
+            continuations: (if ($drows | any(.kind == null)) then null
+                            else ($drows | map(select(.kind == "continuation")) | length) end),
+            over_threshold: (if ($drows | any((.tool_calls|type) != "number")) then null
+                             else {count: ($ot|length),
+                                   token_share: (if ($tc | any(.tokens == null)) then null
+                                                 else (($tc | map(.tokens|dw_tot) | add // 0) as $all
+                                                       | if $all > 0 then ((($ot | map(.tokens|dw_tot) | add // 0) / $all)*1000|floor)/1000
+                                                         else null end) end)} end),
+            turn_threshold: {value: $turn_threshold, unit: "tool_calls", source: $turn_threshold_source}}
+       end) as $dw
+    | ([ if $dw_legacy then
+           "dispatch_waste: unmeasured — legacy run (no start or routing record for any of its packets falls in this window), so every dispatch kind and progress is null and zero_progress, continuations, over_threshold and turn_threshold are all null, never 0."
+         elif ($drows|length) == 0 then
+           "dispatch_waste: unmeasured — this run has no implementer dispatch row (none dispatched, or only on swept/sibling packets), so zero_progress, continuations, over_threshold and turn_threshold are all null, never 0."
+         else
+           (($drows | map(select(.progress == null)) | length) as $n
+            | if $n > 0 then "dispatch_waste.zero_progress: unmeasured — \($n) of \($drows|length) dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0." else empty end),
+           (($drows | map(select(.progress == "none"))) as $zp
+            | ($zp | map(select(.tokens == null)) | length) as $n
+            | if (($drows | any(.progress == null)) | not) and $n > 0 then "dispatch_waste.zero_progress.tokens: unmeasured — \($n) of \($zp|length) progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands." else empty end),
+           (($drows | map(select(.kind == null)) | length) as $n
+            | if $n > 0 then "dispatch_waste.continuations: unmeasured — \($n) of \($drows|length) dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0." else empty end),
+           (([($packets[0] // [])[] | .id as $pid | (.dispatches // []) as $pd
+             | range(0; $pd|length) | select(($pd[.].tool_calls|type) != "number")
+             | "\($pid) dispatch \(. + 1) of \($pd|length)"]) as $unres
+            | ($unres | join(", ")) as $unres_s
+            | if ($unres|length) > 0 then "dispatch_waste.over_threshold: unmeasured — \($unres|length) of \($drows|length) dispatch row(s) carry null tool_calls (an unresolved dispatch: \($unres_s)), so the count and the token share are null, never a count over the other rows." else empty end),
+           (($drows | map(select((.tool_calls|type) == "number"))) as $tc
+            | ($tc | map(select(.tokens == null)) | length) as $n
+            | if ($drows | any((.tool_calls|type) != "number")) then empty
+              elif $n > 0 then "dispatch_waste.over_threshold.token_share: unmeasured — \($n) of \($tc|length) counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands."
+              elif (($dw.over_threshold.token_share == null) and (($tc|length) > 0)) then "dispatch_waste.over_threshold.token_share: unmeasured — the counted dispatch rows hold zero tokens in total, so no share can be taken."
+              else empty end)
+         end ]) as $dw_notes
     | {
       schema: 2,
       run_id: $run_id,
@@ -1072,14 +1833,69 @@ cmd_collect() {
         by_tool: ($bytool[0] // {}),
         by_command_class: ($bycmd[0] // {}),
         by_skill: ($byskill[0] // {}),
-        by_lane: ($bylane[0] // {}),
+        # SAME-FILE OVERLAP (retire-unused-loop-modes T3). Parallel mode used to
+        # guarantee file-disjointness mechanically; this is the observability that
+        # replaces it now that the guarantee is gone. null means UNMEASURED (no
+        # events, or an edit event with no file_hash), never a clean 0 — see the
+        # section-6b comment above for the exact pairing rule. (No apostrophes in
+        # here: the whole program is one single-quoted shell word.)
+        same_file_overlaps: $ov.pairs,
+        same_file_overlap_diagnostics: {
+          edit_events: ($ov.edit_events // 0),
+          edit_events_missing_hash: ($ov.edit_events_missing_hash // 0)
+        },
         tokens: $tot,
         by_model: ($bymodel[0] // {}),
         by_effort: ($byeffort[0] // {}),
         context_invalidations: ($ctxinval[0] // {count:0, cache_creation:0, events:[]}),
         cache_hit_ratio: (if $cache_total>0 then (($tot.cache_read / $cache_total)*1000|floor)/1000 else null end),
         failed_tool_calls: (if $instrumented then (($sids[0] // []) | map(select(.ok == false)) | length) else null end),
-        human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length)
+        human_interactions: (($sids[0] // []) | map(select(.tool=="AskUserQuestion")) | length),
+        driver_mode_edits_outside_agents: (
+          if (($sids[0] // []) | length) == 0 then null
+          elif ($edit_events | any(has("agents_dir") | not)) then null
+          else ($edit_events | map(select(.driver_mode == true and .ok == true and .agents_dir == false)) | length)
+          end
+        ),
+        driver_mode_edit_diagnostics: {
+          edit_events: ($edit_events | length),
+          edit_events_missing_agents_dir: ($edit_events | map(select(has("agents_dir") | not)) | length)
+        },
+        # MAIN-SESSION CONTEXT success metric (thin-loop-driver T21 / PRD
+        # "Main-session context"): the largest input+cache_creation+cache_read of
+        # one main-thread turn recorded inside this run driver-mode enter/exit
+        # window(s), beside the threshold the run KICKOFF (earliest) enter
+        # record stated. The two fields are null INDEPENDENTLY, not together:
+        # both null when there is no window or the kickoff record threshold is
+        # missing/"unknown"; threshold stated with max_context null when no
+        # main-thread turn falls inside any window -- never max_context alone
+        # when the comparison threshold is unknown (section 4c above; PRD: "a
+        # run lacking usage data or a stated threshold reports unmeasured").
+        driver_mode_context: { threshold: $dmc.threshold, max_context: $dmc.max_context },
+        driver_mode_context_diagnostics: {
+          windows: ($dmc.windows // 0),
+          turns_in_window: ($dmc.turns_in_window // 0)
+        },
+        # OUTCOME COVERAGE (loop-measurement T5). Every STARTED packet (trailer,
+        # start/continuation record, or attributed outcome record — see the T4 join
+        # above) is counted exactly once here, `interrupted` included alongside the
+        # other four terminal values. `outcome_counts` only tallies packets that HAVE
+        # a terminal record; `started_without_outcome` is the complementary count —
+        # a packet the run began but never closed (a live pause, or a crash the next
+        # sweep for a later session has not yet run). `outcome_coverage` is the run-level read:
+        # "unmeasured" when this run holds NO `record-start` boundary at all (every
+        # run before this feature, or one where the loop never called it) — never
+        # inferred from packet COUNT, since a trailer-only legacy run can have many
+        # packets and zero instrumentation. "incomplete" when at least one started
+        # packet lacks a terminal outcome; "complete" only when every one has one.
+        # `null`/`unmeasured` must never render as clean — see `show` below.
+        outcome_counts: ($packets[0] // [] | map(select(.outcome != null))
+                          | group_by(.outcome) | map({key:.[0].outcome,value:length}) | from_entries),
+        started_without_outcome: ($packets[0] // [] | map(select(.outcome == null)) | length),
+        outcome_coverage: (if ($rj.has_start | not) then "unmeasured"
+                            elif (($packets[0] // [] | map(select(.outcome == null)) | length) > 0) then "incomplete"
+                            else "complete" end),
+        dispatch_waste: $dw
       },
       by_agent_role: $rt,
       audit: (($packets[0] // []) as $pk
@@ -1088,20 +1904,17 @@ cmd_collect() {
         labels_present: ($pk | any(.tier != null or .impl != null)),
         orchestrator_impl_edits: ($pk | map(.audit.orchestrator_impl_edits // 0) | add // 0),
         implementer_dispatches: ($pk | map(.dispatched["gaffer:implementer"] // 0) | add // 0),
-        # DISPATCH MODEL (corrected 2026-07-23). An omitted `model` at dispatch is
-        # the NORMAL, correct case: the Agent tool resolves it to the `model:`
-        # frontmatter of the target agent, and every orchestration agent declares
-        # one — that frontmatter is the routing policy (run-loop §3.3). Counting
-        # omissions as violations manufactured false positives (a clean run of
-        # architect/reviewer dispatches read as "8 unnamed models" when all 8
-        # resolved correctly to opus). What is actually worth seeing is the
-        # OVERRIDE: a caller deliberately deviating from a declared tier. Ground
-        # truth for what each role really ran on is `by_agent_role.<role>.models`,
-        # not this field.
+        # DISPATCH MODEL (per-agent-model-routing, superseding the 2026-07-23 rule
+        # that counted every explicit `model` arg). The dispatch site passes
+        # `routing.sh resolve <agent>`, so a passed model is now NORMAL when the map
+        # routes that agent. An override is a passed model that DIFFERS from the
+        # routing the hook stamped at dispatch time (see $route above) — including a
+        # mapped agent dispatched with no model, keyed "(none)". Ground truth for
+        # what each role really ran on is `by_agent_role.<role>.models`, not this.
         dispatches_total: ($dispatches | length),
-        dispatches_with_model_override: (if $instrumented then ($dispatches | map(select(.model != null)) | length) else null end),
-        by_dispatch_model_override: ($dispatches | map(select(.model != null)) | group_by(.model)
-                            | map({key:(.[0].model),value:length}) | from_entries),
+        dispatches_with_model_override: $route.count,
+        by_dispatch_model_override: $route.by_model,
+        configured_routing: $route.configured,
         # TIER COVERAGE (ADR 0019). run-loop §3.2 makes `tier` a required packet
         # field and §3.4 requires copying it into the commit trailer. Packets with
         # no tier trailer are unmeasurable — surface the count and the ids rather
@@ -1136,7 +1949,20 @@ cmd_collect() {
         "Per-packet token split needs per-turn transcript timestamps; packets[].tokens is null when absent.",
         "Token turns are bounded to the run window (ADR 0019 window-bleed fix); ts==null turns are kept unwindowed.",
         "Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).",
-        "Packet boundaries derived from [orch packet:<id>] commit trailers; failed/uncommitted packets do not appear.",
+        "Packet rows come from [orch packet:<id>] commit trailers AND runstate.sh record-start/record-outcome/sweep-open attestations (loop-measurement T4): a packet the loop started now appears even if it never committed (failed, rolled-back) or was interrupted mid-run. totals.outcome_coverage says whether that instrumentation is present for THIS run: `unmeasured` with no record-start boundary at all (pre-feature or a non-loop run — never infer completeness from packet count), `incomplete` when a started packet still lacks a terminal outcome, `complete` otherwise.",
+        (($packets[0] // []) | map(select(.swept == true)) | map(.id)) as $swept_ids
+         | (if ($swept_ids|length) > 0 then
+              "swept: true on \($swept_ids|length) packet(s) (\($swept_ids|join(", "))) — sweep-open closes an open packet by copying its own start ts as the close ts, so tool_calls/active_seconds/duration_ms/edits/by_agent/by_tool/by_command_class/failed_tool_calls/human_interactions/dispatched/tokens/audit counts read null there, not 0. The work happened; this collector cannot reconstruct its window from a verbatim-copied close (loop-measurement C1)."
+            else empty end),
+        # dispatch-progress-metrics T3: a routing-unmeasured window is named, never
+        # left to read as a run of first attempts. A legacy run gets no note, so
+        # re-collecting an old run yields the same output it always did.
+        (($kindj[0] // {}) as $kjn
+         | if ($kjn.routing_unmeasured == true) then
+             "dispatch kind: routing-unmeasured — \($kjn.start_count) start record(s) fall in this window but no .agents/loop/*/routing.jsonl holds a routing record for any of its packets (the run directory was pruned by begin-run, or no packet reached a review), so every packets[].dispatches[].kind is null (unmeasured), never the `initial` the start records alone would give."
+           else empty end),
+        # dispatch-progress-metrics T6: which dispatch_waste component is unmeasured, and why.
+        $dw_notes[],
         "Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.",
         "Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.",
         "The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.",
@@ -1144,8 +1970,22 @@ cmd_collect() {
         "totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.",
         "by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.",
         "active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.",
+        "totals.same_file_overlaps counts (main session, subagent) pairs that edited the SAME file: the span of a subagent is its first-to-last event, the main session pairs with it only through its own edit events falling inside that span, and a pair counts once no matter how many files it shares. This replaces the mechanical file-disjointness guarantee parallel mode used to provide, now that the guarantee is gone; it never logs a path, only opaque file hashes.",
+        (if $ov.pairs == null then
+           (if $ov.reason == "no_events" then
+              "same_file_overlaps=unmeasured: this run has no events."
+            elif $ov.reason == "missing_hash" then
+              "same_file_overlaps=unmeasured: \($ov.edit_events_missing_hash) of \($ov.edit_events) edit event(s) in this run carry no file_hash (pre-instrumentation hook, or a hash the hook could not compute)."
+            else "same_file_overlaps=unmeasured." end)
+         else empty end),
         "audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.",
-        "audit.dispatches_with_model_override counts EXPLICIT `model` args at dispatch (a deliberate deviation). An omitted model is correct — it resolves to the `model:` frontmatter of the target agent; read by_agent_role.<role>.models for what each role actually ran on.",
+        "audit.dispatches_with_model_override counts dispatches whose passed model DIFFERS from the routing resolved at dispatch (the routing.sh resolve value the hook stamped: the model_routing map value when the agent is mapped, no model when it is not). A dispatch passing its resolved value is policy, not an override; a mapped agent dispatched with no model is keyed \"(none)\" in by_dispatch_model_override. audit.configured_routing is the routing table of the latest stamped dispatch (null = unmeasured). Read by_agent_role.<role>.models for what each role actually ran on.",
+        (if $route.unstamped > 0 then
+           "routing: \($route.unstamped) of \($route.total) dispatches carry no routing stamp, so dispatches_with_model_override and by_dispatch_model_override are null (unmeasured), NOT zero — a partial count would read as clean."
+         else empty end),
+        (if $route.distinct_tables > 1 then
+           "routing: model routing CHANGED mid-run — \($route.distinct_tables) distinct routing tables were stamped in this window; configured_routing is the latest, and each dispatch was judged against the table in force when it completed."
+         else empty end),
         (($packets[0] // []) as $pkn
          | ($pkn | any(.tier != null or .impl != null)) as $lab
          | ($pkn | map(select(.tier == null or .impl == null)) | length) as $miss
@@ -1176,6 +2016,17 @@ cmd_show() {
   jq -r '
     "run: \(.run_id)   mode: \(.mode)   autonomy: \(.autonomy // "?")   token_source: \(.token_source)\(if .self_host == true then "   self-host: yes" elif (has("self_host") | not) or .self_host == null then "   self-host: unknown" else "" end)",
     "window: \(.window.wall_seconds)s wall (active \(.window.active_seconds // "?")s / idle \(.window.idle_seconds // "?")s)   packets: \(.totals.packets)   tool_calls: \(.totals.tool_calls) (+\(.totals.unattributed_tool_calls // 0) unattributed)",
+    # outcome coverage is never allowed to render as "all green" — see the T4/T5
+    # comment on totals.outcome_coverage. Absent (a packet collected before this
+    # field existed) reads the same as "unmeasured", not as clean.
+    (((.totals.outcome_coverage // "unmeasured")) as $cov
+     | if $cov == "unmeasured" then
+         "outcome coverage: unmeasured — no record-start boundary in this run (pre-instrumentation, or the loop never ran record-start)"
+       elif $cov == "incomplete" then
+         "outcome coverage: incomplete — \(.totals.started_without_outcome // "?") started packet(s) with no terminal outcome yet"
+       else
+         "outcome coverage: complete — every started packet has a terminal outcome (not all necessarily green — see \"by outcome\" below)"
+       end),
     "tokens: in=\(.totals.tokens.input) out=\(.totals.tokens.output) cacheR=\(.totals.tokens.cache_read) cacheC=\(.totals.tokens.cache_creation)   cache_hit_ratio: \(.totals.cache_hit_ratio // "n/a")",
     # Surface WHY the token half is missing/low-confidence, rather than leaving a
     # bare `none` that reads identically to "this run had no transcripts".
@@ -1227,10 +2078,47 @@ cmd_show() {
     "",
     "by command class (rtk-targeting: calls / duration):",
     ((.totals.by_command_class // {}) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.calls) calls / \(.value.duration_ms)ms"),
-    (if ((.totals.by_lane // {}) | length) > 0 then
-       "", "by lane (parallel — sum(lane dur) >> wall means real concurrency):",
-       ((.totals.by_lane) | to_entries | sort_by(-.value.duration_ms)[] | "  \(.key): \(.value.tool_calls) calls / \(.value.duration_ms)ms")
-     else empty end),
+    "",
+    # `0` and `unmeasured` must render as visibly different strings — see the
+    # section-6b comment in collect (above) for why they are never allowed to collapse.
+    (((.totals.same_file_overlaps)) as $sfo
+     | if $sfo == null then
+         "same-file overlaps (main + subagent editing the same file while both active): unmeasured (\(.totals.same_file_overlap_diagnostics.edit_events // 0) edit event(s), \(.totals.same_file_overlap_diagnostics.edit_events_missing_hash // 0) missing a file_hash)"
+       else
+         "same-file overlaps (main + subagent editing the same file while both active): \($sfo)"
+       end),
+    "",
+    # thin-loop-driver success metric: 0 is a real, checkable claim only once every
+    # edit-type event in the run carries agents_dir; a legacy/pre-instrumentation edit
+    # or an event-less run must read as unmeasured, never as a clean 0 (same rule as
+    # same_file_overlaps just above).
+    (((.totals.driver_mode_edits_outside_agents)) as $dme
+     | if $dme == null then
+         "main-session edits outside .agents/ in driver mode: unmeasured (\(.totals.driver_mode_edit_diagnostics.edit_events // 0) edit event(s), \(.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir // 0) missing agents_dir)"
+       else
+         "main-session edits outside .agents/ in driver mode: \($dme)"
+       end),
+    "",
+    # thin-loop-driver success metric (T21): the two fields are null
+    # INDEPENDENTLY, not together -- both read unmeasured only when the
+    # kickoff enter never stated a real threshold; a threshold present but
+    # max_context null means the windows had no main-thread usage data. Never
+    # render a bare number without saying which of the two nulls it is, per
+    # the same rule as every other null above. The null-threshold line names
+    # the cause and the settings KEY that would supply a threshold -- the key
+    # alone: no scope that can carry it, no precedence among scopes, and never
+    # a suggested value (a value here would reinstate in prose the invented
+    # default thin-loop-driver T6 deleted from the reader). Its only numbers
+    # are the two diagnostics counts.
+    (((.totals.driver_mode_context // {threshold:null,max_context:null})) as $dc
+     | ((.totals.driver_mode_context_diagnostics // {windows:0,turns_in_window:0})) as $dcd
+     | if $dc.threshold == null then
+         "main-session context (driver mode): unmeasured — no compaction threshold was set here, not a quantity that cannot be measured; the settings key autoCompactWindow supplies one (\($dcd.windows) window(s), \($dcd.turns_in_window) turn(s))"
+       elif $dc.max_context == null then
+         "main-session context (driver mode): unmeasured — no main-thread usage data in \($dcd.windows) window(s) (threshold \($dc.threshold))"
+       else
+         "main-session context (driver mode): \($dc.max_context) tokens vs threshold \($dc.threshold)\(if $dc.max_context > $dc.threshold then "  ⚠ OVER threshold" else "  under threshold" end)"
+       end),
     "",
     # The audit sits ABOVE the packets table on purpose: it is the "something is off"
     # section, and a run with 14 packets pushed it far enough down the page that a real
@@ -1241,16 +2129,66 @@ cmd_show() {
     "routing audit (opus orchestrator edits vs implementer dispatches; label \(if (.audit.labels_present) then "present" else "ABSENT — pre-instrumentation run" end)):",
     "  orchestrator_impl_edits=\(.audit.orchestrator_impl_edits // 0)   implementer_dispatches=\(.audit.implementer_dispatches // 0)   by_tier=\(.audit.by_tier // {})",
     "  tier labels: \((.audit.packets_total // 0) - (.audit.packets_missing_tier // 0))/\(.audit.packets_total // 0) packets labelled\(if (.audit.packets_missing_tier // 0) > 0 then "   ⚠ UNMEASURED: \(.audit.unlabelled_packet_ids // [] | join(", "))" else "" end)",
-    "  dispatches=\(.audit.dispatches_total // 0) (explicit model overrides: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-instrumentation run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(.audit.by_dispatch_model_override // {})",
+    # No `// 0` / `// {}` here: null is UNMEASURED (pre-routing or unstamped dispatches)
+    # and must not render as a clean-looking zero or empty map (per-agent-model-routing).
+    "  dispatches=\(if .audit.dispatches_total == null then "unmeasured" else .audit.dispatches_total end) (model overrides vs routing resolved at dispatch: \(if .audit.dispatches_with_model_override == null then "unmeasured — pre-routing run" else .audit.dispatches_with_model_override end))   by_dispatch_model_override=\(if .audit.by_dispatch_model_override == null then "unmeasured" else (.audit.by_dispatch_model_override | tojson) end)",
+    "  configured routing: \(if .audit.configured_routing == null then "unmeasured — pre-routing run" elif (.audit.configured_routing | length) == 0 then "none" else (.audit.configured_routing | to_entries | map("\(.key) \(.value)") | join(", ")) end)",
     "  failed_tool_calls=\(if .totals.failed_tool_calls == null then "unmeasured — pre-instrumentation run" else .totals.failed_tool_calls end)   human_interactions=\(.totals.human_interactions // 0) (interactivity confound)",
+    # dispatch-progress-metrics T8: totals.dispatch_waste renders HERE, inside the
+    # audit block, because an audit signal pushed below the packets table goes
+    # unread. No `// 0` on any component: null is UNMEASURED and renders with the
+    # reason the collector wrote to notes[] (keyed `dispatch_waste[.<component>]: `);
+    # a non-null zero is a measured 0 and renders as 0. A packet collected before the
+    # rollup existed has no dispatch_waste key at all and reads unmeasured, not clean.
+    ((.notes // []) as $notes
+     | def dwnote($k):
+         ($notes | map(select(type == "string" and startswith($k + ": "))) | first) as $n
+         | if $n == null then null
+           else ($n | ltrimstr($k + ": ") | if startswith("unmeasured — ") then ltrimstr("unmeasured — ") else . end) end;
+       def dwwhy($k): (dwnote($k) // "no reason recorded in notes[]");
+       def dwtok: "in=\(.input) out=\(.output) cacheR=\(.cache_read) cacheC=\(.cache_creation)";
+       (.totals.dispatch_waste) as $dw
+     | if ($dw == null) or ($dw | type) != "object" then
+         "  dispatch_waste: unmeasured — \(dwnote("dispatch_waste") // "this packet predates the dispatch_waste rollup")"
+       elif ($dw.zero_progress == null and $dw.continuations == null and $dw.over_threshold == null and $dw.turn_threshold == null) then
+         "  dispatch_waste: unmeasured — \(dwwhy("dispatch_waste"))"
+       else
+         "  dispatch_waste (turn threshold: \(if $dw.turn_threshold == null then "unmeasured" else "\($dw.turn_threshold.value) \($dw.turn_threshold.unit), source \($dw.turn_threshold.source)" end)):",
+         (if $dw.zero_progress == null then
+            "    zero_progress=unmeasured — \(dwwhy("dispatch_waste.zero_progress"))"
+          else
+            "    zero_progress=\($dw.zero_progress.count)   tokens: \(if $dw.zero_progress.tokens == null then "unmeasured — \(dwwhy("dispatch_waste.zero_progress.tokens"))" else ($dw.zero_progress.tokens | dwtok) end)"
+          end),
+         (if $dw.continuations == null then
+            "    continuations=unmeasured — \(dwwhy("dispatch_waste.continuations"))"
+          else
+            "    continuations=\($dw.continuations)"
+          end),
+         (if $dw.over_threshold == null then
+            "    over_threshold=unmeasured — \(dwwhy("dispatch_waste.over_threshold"))"
+          else
+            "    over_threshold=\($dw.over_threshold.count)   token_share: \(if $dw.over_threshold.token_share == null then "unmeasured — \(dwwhy("dispatch_waste.over_threshold.token_share"))" else $dw.over_threshold.token_share end)"
+          end)
+       end),
     ((.audit.flagged_packets // []) | if length==0 then "  no flags" else (.[] | "  ⚠ \(.id): \(.flags | join("; "))") end),
     "",
-    # `outcome` renders as `?` when null, never as "green". A packet exists here only
-    # because a green-commit trailer was found, so failed and rolled-back work leaves NO
-    # row at all — "42 of 42 green" is survivorship that looks BETTER the more work was
-    # discarded. Only `runstate.sh record-outcome` can attest it; null means unattested.
-    "packets (id | wave | outcome | tool_calls | active | dur | out-tok):",
-    (.packets[] | "  \(.id) | wave \(.wave // "?") | \(.outcome // "?") | \(.tool_calls) calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")"),
+    # by outcome: each STARTED packet counted once (loop-measurement T5/T6). A row
+    # here is no longer survivorship over green commits — a failed, rolled-back, or
+    # still-open packet now appears too (T4), so this table can show real failures.
+    (if ((.totals.outcome_counts // {}) | length) > 0 then
+       "", "by outcome:",
+       ((.totals.outcome_counts) | to_entries[] | "  \(.key): \(.value)")
+     else empty end),
+    "",
+    # `outcome` renders as `?` when null, never as "green". Before loop-measurement T4
+    # a packet existed here only because a green-commit trailer was found, so failed and
+    # rolled-back work left NO row at all — that is no longer true once the run carries
+    # record-start/record-outcome attestations (see totals.outcome_coverage above): a
+    # started packet with no commit, or a pause commit that never got a terminal
+    # outcome, now appears with outcome=null (not green). `?` still means unattested,
+    # never "clean" or "green".
+    "packets (id | outcome | tool_calls | active | dur | out-tok):",
+    (.packets[] | "  \(.id) | \(.outcome // "?") | \(.tool_calls // "?") calls | \(.active_seconds // "?")s | \(.duration_ms // "-")ms | \(.tokens.output // "-")\(if .swept == true then "  ⚠ swept by a later session — unmeasured, not zero" else "" end)"),
     # Per-role edit counts alone cannot tell "the orchestrator corrected the implementer"
     # from "they worked on different files". Only same-file overlap can, so print the
     # counts and the contention together or the numbers invite the wrong reading.

@@ -184,6 +184,16 @@ has 'finds the pause-sentinel gap'     'FINDING=gitignore' "$out"
 # it lands as `?? .agents/` and reconcile discards it as scratch on the green
 # checkpoint — the backup destroyed by the recovery path it exists to serve.
 has 'finds the write-backup ignore gap' 'FINDING=writebackup-ignore' "$out"
+# The same pre-2.0 fixture predates thin-loop-driver too: its .gitignore has
+# neither .agents/loop/ nor .agents/driver-mode/, so the driver-mode-ignore
+# finding (T23) fires on it. It has no .claude/settings.json at all, though --
+# the compact-threshold finding (T23) is guarded on that file existing, and a
+# repo carrying no committed settings file is exactly the state the PRD calls
+# supported ("neither the repo nor the operator has set one"), so it must NOT
+# fire here.
+has 'finds the driver-mode/loop ignore gap' 'FINDING=driver-mode-ignore' "$out"
+has 'names both missing patterns'      '.agents/loop/ and .agents/driver-mode/' "$out"
+hasnt 'does not flag the compaction carrier with no .claude/settings.json' 'FINDING=compact-threshold' "$out"
 [ "$rc" = 2 ] && ok 'detect exits 2 when migration is needed' || bad 'detect exit 2' "rc=$rc"
 
 printf '\n== detect: a current repo is left alone ==\n'
@@ -196,10 +206,34 @@ R="$TMP/current"; mkdir -p "$R/gspec/features/a" "$R/.agents"
 printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
 printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
 printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
-printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+# The driver-mode/loop ignores (thin-loop-driver T23) are required for this
+# fixture to be "nothing to do" -- omitting them would make this assertion fail
+# the moment that finding exists, which is exactly the regression this fixture
+# guards. Deliberately carries NO .claude/settings.json at all: that is the
+# guard's supported state (compact-threshold fires only when the file exists
+# and lacks the key), and this is the assertion that pins it -- an unguarded
+# compact-threshold would flag this repo and FINDINGS=0 would never be
+# reachable again.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
 out="$("$MIG" detect "$R" 2>&1)"; rc=$?
 has 'a current repo reports no findings' 'FINDINGS=0' "$out"
 [ "$rc" = 0 ] && ok 'detect exits 0 when nothing to do' || bad 'detect exit 0' "rc=$rc"
+# The installed-gspec report (added with the 2026-09-20 pin bump). Informational, so it
+# must never turn a clean repo into FINDINGS>0 -- a stale install parses fine; it
+# only runs the old briefs. Three states: no stamp, matches the pin, differs.
+PIN_NOW="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+has 'no .gspec/config.json reads as an unknown install' 'GSPEC_INSTALLED=unknown' "$out"
+mkdir -p "$R/.gspec"; printf '{\n  "target": "claude",\n  "gspecVersion": "%s"\n}\n' "$PIN_NOW" > "$R/.gspec/config.json"
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+has 'an install matching the pin is reported bare' "GSPEC_INSTALLED=$PIN_NOW" "$out"
+case "$out" in *re-emit*) bad 'and carries no re-emit hint' "$out" ;; *) ok 'and carries no re-emit hint' ;; esac
+printf '{ "target": "claude", "gspecVersion": "3.1.1" }\n' > "$R/.gspec/config.json"
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+has 'a stale install names the re-emit command with the pin' "re-emit with: npx --yes gspec@$PIN_NOW --target claude" "$out"
+has 'and states the installed version' 'GSPEC_INSTALLED=3.1.1' "$out"
+has 'but a stale install is NOT a finding' 'FINDINGS=0' "$out"
+[ "$rc" = 0 ] && ok 'and detect still exits 0' || bad 'stale install exit 0' "rc=$rc"
+rm -rf "$R/.gspec"
 out="$("$MIG" plan "$R" 2>&1)"
 has 'plan says there is nothing to do' 'Nothing to do' "$out"
 out="$("$MIG" verify "$R" 2>&1)"
@@ -278,6 +312,63 @@ out="$("$MIG" detect "$R" 2>&1)"
 has 'a stranded plan is flagged'       'FINDING=half-moved' "$out"
 has 'and names both halves'            'gspec/tasks/a.md' "$out"
 has 'and says nothing is broken yet'   'nothing breaks' "$out"
+
+# =============================================================================
+printf '\n== detect: a .gitignore missing .agents/loop/ or .agents/driver-mode/ (T23) ==\n'
+# Same shape as the pause/write-backup findings above: reported, fixed by hand,
+# never auto-applied. Round-tripped through a partial fix (one pattern still
+# missing) before the full fix, so the message narrowing is proven, not assumed.
+R="$TMP/driver-mode-ignore"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'flags a .gitignore missing both driver-mode entries' 'FINDING=driver-mode-ignore' "$out"
+has 'names both missing patterns' '.agents/loop/ and .agents/driver-mode/' "$out"
+
+# Fix ONE of the two by hand: the message must narrow to only what remains.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'still flags the remaining gap' 'FINDING=driver-mode-ignore' "$out"
+has 'and names only what is left' '.gitignore does not ignore .agents/driver-mode/' "$out"
+hasnt 'does not re-claim the already-fixed pattern' '.agents/loop/ and .agents/driver-mode/' "$out"
+
+# Fix the rest by hand: a second run finds nothing -- the case that matters
+# most, since a reporter that re-reports an already-fixed item trains the
+# operator to ignore it.
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
+out="$("$MIG" detect "$R" 2>&1)"
+hasnt 'a second run finds nothing once both are ignored' 'FINDING=driver-mode-ignore' "$out"
+
+# =============================================================================
+printf '\n== detect: a per-repo compaction entry -- T4'"'"'s carrier (T23) ==\n'
+R="$TMP/compact-threshold"; mkdir -p "$R/gspec/features/a" "$R/.agents"
+printf -- '---\nspec-version: v2\n---\n- [ ] **P0**: x\n' > "$R/gspec/features/a/prd.md"
+printf -- '---\nspec-version: v2\nfeature: a\n---\n- [ ] **T1** **P0** do it\n' > "$R/gspec/features/a/tasks.md"
+printf 'schema: 1\nfeatures: []\n' > "$R/.agents/roadmap.yaml"
+printf '.agents/pause\n.agents/run-state-prev.yaml\n.agents/loop/\n.agents/driver-mode/\n' > "$R/.gitignore"
+
+# No .claude/settings.json at all -- guarded the same as every other check in
+# _findings(): a repo that has never committed a settings file has not opted
+# out of gaffer's default, which the PRD names as a supported state, so this
+# must NOT fire. (An unguarded version fires here forever and gaffer's own
+# detect -- and every fresh consumer repo off templates/spec-driven-base/,
+# which ships no .claude/ -- can never reach FINDINGS=0.)
+out="$("$MIG" detect "$R" 2>&1)"; rc=$?
+hasnt 'does not flag a repo with no .claude/settings.json at all' 'FINDING=compact-threshold' "$out"
+
+# The file exists but the key is absent -- now it fires.
+mkdir -p "$R/.claude"
+printf '{\n  "otherKey": true\n}\n' > "$R/.claude/settings.json"
+out="$("$MIG" detect "$R" 2>&1)"
+has 'flags a settings.json with no autoCompactWindow key' 'FINDING=compact-threshold' "$out"
+has 'names the carrier'                                   '.claude/settings.json' "$out"
+
+# Fix by hand: a second run finds nothing.
+printf '{\n  "otherKey": true,\n  "autoCompactWindow": 150000\n}\n' > "$R/.claude/settings.json"
+out="$("$MIG" detect "$R" 2>&1)"
+hasnt 'a second run finds nothing once the entry is set' 'FINDING=compact-threshold' "$out"
 
 printf '\n== apply refuses to run on a dirty tree ==\n'
 R="$TMP/dirty"; mk_repo "$R" legacy-a
@@ -1083,45 +1174,408 @@ has   'a packet with a REAL trailer commit still reads dead (the anchor still ma
   'ENTRY=f-real PACKETS=yes VERDICT=dead' "$out"
 
 # =============================================================================
-printf '\n== the runbook must not drift from the pin ==\n'
-# docs/gspec-<version>-migration.md is the HUMAN sequence; skills/migrate/SKILL.md
-# is what the agent runs. Two documents by design -- different readers, different
-# jobs -- but they share exactly one hard fact, the pinned gspec version, and a
-# runbook naming a stale version is worse than no runbook: it gets followed.
-#
-# This is the only mechanical tie between them, and deliberately so. The rest of
-# the runbook is prose no test can judge; the version is a literal, so a pin bump
-# that forgets this file fails here instead of rotting until someone runs an old
-# `npx gspec@...` from it.
-RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null | head -1)"
+printf '\n== apply: retire-unused-loop-modes T5 -- clean up a consumer repo ==\n'
+# Parallel mode (ADR 0016) and rate-limit auto-pause (ADR 0018) are retired from
+# the shipped plugin; a repo that had adopted either still carries the artifacts.
+# Autonomy levels (retire-autonomy-levels) are retired the same way, and their
+# footprint rides this same fixture: `.agents/autonomy`, the `autonomy_ceiling`
+# paragraph, and level references in the human's own files.
+# `apply` cleans up what is mechanically safe and only ever REPORTS the rest.
+R="$TMP/retire-cleanup"; mk_repo "$R" canonical
+mkdir -p "$R/.agents" "$R/.claude"
+cat > "$R/.agents/project-overrides.yaml" <<'EOF'
+# Per-project orchestration overrides for demo-app
+project:
+  name: demo-app
+
+bypass-ask-tier: true
+
+integration_branch: develop
+
+# Rate-limit auto-pause (ADR 0018) — needs Pro/Max plus a `statusLine` entry in
+# user settings.json, which a plugin cannot write. Turn on with
+# `/gaffer:rate-limit-pause on`; this block is the per-repo gate.
+# rate_limit_pause:
+#   enabled: true
+#   five_hour_threshold_pct: 90
+#   seven_day_threshold_pct: 85
+
+# Never let this repo run above supervised, whatever .agents/autonomy says.
+autonomy_ceiling: supervised
+
+escalate_to_human_on:
+  - "anything touching money movement"
+
+# Parallel lanes (ADR 0016). Left at the default 5, but expect far less
+# concurrency than that here.
+# max_parallel_packets: 5
+EOF
+# a TRACKED .agents/autonomy (retire-autonomy-levels): the guard reads no level
+# any more, so it is deleted -- and staged, because it is tracked here.
+printf 'full-autonomy\n' > "$R/.agents/autonomy"
+# a leftover per-lane pause file (ADR 0017's retired per-lane variant) plus the
+# whole-run sentinel, which must survive untouched.
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause"
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-a"
+printf 'requested_at: 2026-01-01T00:00:00Z\n' > "$R/.agents/pause.lane-b"
+# a TRACKED packet-graph.yaml (ADR 0016)
+printf 'waves:\n  - wave: 1\n    packets:\n      - id: x\n' > "$R/.agents/packet-graph.yaml"
+# stale CLAUDE.md routing lines, plus an autonomy-level line
+cat >> "$R/CLAUDE.md" <<'EOF'
+
+Run the backlog in parallel with `/gaffer:run-loop --parallel` after
+`/gaffer:build-packet-dependency-tree`. Auto-pause with `/gaffer:rate-limit-pause on`.
+This repo runs at full-autonomy; raise it with `/gaffer:set-autonomy`.
+EOF
+# the human's own setup narrative and repo harness config, both naming a level
+cat > "$R/spec-setup.md" <<'EOF'
+# Setting this repo up
+
+Write `supervised` into `.agents/autonomy` before the first run.
+Everything else is covered by the plugin defaults.
+EOF
+cat > "$R/.claude/settings.json" <<'EOF'
+{
+  "env": {
+    "ORCH_AUTONOMY": "supervised"
+  }
+}
+EOF
+git -C "$R" add -A >/dev/null 2>&1
+git -C "$R" -c user.email=t@e -c user.name=t commit -qm "retire-cleanup fixtures" >/dev/null 2>&1
+
+printf '\n-- overrides file: every retired key removed, every neighbour byte-identical --\n'
+out="$("$MIG" apply "$R" 2>&1)"
+has 'apply reports the overrides cleanup' 'CLEANED=rate_limit_pause' "$out"
+has 'and names autonomy_ceiling among what it removed' 'autonomy_ceiling:' "$out"
+ov="$(cat "$R/.agents/project-overrides.yaml")"
+hasnt 'the rate_limit_pause example is gone'  'rate_limit_pause:'    "$ov"
+hasnt 'the max_parallel_packets key is gone'  'max_parallel_packets' "$ov"
+hasnt 'the autonomy_ceiling paragraph is gone' 'autonomy_ceiling'    "$ov"
+hasnt 'and its introducing comment went with it' 'Never let this repo run' "$ov"
+has   'bypass-ask-tier survives untouched'    'bypass-ask-tier: true'    "$ov"
+has   'integration_branch survives untouched' 'integration_branch: develop' "$ov"
+has   'the project: block survives untouched' 'name: demo-app' "$ov"
+has   'escalate_to_human_on -- the paragraph AFTER autonomy_ceiling -- survives' \
+  'anything touching money movement' "$ov"
+# The strongest form of "leaves the rest of that file as it was": compare the
+# WHOLE file against the fixture minus exactly the three retired paragraphs.
+# `has`/`hasnt` on individual keys cannot see a blank line eaten between two
+# surviving paragraphs, which is precisely how a paragraph-joining rewrite goes
+# subtly wrong.
+cat > "$TMP/overrides-expected.yaml" <<'EOF'
+# Per-project orchestration overrides for demo-app
+project:
+  name: demo-app
+
+bypass-ask-tier: true
+
+integration_branch: develop
+
+escalate_to_human_on:
+  - "anything touching money movement"
+EOF
+cmp -s "$TMP/overrides-expected.yaml" "$R/.agents/project-overrides.yaml" \
+  && ok 'every surviving paragraph is byte-identical, blank lines included' \
+  || bad 'every surviving paragraph is byte-identical, blank lines included' \
+         "$(diff "$TMP/overrides-expected.yaml" "$R/.agents/project-overrides.yaml" 2>&1)"
+
+printf '\n-- .agents/autonomy: tracked, so removed AND staged AND flagged to commit --\n'
+has 'apply reports the .agents/autonomy removal' 'REMOVED=.agents/autonomy deleted' "$out"
+has 'and says the operator must commit it'       'TRACKED, so this is a change YOU need to commit' "$out"
+[ ! -e "$R/.agents/autonomy" ] && ok '.agents/autonomy is gone from the working tree' \
+  || bad '.agents/autonomy still on disk'
+git -C "$R" status --porcelain -- .agents/autonomy | grep -q '^D ' \
+  && ok 'the .agents/autonomy deletion is staged (it was tracked)' \
+  || bad '.agents/autonomy deletion was not staged' "$(git -C "$R" status --porcelain -- .agents/autonomy)"
+
+printf '\n-- CLAUDE.md / spec-setup.md / .claude/settings.json: REPORTED, never edited --\n'
+before_specsetup="$(cat "$R/spec-setup.md")"
+before_settings="$(cat "$R/.claude/settings.json")"
+has 'apply reports the CLAUDE.md autonomy line' 'CLAUDEMD_ROUTES=' "$out"
+has 'and quotes /gaffer:set-autonomy from it'   'set-autonomy'     "$out"
+has 'apply reports spec-setup.md under its own label' 'SPECSETUP_ROUTES=' "$out"
+has 'and quotes the .agents/autonomy line from it'    '.agents/autonomy' "$out"
+has 'apply reports the repo settings.json ORCH_AUTONOMY entry' 'SETTINGS_AUTONOMY=' "$out"
+[ "$before_specsetup" = "$(cat "$R/spec-setup.md")" ] \
+  && ok 'spec-setup.md is byte-unchanged' || bad 'spec-setup.md was edited'
+[ "$before_settings" = "$(cat "$R/.claude/settings.json")" ] \
+  && ok '.claude/settings.json is byte-unchanged' || bad '.claude/settings.json was edited'
+
+printf '\n-- per-lane pause files removed; the whole-run sentinel survives --\n'
+has 'apply reports the per-lane pause cleanup' 'leftover per-lane pause file' "$out"
+[ ! -e "$R/.agents/pause.lane-a" ] && [ ! -e "$R/.agents/pause.lane-b" ] \
+  && ok 'both per-lane pause files are gone' \
+  || bad 'per-lane pause files still present' "$(ls "$R/.agents" 2>&1)"
+[ -f "$R/.agents/pause" ] && ok 'the whole-run pause sentinel survives untouched' \
+  || bad 'the whole-run pause sentinel was deleted'
+
+printf '\n-- .agents/packet-graph.yaml: tracked, so removed AND flagged for the operator to commit --\n'
+has 'apply reports the packet-graph.yaml removal' 'REMOVED=.agents/packet-graph.yaml deleted' "$out"
+has 'and says the operator must commit it'        'need to commit' "$out"
+[ ! -e "$R/.agents/packet-graph.yaml" ] && ok 'packet-graph.yaml is gone from the working tree' \
+  || bad 'packet-graph.yaml still on disk'
+git -C "$R" status --porcelain -- .agents/packet-graph.yaml | grep -q '^D ' \
+  && ok 'the deletion is staged (it was tracked)' \
+  || bad 'packet-graph.yaml deletion was not staged' "$(git -C "$R" status --porcelain -- .agents/packet-graph.yaml)"
+
+printf '\n-- extra git worktrees: LISTED, never deleted --\n'
+WT="$TMP/retire-cleanup-wt"
+git -C "$R" worktree add -q -b orch/spike "$WT" >/dev/null 2>&1
+out2="$("$MIG" apply "$R" --force 2>&1)"
+has 'apply lists the extra worktree' 'WORKTREES=' "$out2"
+has 'and names its branch'          'orch/spike'  "$out2"
+[ -d "$WT" ] && ok 'the worktree itself is untouched' || bad 'apply deleted a worktree'
+
+printf '\n-- CLAUDE.md: stale routing lines are REPORTED, never edited --\n'
+before_claude="$(cat "$R/CLAUDE.md")"
+has 'apply reports the stale CLAUDE.md routing lines' 'CLAUDEMD_ROUTES=' "$out2"
+has 'and quotes the --parallel line' '--parallel' "$out2"
+after_claude="$(cat "$R/CLAUDE.md")"
+[ "$before_claude" = "$after_claude" ] && ok 'CLAUDE.md itself is byte-unchanged' \
+  || bad 'CLAUDE.md was edited' "apply must never rewrite a consumer's CLAUDE.md"
+
+printf '\n-- idempotence: a second apply finds nothing new to clean up --\n'
+out3="$("$MIG" apply "$R" --force 2>&1)"
+hasnt 'no further CLEANED= on a second run'                'CLEANED='                        "$out3"
+hasnt 'no further per-lane pause cleanup on a second run'  'leftover per-lane pause file'     "$out3"
+hasnt 'no further packet-graph.yaml removal on a second run' 'packet-graph.yaml deleted'      "$out3"
+hasnt 'no further .agents/autonomy removal on a second run'  '.agents/autonomy deleted'       "$out3"
+has 'WORKTREES= is still (accurately) reported -- it is a read-only listing' 'WORKTREES=' "$out3"
+has 'CLAUDEMD_ROUTES= is still (accurately) reported -- read-only' 'CLAUDEMD_ROUTES=' "$out3"
+has 'SPECSETUP_ROUTES= is still reported -- read-only, so it does not go quiet' 'SPECSETUP_ROUTES=' "$out3"
+has 'SETTINGS_AUTONOMY= is still reported -- read-only, so it does not go quiet' 'SETTINGS_AUTONOMY=' "$out3"
+
+printf '\n-- .agents/autonomy: an UNTRACKED one is deleted without claiming a commit --\n'
+# A repo that gitignored the file has nothing to commit, and telling its operator
+# otherwise sends them looking for a change `git status` does not show.
+R5="$TMP/autonomy-untracked"; mk_repo "$R5" canonical
+printf '.agents/run-state.yaml\n.agents/autonomy\n' > "$R5/.gitignore"
+git -C "$R5" add -A >/dev/null 2>&1
+git -C "$R5" -c user.email=t@e -c user.name=t commit -qm "ignore autonomy" >/dev/null 2>&1
+printf 'full-autonomy\n' > "$R5/.agents/autonomy"
+out5="$("$MIG" apply "$R5" 2>&1)"
+has 'apply reports the untracked removal' 'REMOVED=.agents/autonomy deleted' "$out5"
+has 'and says there is nothing to commit' 'untracked, so there is nothing to commit' "$out5"
+# This repo carries no packet-graph.yaml, so the "TRACKED" wording can only have
+# come from the autonomy line -- nothing else here emits it.
+hasnt 'and does NOT claim it was tracked' 'TRACKED, so this is a change YOU need to commit' "$out5"
+[ ! -e "$R5/.agents/autonomy" ] && ok 'the untracked .agents/autonomy is gone' \
+  || bad 'the untracked .agents/autonomy survived'
+
+printf '\n-- a repo with NONE of these artifacts emits none of the new lines --\n'
+# The other half of "each only where present": a clean repo must not be told
+# about a key it never had or a file it does not carry.
+R6="$TMP/no-autonomy-artifacts"; mk_repo "$R6" canonical
+out6="$("$MIG" apply "$R6" 2>&1)"
+hasnt 'no CLEANED= with no retired override key present' 'CLEANED='          "$out6"
+hasnt 'no .agents/autonomy removal when there is none'   '.agents/autonomy'  "$out6"
+hasnt 'no SPECSETUP_ROUTES= with no spec-setup.md'       'SPECSETUP_ROUTES=' "$out6"
+hasnt 'no SETTINGS_AUTONOMY= with no .claude/settings.json' 'SETTINGS_AUTONOMY=' "$out6"
+hasnt 'no CLAUDEMD_ROUTES= from a CLAUDE.md naming no level or retired mode' 'CLAUDEMD_ROUTES=' "$out6"
+
+printf '\n-- statusLine: FOUND (decline path) -- reported, never touched, reload caveat stated --\n'
+R2="$TMP/statusline-decline"; mk_repo "$R2" canonical
+HOME2="$TMP/home-decline"; mkdir -p "$HOME2/.claude"
+cat > "$HOME2/.claude/settings.json" <<'EOF'
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/Users/x/.claude/plugins/cache/gaffer_abc123/scripts/statusline-pause-sensor.sh"
+  }
+}
+EOF
+out="$(CLAUDE_CONFIG_DIR="$HOME2/.claude" "$MIG" apply "$R2" 2>&1)"
+has 'apply finds the stale statusLine'            'FOUND=statusLine' "$out"
+has 'and names --remove-statusline as the way to remove it' '--remove-statusline' "$out"
+has 'and states the session-reload caveat'        'session start' "$out"
+hasnt 'it does NOT claim the removal already took effect' 'REMOVED=statusLine' "$out"
+settings_after="$(cat "$HOME2/.claude/settings.json")"
+has 'the statusLine entry survives a decline' 'statusline-pause-sensor.sh' "$settings_after"
+# a second (declined) run reports the same finding -- it is not a one-shot alert
+out_decline2="$(CLAUDE_CONFIG_DIR="$HOME2/.claude" "$MIG" apply "$R2" --force 2>&1)"
+has 'a second decline still reports FOUND=' 'FOUND=statusLine' "$out_decline2"
+
+if command -v jq >/dev/null 2>&1; then
+  printf '\n-- statusLine: --remove-statusline removes ours, with jq available --\n'
+  R3="$TMP/statusline-remove"; mk_repo "$R3" canonical
+  HOME3="$TMP/home-remove"; mkdir -p "$HOME3/.claude"
+  cp "$HOME2/.claude/settings.json" "$HOME3/.claude/settings.json"
+  out="$(CLAUDE_CONFIG_DIR="$HOME3/.claude" "$MIG" apply "$R3" --remove-statusline 2>&1)"
+  has 'apply reports the statusLine removal'  'REMOVED=statusLine removed' "$out"
+  has 'and still states the session-reload caveat -- never "now safe"' 'session start' "$out"
+  hasnt 'the sensor path is gone from settings.json' 'statusline-pause-sensor.sh' "$(cat "$HOME3/.claude/settings.json")"
+  # idempotent: nothing left to remove on a second run
+  out_rm2="$(CLAUDE_CONFIG_DIR="$HOME3/.claude" "$MIG" apply "$R3" --remove-statusline --force 2>&1)"
+  hasnt 'a second --remove-statusline run finds nothing left' 'FOUND=statusLine' "$out_rm2"
+  hasnt 'and reports no further removal' 'REMOVED=statusLine' "$out_rm2"
+else
+  printf '  SKIP: jq not installed on this host -- the statusLine removal path is not exercised (apply refuses to hand-edit JSON without a real parser)\n'
+fi
+
+printf '\n-- statusLine: a FOREIGN entry is never even named, let alone touched --\n'
+R4="$TMP/statusline-foreign"; mk_repo "$R4" canonical
+HOME4="$TMP/home-foreign"; mkdir -p "$HOME4/.claude"
+cat > "$HOME4/.claude/settings.json" <<'EOF'
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/opt/homebrew/bin/some-other-tool --flag"
+  }
+}
+EOF
+out="$(CLAUDE_CONFIG_DIR="$HOME4/.claude" "$MIG" apply "$R4" --remove-statusline 2>&1)"
+hasnt 'a foreign statusLine is never named as FOUND'   'FOUND=statusLine'   "$out"
+hasnt 'and never removed either, even with the flag'   'REMOVED=statusLine' "$out"
+has 'the foreign entry survives byte-for-byte' 'some-other-tool --flag' "$(cat "$HOME4/.claude/settings.json")"
+
+# =============================================================================
+printf '\n== the runbook and skill never restate the pin ==\n'
+# docs/gspec-migration.md is the HUMAN sequence; skills/migrate/SKILL.md is what
+# the agent runs. Two documents by design -- different readers, different jobs.
+# The pinned gspec version is a configurable value, and its current state lives
+# ONLY in GSPEC_PINNED_VERSION in gspec-backlog.sh. A copy anywhere else is a
+# second source of truth that a pin bump leaves stale -- and a runbook naming a
+# stale version gets followed. So both documents must send the reader to
+# `gspec-backlog.sh pin` and must carry no literal copy of what it prints.
+RB="$HERE/../docs/gspec-migration.md"
+SKILL_MD="$HERE/../skills/migrate/SKILL.md"
 PINNED="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
 SPECVERS="$("$HERE/gspec-backlog.sh" pin | sed -n 's/^GSPEC_SPEC_VERSIONS=//p')"
-if [ -n "$RB" ] && [ -f "$RB" ]; then
-  ok 'the migration runbook exists'
+SKILL_TXT="$(cat "$SKILL_MD")"
+case "$SKILL_TXT" in *'docs/gspec-migration.md'*) ok 'the skill names the runbook path' ;;
+  *) bad 'the skill names the runbook path' "no docs/gspec-migration.md in $SKILL_MD" ;; esac
+# Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
+# on failure, and the got value here is a 200-line document.
+case "$SKILL_TXT" in *"$PINNED"*) bad 'the skill carries no literal pinned version' "found $PINNED in $SKILL_MD" ;;
+  *) ok 'the skill carries no literal pinned version' ;; esac
+case "$SKILL_TXT" in *'gspec-backlog.sh pin'*) ok 'the skill reads the version from gspec-backlog.sh pin' ;;
+  *) bad 'the skill reads the version from gspec-backlog.sh pin' "no 'gspec-backlog.sh pin' in $SKILL_MD" ;; esac
+if [ -f "$RB" ]; then
+  ok 'the migration runbook exists at docs/gspec-migration.md'
   RB_TXT="$(cat "$RB")"
-  # Checked with `case`, not the `has` helper: `has` echoes the whole "got" value
-  # on failure, and the got value here is a 200-line document. Three of those in
-  # a CI log buries the one line that says what is wrong.
   rb_has() { # rb_has <name> <literal>
     case "$RB_TXT" in *"$2"*) ok "$1" ;;
       *) bad "$1" "runbook does not contain: $2   ($RB)" ;; esac
   }
-  rb_has 'it names the pinned gspec version'       "gspec@$PINNED"
-  rb_has 'and quotes that pin in the check output' "GSPEC_PINNED_VERSION=$PINNED"
-  rb_has 'and the supported spec-version set'      "GSPEC_SPEC_VERSIONS=$SPECVERS"
-  # Its filename carries the version, so a bump must rename it -- otherwise a
-  # file called ...-3.1.1-... describes 3.2 and every link to it lies.
-  case "$RB" in *"$PINNED"*) ok 'the runbook filename matches the pin' ;;
-    *) bad 'the runbook filename matches the pin' "no $PINNED in: $RB" ;; esac
+  case "$RB_TXT" in *"$PINNED"*) bad 'the runbook carries no literal pinned version' "found $PINNED in $RB" ;;
+    *) ok 'the runbook carries no literal pinned version' ;; esac
+  rb_has 'it reads the version from gspec-backlog.sh pin' 'gspec-backlog.sh pin'
+  rb_has 'and installs by that placeholder, not a literal' 'gspec@<pinned version>'
+  case "$RB_TXT" in *"GSPEC_SPEC_VERSIONS=$SPECVERS"*) bad 'the runbook carries no literal spec-version set' "found $SPECVERS in $RB" ;;
+    *) ok 'the runbook carries no literal spec-version set' ;; esac
+  # No versioned runbook left behind beside it: a docs/gspec-<version>-migration.md
+  # is exactly the second copy of the value this section exists to forbid.
+  STALE_RB="$(ls "$HERE"/../docs/gspec-*-migration.md 2>/dev/null || true)"
+  if [ -z "$STALE_RB" ]; then ok 'no version-named runbook remains'
+  else bad 'no version-named runbook remains' "$STALE_RB"; fi
   # The install-before-migrate order is the one instruction whose loss silently
-  # costs a second migration, so pin it by CONTENT, not just by version string.
+  # costs a second migration, so pin it by CONTENT.
   rb_has 'it keeps the install-before-migrate hazard' 'the exact layout you are leaving'
   # And the check that separates a broken migration from a finished backlog --
   # the defect this plugin actually shipped once.
   rb_has 'it tells the reader to read the task-line count' 'task line(s) read'
 else
-  bad 'the migration runbook exists' "no docs/gspec-*-migration.md found"
+  bad 'the migration runbook exists at docs/gspec-migration.md' "missing: $RB"
 fi
+
+# =============================================================================
+printf '\n== the migrate skill: reasons one clause with the rest in their ADRs (skill-prompt-trim T10) ==\n'
+# Capability 3: each rule keeps at most one clause of reason, and the rest moves to a
+# dated `Relocated from skills (<date>)` section of the ADR that owns the rule. Each row
+# pins all three sides of one move -- the clause the skill kept, the moved wording gone
+# from the skill, and that wording present in the migrate relocation section of its
+# ADR -- so a reason pasted back into the skill, or a move that dropped the wording
+# instead of relocating it, turns this red. Needles are read over whitespace-squeezed
+# text, so a markdown wrap does not fail a clause that is present; each ADR needle sits
+# on one blockquote line, since `> ` prefixes survive the squeeze.
+t10_sq() { printf '%s' "$1" | tr -d '\r' | tr '\n' ' ' | tr -s ' '; }
+t10_skill="$(t10_sq "$SKILL_TXT")"
+while IFS='|' read -r t10_label t10_kept t10_moved t10_adr; do
+  [ -n "$t10_label" ] || continue
+  case "$t10_skill" in
+    *"$t10_kept"*) ok "migrate keeps one clause: $t10_label" ;;
+    *) bad "migrate keeps one clause: $t10_label" "missing: $t10_kept" ;;
+  esac
+  case "$t10_skill" in
+    *"$t10_moved"*) bad "migrate carries no copy of the moved reason: $t10_label" "still present: $t10_moved" ;;
+    *) ok "migrate carries no copy of the moved reason: $t10_label" ;;
+  esac
+  t10_adr_file="$(ls "$HERE"/../docs/adr/"$t10_adr"-*.md 2>/dev/null | head -1)"
+  t10_sect="$(sed -n "/^## Relocated from skills ([0-9-]*) — the migrate skill's/,\$p" "$t10_adr_file" 2>/dev/null)"
+  case "$(t10_sq "$t10_sect")" in
+    *"$t10_moved"*) ok "ADR $t10_adr's migrate relocation section holds it: $t10_label" ;;
+    *) bad "ADR $t10_adr's migrate relocation section holds it: $t10_label" "no '$t10_moved' under a migrate relocation heading in ${t10_adr_file:-docs/adr/$t10_adr-*.md}" ;;
+  esac
+done <<'T10_MOVES'
+why done means packets out|reads as "nothing to do", not as "unreadable"|a pure rename yielded **0 packets from 31 plan files**|0020
+why §2b is read first|the wrong order makes the repo worse|the one way to make this worse rather than better|0020
+why the tree must be clean|so the migration reads as one reviewable, revertable `git diff`|is not one you can review or revert|0020
+why never on main|**Never migrate `main`.**|that belongs on a branch|0020
+why an install mismatch is no finding|since a stale install reads fine|merely runs the old briefs|0020
+why the why is relayed|since several findings look cosmetic and are not|hard-blocks every turn on Codex|0020
+why a flat layout is not breakage|the adapter reads all three gspec layouts|have moved on without it|0020
+why a half-moved feature is reported|two plans for one feature|one moved and one did not|0020
+why a plan without a PRD is not diagnosed|it may be an interrupted `/gspec-migrate` or a deliberate infra plan|one real consumer repo documents exactly that|0020
+why the folder move is gspec's|this plugin owns **execution**|a fight this plugin would lose loudly and intermittently|0020
+why gspec is upgraded first|the layout you are leaving, and reports success|You would then have to migrate twice|0020
+why arch.md and design.html are not written|each feature folder is simply incomplete|migration relocates only the two that already existed|0020
+why placeholder arch lines are declined|gspec's own `plan-lint` floor rejects every such anchor|it produces files gspec itself then refuses|0020
+why architecture altitude is only relayed|splitting it is `/gspec-architect`'s job on a later pass|rewrites specs the user has already reviewed|0020
+why the spec move is committed before §3|before returning to §3 — `migrate.sh apply` refuses on a dirty tree|readable as its own diff regardless|0020
+why approval is awaited|this rewrites a repo's spec layout|it is not a routine edit|0020
+why two keys are dropped|so a stored copy drifts|storing either is how they drift|0020
+why a roadmap entry needs its why|`why` is what a human needs to re-sequence later|is required precisely because|0020
+why a vestigial allow-path goes|so a separate `gspec/tasks/**` entry is vestigial|nobody remembers what it was for|0020
+why CLAUDE.md describes one layout|since an agent trusts this file without checking|the whole value of this file|0020
+why a mixed layout still verifies|a mixed repo is a normal state, not a fault|refusing to pass a repo with nothing wrong|0020
+why legacy task lines are not rewritten|which gspec's immutability floor blocks|destroys the record of what was built|0020
+why the report's items are alerts|everything depending on it, blocked forever|the backlog quietly reports nothing to do|0020
+why the conventions are Read|naming the path is not reading it|unread they produce free prose|0023
+why the card is left as inserted|since a paraphrase drifts from the plugin's own contract|This is the layer that makes reports come out in the house format|0023
+why backlog.done is deleted|dead state since completion is derived from the gspec checkbox|with no reader left|0025
+why the done block shows nothing finished|never the `done:` block dropped in step 4|no fresher a signal than the boxes it mirrored|0025
+why apply never deletes a finding|since it may hold the only copy of something undecided|nobody has decided about yet|0024
+why a repaired scope is flow form|a block-form repair silently leaves the entry `unknown`|the repair fails silently, which is the one|0024
+why drops go through drop-finding|removes the index entry and its body together.|leaves one orphaned|0024
+why the driver-mode dirs are ignored|would sweep or discard an untracked file there|same reason as the pause/write-backup findings above|0028
+why compact-threshold needs a settings file|the finding never fires when the repo commits no settings file|has not opted into a committed value|0028
+why the autonomy leftovers go|since the guard resolves no level any more|they only tell their next reader|0004
+why reported autonomy lines are offered a rewrite|offer to rewrite them, since the guard reads no level any more.|a level named in prose is describing a|0004
+T10_MOVES
+
+# Capability 4 and the history rule: the skill states no default value, carries no
+# task id and no retired feature's slug (git and the plan files record those).
+t10_hist="$(printf '%s\n' "$SKILL_TXT" | grep -nE '\(default |\bT[0-9]+\b|retire-(unused-loop-modes|autonomy-levels)' || true)"
+[ -z "$t10_hist" ] && ok 'migrate states no default value, task id or retired-feature slug' \
+  || bad 'migrate states no default value, task id or retired-feature slug' "found: $(printf '%s' "$t10_hist" | head -1)"
+
+# Every instruction, prohibition and trap whose reason moved keeps its rule wording.
+while IFS= read -r t10_rule; do
+  [ -n "$t10_rule" ] || continue
+  case "$t10_skill" in
+    *"$t10_rule"*) ok "migrate keeps the rule: $t10_rule" ;;
+    *) bad "migrate keeps the rule: $t10_rule" "missing from $SKILL_MD" ;;
+  esac
+done <<'T10_RULES'
+**Do not skip this and go straight to `/gspec-migrate`**
+You must be in the **main conversation** to invoke it
+offers to add placeholder `arch:` lines, decline
+The order is migrate → `/gspec-architect` → `/gspec-plan`
+Relay the warning; do not act on it here.
+**This is not breakage, and must not be relayed as breakage**
+**Do not diagnose this one for them**
+never resolve one by deleting
+**Ask the user before re-running with `--remove-statusline`.**
+Never phrase a same-run removal as "now safe."
+never delete a key from their `settings.json` on their behalf
+Leave it exactly as inserted — **do not reword or summarize it**
+**Never the block form** (`packets:` then indented `- <id>` lines)
+Re-run `migrate.sh findings-audit` afterwards
+Do **not** "fix" them by rewriting task lines
+Do not report success.
+**Do not commit it yourself.**
+T10_RULES
 
 printf '\n----------------------------------------\n'
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then

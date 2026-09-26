@@ -2,14 +2,14 @@
 
 Thanks for your interest in improving the **gaffer** plugin. This is a
 portable, domain-agnostic Claude Code plugin — a reusable orchestration layer
-(subagent team, skill chains, task-packet template, autonomy dial, and an
-approval guardrail hook) that installs on top of any application repo. Keeping it
+(subagent team, skill chains, task-packet template, a pausable guided loop, and an
+approval guardrail hook enforcing one fixed rule set) that installs on top of any
+application repo. Keeping it
 generic and safe is the whole point, so a few conventions matter more than usual.
 
 For the deep, authoritative developer brief — the structure rules, the guard's
-tier model, the loop's relay/inline crossover, parallel lanes, and the pause
-sentinel — read [`CLAUDE.md`](CLAUDE.md). This file is the quick-start and the
-etiquette; `CLAUDE.md` is the reference.
+tier model, and the pause sentinel — read [`CLAUDE.md`](CLAUDE.md). This file
+is the quick-start and the etiquette; `CLAUDE.md` is the reference.
 
 ## Ground rules
 
@@ -27,8 +27,8 @@ etiquette; `CLAUDE.md` is the reference.
 - **Record decisions.** Anything that changes the design, a safety boundary, or a
   measured tradeoff gets an ADR under `docs/adr/` (copy the numbering/format of
   the existing ones). If your change invalidates a measured claim in an ADR
-  (e.g. the ~20-packet relay/inline crossover), update the ADR **and** the skills
-  that cite it in the same PR.
+  (e.g. a guard threshold or a git soft-gate rule), update the ADR **and** the
+  skills that cite it in the same PR.
 
 ## Repo structure (do not violate)
 
@@ -86,22 +86,19 @@ claude plugin validate .
 
 ## Testing
 
-Six deterministic sweeps guard the shell cores. Run the ones your change
-touches; CI runs all of them on every push and pull request.
+Deterministic sweeps guard the shell cores. Run the ones your change touches;
+CI runs all of them on every push and pull request.
 
 ```bash
 scripts/test-guard.sh                # guardrail allow/deny, closed bypasses, guard-extra
-scripts/test-runstate.sh             # pause/resume + crash reconcile (seq + parallel lanes)
-scripts/test-packet-graph.sh         # dependency-graph math (edges, waves, ready)
-scripts/test-worktree.sh             # worktree lane lifecycle + safety gates
-scripts/test-pause.sh                # pause sentinel + hook (incl. from a lane worktree)
-scripts/test-parallel-pause-e2e.sh   # parallel-pause choreography
+scripts/test-runstate.sh             # pause/resume + crash reconcile (sequential)
+scripts/test-pause.sh                # pause sentinel + hook (incl. from a generic worktree)
 ```
 
-**Rule:** any change to a deterministic core (`guard.sh`, `runstate.sh`,
-`packet-graph.sh`, `worktree.sh`) or the loop/pause skills needs a matching
-addition to its sweep. Judgment lives in the agent/skill prompts; mechanism lives
-in the scripts — and the scripts are tested.
+**Rule:** any change to a deterministic core (`guard.sh`, `runstate.sh`) or the
+loop/pause skills needs a matching addition to its sweep. Judgment lives in the
+agent/skill prompts; mechanism lives in the scripts — and the scripts are
+tested.
 
 ## Submitting a change
 

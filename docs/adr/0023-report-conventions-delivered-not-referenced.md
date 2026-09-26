@@ -104,3 +104,314 @@ the contract **reliably present**, not enforced.
 **Known gap.** L2 lands in existing repos only when `/gaffer:migrate` is re-run. Until
 then those repos are on L1 (inside skills) and L3 (everywhere else), which is the
 configuration L3 exists to serve.
+
+## Amendment — the loop's shapes are rebuilt on `run-digest` (2026-09-16, ADR 0028)
+
+- Status: Accepted, amending this record. Nothing above is retracted.
+- Relates to: [ADR 0028](0028-loop-driver-mode.md) (driver mode), [ADR 0025](0025-remove-backlog-done.md)
+  (the "✅ is this session" rule this narrows), `thin-loop-driver` T18.
+
+**What changed and why.** This ADR's three delivery layers (L1 `Read`, L2 the stamped
+card, L3 the SessionStart hook) are unchanged and still correct. What changed is the
+thing being delivered: ADR 0028 made the loop driver thin. Every agent the loop
+dispatches now returns **one status line** (`templates/status-line.md`) and writes its
+detail to a result file the driver never opens, so the driver no longer holds a running
+narrative of the run — and after a compaction, or in a session that resumed another
+session's run, it holds nothing of the run at all. Shape A's multi-section per-packet
+check-in assumed material the driver stopped having.
+
+**Three consequences, recorded here so the shapes are not "fixed" back later:**
+
+**1. Shape A is one line per ended packet, with no tally and no decision block.** It
+carries the packet's id, a plain-English title and its outcome, plus one line per
+escalation-decider decision since the last report. A header tally on top of one or two
+lines is longer than what it summarizes, and the run's state is what shape B is for.
+The header tally therefore opens **B and C only**.
+
+A decision that *ended* its packet — a `hand-off-feature` always does — still takes its
+own 🔀 line beneath the packet's own outcome line, so one packet can occupy two lines
+here. That is the single documented exception to the conventions' rule that such a
+packet takes one line carrying 🔀, and it is recorded in both files: that rule exists so
+the packet counts once in each tally, and shape A has no tally to count in. The
+alternative — folding the decision into the packet's line — would drop the decision line
+this shape exists to emit.
+
+**2. Shapes B and C are assembled from `runstate.sh run-digest`, not from memory.** The
+digest reads the run's handoff files, its result files' first lines, its routing records,
+the outcomes log and the driver-mode records, and prints four line kinds: `packet`,
+`decision`, `handoff-feature` and at most one `enter`. Three facts it does not carry are
+named in `templates/report-templates.md` and are the **only** ones a shape may read from
+elsewhere — the pending count, a periodic pause's setting, and the branch/sha. This is
+not a licence to re-open the repo to enrich a report; it replaces one unreliable source
+(memory) with one cheap, fixed-size file read, and the "do not go back to disk" rule in
+`templates/report-conventions.md` is otherwise intact.
+
+**3. ✅ in shape B now counts the RUN, from the digest — narrowing ADR 0025 D3.** D3's
+rule was that ✅ counts what *this session* landed, read from check-ins the agent itself
+rendered and never from disk. Its purpose was to stop a backlog-wide or `backlog.done`-
+derived count from being reconstructed by scanning trailers. That purpose survives: the
+digest is one read of the run's own records, `backlog.done` stays deleted, and nothing
+scans trailers. But the PRD requires a stop report to name **every packet the run began**
+with its outcome, whoever renders it — which a session-scoped count cannot do across a
+compaction or a hand-over. So ✅ in shape B counts `packet` lines reading `green`.
+Everywhere else, including any report with no digest behind it, D3 stands unchanged.
+
+**What this amendment does NOT change.** The card (`templates/report-conventions-card.md`)
+and its two copies are untouched and stay byte-identical — the change is to the shapes,
+not to the conventions the card distills, which is why L2/L3 need no re-stamp. The glyph
+vocabulary gains nothing: ⏸️ stays header-only, and a paused packet is named in shape B's
+⚠️ **Unfinished** section with the *word* paused. The ⚠️ bucket's *label* does move —
+shape B words it **unfinished**, because there it aggregates `blocked`, `interrupted`,
+`abandoned`, `open` and `paused`, and "blocked" would be wrong for four of those five.
+Glyph, tally position and fixed order are unchanged, the section heading moves with the
+word so the table-of-contents correspondence holds, and `templates/report-conventions.md`
+states the two labels together rather than leaving the shapes file to contradict it. `templates/check-in.md` survives for a
+Chief Engineer dispatched for self-contained work outside a loop packet, and now says so;
+it is no longer an input to any loop report.
+
+**Known gap.** Nothing mechanically checks that a rendered report was actually assembled
+from the digest rather than recalled — the same honest position this ADR already takes
+about format enforcement. `scripts/test-report-conventions.sh` asserts the contract is
+*present and consistent* (the shapes name the digest, the wire format says it is not the
+loop's, this amendment is an appended section rather than a rewrite); the reviewer is
+what catches a report that ignored it.
+
+## Relocated from CLAUDE.md (2026-09-22) — design notes with no other home
+
+Nothing above is changed by this section. These points were carried only in the repo-root
+`CLAUDE.md` and are recorded here so that file can hold the rules without the reasoning.
+
+- **The card is small on purpose.** `templates/report-conventions-card.md` is a ~2.9k-char
+  distillation, the always-on layer, and the one source both L2 (the consumer `CLAUDE.md`
+  stamp) and L3 (the hook) copy from. It is a fourth file, not a fourth contract.
+- **The decision block is a shared primitive, not stop-report furniture.** It is also the
+  Chief Engineer's intake "2–3 approaches with trade-offs", `review-change`'s Risks
+  section, and an inline ask under a blocked packet in a report whose run is still going.
+  It is factored out because four near-identical shapes would drift apart, and the
+  un-actionable form ("things a human should weigh") is what they drift into.
+- **The kickoff is the cheapest correction point in a run.** A wrong assumption costs a
+  sentence there and several packets at the stop report, which is why shape C carries an
+  explicit `Assuming:` line and why `run-loop` emits it after preflight and backlog
+  resolution, when it states facts rather than intentions.
+- **Deliberately not built, so they are not invented later:** a welcome-back shape
+  (identical content to B — reuse it); a metrics shape (numbers-dense and pulled on
+  demand, not pushed); anything for guard ASK-tier prompts (Claude Code renders those
+  natively and a template cannot reach them); and a mid-packet progress heartbeat (a
+  subagent returns nothing until it finishes, a transport limit — a shape that implied
+  liveness would be lying).
+- **No header tally on a report with nothing to count.** Reports without a shape
+  (`review-change`, `metrics show`/`analyze`, `new-project`, `migrate`) still owe the
+  glyph vocabulary, the indentation contract and the decision block, but a tally on a
+  metrics summary is decoration, and decoration is what teaches a reader to stop trusting
+  the glyphs.
+
+## Relocated from skills (2026-09-25) — the pause skill's report reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the report contract is `Read`, not named** (the pause skill's preamble):
+
+  > Naming a path is not reading it, and unread they produce free prose.
+
+- **Why Shipped lines are not a packet-id list** (pause step 4):
+
+  > Not a packet-id list: `wbr-t14` means nothing to the human a week later,
+  > **Rate-limit auto-pause** (`wbr-t14`) does.
+
+- **Why each blocking question is rewritten as an answerable choice** (pause
+  step 4):
+
+  > A question the human must go reading to understand is a question that stalls
+  > the run.
+
+## Relocated from skills (2026-09-25) — the resume skill's report reasons
+
+Moved out of `skills/resume/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a surfaced question names its packet by title** (resume §3). The skill keeps
+  "since the human will not recognise the id". It used to read:
+
+  > These were written by a session that no longer exists, so give the human the
+  > plain-English title of the packet they block — they will not recognise the id.
+
+- **Why the resuming kickoff states what is left** (resume §4):
+
+  > The human may be days removed from the run and remembers none of the ids; the
+  > checkpoint you just loaded is the only thing that does.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's report reasons
+
+Moved out of `skills/run-loop/SKILL.md` (the report-contract section and §2) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the report contract is `Read`, not named** (the report-contract section). The
+  skill keeps "unread, you render from memory". It used to read:
+
+  > **Naming a path is not reading it** — unread, you render from memory and
+  > produce free prose, which is the exact failure these files exist to prevent.
+
+- **Why a fresh run's kickoff plans from the backlog it just resolved** (§2's
+  kickoff). The skill keeps "a fresh digest has no `packet` lines". It used to
+  read:
+
+  > a fresh run's digest has no `packet` lines yet, so the forward plan is the
+  > backlog you just resolved above, a file read moments old.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's per-packet report reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** and
+**Write the handoff, then start** steps by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a non-zero `group` exit is reported.** The skill keeps "since a silent
+  fallback reads as "nothing to bundle"". It used to read:
+
+  > since a silent fallback would read as "nothing to bundle" rather than "the check itself failed."
+
+- **Why `$SWEEP` is carried to the packet's report.** The skill keeps "this sweep is
+  the only point that knows which packets are newly closed". It used to read:
+
+  > since `run-digest`'s `packet` lines are never filtered by `--since` and this sweep
+  > is the only point that knows which of them are newly closed; without it a swept
+  > packet's line is never picked out of the digest until the eventual stop report.
+
+- **Why `SINCE` is captured before the start is attested.** The skill keeps "so
+  §3.5/§3.6's report scopes `run-digest --since "$SINCE"` to this packet's own
+  decisions". It used to read:
+
+  > so §3.5/§3.6's shape-A report can later scope `run-digest --since "$SINCE"` to
+  > only the decisions made during THIS packet's own attempts, never one already reported for an earlier packet
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and stop-report reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination` by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **Why each swept packet gets its own ⚠️ line in the landing report.** The skill keeps
+  "since that sweep's record is the only thing marking these as new". It used to read:
+
+  > `run-digest`'s `packet` lines are never filtered by `--since`, so this sweep's own
+  > record of what it just closed is the only thing marking these as new, not already
+  > carried by an earlier report
+
+- **Why a failed capability call is an alert, not a withheld line.** The skill keeps
+  "as an alert alongside the ✅/🔁 line, never a reason to withhold it". It used to
+  read:
+
+  > the packet still landed, so this is an alert alongside the ✅/🔁 line, never a
+  > reason to withhold it.
+
+- **Why a capability flip in the stop report carries no ⚠️.** The skill keeps "since a
+  capability flip is not a packet". It used to read:
+
+  > (the conventions reserve that glyph for a tally-counted section carrying one line
+  > per packet, and a capability flip is not a packet)
+
+- **Why the stop report reads the whole-run digest.** The skill keeps "whether or not
+  this session was the one that ran it". It used to add:
+
+  > (a compaction or a resumed session reads the same report)
+
+- **Why a landed bundle's one line must name every member.** The skill keeps "A bundle
+  is ONE packet — one `packet` line in `run-digest`, one ✅ line, never one per member —
+  but that line's `<title>` is only the cursor's `TEXT=` line (§3.3)". It used to
+  read:
+
+  > a bundle's several members share the one directory keyed to its own id,
+  > `<cursor>` — so it still counts as ONE packet, matching `run-digest`'s own line
+  > count and this shape's tally: a bundle earns exactly one ✅ line, never one per
+  > member. But `<title>` on that line is only the cursor's own `TEXT=` line (§3.3),
+  > so rendering it as-is would read a four-task bundle as one task, and the header
+  > tally would read `✅ 1` for four landed tasks.
+
+- **Why membership is confirmed from the branch.** The skill keeps "that line
+  records the intent at §3.3; the commit's own trailers record what landed". It
+  used to read:
+
+  > This session may not be the one that landed it (a compaction, or a resumed session
+  > inheriting someone else's run), so confirm membership from the branch itself
+  > rather than trusting the `BUNDLE=` line alone — that line was written back at
+  > §3.3, before the packet even started, and names an intent
+
+- **Why both branches are searched, never `<base>..HEAD`.** The skill keeps "§3.7 has
+  already merged each earlier bundle's commit into the integration branch". It used to
+  read:
+
+  > §3.7 merges a landed packet's branch into the integration branch right after it
+  > lands, so by stop-report time `HEAD` is wherever the *last* packet in the run
+  > happens to have run, and every earlier bundle's commit is only reachable from the
+  > integration branch, not from `<base>..HEAD`; that range finds nothing for any
+  > bundle but the most recent one — exactly the resumed/compacted case this step
+  > exists to cover.
+
+- **Why the trailer list is read in commit order.** The skill keeps "`<cursor>` first
+  (§3.6 writes it first)". It used to add:
+
+  > and that ordering is load-bearing there for orphan-adopt — see that step
+
+## Relocated from skills (2026-09-25) — the migrate skill's report and conventions-card reasons
+
+Moved out of `skills/migrate/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the conventions are `Read` before the summary.** The skill keeps "that summary
+  has **no shape of its own**, so those conventions *are* its format; naming the path
+  is not reading it". It used to add:
+
+  > the glyph vocabulary, the indentation contract, and the decision block that every human-facing report in this
+  > plugin owes.
+
+  > and unread they produce free prose.
+
+- **Why the stamped card is left exactly as inserted.** The skill keeps "since a
+  paraphrase drifts from the plugin's own contract". It used to read:
+
+  > The marker is what stops `hooks/report-conventions.sh` injecting the
+  > same text again at every session start, and a paraphrase drifts from the plugin's own
+  > contract. This is the layer that makes reports come out in the house format *without
+  > the human asking each session*; a repo without it gets free prose on every turn that
+  > is not inside a gaffer skill.
+
+## Relocated from skills (2026-09-25) — the metrics, new-project and review-change skills' report reasons
+
+Moved out of `skills/metrics/SKILL.md`, `skills/new-project/SKILL.md` and
+`skills/review-change/SKILL.md` by `skill-prompt-trim`. Each skill keeps each rule with at
+most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the conventions are `Read` first** (all three skills). Each keeps "no shape of
+  its own**, so those conventions *are* its format; naming the path is not reading it".
+  Each used to add, after the `Read`:
+
+  > — the glyph vocabulary, the indentation contract, and the decision block that every human-facing report in this
+
+  > plugin owes.
+
+  and, after "naming the path is not reading it":
+
+  > and unread they produce free prose.
+
+- **Why `show` takes no header tally** (metrics §3). The skill keeps "since there is
+  nothing to count here". It used to read:
+
+  > This is numbers-dense by nature, so it takes **no header tally and no glyph gutter** —
+
+  > the tally means "this is a run and here is its state", and there is nothing to count
+
+- **Why a trade-off is a decision block** (metrics §5). The skill keeps "A bullet that
+  hides a cost reads as free". It used to add:
+
+  > — the same form every other ask in this plugin takes.
+
+- **Why a risk is a decision block** (review-change §5). The skill keeps "A risk worth
+  reporting is a choice". It used to add:
+
+  > "Things a human should weigh" is the shape that gets skimmed and forgotten.
+
+- **Why a verdict takes no header tally** (review-change §5). The skill keeps "a review
+  is not a run and has nothing to count". It used to add:
+
+  > The tally means "this is a run and here is its state" — bolting it onto a verdict is decoration, and decoration is what teaches a reader to stop trusting the glyphs.

@@ -13,10 +13,6 @@
 
 set -uo pipefail
 
-# Hermetic: don't let a developer's shell env change the resolved autonomy level.
-# The commit-gate cases set ORCH_AUTONOMY explicitly per case.
-unset ORCH_AUTONOMY 2>/dev/null || true
-
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUARD="${HERE}/../hooks/guard.sh"
 
@@ -24,12 +20,10 @@ GUARD="${HERE}/../hooks/guard.sh"
 # above, so this repo's own path stays known). The config-root walk (added
 # below in guard.sh) discovers roots from BOTH the payload cwd AND
 # $PWD/CLAUDE_PROJECT_DIR: a suite run from inside a consumer repo would
-# otherwise inherit that repo's own `.agents/*` (autonomy, guard-extra-*) for
-# every no-cwd payload, silently widening or narrowing what's under test
-# depending on where the suite happens to run from. Confirmed empirically: from
-# a neutral cwd the suite is 109/109 green; run from inside a repo declaring
-# full-autonomy it drops to 106/3, with the 3 failures being `git commit` cases
-# that get ALLOWED (exit 0, want 2) because they inherit that repo's autonomy.
+# otherwise inherit that repo's own `.agents/*` (guard-extra-*, bypass-ask-tier)
+# for every no-cwd payload, silently widening or narrowing what's under test
+# depending on where the suite happens to run from — a repo declaring
+# `bypass-ask-tier: true` would turn every ASK case into an allow.
 # Pin both so the suite's result cannot depend on where it is invoked from.
 unset CLAUDE_PROJECT_DIR 2>/dev/null || true
 cd "$(mktemp -d)"
@@ -121,14 +115,25 @@ check 2 "quoted pipe then a real pipe to a sensitive-path write" \
 echo "== git merge-base precision (ADR 0014 §6): read-only, not the merge soft-gate =="
 # `git merge-base` is read-only plumbing. Bare, the fast-path allows it; but wrapped
 # in a $()/redirect/chain (which disqualifies the fast-path) the git router used to
-# match its `merge` prefix and route it into the merge soft-gate -> denied below
-# full-autonomy. The trailing boundary now excludes `-`, so it no longer misfires.
+# match its `merge` prefix and route it into the merge soft-gate -> denied as a
+# merge. The trailing boundary now excludes `-`, so it no longer misfires.
 check 0 "bare git merge-base (fast-path)"          "$(bash_call '"git merge-base main HEAD"')"
 check 0 "git merge-base in \$() (was merge-gate FP)" "$(bash_call '"git rev-list --count $(git merge-base main HEAD)..HEAD"')"
 check 0 "git merge-base with a redirect"           "$(bash_call '"git merge-base main feature > base.txt"')"
 check 0 "git merge-tree (plumbing, not merge)"     "$(bash_call '"git merge-tree $(git merge-base a b) a b"')"
-# A REAL merge still routes into the soft-gate: denied below full-autonomy.
-check 2 "real git merge still gated (interactive)" "$(bash_call '"git merge origin/x"')"
+# A REAL merge still routes into the soft-gate. Judged against a repo actually on
+# `main`, so the denial is the merge gate's branch rule and not "not a repo" —
+# a deny for the wrong reason would read as a pass.
+MB_MAIN="$(mktemp -d)"
+( git -C "$MB_MAIN" init -q
+  git -C "$MB_MAIN" config user.email t@example.test
+  git -C "$MB_MAIN" config user.name test
+  printf 'seed\n' > "$MB_MAIN/seed.txt"
+  git -C "$MB_MAIN" add seed.txt
+  git -C "$MB_MAIN" commit -qm seed
+  git -C "$MB_MAIN" branch -M main ) >/dev/null 2>&1
+check 2 "real git merge into main still gated" \
+  "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git merge origin/x"}}' "$MB_MAIN")"
 
 echo "== shell writes to SECRET paths: deny (exit 2) — irreversible exposure =="
 check 2 "cp over .env"               "$(bash_call '"cp tmp .env"')"
@@ -264,8 +269,6 @@ check_ask "self-host: guard-extra-review itself asks (a deletable rule is no rul
   "$(sh_cwd Edit '{"file_path":".agents/guard-extra-review"}')"
 check_ask "self-host: project-overrides asks (it carries bypass-ask-tier)" \
   "$(sh_cwd Edit '{"file_path":".agents/project-overrides.yaml"}')"
-check_ask "self-host: .agents/autonomy asks (no silent self-elevation)" \
-  "$(sh_cwd Edit '{"file_path":".agents/autonomy"}')"
 check_ask "self-host: .claude/settings.json asks (hook registration)" \
   "$(sh_cwd Edit '{"file_path":".claude/settings.json"}')"
 
@@ -304,10 +307,8 @@ check 0 "consumer default: agents/ does not ask" \
   "$(cn_cwd Edit '{"file_path":"agents/notes.md"}')"
 check 0 "consumer default: skills/ does not ask" \
   "$(cn_cwd Edit '{"file_path":"skills/index.ts"}')"
-check 0 "consumer default: .agents/autonomy does not ask" \
-  "$(cn_cwd Edit '{"file_path":".agents/autonomy"}')"
 
-echo "== commit soft-gate: autonomy × branch × staged diff (ADR 0004) =="
+echo "== commit soft-gate: branch × staged diff (ADR 0004) =="
 # Build a throwaway git repo on a named branch. Optionally stage/track a file so
 # we can exercise the sensitive-staged-path check. Real repos are needed because
 # the gate reads the branch and the staged diff from git.
@@ -331,11 +332,11 @@ stage() { # $1 repo, $2 path (relative), stages a new file at that path
   git -C "$1" add "$2" >/dev/null 2>&1
 }
 
-# commit_check <expected> <desc> <autonomy> <cwd> [command]
+# commit_check <expected> <desc> <cwd> [command]
 commit_check() {
-  local want="$1" desc="$2" auton="$3" cwd="$4" cmd="${5:-git commit -m x}" got payload
+  local want="$1" desc="$2" cwd="$3" cmd="${4:-git commit -m x}" got payload
   payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$cwd" "$cmd")"
-  printf '%s' "$payload" | ORCH_AUTONOMY="$auton" "$GUARD" >/dev/null 2>&1
+  printf '%s' "$payload" | "$GUARD" >/dev/null 2>&1
   got=$?
   if [ "$got" = "$want" ]; then
     printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
@@ -358,24 +359,23 @@ R_AUTON_SECRET="$(new_repo feature)";     stage "$R_AUTON_SECRET" "config/secret
 R_FEAT_AUTHCODE="$(new_repo feature)";    stage "$R_FEAT_AUTHCODE" "src/Auth/Login.cs"
 
 # The decision cube from the plan (sensitive == SECRET tier after ADR 0014).
-commit_check 2 "interactive + feature + clean -> deny"       interactive "$R_FEAT_CLEAN"
-commit_check 2 "supervised + main + clean -> deny"           supervised  "$R_MAIN_CLEAN"
-commit_check 0 "supervised + feature + clean -> allow"       supervised  "$R_FEAT_CLEAN"
-commit_check 2 "supervised + feature + SECRET (.env) -> deny" supervised  "$R_FEAT_SECRET"
-commit_check 0 "supervised + feature + auth CODE -> allow (ADR 0014)" supervised "$R_FEAT_AUTHCODE"
-commit_check 0 "autonomous + feature + clean -> allow"       autonomous  "$R_AUTON_CLEAN"
-commit_check 2 "autonomous + feature + SECRET -> deny"       autonomous  "$R_AUTON_SECRET"
+commit_check 2 "main + clean -> deny"                        "$R_MAIN_CLEAN"
+commit_check 0 "feature + clean -> allow"                    "$R_FEAT_CLEAN"
+commit_check 2 "feature + SECRET (.env) -> deny"             "$R_FEAT_SECRET"
+commit_check 0 "feature + auth CODE -> allow (ADR 0014)"     "$R_FEAT_AUTHCODE"
+commit_check 0 "second feature repo + clean -> allow"        "$R_AUTON_CLEAN"
+commit_check 2 "feature + SECRET (secrets/ dir) -> deny"     "$R_AUTON_SECRET"
 
 # Fail-closed: not a git repo, and detached HEAD.
 NONREPO="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $NONREPO"
-commit_check 2 "supervised + non-repo cwd -> deny (fail closed)"  supervised "$NONREPO"
+commit_check 2 "non-repo cwd -> deny (fail closed)"  "$NONREPO"
 R_DETACHED="$(new_repo feature)"
 git -C "$R_DETACHED" checkout -q "$(git -C "$R_DETACHED" rev-parse HEAD)"
-commit_check 2 "supervised + detached HEAD -> deny (fail closed)" supervised "$R_DETACHED"
+commit_check 2 "detached HEAD -> deny (fail closed)" "$R_DETACHED"
 
 # --amend stays hard-denied (history rewrite), even when otherwise allowable.
-commit_check 2 "supervised + feature + --amend -> deny (history rewrite)" \
-  supervised "$R_FEAT_CLEAN" "git commit --amend -m x"
+commit_check 2 "feature + --amend -> deny (history rewrite)" \
+  "$R_FEAT_CLEAN" "git commit --amend -m x"
 
 # -a/--all bypass closed: a SECRET tracked-but-unstaged change is swept in.
 R_ALL="$(new_repo feature)"
@@ -383,22 +383,10 @@ printf 'a\n' > "$R_ALL/.env"
 git -C "$R_ALL" add .env >/dev/null 2>&1
 git -C "$R_ALL" commit -qm "add env" >/dev/null 2>&1
 printf 'b\n' >> "$R_ALL/.env"   # tracked, unstaged
-commit_check 2 "supervised + feature + 'commit -am' over SECRET tracked file -> deny" \
-  supervised "$R_ALL" "git commit -am x"
+commit_check 2 "feature + 'commit -am' over SECRET tracked file -> deny" \
+  "$R_ALL" "git commit -am x"
 
-# Precedence: env unset, .agents/autonomy provides the level.
-R_FILELVL="$(new_repo feature)"; stage "$R_FILELVL" "src/util.ts"
-mkdir -p "$R_FILELVL/.agents"; printf 'supervised\n' > "$R_FILELVL/.agents/autonomy"
-commit_check 0 ".agents/autonomy=supervised (env unset) + feature + clean -> allow" \
-  "" "$R_FILELVL"
-
-# Ceiling clamp: project-overrides caps autonomous down to interactive.
-R_CEIL="$(new_repo feature)"; stage "$R_CEIL" "src/util.ts"
-mkdir -p "$R_CEIL/.agents"; printf 'autonomy_ceiling: interactive\n' > "$R_CEIL/.agents/project-overrides.yaml"
-commit_check 2 "autonomous clamped by autonomy_ceiling=interactive -> deny" \
-  autonomous "$R_CEIL"
-
-echo "== git-workflow soft-gate: merge/rebase/push at full-autonomy (ADR 0006) =="
+echo "== git-workflow soft-gate: merge/rebase/push (ADR 0006) =="
 # The guard only INSPECTS the command (branch via git, best-effort diff); it never
 # runs the merge/rebase/push, so source/target branches need not actually exist.
 # commit_check is generic on the command, so reuse it here.
@@ -406,85 +394,48 @@ R_WF_FEAT="$(new_repo feature)"        # on a feature branch
 R_WF_MAIN="$(new_repo main)"           # on main
 R_WF_DEV="$(new_repo develop)"         # on an integration branch
 
-# --- merge: delegated only at full-autonomy, only into a NON-main branch ---
-commit_check 0 "full-autonomy + feature + merge -> allow"        full-autonomy "$R_WF_FEAT" "git merge orch/x"
-commit_check 0 "full-autonomy + develop + merge -> allow"        full-autonomy "$R_WF_DEV"  "git merge orch/x"
-commit_check 2 "full-autonomy + main + merge -> deny (branch)"   full-autonomy "$R_WF_MAIN" "git merge orch/x"
-commit_check 2 "autonomous + feature + merge -> deny (autonomy)" autonomous    "$R_WF_FEAT" "git merge orch/x"
-commit_check 2 "supervised + feature + merge -> deny (autonomy)" supervised    "$R_WF_FEAT" "git merge orch/x"
+# --- merge: delegated only into a NON-main branch ---
+commit_check 0 "feature + merge -> allow"        "$R_WF_FEAT" "git merge orch/x"
+commit_check 0 "develop + merge -> allow"        "$R_WF_DEV"  "git merge orch/x"
+commit_check 2 "main + merge -> deny (branch)"   "$R_WF_MAIN" "git merge orch/x"
 
-# --- merge carrying a SECRET path re-escalates even at full-autonomy ---
+# --- merge carrying a SECRET path re-escalates anyway ---
 R_WF_SENS="$(new_repo develop)"
 ( git -C "$R_WF_SENS" checkout -q -b orch/sens
   printf 'x\n' > "$R_WF_SENS/.env"
   git -C "$R_WF_SENS" add .env; git -C "$R_WF_SENS" commit -qm "env"
   git -C "$R_WF_SENS" checkout -q develop ) >/dev/null 2>&1
-commit_check 2 "full-autonomy + develop + merge of SECRET-bearing branch -> deny" \
-  full-autonomy "$R_WF_SENS" "git merge orch/sens"
+commit_check 2 "develop + merge of SECRET-bearing branch -> deny" \
+  "$R_WF_SENS" "git merge orch/sens"
 
-# --- rebase: delegated only at full-autonomy on a NON-main branch; -i is rewrite ---
-commit_check 0 "full-autonomy + feature + rebase base -> allow"      full-autonomy "$R_WF_FEAT" "git rebase develop"
-commit_check 2 "full-autonomy + feature + rebase -i -> deny (rewrite)" full-autonomy "$R_WF_FEAT" "git rebase -i develop"
-commit_check 2 "full-autonomy + main + rebase -> deny (branch)"      full-autonomy "$R_WF_MAIN" "git rebase develop"
-commit_check 2 "autonomous + feature + rebase -> deny (autonomy)"    autonomous    "$R_WF_FEAT" "git rebase develop"
+# --- rebase: delegated only on a NON-main branch; -i is a rewrite ---
+commit_check 0 "feature + rebase base -> allow"        "$R_WF_FEAT" "git rebase develop"
+commit_check 2 "feature + rebase -i -> deny (rewrite)" "$R_WF_FEAT" "git rebase -i develop"
+commit_check 2 "main + rebase -> deny (branch)"        "$R_WF_MAIN" "git rebase develop"
 
-# --- push: delegated only at full-autonomy, never to main, never forced ---
-commit_check 0 "full-autonomy + push feature ref -> allow"          full-autonomy "$R_WF_FEAT" "git push origin feature"
-commit_check 0 "full-autonomy + bare push on feature -> allow"      full-autonomy "$R_WF_FEAT" "git push"
-commit_check 2 "full-autonomy + push origin main -> deny (target)"  full-autonomy "$R_WF_FEAT" "git push origin main"
-commit_check 2 "full-autonomy + push HEAD:main -> deny (target)"    full-autonomy "$R_WF_FEAT" "git push origin HEAD:main"
-commit_check 2 "full-autonomy + bare push on main -> deny (target)" full-autonomy "$R_WF_MAIN" "git push"
-commit_check 2 "full-autonomy + push -f feature -> deny (force)"    full-autonomy "$R_WF_FEAT" "git push -f origin feature"
-commit_check 2 "autonomous + push feature ref -> deny (autonomy)"   autonomous    "$R_WF_FEAT" "git push origin feature"
+# --- push: never to main, never forced ---
+commit_check 0 "push feature ref -> allow"          "$R_WF_FEAT" "git push origin feature"
+commit_check 0 "bare push on feature -> allow"      "$R_WF_FEAT" "git push"
+commit_check 2 "push origin main -> deny (target)"  "$R_WF_FEAT" "git push origin main"
+commit_check 2 "push HEAD:main -> deny (target)"    "$R_WF_FEAT" "git push origin HEAD:main"
+commit_check 2 "bare push on main -> deny (target)" "$R_WF_MAIN" "git push"
+commit_check 2 "push -f feature -> deny (force)"    "$R_WF_FEAT" "git push -f origin feature"
 
-# --- the danger floor still hard-denies at full-autonomy ---
-# rm -rf and sensitive-path writes stay HARD even at the top autonomy level.
-commit_check 2 "full-autonomy + rm -rf -> deny (danger floor)" \
-  full-autonomy "$R_WF_FEAT" "rm -rf build"
-check 2 "full-autonomy + edit .env -> deny (danger floor)" \
+# --- the danger floor still hard-denies alongside a delegable git gate ---
+# rm -rf and sensitive-path writes stay HARD wherever they are issued.
+commit_check 2 "rm -rf -> deny (danger floor)" \
+  "$R_WF_FEAT" "rm -rf build"
+check 2 "edit .env -> deny (danger floor)" \
   "$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":".env"}}' "$R_WF_FEAT")"
-# Migrations / dep installs are the ASK tier — they prompt, not deny, at every
-# level (the human clicks; autonomy does not auto-approve an ask). See ADR 0008.
+# Migrations / dep installs are the ASK tier — they prompt, not deny (the human
+# clicks; nothing auto-approves an ask). See ADR 0008.
 migrate_payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"dotnet ef database update"}}' "$R_WF_FEAT")"
-out="$(printf '%s' "$migrate_payload" | ORCH_AUTONOMY=full-autonomy "$GUARD" 2>/dev/null)"; got=$?
+out="$(printf '%s' "$migrate_payload" | "$GUARD" 2>/dev/null)"; got=$?
 if [ "$got" = 0 ] && printf '%s' "$out" | grep -q '"permissionDecision":[[:space:]]*"ask"'; then
-  printf 'ok   (ask)     full-autonomy + db migration -> ask (routine tier)\n'; pass=$((pass + 1))
+  printf 'ok   (ask)     db migration -> ask (routine tier)\n'; pass=$((pass + 1))
 else
-  printf 'FAIL (want ask, got exit %s) full-autonomy + db migration\n' "$got"; fail=$((fail + 1))
+  printf 'FAIL (want ask, got exit %s) db migration\n' "$got"; fail=$((fail + 1))
 fi
-
-# --- resolution + ceiling for the new level ---
-R_WF_FILELVL="$(new_repo feature)"
-mkdir -p "$R_WF_FILELVL/.agents"; printf 'full-autonomy\n' > "$R_WF_FILELVL/.agents/autonomy"
-commit_check 0 ".agents/autonomy=full-autonomy (env unset) + feature + merge -> allow" \
-  "" "$R_WF_FILELVL" "git merge orch/x"
-R_WF_CEIL="$(new_repo feature)"
-mkdir -p "$R_WF_CEIL/.agents"; printf 'autonomy_ceiling: autonomous\n' > "$R_WF_CEIL/.agents/project-overrides.yaml"
-commit_check 2 "full-autonomy clamped by autonomy_ceiling=autonomous + merge -> deny" \
-  full-autonomy "$R_WF_CEIL" "git merge orch/x"
-
-echo "== .agents/autonomy header format parses (skill writes a # header) =="
-# Regression for the parser bug: the set-autonomy skill writes an explanatory
-# comment header ABOVE the bare level. Stripping the whole file would fold the
-# header in and silently fall back to interactive. The parser must read only the
-# last non-comment line.
-R_HDR="$(new_repo feature)"; stage "$R_HDR" "src/util.ts"
-mkdir -p "$R_HDR/.agents"
-cat > "$R_HDR/.agents/autonomy" <<'EOF'
-# Default orchestration autonomy level for this repo (ADR 0004 / 0006).
-# Resolution order: env ORCH_AUTONOMY -> this file -> plugin default (interactive).
-#   interactive   — human approves every mutation gate
-#   supervised    — CE auto-commits green work on a feature branch
-supervised
-EOF
-commit_check 0 "header-format .agents/autonomy=supervised (env unset) -> allow" \
-  "" "$R_HDR"
-# And the top level, hyphenated, in the same header format.
-R_HDR2="$(new_repo feature)"
-mkdir -p "$R_HDR2/.agents"
-printf '# header line\n#   another comment\nfull-autonomy\n' > "$R_HDR2/.agents/autonomy"
-commit_check 0 "header-format .agents/autonomy=full-autonomy + merge -> allow" \
-  "" "$R_HDR2" "git merge orch/x"
 
 echo "== cross-tree git gate: payload cwd = one repo, command targets another =="
 # A command can target a DIFFERENT checkout than the payload cwd via `git -C <dir>`
@@ -507,39 +458,35 @@ read -r T_MAIN T_FEAT <<EOF
 $(mk_two_trees)
 EOF
 # cwd = t_main (on main), but the command targets t_feat (on feature):
-commit_check 0 "supervised + cwd=main-repo + 'git -C <feat> commit' -> allow (reads feature)" \
-  supervised "$T_MAIN" "git -C $T_FEAT commit -m x"
-commit_check 0 "supervised + cwd=main-repo + 'cd <feat> && git commit' -> allow" \
-  supervised "$T_MAIN" "cd $T_FEAT && git commit -m x"
-commit_check 0 "full-autonomy + cwd=main-repo + 'git -C <feat> merge' -> allow" \
-  full-autonomy "$T_MAIN" "git -C $T_FEAT merge orch/x"
+commit_check 0 "cwd=main-repo + 'git -C <feat> commit' -> allow (reads feature)" \
+  "$T_MAIN" "git -C $T_FEAT commit -m x"
+commit_check 0 "cwd=main-repo + 'cd <feat> && git commit' -> allow" \
+  "$T_MAIN" "cd $T_FEAT && git commit -m x"
+commit_check 0 "cwd=main-repo + 'git -C <feat> merge' -> allow" \
+  "$T_MAIN" "git -C $T_FEAT merge orch/x"
 # Reverse bypass closed: cwd = feature repo, but the command targets the main repo
 # — must deny (judged against the tree the command actually writes).
-commit_check 2 "supervised + cwd=feat-repo + 'git -C <main-repo> commit' -> deny (reads main)" \
-  supervised "$T_FEAT" "git -C $T_MAIN commit -m x"
+commit_check 2 "cwd=feat-repo + 'git -C <main-repo> commit' -> deny (reads main)" \
+  "$T_FEAT" "git -C $T_MAIN commit -m x"
 # `git commit -C <ref>` (reuse message) must NOT be mistaken for a target dir.
 stage "$T_MAIN" "src/util.ts"   # ensure the main repo has a clean staged change
-commit_check 2 "supervised + main-repo + 'git commit -C HEAD' -> deny (not a dir; still main)" \
-  supervised "$T_MAIN" "git commit -C HEAD"
+commit_check 2 "main-repo + 'git commit -C HEAD' -> deny (not a dir; still main)" \
+  "$T_MAIN" "git commit -C HEAD"
 
 echo "== config-root discovery: cwd BELOW the repo root inherits the ancestor's .agents/* =="
 # Regression for the PROJECT_DIR/SHELL_CWD split (ADR 0011): the payload cwd is
 # routinely a SUBDIRECTORY of the project (a package cache, a submodule, src/).
 # Before the fix, config was resolved from cwd alone, so any non-root cwd found no
-# `.agents/` at all: autonomy silently fell back to `interactive` (fail closed,
-# confusing) and `guard-extra-bash`/`guard-extra-paths` silently stopped loading
-# (fail OPEN -- the repo's declared hard-gates vanished).
+# `.agents/` at all: `guard-extra-bash`/`guard-extra-paths` silently stopped
+# loading (fail OPEN -- the repo's declared hard-gates vanished).
 R_ROOT="$(new_repo feature)"; stage "$R_ROOT" "src/util.ts"
 mkdir -p "$R_ROOT/.agents"
-printf 'supervised\n' > "$R_ROOT/.agents/autonomy"
 printf '# custom risky command declared at the repo root\n(^|[^[:alnum:]])make[[:space:]]+special-deploy([^[:alnum:]]|$)\n' \
   > "$R_ROOT/.agents/guard-extra-bash"
 printf '# custom sensitive path declared at the repo root\n(^|/)src/critical/\n' \
   > "$R_ROOT/.agents/guard-extra-paths"
 R_SUB="$R_ROOT/pkg/sub"; mkdir -p "$R_SUB"
 
-commit_check 0 "cwd below repo root: autonomy read from ancestor root (was: interactive -> deny)" \
-  "" "$R_SUB"
 check 2 "cwd below repo root: guard-extra-bash enforced (was: silently allowed)" \
   "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"make special-deploy"}}' "$R_SUB")"
 check 2 "cwd below repo root: guard-extra-paths enforced on Edit (was: silently allowed)" \
@@ -547,16 +494,16 @@ check 2 "cwd below repo root: guard-extra-paths enforced on Edit (was: silently 
 check 2 "cwd below repo root: guard-extra-paths enforced via shell write (was: silently allowed)" \
   "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"echo x > src/critical/x.ts"}}' "$R_SUB")"
 
-echo "== nested-repo regression: cwd = a nested checkout ON MAIN inside a full-autonomy outer project =="
+echo "== nested-repo regression: cwd = a nested checkout ON MAIN inside an outer project =="
 # The regression guard for the whole PROJECT_DIR/SHELL_CWD decoupling. The outer
-# project votes full-autonomy, but the tree the command actually TARGETS (cwd =
+# project is on a feature branch, but the tree the command actually TARGETS (cwd =
 # a nested checkout, e.g. a vendored clone/submodule) is on `main`. Config
 # resolution (which root's rules apply) and git-target resolution (which tree the
 # soft gates judge) must stay fully independent -- if a "fix" let the discovered
 # config root also drive GIT_CWD, this would wrongly read the OUTER branch
 # (feature) and ALLOW. It must still DENY.
 R_NEST_OUTER="$(new_repo feature)"
-mkdir -p "$R_NEST_OUTER/.agents"; printf 'full-autonomy\n' > "$R_NEST_OUTER/.agents/autonomy"
+mkdir -p "$R_NEST_OUTER/.agents"
 R_NEST_INNER="$R_NEST_OUTER/vendor/nested-checkout"
 mkdir -p "$R_NEST_INNER"
 ( git -C "$R_NEST_INNER" init -q
@@ -567,35 +514,28 @@ mkdir -p "$R_NEST_INNER"
   git -C "$R_NEST_INNER" commit -qm seed
   git -C "$R_NEST_INNER" branch -M main ) >/dev/null 2>&1
 COMMIT_TMPS="$COMMIT_TMPS $R_NEST_INNER"
-commit_check 2 "nested checkout on main inside a full-autonomy outer project -> still DENY" \
-  "" "$R_NEST_INNER"
+commit_check 2 "nested checkout on main inside an outer project -> still DENY" \
+  "$R_NEST_INNER"
 
-echo "== restrictive config merge: privilege across discovered roots can only be LOWERED =="
-# (1) A nested .agents/autonomy=interactive UNDER a full-autonomy root: every
-# discovered root VOTES and the LOWEST vote wins, so the nested `interactive`
-# holds even though the ancestor root says full-autonomy.
-R_MERGE_OUTER="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $R_MERGE_OUTER"
-mkdir -p "$R_MERGE_OUTER/.agents"; printf 'full-autonomy\n' > "$R_MERGE_OUTER/.agents/autonomy"
-R_MERGE_NESTED="$R_MERGE_OUTER/nested"
-mkdir -p "$R_MERGE_NESTED/.agents"; printf 'interactive\n' > "$R_MERGE_NESTED/.agents/autonomy"
-commit_check 2 "nested .agents/autonomy=interactive under a full-autonomy root -> deny (MIN vote)" \
-  "" "$R_MERGE_NESTED"
-
-# (2) A foreign CLAUDE_PROJECT_DIR declaring full-autonomy must not RAISE a cwd
-# project that declares interactive -- privilege only ever goes DOWN, never up,
-# regardless of which root CLAUDE_PROJECT_DIR points at.
+echo "== restrictive config merge: a foreign root can only ever RESTRICT =="
+# A foreign CLAUDE_PROJECT_DIR declaring `bypass-ask-tier: true` must not remove
+# the ASK the cwd project still wants -- resolution is restrictive, so EVERY
+# discovered root has to opt in and the cwd root's silence vetoes the bypass.
+# Whichever root CLAUDE_PROJECT_DIR points at, discovery can only ever ADD a
+# restriction, never drop one.
 R_MERGE_FOREIGN="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $R_MERGE_FOREIGN"
-mkdir -p "$R_MERGE_FOREIGN/.agents"; printf 'full-autonomy\n' > "$R_MERGE_FOREIGN/.agents/autonomy"
+mkdir -p "$R_MERGE_FOREIGN/.agents"
+printf 'bypass-ask-tier: true\n' > "$R_MERGE_FOREIGN/.agents/project-overrides.yaml"
 R_MERGE_CWD="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $R_MERGE_CWD"
-mkdir -p "$R_MERGE_CWD/.agents"; printf 'interactive\n' > "$R_MERGE_CWD/.agents/autonomy"
-merge_payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' "$R_MERGE_CWD")"
-printf '%s' "$merge_payload" | CLAUDE_PROJECT_DIR="$R_MERGE_FOREIGN" "$GUARD" >/dev/null 2>&1
+mkdir -p "$R_MERGE_CWD/.agents"
+merge_payload="$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"src/Auth/Login.cs"}}' "$R_MERGE_CWD")"
+merge_out="$(printf '%s' "$merge_payload" | CLAUDE_PROJECT_DIR="$R_MERGE_FOREIGN" "$GUARD" 2>/dev/null)"
 merge_got=$?
-if [ "$merge_got" = 2 ]; then
-  printf 'ok   (exit %s) foreign CLAUDE_PROJECT_DIR=full-autonomy cannot raise cwd=interactive project\n' "$merge_got"
+if [ "$merge_got" = 0 ] && printf '%s' "$merge_out" | grep -q '"permissionDecision":[[:space:]]*"ask"'; then
+  printf 'ok   (ask)     foreign CLAUDE_PROJECT_DIR bypass-ask-tier cannot remove the cwd project'"'"'s ask\n'
   pass=$((pass + 1))
 else
-  printf 'FAIL (want 2, got %s) foreign CLAUDE_PROJECT_DIR=full-autonomy cannot raise cwd=interactive project\n' "$merge_got"
+  printf 'FAIL (want ask, got exit %s) foreign CLAUDE_PROJECT_DIR bypass-ask-tier cannot remove the cwd project'"'"'s ask\n' "$merge_got"
   fail=$((fail + 1))
 fi
 
@@ -647,6 +587,499 @@ mkdir -p "$R_BYP_OUTER/.agents"; printf 'bypass-ask-tier: true\n' > "$R_BYP_OUTE
 R_BYP_NESTED="$R_BYP_OUTER/nested"; mkdir -p "$R_BYP_NESTED/.agents"   # declares .agents, no bypass flag
 check_ask "bypass vetoed by nested root without the flag -> still asks" \
   "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"npm install left-pad"}}' "$R_BYP_NESTED")"
+
+echo "== driver mode (ADR 0028 / thin-loop-driver T5): refuse a main-thread write outside .agents/ =="
+DM="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM"
+mkdir -p "$DM/.agents/driver-mode"
+: > "$DM/.agents/driver-mode/sess-driver"
+
+# dm_payload <tool> <tool_input-json> [session_id] [agent_id]
+dm_payload() {
+  local s="" a=""
+  [ -n "${3:-}" ] && s=",\"session_id\":\"$3\""
+  [ -n "${4:-}" ] && a=",\"agent_id\":\"$4\""
+  printf '{"cwd":"%s","tool_name":"%s","tool_input":%s%s%s}' "$DM" "$1" "$2" "$s" "$a"
+}
+
+# check_deny_category <expected-category> <desc> <payload>: asserts exit 2 AND
+# that deny()'s stderr names the given category, so a driver-mode refusal
+# can't be mistaken for (or mask) an unrelated deny.
+check_deny_category() {
+  local want_cat="$1" desc="$2" payload="$3" err got
+  err="$(printf '%s' "$payload" | "$GUARD" 2>&1 >/dev/null)"; got=$?
+  if [ "$got" = 2 ] && printf '%s' "$err" | grep -q "category : ${want_cat}"; then
+    printf 'ok   (deny:%s) %s\n' "$want_cat" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want deny:%s, got exit %s) %s\n' "$want_cat" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+
+check 2 "driver mode: Edit outside .agents/ refused" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver)"
+check 2 "driver mode: Write outside .agents/ refused" \
+  "$(dm_payload Write '{"file_path":"src/util.ts","content":"x"}' sess-driver)"
+check 2 "driver mode: MultiEdit outside .agents/ refused" \
+  "$(dm_payload MultiEdit '{"file_path":"src/util.ts","edits":[]}' sess-driver)"
+check 2 "driver mode: NotebookEdit outside .agents/ refused" \
+  "$(dm_payload NotebookEdit '{"notebook_path":"nb.ipynb","new_source":"x"}' sess-driver)"
+
+check 2 "driver mode: sed -i outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/util.ts"}' sess-driver)"
+check 2 "driver mode: cat > outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"cat > src/util.ts <<EOF"}' sess-driver)"
+check 2 "driver mode: tee outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"echo x | tee src/util.ts"}' sess-driver)"
+check 2 "driver mode: cp outside .agents/ refused" \
+  "$(dm_payload Bash '{"command":"cp tmp src/util.ts"}' sess-driver)"
+
+echo "== driver mode: .agents/ targets stay allowed =="
+check 0 "driver mode: Edit under .agents/ allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/run-state.yaml"}' sess-driver)"
+check 0 "driver mode: Write under .agents/ allowed" \
+  "$(dm_payload Write '{"file_path":".agents/findings/f-001.md","content":"x"}' sess-driver)"
+check 0 "driver mode: cat > .agents/ heredoc allowed" \
+  "$(dm_payload Bash '{"command":"cat > .agents/run-state.yaml <<EOF"}' sess-driver)"
+# I3: a Windows-separated .agents/ target needs a REAL cwd to mean anything (an
+# absolute drive-letter path can't be judged against a real config root on a
+# POSIX test box) -- so this is RELATIVE, cwd-anchored, and paired with a
+# Windows-separated path that names something else, which must still refuse.
+check 0 "driver mode: relative backslash .agents/ target allowed" \
+  "$(dm_payload Edit '{"file_path":".agents\\run-state.yaml"}' sess-driver)"
+check 2 "driver mode: relative backslash path outside .agents/ refused" \
+  "$(dm_payload Edit '{"file_path":"src\\util.ts"}' sess-driver)"
+
+echo "== driver mode: agent_id present -> not the main thread, allowed =="
+check 0 "driver mode: same mark but agent_id present allowed (Edit)" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver agent-123)"
+check 0 "driver mode: same mark but agent_id present allowed (Bash write)" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/util.ts"}' sess-driver agent-123)"
+
+echo "== driver mode: no mark for this session -> judged as today =="
+check 0 "driver mode: another session's mark does not apply" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-other)"
+check 0 "driver mode: no session_id at all -> judged as today" \
+  "$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"src/util.ts"}}' "$DM")"
+
+echo "== driver mode: session_id path traversal never denies, never reads an arbitrary path =="
+check 0 "driver mode: session_id='..' treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '..')"
+check 0 "driver mode: session_id='.' treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '.')"
+check 0 "driver mode: session_id with a path separator treated as no mark" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' '../driver-mode/sess-driver')"
+
+echo "== driver mode: secret floor first, then driver-mode -- and it survives bypass-ask-tier =="
+check_deny_category "secret-path" "driver mode: .env still refused as a secret, not driver-mode" \
+  "$(dm_payload Edit '{"file_path":".env"}' sess-driver)"
+check_deny_category "driver-mode" "driver mode: refusal names driver-mode as the category" \
+  "$(dm_payload Edit '{"file_path":"src/util.ts"}' sess-driver)"
+
+DMB="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DMB"
+mkdir -p "$DMB/.agents/driver-mode"; : > "$DMB/.agents/driver-mode/sess-byp"
+printf 'bypass-ask-tier: true\n' > "$DMB/.agents/project-overrides.yaml"
+check 2 "driver mode still refuses with bypass-ask-tier: true" \
+  "$(printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"src/util.ts"},"session_id":"sess-byp"}' "$DMB")"
+
+echo "== driver mode: git commit and an .agents/ write are unaffected =="
+DM_GIT="$(new_repo feature)"; stage "$DM_GIT" "src/util.ts"
+mkdir -p "$DM_GIT/.agents/driver-mode"; : > "$DM_GIT/.agents/driver-mode/sess-git"
+
+# dm_commit_check <expected> <desc> <commit-message>: a real git commit, on a
+# feature branch, with a driver-mode mark on the session.
+dm_commit_check() {
+  local want="$1" desc="$2" msg="$3" payload got
+  payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git commit -m \\"%s\\""},"session_id":"sess-git"}' \
+    "$DM_GIT" "$msg")"
+  printf '%s' "$payload" | "$GUARD" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want %s, got %s) %s\n' "$want" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+dm_commit_check 0 "driver mode: plain git commit still allowed" "x"
+# I2: a write-pattern MATCH inside a commit message is not a real write --
+# these were wrongly refused before the sanitize-then-extract fix.
+dm_commit_check 0 "driver mode: commit message containing 'install' allowed" \
+  "feat: install the mv/cp path"
+dm_commit_check 0 "driver mode: commit message containing '->' allowed" \
+  "route escalate -> decider"
+# I5: both false-positive sources (a write keyword AND a redirection-shaped
+# '->') in the SAME message, still allowed.
+dm_commit_check 0 "driver mode: commit message with both '->' and 'install' allowed" \
+  "route escalate -> decider; install step"
+
+# I2: the rest -- a real heredoc write into .agents/ whose BODY contains every
+# false-positive word at once, two /dev/null-only redirects, and a quoted
+# 'tee' inside a --summary value. None of these actually write outside
+# .agents/, so none should be refused.
+check 0 "driver mode: heredoc into .agents/ whose body says install/->/cp allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh write .agents/run-state.yaml <<'"'"'EOF'"'"'\nnote: '"'"'ran npm install; next packet; route -> cp'"'"'\nEOF"}' sess-driver)"
+check 0 "driver mode: stderr-to-/dev/null read allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh status 2>/dev/null"}' sess-driver)"
+check 0 "driver mode: stdout-to-/dev/null read allowed" \
+  "$(dm_payload Bash '{"command":"bash scripts/gspec-backlog.sh nodes > /dev/null"}' sess-driver)"
+check 0 "driver mode: quoted 'tee' inside a --summary value allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh add-finding f1 x --summary \"use tee for logs\""}' sess-driver)"
+
+echo "== driver mode: CRITICAL C1 -- a real write hiding past a naive .agents/ substring check =="
+check 2 "driver mode: cp names .agents/ as SOURCE, writes outside -> refused" \
+  "$(dm_payload Bash '{"command":"cp .agents/x src/y"}' sess-driver)"
+check 2 "driver mode: cat reads .agents/, redirect writes outside -> refused" \
+  "$(dm_payload Bash '{"command":"cat .agents/f > src/z"}' sess-driver)"
+check 2 "driver mode: sed -i with one good and one bad file -> refused" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ src/x .agents/y"}' sess-driver)"
+check 2 "driver mode: tee target outside, .agents/ is only the INPUT redirect -> refused" \
+  "$(dm_payload Bash '{"command":"tee src/x < .agents/y"}' sess-driver)"
+check 2 "driver mode: .agents/ only in a trailing comment -> refused" \
+  "$(dm_payload Bash '{"command":"echo hi > src/x # .agents/"}' sess-driver)"
+check 2 "driver mode: a later segment names .agents/, an earlier one doesn't -> refused" \
+  "$(dm_payload Bash '{"command":"echo hi > src/x; echo > .agents/y"}' sess-driver)"
+
+echo "== driver mode: IMPORTANT I1 -- the Edit/Write path check is ANCHORED, not a substring test =="
+check 2 "driver mode: .agents/../src/x (traversal out of .agents/) refused" \
+  "$(dm_payload Edit '{"file_path":".agents/../src/x"}' sess-driver)"
+check 2 "driver mode: src/.agents/evil (nested, not the real .agents/) refused" \
+  "$(dm_payload Edit '{"file_path":"src/.agents/evil"}' sess-driver)"
+check 2 "driver mode: ../.agents/x (traversal into a parent) refused" \
+  "$(dm_payload Edit '{"file_path":"../.agents/x"}' sess-driver)"
+# T4 narrowing: a foreign absolute root is OUTSIDE the driven repository, so it
+# cannot reach a packet's commit and driver mode no longer refuses it. It used to
+# expect exit 2. Its still-refused siblings sit either side of it: a nested
+# `src/.agents/` INSIDE the repository is not the real one, and `../.agents/x`
+# cannot be placed at all.
+check 0 "driver mode: /tmp/other/.agents/x (outside the driven repo) allowed" \
+  "$(dm_payload Edit '{"file_path":"/tmp/other/.agents/x"}' sess-driver)"
+check 2 "driver mode: src/my-.agents/x (.agents/ is not a leading path segment) refused" \
+  "$(dm_payload Edit '{"file_path":"src/my-.agents/x"}' sess-driver)"
+check 2 "driver mode: src/foo.agents/x (foo.agents != .agents) refused" \
+  "$(dm_payload Edit '{"file_path":"src/foo.agents/x"}' sess-driver)"
+
+echo "== driver mode: T4 -- the permitted class is 'cannot reach a packet's commit' =="
+# The narrowing (gaps T4): driver mode exists so the driver does not make a
+# packet's edits itself, so a write that cannot enter any packet's commit -- one
+# resolving OUTSIDE the repository the loop is driving -- is no longer refused.
+# The worked example is the driver's own agent-memory file, which lives outside
+# the repository entirely. Every case that PERMITS is paired here with one that
+# still refuses, because a narrowing verified only by what it now permits is not
+# verified at all.
+DM_OUT="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_OUT"   # no .agents/ anywhere above it
+DM_PHYS="$(cd "$DM" && pwd -P)"                             # the repo's REAL path
+DM_LINKDIR="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_LINKDIR"
+ln -s "$DM_PHYS" "$DM_LINKDIR/repo"                         # a symlink INTO the repo
+
+# (1) permitted: outside the repository -> cannot reach a packet's commit.
+check 0 "T4: an out-of-repo agent-memory write allowed (the worked example)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/projects/some-repo/memory/MEMORY.md\"}" sess-driver)"
+check 0 "T4: out-of-repo write via a shell redirect allowed" \
+  "$(dm_payload Bash "{\"command\":\"echo note > ${DM_OUT}/scratch.txt\"}" sess-driver)"
+
+# (2) still enforcing: the floors and tiers that judge that same out-of-repo call.
+#     SECRET is the hard floor and runs BEFORE driver mode, so it still denies.
+check_deny_category "secret-path" "T4: out-of-repo .env still hard-denied as a secret" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/.env\"}" sess-driver)"
+check_deny_category "secret-path-via-bash" "T4: out-of-repo key material still hard-denied (bash)" \
+  "$(dm_payload Bash "{\"command\":\"cp tmp ${DM_OUT}/server.pem\"}" sess-driver)"
+#     ORDERING: driver mode sits BEFORE the ask tier. An out-of-repo REVIEW path
+#     must reach that tier and ASK -- if driver mode had drifted below it this
+#     would still be exit 2, and the in-repo case just below would ASK instead of
+#     denying. The two together pin the position, not just the behaviour.
+check_ask "T4: out-of-repo CI config reaches the REVIEW ask tier" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_OUT}/.github/workflows/ci.yml\"}" sess-driver)"
+check_deny_category "driver-mode" "T4: in-repo CI config refused by driver mode, not asked" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.github/workflows/ci.yml\"}" sess-driver)"
+
+# (3) unchanged: an IN-REPOSITORY target outside .agents/ is still refused, by
+#     absolute path as well as relative -- including one reached through a
+#     symlink, which a lexical prefix test would have read as "outside".
+check_deny_category "driver-mode" "T4: absolute in-repo target outside .agents/ still refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/src/util.ts\"}" sess-driver)"
+check 2 "T4: in-repo target via the payload's own (possibly symlinked) cwd refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM}/src/util.ts\"}" sess-driver)"
+# NOTE: this is the symlinked-ANCESTOR form only (a directory symlink in the
+# path's prefix). The symlink-LEAF form -- a final component that is itself a
+# link into the repository -- is a separate mechanism with its own cases in the
+# B1 section immediately below. This case passing says nothing about that one.
+check 2 "T4: in-repo target reached through a symlink refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LINKDIR}/repo/src/util.ts\"}" sess-driver)"
+check 2 "T4: absolute in-repo bash write outside .agents/ refused" \
+  "$(dm_payload Bash "{\"command\":\"echo x > ${DM_PHYS}/src/util.ts\"}" sess-driver)"
+check 0 "T4: absolute path under the repo's own .agents/ still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/run-state.yaml\"}" sess-driver)"
+
+# (4) unchanged: a repository-relative target that resolves OUTSIDE stays
+#     refused -- for being unverifiable, never permitted for being outside.
+#     Wrong-and-refused costs a pause; wrong-and-allowed is the leak.
+check 2 "T4: relative ../outside.txt refused (resolves outside, unverifiable)" \
+  "$(dm_payload Edit '{"file_path":"../outside.txt"}' sess-driver)"
+check 2 "T4: relative ../../elsewhere/x refused (deeper traversal out)" \
+  "$(dm_payload Edit '{"file_path":"../../elsewhere/x"}' sess-driver)"
+check 2 "T4: relative ../outside.txt refused via a shell write too" \
+  "$(dm_payload Bash '{"command":"cp tmp ../outside.txt"}' sess-driver)"
+check 2 "T4: an unresolved \$VAR absolute-looking target still refused" \
+  "$(dm_payload Bash '{"command":"cp tmp $HOME/notes.md"}' sess-driver)"
+
+echo "== driver mode: B1 -- an existing symlink LEAF is resolved, never left unjudged =="
+# The gap the T4 cases above could not see: `_driver_mode_resolve_abs` resolves
+# only the nearest existing ANCESTOR directory (the tail is deliberately left
+# alone, because a write legitimately creates a new file). A target whose FINAL
+# component is an existing symlink into the driven repository therefore compared
+# as OUTSIDE it and was permitted, while the write followed the link into the
+# checkout. Reproduced by direct invocation at exit 0 before the fix.
+#
+# Every case here is paired by DIRECTION, because this restores a refusal and
+# must not re-broaden the one T4 narrowed:
+#   REFUSE cases pin that a leaf resolving INTO the repository is judged on where
+#   it really lands (and that an unfollowable leaf is refused, not guessed at);
+#   PERMIT cases pin that a leaf genuinely outside the repository, and one
+#   pointing at the driver's own .agents/, are still allowed.
+DM_LEAF="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_LEAF"   # no .agents/ above it
+DM_LEAF_P="$(cd "$DM_LEAF" && pwd -P)"
+mkdir -p "$DM_PHYS/src"; : > "$DM_PHYS/src/util.ts"           # a real in-repo link target
+: > "$DM_PHYS/.agents/run-state.yaml"                         # the driver's own surface
+printf 'plain\n' > "$DM_LEAF_P/plain.txt"
+
+ln -s "$DM_PHYS/src/util.ts"             "$DM_LEAF_P/into-repo.txt"    # leaf -> repo source
+ln -s "into-repo.txt"                    "$DM_LEAF_P/chain.txt"        # 2 hops -> repo source
+ln -s "$DM_PHYS/src/not-yet.ts"          "$DM_LEAF_P/dangling.txt"     # dangling -> repo source
+ln -s "$DM_PHYS/.agents/run-state.yaml"  "$DM_LEAF_P/into-agents.txt"  # -> driver's own surface
+ln -s "plain.txt"                        "$DM_LEAF_P/outside.txt"      # outside -> outside
+ln -s "loop-b.txt"                       "$DM_LEAF_P/loop-a.txt"       # a symlink loop:
+ln -s "loop-a.txt"                       "$DM_LEAF_P/loop-b.txt"       #   unfollowable
+ln -s "../src/util.ts"                   "$DM_PHYS/.agents/leaf-out.txt"  # .agents/ -> repo src
+ln -s "run-state.yaml"                   "$DM_PHYS/.agents/leaf-in.txt"   # .agents/ -> .agents/
+
+# dm_check <expected-exit> <desc> <payload>: `check`, plus a structural assert
+# that the payload's tool_input survived the shell. A MANGLED payload is denied
+# fail-closed (exit 2, ADR 0021), so a refuse-direction case can pass while
+# testing nothing -- which is exactly what happened while these cases were being
+# written. In `check 2 "desc" "$(dm_payload Write "{\"a\":\"1\",\"b\":\"2\"}" …)"`
+# the brace-enclosed comma BRACE-EXPANDS: dm_payload was called twice, each time
+# with one half and no braces, and the case reported `ok (exit 2)` against a
+# payload the guard could not parse. Interpolate a path into a multi-key JSON
+# body with single-quoted segments, as below -- never with `\"` escapes.
+dm_check() {
+  case "$3" in
+    *'"tool_input":{'*) check "$1" "$2" "$3" ;;
+    *) printf 'FAIL (payload mangled before the guard saw it) %s\n' "$2"; fail=$((fail + 1)) ;;
+  esac
+}
+
+# (1) REFUSE: the leaf lands inside the repository, so the write could reach a packet.
+check_deny_category "driver-mode" "B1: out-of-repo leaf symlink INTO the repo refused (Edit)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_check 2 "B1: the same leaf symlink refused via a shell redirect" \
+  "$(dm_payload Bash "{\"command\":\"echo x > ${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_check 2 "B1: a 2-hop symlink chain ending in the repo refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/chain.txt\"}" sess-driver)"
+dm_check 2 "B1: a DANGLING leaf symlink into the repo refused (the write creates it there)" \
+  "$(dm_payload Write '{"file_path":"'"${DM_LEAF_P}"'/dangling.txt","content":"x"}' sess-driver)"
+dm_check 2 "B1: an unfollowable leaf (symlink loop) refused as unverifiable" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/loop-a.txt\"}" sess-driver)"
+# The two check_deny_category cases either side of these need no dm_check: a
+# mangled payload denies with a DIFFERENT category, so they fail loudly by
+# construction. So do the check 0 permits -- a mangled payload denies, and a
+# permit case asserting exit 0 cannot pass on one.
+# The same defect from the other side: the lexical `<root>/.agents/` fast path
+# must not hand a free pass to a link that leaves .agents/ on resolution.
+check_deny_category "driver-mode" "B1: leaf symlink UNDER .agents/ pointing at repo source refused" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/leaf-out.txt\"}" sess-driver)"
+
+# (2) PERMIT: still outside the repository, or still the driver's own surface.
+check 0 "B1: out-of-repo leaf symlink to an out-of-repo file still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/outside.txt\"}" sess-driver)"
+check 0 "B1: a plain (non-symlink) out-of-repo file in the same directory still allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/plain.txt\"}" sess-driver)"
+check 0 "B1: out-of-repo leaf symlink into the repo's OWN .agents/ allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-agents.txt\"}" sess-driver)"
+check 0 "B1: leaf symlink under .agents/ pointing within .agents/ allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/leaf-in.txt\"}" sess-driver)"
+check 0 "B1: an ordinary .agents/ write is unaffected by the leaf check" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/run-state.yaml\"}" sess-driver)"
+
+# (3) no usable `readlink` -- the stock-Git-Bash case this hook is built around.
+#     `readlink` is probed by EXECUTION, not `command -v`, and a leaf that cannot
+#     be followed is REFUSED rather than assumed outside. That costs precision on
+#     such a host (every symlink leaf refuses, wherever it points) and keeps the
+#     direction the tier requires. The permit case is the control: it proves the
+#     stubbed PATH has not simply broken the guard into denying everything.
+DM_NORL="$(mktemp -d)"; COMMIT_TMPS="$COMMIT_TMPS $DM_NORL"
+printf '#!/bin/sh\nexit 127\n' > "$DM_NORL/readlink"; chmod +x "$DM_NORL/readlink"
+dm_norl_check() {   # <expected-exit> <desc> <payload>
+  local want="$1" desc="$2" payload="$3" got
+  printf '%s' "$payload" | env PATH="$DM_NORL:/usr/bin:/bin" "$GUARD" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then
+    printf 'ok   (exit %s) %s\n' "$got" "$desc"; pass=$((pass + 1))
+  else
+    printf 'FAIL (want %s, got %s) %s\n' "$want" "$got" "$desc"; fail=$((fail + 1))
+  fi
+}
+dm_norl_check 2 "B1: no usable readlink -> leaf symlink into the repo still REFUSED" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/into-repo.txt\"}" sess-driver)"
+dm_norl_check 0 "B1: no usable readlink -> a plain out-of-repo write still allowed (control)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_LEAF_P}/plain.txt\"}" sess-driver)"
+
+echo "== driver mode: B1b -- the RELATIVE arm and a symlinked DIRECTORY judged the same way =="
+# The half of the same defect the B1 cases above could not see, because they all
+# use ABSOLUTE paths. `<root>/.agents/` was a LEXICAL permit, so two shapes still
+# wrote repository source while wearing an `.agents/` name:
+#   (a) the RELATIVE form of a symlink leaf -- and relative is the form a driver
+#       writes by default. It is self-reachable: `ln`'s write target is its LAST
+#       positional argument, so `ln -s ../src/util.ts .agents/link.txt` is
+#       permitted (at judgement time that path is not yet a link -- pinned as a
+#       permit below), and the write THROUGH the link was permitted too. Two
+#       calls, both inside the driver's own surface, no external setup.
+#   (b) a symlinked DIRECTORY under `.agents/`, in BOTH path forms: a leaf test
+#       cannot see a link in the path's MIDDLE. Contrast the T4 case above where
+#       a symlinked directory OUTSIDE `.agents/` was already refused by `pwd -P`
+#       -- it was specifically the lexical shortcut that defeated it.
+# Both close by judging physically FIRST in both arms, with the lexical test kept
+# only as the resolution-FAILURE fallback. Paired by direction as before: each
+# refusal has a permit beside it, so restoring these refusals cannot be mistaken
+# for re-broadening the one T4 narrowed.
+ln -s "$DM_PHYS/src/util.ts" "$DM_PHYS/.agents/abs-leaf.txt"   # -> repo src, absolute target
+ln -s "$DM_LEAF_P/plain.txt" "$DM_PHYS/.agents/out-leaf.txt"   # -> outside the repository
+ln -s "../src"               "$DM_PHYS/.agents/dirlink"        # symlinked DIR -> repo source
+ln -s "$DM_LEAF_P"           "$DM_PHYS/.agents/dirlink-out"    # symlinked DIR -> outside
+
+# A permit case would pass just as well if `ln -s` had silently failed and the
+# link never existed, because a plain `.agents/` write is permitted anyway. So
+# assert the fixtures really ARE links, and the permits mean what they say.
+dm_require_link() {   # <path>
+  if [ -L "$1" ]; then
+    printf 'ok   (fixture) .agents/%s is a symlink\n' "${1##*/}"; pass=$((pass + 1))
+  else
+    printf 'FAIL (fixture) %s is not a symlink -- cases below would be vacuous\n' "$1"
+    fail=$((fail + 1))
+  fi
+}
+for dm_l in leaf-out.txt leaf-in.txt abs-leaf.txt out-leaf.txt dirlink dirlink-out; do
+  dm_require_link "$DM_PHYS/.agents/$dm_l"
+done
+
+# (1) REFUSE: the relative form of a symlink leaf leaving .agents/ for repo source.
+#     `leaf-out.txt` is the SAME link the absolute case above already refuses --
+#     only the path form differs, which is the whole point.
+check_deny_category "driver-mode" "B1b: RELATIVE .agents/ leaf symlink into repo source refused (Edit)" \
+  "$(dm_payload Edit '{"file_path":".agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: the ./ form of that same relative leaf refused" \
+  "$(dm_payload Edit '{"file_path":"./.agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf whose link target is ABSOLUTE refused" \
+  "$(dm_payload Edit '{"file_path":".agents/abs-leaf.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused for Write too" \
+  "$(dm_payload Write '{"file_path":".agents/leaf-out.txt","content":"x"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused via a shell redirect" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/leaf-out.txt"}' sess-driver)"
+dm_check 2 "B1b: relative .agents/ leaf refused via sed -i" \
+  "$(dm_payload Bash '{"command":"sed -i s/a/b/ .agents/leaf-out.txt"}' sess-driver)"
+
+# (2) REFUSE: a symlinked DIRECTORY under .agents/, absolute AND relative.
+check_deny_category "driver-mode" "B1b: symlinked dir under .agents/ into repo source refused (absolute)" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink/util.ts\"}" sess-driver)"
+dm_check 2 "B1b: ... and for a not-yet-existing file under that symlinked dir" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink/new.ts\"}" sess-driver)"
+dm_check 2 "B1b: symlinked dir under .agents/ refused in the RELATIVE form" \
+  "$(dm_payload Edit '{"file_path":".agents/dirlink/util.ts"}' sess-driver)"
+dm_check 2 "B1b: symlinked dir under .agents/ refused via a shell redirect" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/dirlink/util.ts"}' sess-driver)"
+
+# (3) PERMIT: still the driver's own surface, or still outside the repository.
+#     The last one pins the reachability described above -- creating the link is
+#     permitted, which is exactly why writing THROUGH it must not be.
+check 0 "B1b: relative .agents/ leaf pointing WITHIN .agents/ allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/leaf-in.txt"}' sess-driver)"
+check 0 "B1b: relative .agents/ leaf pointing OUTSIDE the repository allowed" \
+  "$(dm_payload Edit '{"file_path":".agents/out-leaf.txt"}' sess-driver)"
+check 0 "B1b: symlinked dir under .agents/ pointing outside the repository allowed" \
+  "$(dm_payload Edit "{\"file_path\":\"${DM_PHYS}/.agents/dirlink-out/plain.txt\"}" sess-driver)"
+check 0 "B1b: an ordinary relative .agents/ write is unaffected" \
+  "$(dm_payload Edit '{"file_path":".agents/run-state.yaml"}' sess-driver)"
+check 0 "B1b: an ordinary relative .agents/ write via a shell redirect unaffected" \
+  "$(dm_payload Bash '{"command":"echo x > .agents/findings/f-002.md"}' sess-driver)"
+check 0 "B1b: creating the link itself is permitted (that path is not yet a link)" \
+  "$(dm_payload Bash '{"command":"ln -s ../src/util.ts .agents/not-yet-a-link.txt"}' sess-driver)"
+
+echo "== driver mode: unresolved shell variables and dangerous constructs refuse conservatively =="
+check 2 "driver mode: an unresolved \$VAR write target refused" \
+  "$(dm_payload Bash '{"command":"cp tmp $VAR"}' sess-driver)"
+check 2 "driver mode: command substitution alongside a write refused" \
+  "$(dm_payload Bash '{"command":"cp $(echo src/util.ts) .agents/y"}' sess-driver)"
+check 2 "driver mode: xargs alongside a write refused" \
+  "$(dm_payload Bash '{"command":"echo .agents/y | xargs cp tmp"}' sess-driver)"
+
+echo "== driver mode: N1 CRITICAL -- a quoted target must not vanish into nothing =="
+# Blanking a quoted region to SPACES erased both the write-pattern's own
+# "non-space char" evidence and the target itself. Every one of these is a
+# real write outside .agents/, or opaque enough that it must be refused.
+check 2 "N1: double-quoted target, spaced" \
+  "$(dm_payload Bash '{"command":"echo x > \"src/y\""}' sess-driver)"
+check 2 "N1: double-quoted target, glued to >" \
+  "$(dm_payload Bash '{"command":"echo x >\"src/y\""}' sess-driver)"
+check 2 "N1: quoted unresolved variable target" \
+  "$(dm_payload Bash '{"command":"echo x > \"$TMP\""}' sess-driver)"
+check 2 "N1: cp .agents/ as source, quoted dest outside" \
+  "$(dm_payload Bash '{"command":"cp .agents/a \"src/y\""}' sess-driver)"
+check 2 "N1: tee .agents/ and a quoted outside target" \
+  "$(dm_payload Bash '{"command":"echo x | tee .agents/a \"src/y\""}' sess-driver)"
+check 2 "N1: sed -i with a QUOTED expression, one bad file" \
+  "$(dm_payload Bash '{"command":"sed -i 's/a/b/' src/x .agents/y"}' sess-driver)"
+check 2 "N1: unquoted backslash before a stray trailing quote" \
+  "$(dm_payload Bash '{"command":"echo \\\" > src/y \""}' sess-driver)"
+
+echo "== driver mode: N2 CRITICAL -- content after a heredoc terminator is a real command =="
+check 2 "N2: a write AFTER the heredoc terminator is not part of the body" \
+  "$(dm_payload Bash '{"command":"cat <<'EOF' > .agents/x\nhi\nEOF\necho pwn > src/y"}' sess-driver)"
+
+echo "== driver mode: N3 CRITICAL -- '#' is a comment only at a word boundary, to end-of-line =="
+check 2 "N3: a trailing comment does not swallow the next line" \
+  "$(dm_payload Bash '{"command":"echo hi # note\necho pwn > src/y"}' sess-driver)"
+check 2 "N3: '#' mid-word is not a comment; the ';' after it still separates" \
+  "$(dm_payload Bash '{"command":"echo a#b; echo pwn > src/y"}' sess-driver)"
+
+echo "== driver mode: N4 CRITICAL -- a newline is a statement separator for the fast-path too =="
+# Pre-existing guard bug (not driver-mode-specific): only the FIRST word of a
+# multi-line command was ever checked by the read-only fast-path.
+check 2 "N4: multi-line command reaches the SECRET floor (no driver mode needed)" \
+  "$(bash_call '"echo hi\ncp a .env"')"
+check 2 "N4: multi-line write refused in driver mode" \
+  "$(dm_payload Bash '{"command":"true\ncp a src/y"}' sess-driver)"
+check 0 "N4: a purely read-only multi-line command still allows (slower path)" \
+  "$(bash_call '"git status\ngit log -1"')"
+
+echo "== driver mode: N5 IMPORTANT -- the clobber redirect (>|) is a write too =="
+check 2 "N5: >| target outside .agents/ refused in driver mode" \
+  "$(dm_payload Bash '{"command":"echo x >| src/y"}' sess-driver)"
+check 2 "N5: >| .env hits the SECRET floor (no driver mode needed)" \
+  "$(bash_call '">| .env"')"
+
+echo "== driver mode: N6 IMPORTANT -- cd/pushd invalidates every relative target =="
+check 2 "N6: cd src && a relative .agents/ write is really src/.agents/" \
+  "$(dm_payload Bash '{"command":"cd src && echo x > .agents/y"}' sess-driver)"
+
+echo "== driver mode: N7 IMPORTANT -- cp -t/--target-directory, and every mv source =="
+check 2 "N7a: cp -t names the real destination, not the last positional arg" \
+  "$(dm_payload Bash '{"command":"cp -t src .agents/x"}' sess-driver)"
+check 2 "N7b: mv removes its source too -- that is a write outside .agents/" \
+  "$(dm_payload Bash '{"command":"mv src/a .agents/b"}' sess-driver)"
+
+echo "== driver mode: M2 -- re-confirm the earlier false-positive fixes still hold =="
+m2_git_cmd='git commit -F - <<'"'"'EOF'"'"'\nnote: -> tee cp >\nEOF'
+m2_git_payload="$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"%s"},"session_id":"sess-git"}' "$DM_GIT" "$m2_git_cmd")"
+printf '%s' "$m2_git_payload" | "$GUARD" >/dev/null 2>&1
+got=$?
+if [ "$got" = 0 ]; then
+  printf 'ok   (exit 0) M2: git commit -F - heredoc body with ->/tee/cp allowed\n'; pass=$((pass + 1))
+else
+  printf 'FAIL (want 0, got %s) M2: git commit -F - heredoc body with ->/tee/cp allowed\n' "$got"; fail=$((fail + 1))
+fi
+check 0 "M2: input redirect from a quoted variable allowed" \
+  "$(dm_payload Bash '{"command":"scripts/runstate.sh write .agents/run-state.yaml < \"$TMP\""}' sess-driver)"
+check 0 "M2: awk redirect into .agents/ allowed" \
+  "$(dm_payload Bash '{"command":"awk '{print}' file > .agents/loop/r/x"}' sess-driver)"
+check 0 "M2: a read-only pipeline ending in sed (no -i) allowed" \
+  "$(dm_payload Bash '{"command":"git log | grep foo | sed -E s/a/b/"}' sess-driver)"
 
 echo "== payload parsing: the guard must fail CLOSED when it cannot READ its input =="
 # Regression sweep for the "guard.sh fails open" report. Three independent
@@ -720,12 +1153,6 @@ check_nojq 2 "no parser: escaped shell write to .env still denied" \
 # the fix this exited 1 (fail-open) whenever no parser could answer.
 check_nojq 2 "no parser: absent optional key (cwd) does not kill the hook" \
   '{"tool_name":"Write","tool_input":{"file_path":".env","content":"x"}}'
-# Same hazard via an all-comments autonomy file (leading `grep -v` exits 1).
-R_ALLCOMMENT="$(mktemp -d)"; PARSE_TMPS="$PARSE_TMPS $R_ALLCOMMENT"
-mkdir -p "$R_ALLCOMMENT/.agents"
-printf '# just a header\n#\n\n' > "$R_ALLCOMMENT/.agents/autonomy"
-check 2 "autonomy file of only comments does not kill the hook (falls back to interactive)" \
-  "$(printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' "$R_ALLCOMMENT")"
 
 # Fail CLOSED on an unreadable payload, at every level of the envelope.
 check 2 "malformed JSON payload -> DENY (cannot judge => must not allow)" \
@@ -784,9 +1211,8 @@ fi
 
 echo "== parallel lanes: guard behavior INSIDE a git worktree (ADR 0016) =="
 # A lane runs in its own worktree on orch/<id>. The worktree checks out the
-# COMMITTED .agents/ (project-overrides, guard-extra), but a session-written
-# .agents/autonomy is gitignored and absent there — so the driver passes
-# ORCH_AUTONOMY via env, which the guard honors first. Prove all of that.
+# COMMITTED .agents/ (project-overrides, guard-extra), and the gates judge the
+# worktree's own branch. Prove all of that.
 RW1="$(new_repo develop)"
 mkdir -p "$RW1/.agents"
 printf 'integration_branch: develop\n' > "$RW1/.agents/project-overrides.yaml"
@@ -795,10 +1221,9 @@ git -C "$RW1" add -A >/dev/null 2>&1; git -C "$RW1" commit -qm "agents config" >
 WTX="$(dirname "$RW1")/$(basename "$RW1")-wtx"; COMMIT_TMPS="$COMMIT_TMPS $WTX"
 git -C "$RW1" worktree add -q -b orch/lane-x "$WTX" develop >/dev/null 2>&1
 
-# commit gate resolves the worktree's branch (orch/lane-x, not main) and the
-# env-supplied autonomy — the enabling case for parallel lanes.
-commit_check 0 "worktree lane commit + ORCH_AUTONOMY=full-autonomy -> allow"  full-autonomy "$WTX"
-commit_check 2 "worktree lane commit + ORCH_AUTONOMY=interactive -> deny"     interactive   "$WTX"
+# commit gate resolves the worktree's branch (orch/lane-x, not main) — the
+# enabling case for parallel lanes.
+commit_check 0 "worktree lane commit -> allow"  "$WTX"
 
 # path rules fire from a worktree cwd: SECRET denies, committed guard-extra
 # denies, auth CODE asks (ADR 0014), ordinary allows.
@@ -808,15 +1233,20 @@ check 2     "worktree cwd: committed guard-extra (src/critical) denied" "$(gw "s
 check_ask   "worktree cwd: auth CODE asks (ADR 0014)"            "$(gw "src/Auth/Login.cs")"
 check 0     "worktree cwd: ordinary path allowed"                "$(gw "src/util.ts")"
 
-# a committed autonomy_ceiling in the worktree still clamps the env level down.
-RW2="$(new_repo develop)"
-mkdir -p "$RW2/.agents"
-printf 'integration_branch: develop\nautonomy_ceiling: interactive\n' > "$RW2/.agents/project-overrides.yaml"
-git -C "$RW2" add -A >/dev/null 2>&1; git -C "$RW2" commit -qm "agents config + ceiling" >/dev/null 2>&1
-WTY="$(dirname "$RW2")/$(basename "$RW2")-wty"; COMMIT_TMPS="$COMMIT_TMPS $WTY"
-git -C "$RW2" worktree add -q -b orch/lane-y "$WTY" develop >/dev/null 2>&1
-commit_check 2 "worktree committed autonomy_ceiling=interactive clamps full-autonomy -> deny" \
-  full-autonomy "$WTY"
+echo "== one fixed rule set: the four autonomy rank comparisons are gone (retire-autonomy-levels T1) =="
+# The git soft gates used to lead with `autonomy_rank $ORCH_AUTONOMY -lt ...`,
+# one per gate. Every behavioural case above pins what the gates now DO; this
+# pins that the mechanism itself is absent, so a level cannot be reintroduced
+# silently — a reader of the cases alone could not tell a removed comparison
+# from one that happens to pass. Source-level because there is no payload that
+# can observe an absent branch.
+if grep -qiE 'autonomy_rank|ORCH_AUTONOMY|autonomy_ceiling|resolve_autonomy|ensure_autonomy|gate:autonomy' "$GUARD"; then
+  printf 'FAIL (want none) guard.sh still carries autonomy resolution or a rank comparison\n'
+  fail=$((fail + 1))
+else
+  printf 'ok   (absent)  guard.sh carries no autonomy resolution and no rank comparison\n'
+  pass=$((pass + 1))
+fi
 
 echo
 echo "-----------------------------------------"

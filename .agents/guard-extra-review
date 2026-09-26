@@ -9,8 +9,8 @@
 # --------------------------------------------
 # This repo is the plugin. In a consumer repo the plugin sits OUTSIDE the working
 # tree, so a loop physically cannot edit the guard, the state writer, or the agent
-# prompts it is running from. Here it can, and at `full-autonomy` it would do so
-# silently. The timing differs per surface and each is bad in its own way:
+# prompts it is running from. Here it can, and it would do so silently. The timing
+# differs per surface and each is bad in its own way:
 #
 #   scripts/*.sh   invoked fresh per Bash call -> an edit takes effect MID-RUN, in
 #                  the run that made it. runstate.sh is the loop's own single
@@ -55,10 +55,6 @@
 # project-overrides.yaml carries `bypass-ask-tier`, which disables this entire
 # tier in one line (ADR 0015). It must never be flipped without a human seeing it.
 (^|/)\.agents/project-overrides\.ya?ml$
-# autonomy: the level itself. /gaffer:set-autonomy is the sanctioned path and will
-# now prompt once — that redundancy is the point, since self-raising autonomy is
-# precisely what must not happen quietly.
-(^|/)\.agents/autonomy$
 # Hook and MCP-server registration: what gets loaded at session start.
 (^|/)\.claude/settings\.json$
 (^|/)\.mcp\.json$

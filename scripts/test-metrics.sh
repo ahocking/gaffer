@@ -4,9 +4,9 @@
 # =============================================================================
 # Exercises scripts/metrics.sh (the JOIN/ASSEMBLE core) and hooks/metrics-log.sh
 # (the event logger) against SYNTHETIC fixtures — a throwaway git repo with
-# `[orch packet:<id>]` trailers, a per-session event log, a packet-graph wave map,
-# and fake Claude Code transcripts. No live agent, no real ~/.claude. Exit 0 = all
-# passed (CI runs it on push). A behavior worth having is a behavior worth a test.
+# `[orch packet:<id>]` trailers, a per-session event log, and fake Claude Code
+# transcripts. No live agent, no real ~/.claude. Exit 0 = all passed (CI runs it on
+# push). A behavior worth having is a behavior worth a test.
 # =============================================================================
 
 set -uo pipefail
@@ -40,7 +40,7 @@ commit_at() { # commit_at <iso-Z> <packet-id>
 commit_at "2026-07-21T10:00:03Z" "feat-001"
 commit_at "2026-07-21T10:00:06Z" "feat-002"
 
-# --- .agents fixtures: event log, packet-graph waves, run-state ---------------
+# --- .agents fixtures: event log, run-state ------------------------------------
 mkdir -p "$REPO/.agents/metrics/events"
 EV="$REPO/.agents/metrics/events/S1.jsonl"
 cat > "$EV" <<'JSON'
@@ -50,16 +50,6 @@ cat > "$EV" <<'JSON'
 {"ts":"2026-07-21T10:00:04Z","session_id":"S1","agent_id":"a2","agent_type":"reviewer","tool":"Bash","duration_ms":40,"cmd_class":"git diff"}
 {"ts":"2026-07-21T10:00:05Z","session_id":"S1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":50}
 JSON
-
-cat > "$REPO/.agents/packet-graph.yaml" <<'YAML'
-waves:
-  - wave: 1
-    packets:
-      - id: feat-001
-  - wave: 2
-    packets:
-      - id: feat-002
-YAML
 
 cat > "$REPO/.agents/run-state.yaml" <<'YAML'
 schema: 3
@@ -108,6 +98,66 @@ PRE_SELFHOST_KEYS="audit autonomy by_agent_role generated_at mode notes packets 
 check "packet-shape: top-level key set unchanged" "$PRE_SELFHOST_KEYS" \
   "$(jq -r 'del(.self_host)|keys|sort|join(" ")' "$OUT")"
 
+# --- dispatch-progress-metrics pin (T1): today's `collect` output for THIS fixture,
+# captured before that feature added any field. Every later task in the feature deletes
+# its own new fields (append each jq path to DPM_NEW_FIELDS) and this check proves what
+# is left is byte-identical: packets[].edits, dispatched, by_agent_role, outcome and
+# audit.review_dispatches keep their meaning. Never re-capture DPM_GOLDEN to make it
+# pass — a difference here is a changed existing field, not a stale golden.
+DPM_NEW_FIELDS=('.packets[].dispatches'   # jq paths added by dispatch-progress-metrics (T2: dispatches)
+                '.totals.dispatch_waste'  # T6: the rollup
+                '.notes[] | select(startswith("dispatch_waste"))'    # T6: its notes[] lines
+                '.packets[].dispatches[]?.effort')  # session-effort-reporting T3: per-dispatch effort;
+                # totals.by_effort stays IN the golden, so this pin proves it unchanged
+# T7: the two per-packet dispatch flags are new entries in an EXISTING array, so they
+# are stripped rather than deleted, and flagged_packets is re-derived without them (an
+# entry whose only flags were these two drops out, exactly as the collector would list it).
+DPM_NEW_FLAG='(startswith("waste:zero-progress-dispatch(") or startswith("waste:over-budget-dispatch("))'
+DPM_FLAG_STRIP='(.packets[]?.audit.flags |= (if type == "array" then map(select('"$DPM_NEW_FLAG"' | not)) else . end))
+  | (.audit.flagged_packets |= (if type == "array"
+      then (map(.flags |= map(select('"$DPM_NEW_FLAG"' | not))) | map(select((.flags | length) > 0)))
+      else . end))'
+dpm_filter() {
+  local f='del(.generated_at)' p
+  for p in ${DPM_NEW_FIELDS[@]+"${DPM_NEW_FIELDS[@]}"}; do f="$f | del($p)"; done
+  printf '%s | %s' "$f" "$DPM_FLAG_STRIP"
+}
+dpm_view() { jq -S -c "$(dpm_filter)" "$1"; }
+DPM_GOLDEN="$(cat <<'GOLDEN'
+{"audit":{"by_dispatch_model_override":null,"by_tier":{},"configured_routing":null,"dispatches_total":0,"dispatches_with_model_override":null,"flagged_packets":[],"implementer_dispatches":0,"labels_present":false,"orchestrator_impl_edits":0,"packets_missing_impl":2,"packets_missing_tier":2,"packets_total":2,"unlabelled_packet_ids":["feat-001","feat-002"]},"autonomy":"unknown","by_agent_role":{"implementer":{"cc_shape":{"cc_over_50k":0,"max":100,"median":100,"p90":100,"turns":1,"turns_over_50k":0},"models":{"claude-sonnet-5":{"cache_creation":100,"cache_read":1000,"input":300,"output":150}},"tokens":{"cache_creation":100,"cache_read":1000,"input":300,"output":150}},"main":{"cc_shape":{"cc_over_50k":0,"max":200,"median":200,"p90":200,"turns":2,"turns_over_50k":0},"models":{"claude-opus-4-8":{"cache_creation":200,"cache_read":1200,"input":200,"output":100}},"tokens":{"cache_creation":200,"cache_read":1200,"input":200,"output":100}},"reviewer":{"cc_shape":{"cc_over_50k":0,"max":0,"median":0,"p90":0,"turns":1,"turns_over_50k":0},"models":{"claude-opus-4-8":{"cache_creation":0,"cache_read":600,"input":40,"output":20}},"tokens":{"cache_creation":0,"cache_read":600,"input":40,"output":20}}},"mode":"parallel","notes":["token_source=transcript: version-fragile on-disk parse (ADR 0019 Open Q1).","Per-packet token split needs per-turn transcript timestamps; packets[].tokens is null when absent.","Token turns are bounded to the run window (ADR 0019 window-bleed fix); ts==null turns are kept unwindowed.","Guard ASK-tier prompt frequency is not captured in v1 (PostToolUse hook sees allowed calls only).","Packet rows come from [orch packet:<id>] commit trailers AND runstate.sh record-start/record-outcome/sweep-open attestations (loop-measurement T4): a packet the loop started now appears even if it never committed (failed, rolled-back) or was interrupted mid-run. totals.outcome_coverage says whether that instrumentation is present for THIS run: `unmeasured` with no record-start boundary at all (pre-feature or a non-loop run — never infer completeness from packet count), `incomplete` when a started packet still lacks a terminal outcome, `complete` otherwise.","Trailer scan is bounded at BOTH ends: [win_start, last-event + grace] (grace=ORCH_METRICS_TRAILER_GRACE, default 3600s), or --until verbatim. Before this the upper bound was open, so a retrospective collect absorbed packets committed by every later run.","Trailer times are AUTHOR dates, not committer dates (v3.2): committer date is rewritten by rebase/cherry-pick/squash-merge, which moved packets into whichever run last replayed the branch and dropped in-window work whose merge landed later.","The trailer grace is CAPPED at the earliest event of any other session after win_end (v3.2), so commits made by a concurrent or back-to-back session cannot be claimed by this run; the full grace applies only when nothing else was running.","by_skill is STICKY: set by the most recent slash-command/Skill invocation and never cleared, so it is an UPPER BOUND on the spend of that skill, not an exact span.","totals.context_invalidations counts turns where `effort` or the model CHANGED within one agent context — each re-writes the whole cached prefix, so its cost scales with how deep in the context the change happened, not with which direction it went. An empty by_effort means the transcripts predate the per-turn `effort` field (unmeasured), not that effort never changed.","by_tool is the tool-SELECTION mix (Bash/Read/Edit/Grep/...); shell `grep`/`find`/`sed` showing up in by_command_class while Grep/Glob sit at zero here is context waste, not search volume.","active/idle from inter-event gaps (idle_gap_seconds); unattributed_tool_calls = events outside all packet windows.","totals.same_file_overlaps counts (main session, subagent) pairs that edited the SAME file: the span of a subagent is its first-to-last event, the main session pairs with it only through its own edit events falling inside that span, and a pair counts once no matter how many files it shares. This replaces the mechanical file-disjointness guarantee parallel mode used to provide, now that the guarantee is gone; it never logs a path, only opaque file hashes.","same_file_overlaps=unmeasured: 2 of 2 edit event(s) in this run carry no file_hash (pre-instrumentation hook, or a hash the hook could not compute).","audit.* cross-checks the executor [orch tier:/impl:] self-label against who actually edited (impl_edits_by_role) and what was dispatched; leak = opus orchestrator wrote code without dispatching the implementer.","audit.dispatches_with_model_override counts dispatches whose passed model DIFFERS from the routing resolved at dispatch (the routing.sh resolve value the hook stamped: the model_routing map value when the agent is mapped, no model when it is not). A dispatch passing its resolved value is policy, not an override; a mapped agent dispatched with no model is keyed \"(none)\" in by_dispatch_model_override. audit.configured_routing is the routing table of the latest stamped dispatch (null = unmeasured). Read by_agent_role.<role>.models for what each role actually ran on.","labels: NO packet in this run carries a [orch tier:]/[orch impl:] trailer — routing is entirely UNMEASURED for this run (legacy or convention off), not clean; per-packet unlabelled flags are suppressed (run-loop §3.2/§3.4).","instrumentation: no event carries `ok` — this run PREDATES the ok/model hook capture, so failed_tool_calls and dispatches_with_model_override are null (unmeasured), NOT zero."],"packets":[{"active_seconds":1,"audit":{"flags":[],"implementer_dispatched":false,"orchestrator_impl_edits":0,"review_dispatches":0},"by_agent":{"implementer":2},"by_command_class":{"dotnet test":1},"by_tool":{"Bash":1,"Edit":1},"dispatched":{},"duration_ms":50,"edits":null,"end":"2026-07-21T10:00:03Z","failed_tool_calls":0,"human_interactions":0,"id":"feat-001","impl":null,"impl_edits_by_role":{"implementer":1},"outcome":null,"start":"2026-07-21T10:00:01Z","swept":false,"tier":null,"tokens":{"cache_creation":300,"cache_read":1800,"input":400,"output":200},"tool_calls":2},{"active_seconds":1,"audit":{"flags":[],"implementer_dispatched":false,"orchestrator_impl_edits":0,"review_dispatches":0},"by_agent":{"implementer":1,"reviewer":1},"by_command_class":{"git diff":1},"by_tool":{"Bash":1,"Edit":1},"dispatched":{},"duration_ms":90,"edits":null,"end":"2026-07-21T10:00:06Z","failed_tool_calls":0,"human_interactions":0,"id":"feat-002","impl":null,"impl_edits_by_role":{"implementer":1},"outcome":null,"start":"2026-07-21T10:00:03Z","swept":false,"tier":null,"tokens":{"cache_creation":0,"cache_read":1000,"input":140,"output":70},"tool_calls":2}],"run_id":"feat-001","schema":2,"self_host":false,"sessions":["S1"],"token_diagnostics":{"duplicate_turns_dropped":0,"transcript_dir":"present","transcript_files_matched":3,"transcript_files_present":3,"usage_turns":4,"usage_turns_in_window":4},"token_source":"transcript","totals":{"by_command_class":{"dotnet test":{"calls":1,"duration_ms":30},"git diff":{"calls":1,"duration_ms":40},"git status":{"calls":1,"duration_ms":10}},"by_effort":{},"by_model":{"claude-opus-4-8":{"cache_creation":200,"cache_read":1800,"input":240,"output":120},"claude-sonnet-5":{"cache_creation":100,"cache_read":1000,"input":300,"output":150}},"by_role_duration_ms":{"implementer":100,"main":10,"reviewer":40},"by_skill":{"none":{"duration_ms":150,"tool_calls":5}},"by_tool":{"Bash":{"calls":3,"duration_ms":80},"Edit":{"calls":2,"duration_ms":70}},"cache_hit_ratio":0.903,"context_invalidations":{"cache_creation":0,"count":0,"events":[]},"driver_mode_context":{"max_context":null,"threshold":null},"driver_mode_context_diagnostics":{"turns_in_window":0,"windows":0},"driver_mode_edit_diagnostics":{"edit_events":2,"edit_events_missing_agents_dir":2},"driver_mode_edits_outside_agents":null,"duration_ms":150,"failed_tool_calls":null,"human_interactions":0,"outcome_counts":{},"outcome_coverage":"unmeasured","packets":2,"same_file_overlap_diagnostics":{"edit_events":2,"edit_events_missing_hash":2},"same_file_overlaps":null,"started_without_outcome":2,"tokens":{"cache_creation":300,"cache_read":2800,"input":540,"output":270},"tool_calls":5,"unattributed_by_agent":{"main":1},"unattributed_tool_calls":1},"window":{"active_seconds":4,"end":"2026-07-21T10:00:05Z","idle_seconds":0,"start":"2026-07-21T10:00:01Z","wall_seconds":4}}
+GOLDEN
+)"
+if [ "$(dpm_view "$OUT")" = "$DPM_GOLDEN" ]; then
+  ok "dpm pin: collect output minus new fields byte-identical to pre-feature"
+else
+  bad "dpm pin: collect output minus new fields byte-identical to pre-feature" \
+      "differing fields (< pre-feature, > now):"
+  diff <(printf '%s\n' "$DPM_GOLDEN" | jq -S .) <(dpm_view "$OUT" | jq -S .) \
+    | head -40 | sed 's/^/       /'
+fi
+# The pin must go red when an existing field it guards is altered — one mutation each.
+dpm_mutant() { # dpm_mutant <label> <jq mutation>
+  local m="$ROOT/dpm-mutant.json"
+  jq "$2" "$OUT" > "$m"
+  if [ "$(dpm_view "$m")" != "$DPM_GOLDEN" ]; then ok "dpm pin red under mutation: $1"
+  else bad "dpm pin red under mutation: $1" "altered output still matched the golden"; fi
+}
+dpm_mutant "packets[].edits"         '.packets[0].edits = 3'
+dpm_mutant "dispatched[]"            '.packets[1].dispatched = {"implementer": 1}'
+dpm_mutant "audit.review_dispatches" '.packets[0].audit.review_dispatches = 1'
+# T7: an existing flag class is still guarded (the strip is limited to the two new
+# dispatch flags, not the whole waste: class) ...
+dpm_mutant "an existing waste: flag" \
+  '.packets[0].audit.flags += ["waste:integration-tier-edited-inline-on-opus"]
+   | .audit.flagged_packets += [{id:"feat-001",tier:null,impl:null,flags:["waste:integration-tier-edited-inline-on-opus"]}]'
+# ... and the two new ones are stripped, with flagged_packets re-derived without them.
+DPM_M="$ROOT/dpm-t7.json"
+jq '.packets[0].audit.flags += ["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(2)"]
+    | .audit.flagged_packets += [{id:"feat-001",tier:null,impl:null,flags:["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(2)"]}]' \
+  "$OUT" > "$DPM_M"
+check "dpm pin: the two waste:*-dispatch flags are stripped and flagged_packets re-derived" \
+  "$DPM_GOLDEN" "$(dpm_view "$DPM_M")"
+
 # tokens: main(200/100/200/1200) + a1(300/150/100/1000) + a2(40/20/0/600)
 check "tokens.input"          "540"  "$(jq -r '.totals.tokens.input' "$OUT")"
 check "tokens.output"         "270"  "$(jq -r '.totals.tokens.output' "$OUT")"
@@ -123,10 +173,8 @@ check "role main read"       "1200" "$(jq -r '.by_agent_role.main.tokens.cache_r
 
 # per-packet windows: feat-001 (:01,:03] -> :02,:03 = 2 (both implementer);
 #                     feat-002 (:03,:06] -> :04(reviewer),:05(implementer) = 2
-check "pkt feat-001 wave"        "1" "$(jq -r '.packets[]|select(.id=="feat-001").wave' "$OUT")"
 check "pkt feat-001 tool_calls"  "2" "$(jq -r '.packets[]|select(.id=="feat-001").tool_calls' "$OUT")"
 check "pkt feat-001 implementer" "2" "$(jq -r '.packets[]|select(.id=="feat-001").by_agent.implementer' "$OUT")"
-check "pkt feat-002 wave"        "2" "$(jq -r '.packets[]|select(.id=="feat-002").wave' "$OUT")"
 check "pkt feat-002 tool_calls"  "2" "$(jq -r '.packets[]|select(.id=="feat-002").tool_calls' "$OUT")"
 check "pkt feat-002 reviewer"    "1" "$(jq -r '.packets[]|select(.id=="feat-002").by_agent.reviewer' "$OUT")"
 
@@ -224,6 +272,10 @@ else
   diff <(jq -S 'del(.generated_at)' "$OUT") <(jq -S 'del(.generated_at)' "$CRLFOUT") \
     | head -40 | sed 's/^/       /'
 fi
+# This fixture has no start or routing record, so every dispatch-progress-metrics
+# field in it is null and the check above cannot see a CR inside one. The same byte
+# identity is asserted over the T3/T6 fixtures, which carry them, at "CRLF-jq over
+# dispatch kind and progress" below (after those fixtures are built).
 
 echo "== ADR 0019 v3.1: token_source=none says WHICH failure it was =="
 # `none` used to conflate "nothing on disk" with "files exist but none opened", and the
@@ -302,6 +354,37 @@ check "hook subagent_type"         "general-purpose"     "$(jq -r 'select(.tool=
 # privacy: NO args / env / paths / secret leak into the log (head-only classifier)
 if grep -qiE 'API_KEY|xyz|porcelain|/Users/|HEAD' "$HL"; then bad "hook cmd_class leaks args/paths/secret"; else ok "hook cmd_class leaks nothing (no args/env/paths/secret)"; fi
 
+echo "== hook routing stamp: routing_resolved + routing_table on Agent events (per-agent-model-routing T2) =="
+# Run from inside a throwaway checkout (no ORCH_METRICS_DIR) so the hook resolves
+# main_root and passes `--root` to routing.sh; the real agents/ dir supplies the
+# frontmatter (implementer: sonnet), so `implementer: opus` is a table entry.
+RTREPO="$ROOT/rtrepo"; mkdir -p "$RTREPO/.agents"; git -C "$RTREPO" init -q
+printf 'model_routing:\n  implementer: opus\n' > "$RTREPO/.agents/project-overrides.yaml"
+rt() { ( cd "$RTREPO" && printf '%s' "$1" | "$HOOK" >/dev/null 2>&1 ); }
+rt '{"session_id":"RT1","tool_name":"Agent","agent_id":"","agent_type":"main","tool_use_id":"rt-mapped","tool_input":{"subagent_type":"gaffer:implementer"}}'
+rt '{"session_id":"RT1","tool_name":"Agent","agent_id":"","agent_type":"main","tool_use_id":"rt-unmapped","tool_input":{"subagent_type":"reviewer"}}'
+rt '{"session_id":"RT1","tool_name":"Bash","agent_id":"","agent_type":"main","tool_use_id":"rt-bash","tool_input":{"command":"git status"}}'
+RTL="$RTREPO/.agents/metrics/events/RT1.jsonl"
+check "routing stamp: mapped agent resolves to the alias" "opus" \
+  "$(jq -r 'select(.tool_use_id=="rt-mapped").routing_resolved' "$RTL")"
+check "routing stamp: mapped agent carries the table" '{"implementer":"opus"}' \
+  "$(jq -c 'select(.tool_use_id=="rt-mapped").routing_table' "$RTL")"
+check "routing stamp: unmapped agent resolves to explicit \"\"" '""' \
+  "$(jq -c 'select(.tool_use_id=="rt-unmapped").routing_resolved' "$RTL")"
+check "routing stamp: unmapped agent still carries the table" '{"implementer":"opus"}' \
+  "$(jq -c 'select(.tool_use_id=="rt-unmapped").routing_table' "$RTL")"
+check "routing stamp: non-Agent event carries neither field" "false false" \
+  "$(jq -r 'select(.tool_use_id=="rt-bash") | "\(has("routing_resolved")) \(has("routing_table"))"' "$RTL")"
+# routing.sh unavailable: CLAUDE_PLUGIN_ROOT at an empty dir -> both fields absent,
+# stdout empty, exit 0.
+RTEMPTY="$ROOT/rt-empty-plugin-root"; mkdir -p "$RTEMPTY"
+RTOUT="$( cd "$RTREPO" && printf '%s' '{"session_id":"RT2","tool_name":"Agent","agent_id":"","agent_type":"main","tool_input":{"subagent_type":"implementer"}}' \
+  | CLAUDE_PLUGIN_ROOT="$RTEMPTY" "$HOOK" 2>/dev/null )"; RTRC=$?
+check "routing stamp: script missing -> hook exits 0" "0" "$RTRC"
+check "routing stamp: script missing -> hook stdout empty" "" "$RTOUT"
+check "routing stamp: script missing -> both fields absent (event still logged)" "Agent false false" \
+  "$(jq -r '"\(.tool) \(has("routing_resolved")) \(has("routing_table"))"' "$RTREPO/.agents/metrics/events/RT2.jsonl" 2>/dev/null)"
+
 echo "== no events + no repo trailers -> empty-but-valid packet =="
 BARE="$ROOT/bare"; mkdir -p "$BARE"; git -C "$BARE" init -q
 OUT3="$ROOT/rm3.json"
@@ -317,6 +400,11 @@ ORCH_METRICS=off ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" \
   bash -c "printf '%s' '$payload' | '$HOOK'" >/dev/null 2>&1
 [ ! -f "$HREPO/.agents/metrics/events/H1.jsonl" ] && ok "disabled hook writes nothing" \
   || bad "disabled hook writes nothing" "file should not exist"
+# ...including the fixed-rules marker (retire-autonomy-levels T6): "writes nothing"
+# means nothing, so a disabled hook must not leave a session looking post-install.
+[ ! -f "$HREPO/.agents/metrics/events/_state/H1.fixed-rules" ] \
+  && ok "disabled hook writes no fixed-rules marker" \
+  || bad "disabled hook writes no fixed-rules marker" "marker should not exist"
 
 echo "== hook appends a metadata line and prints NOTHING on stdout =="
 STDOUT="$(printf '%s' "$payload" | ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" "$HOOK" 2>/dev/null)"
@@ -329,6 +417,25 @@ check "hook line: agent_type" "main" "$(jq -r '.agent_type' "$LINE" 2>/dev/null)
 # only the 5 base keys appear (no spurious keys, and never full command text / paths).
 check "hook line: base keys only when enrichment absent" "agent_id agent_type session_id tool ts" \
   "$(jq -r 'keys|join(" ")' "$LINE" 2>/dev/null)"
+# retire-autonomy-levels T6: the same call leaves a ZERO-BYTE `_state/<sid>.fixed-rules`
+# marker — the only thing metrics.sh now reads for the run's level. It must add no field
+# to the event line (asserted by the base-key check above), no growth to the log, and
+# nothing to stdout; a second call must not grow it either (`:>>`, never a rewrite).
+MARK="$HREPO/.agents/metrics/events/_state/H1.fixed-rules"
+[ -f "$MARK" ] && ok "hook wrote the fixed-rules marker" || bad "hook wrote the fixed-rules marker"
+check "fixed-rules marker is zero-byte" "0" "$(wc -c < "$MARK" 2>/dev/null | tr -d ' ')"
+STDOUT2="$(printf '%s' "$payload" | ORCH_METRICS_DIR="$HREPO/.agents/metrics/events" "$HOOK" 2>/dev/null)"
+HRC2=$?
+check "hook stdout still empty on the marker path" "" "$STDOUT2"
+check "hook exits 0 on the marker path"            "0" "$HRC2"
+check "fixed-rules marker stays zero-byte on re-fire" "0" "$(wc -c < "$MARK" 2>/dev/null | tr -d ' ')"
+# an UNWRITABLE _state dir must not change any of that (fail-silent, exit 0)
+RO="$ROOT/ro-hook"; mkdir -p "$RO/_state"; chmod 500 "$RO/_state"
+ROOUT="$(printf '%s' '{"session_id":"RO1","tool_name":"Bash","agent_id":"","agent_type":"main"}' \
+  | ORCH_METRICS_DIR="$RO" "$HOOK" 2>/dev/null)"; RORC=$?
+check "hook stdout empty when _state is unwritable" "" "$ROOUT"
+check "hook exits 0 when _state is unwritable"      "0" "$RORC"
+chmod 700 "$RO/_state"
 
 echo "== widened matcher: non-mutating tools (Task, Read) are logged too =="
 WREPO="$ROOT/wrepo"; mkdir -p "$WREPO"; git -C "$WREPO" init -q
@@ -368,20 +475,6 @@ for _ in $(seq 1 15); do emit laneX & emit laneY & done; wait
 check "concurrent: all 30 appends present" "30" "$(wc -l < "$CEV/C1.jsonl" 2>/dev/null | tr -d ' ')"
 corrupt=0; while IFS= read -r ln; do printf '%s' "$ln" | jq -e . >/dev/null 2>&1 || corrupt=$((corrupt+1)); done < "$CEV/C1.jsonl"
 check "concurrent: 0 torn/corrupt lines" "0" "$corrupt"
-
-echo "== P5-M: by_lane rollup attributes spend per worktree lane =="
-LREPO="$ROOT/lrepo"; mkdir -p "$LREPO"; git -C "$LREPO" init -q
-LEV="$LREPO/.agents/metrics/events"; mkdir -p "$LEV"
-cat > "$LEV/LN.jsonl" <<'JSON'
-{"ts":"2026-07-21T10:00:00Z","session_id":"LN","agent_id":"a","agent_type":"implementer","tool":"Bash","duration_ms":100,"lane_id":"repo-wt-t1"}
-{"ts":"2026-07-21T10:00:01Z","session_id":"LN","agent_id":"a","agent_type":"implementer","tool":"Bash","duration_ms":200,"lane_id":"repo-wt-t1"}
-{"ts":"2026-07-21T10:00:02Z","session_id":"LN","agent_id":"b","agent_type":"implementer","tool":"Bash","duration_ms":50,"lane_id":"repo-wt-t2"}
-JSON
-LOUT="$ROOT/lrm.json"
-"$METRICS" collect --main-root "$LREPO" --projects-dir "$ROOT/none" --out "$LOUT" >/dev/null 2>&1
-check "by_lane t1 tool_calls"  "2"   "$(jq -r '.totals.by_lane["repo-wt-t1"].tool_calls' "$LOUT")"
-check "by_lane t1 duration_ms" "300" "$(jq -r '.totals.by_lane["repo-wt-t1"].duration_ms' "$LOUT")"
-check "by_lane t2 tool_calls"  "1"   "$(jq -r '.totals.by_lane["repo-wt-t2"].tool_calls' "$LOUT")"
 
 echo "== scope: commit trailers OUTSIDE the run window are excluded =="
 # A prior run's packet (committed before this run's first event) must NOT be folded
@@ -591,7 +684,7 @@ check "c-nolabel unlabelled x2"  "2"     "$(jq -r '[.packets[]|select(.id=="c-no
 check "run mixed label note"     "1"     "$(jq -r '[.notes[]|select(startswith("labels: 1 of 4"))]|length' "$COUT")"
 check "run flagged ids"          "c-mech c-docs c-nolabel" "$(jq -r '[.audit.flagged_packets[].id]|join(" ")' "$COUT")"
 
-echo "== ADR 0019: ok/model/autonomy/interactivity instrumentation =="
+echo "== ADR 0019: ok/model/interactivity instrumentation =="
 DREPO="$ROOT/drepo"; mkdir -p "$DREPO"
 git -C "$DREPO" init -q
 git -C "$DREPO" config user.email t@t; git -C "$DREPO" config user.name t
@@ -601,12 +694,9 @@ GIT_AUTHOR_DATE="2026-07-21T14:00:05Z" GIT_COMMITTER_DATE="2026-07-21T14:00:05Z"
 
 [orch packet:d-one]"
 mkdir -p "$DREPO/.agents/metrics/events"
-# the real .agents/autonomy is a COMMENTED template — the parse must skip comments
-# and blank lines and take only the level (regression: slurping yielded the manual).
-printf '# Default autonomy level for this repo (ADR 0004).\n#   interactive | supervised | autonomous\n\nautonomous\n' > "$DREPO/.agents/autonomy"
 # d-one window (:01,:05]: 3 `dotnet test` runs of which 2 FAILED (ok:false) = rework;
-# one dispatch WITH an explicit model OVERRIDE, one plain (which correctly resolves
-# to the agent's frontmatter model — NOT a violation); one human question.
+# one dispatch passing a model, one plain — both UNSTAMPED (no routing_resolved),
+# so the override count is unmeasured here; one human question.
 cat > "$DREPO/.agents/metrics/events/D1.jsonl" <<'JSON'
 {"ts":"2026-07-21T14:00:01Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}
 {"ts":"2026-07-21T14:00:02Z","session_id":"D1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"dotnet test","ok":false}
@@ -619,19 +709,18 @@ JSON
 DOUT="$ROOT/drun.json"
 "$METRICS" collect --main-root "$DREPO" --projects-dir "$ROOT/none" --out "$DOUT" >/dev/null 2>&1 \
   || bad "instrumentation collect exits 0" "collect returned nonzero"
-check "autonomy recorded"          "autonomous" "$(jq -r '.autonomy' "$DOUT")"
 check "run failed_tool_calls"      "2"          "$(jq -r '.totals.failed_tool_calls' "$DOUT")"
 check "run human_interactions"     "1"          "$(jq -r '.totals.human_interactions' "$DOUT")"
 check "pkt failed_tool_calls"      "2"          "$(jq -r '.packets[]|select(.id=="d-one").failed_tool_calls' "$DOUT")"
 check "pkt human_interactions"     "1"          "$(jq -r '.packets[]|select(.id=="d-one").human_interactions' "$DOUT")"
 # rework proxy: 3 dotnet test invocations inside one packet
 check "pkt rework proxy (test x3)" "3"          "$(jq -r '.packets[]|select(.id=="d-one").by_command_class["dotnet test"]' "$DOUT")"
-# dispatch-model OVERRIDES (§3.3). An omitted model is correct (frontmatter
-# resolution), so only the explicit override counts here — the reviewer dispatch
-# with no `model` must NOT be counted.
+# dispatch-model OVERRIDES (per-agent-model-routing). These D1 Agent events carry
+# NO routing stamp (pre-routing hook), so the override count is UNMEASURED: judging
+# them would need the routing resolved at dispatch, which was never recorded.
 check "dispatches_total"           "2"          "$(jq -r '.audit.dispatches_total' "$DOUT")"
-check "dispatch model overrides"   "1"          "$(jq -r '.audit.dispatches_with_model_override' "$DOUT")"
-check "by_dispatch_model_override" "1"          "$(jq -r '.audit.by_dispatch_model_override.sonnet' "$DOUT")"
+check "dispatch model overrides null (Agent events unstamped, pre-routing)" "null" "$(jq -r '.audit.dispatches_with_model_override' "$DOUT")"
+check "by_dispatch_model_override null (Agent events unstamped, pre-routing)" "null" "$(jq -r '.audit.by_dispatch_model_override' "$DOUT")"
 check "no stale unnamed-model key" "null"       "$(jq -r '.audit.dispatches_without_named_model' "$DOUT")"
 # d-one carries NO tier/impl trailer and NO packet in the run does -> a wholesale
 # unlabelled run. The counts still report it as UNMEASURED, but the per-packet
@@ -642,9 +731,6 @@ check "d-one missing impl"         "1"          "$(jq -r '.audit.packets_missing
 check "d-one in unlabelled ids"    "d-one"      "$(jq -r '.audit.unlabelled_packet_ids[]' "$DOUT")"
 check "d-one flags suppressed"     "0"          "$(jq -r '[.packets[]|select(.id=="d-one").audit.flags[]|select(startswith("unlabelled:"))]|length' "$DOUT")"
 check "d-one wholesale note"       "1"          "$(jq -r '[.notes[]|select(startswith("labels: NO packet"))]|length' "$DOUT")"
-# env override wins over the .agents/autonomy file
-check "autonomy env override" "full-autonomy" \
-  "$(ORCH_AUTONOMY=full-autonomy "$METRICS" collect --main-root "$DREPO" --projects-dir "$ROOT/none" --out "$ROOT/drun2.json" >/dev/null 2>&1; jq -r '.autonomy' "$ROOT/drun2.json")"
 # absent ok/model fields must read as UNMEASURED (null), never as "zero failures"
 check "S1 failed_tool_calls null"  "null"       "$(jq -r '.totals.failed_tool_calls' "$OUT")"
 check "S1 model-override null"     "null"       "$(jq -r '.audit.dispatches_with_model_override' "$OUT")"
@@ -654,6 +740,133 @@ check "S1 pre-instrumentation note" "1" \
 # ...and the instrumented run must NOT carry that note
 check "D1 no pre-instr note"       "0" \
   "$(jq -r '[.notes[]|select(startswith("instrumentation:"))]|length' "$DOUT")"
+
+echo "== retire-autonomy-levels: the level comes from the hook's marker, not env or a level file =="
+# Autonomy levels are retired, so `autonomy` is no longer "what is configured now" but
+# "did every session in this window run under the one fixed rule set" — answered solely
+# by the `_state/<sid>.fixed-rules` markers hooks/metrics-log.sh writes. Two sessions in
+# one repo let a window be all-marked, part-marked or unmarked without rebuilding it.
+# NOTE the fixture name: `$ROOT/arepo` is already taken TWICE in this sweep (the adhoc
+# run_id case and the author-date case both build one), and sharing a repo means sharing
+# its events dir — a stray third session log made `--all-sessions` here read a window we
+# never wrote. Fixtures whose selection rule is "every session" need their OWN repo.
+FXREPO="$ROOT/fxrepo"; mkdir -p "$FXREPO/.agents/metrics/events/_state"
+FXST="$FXREPO/.agents/metrics/events/_state"
+git -C "$FXREPO" init -q
+git -C "$FXREPO" config user.email t@t; git -C "$FXREPO" config user.name t
+echo a > "$FXREPO/f"; git -C "$FXREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T15:00:05Z" GIT_COMMITTER_DATE="2026-07-21T15:00:05Z" \
+  git -C "$FXREPO" commit -q -m "work
+
+[orch packet:fx-one]"
+printf '{"ts":"2026-07-21T15:00:01Z","session_id":"F1","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}\n' \
+  > "$FXREPO/.agents/metrics/events/F1.jsonl"
+printf '{"ts":"2026-07-21T15:00:02Z","session_id":"F2","agent_id":"","agent_type":"main","tool":"Bash","cmd_class":"git status","ok":true}\n' \
+  > "$FXREPO/.agents/metrics/events/F2.jsonl"
+acollect() { # acollect <out-name> <collect args...> -> prints .autonomy
+  local o="$ROOT/$1.json"; shift
+  "$METRICS" collect --main-root "$FXREPO" --projects-dir "$ROOT/none" --out "$o" "$@" >/dev/null 2>&1
+  jq -r '.autonomy' "$o" 2>/dev/null
+}
+# a pre-install window — no session left a marker — re-collects as UNKNOWN, which
+# means UNMEASURED, never some other level.
+check "autonomy: no marker -> unknown" "unknown" "$(acollect fx-none --session F1)"
+: > "$FXST/F1.fixed-rules"
+check "autonomy: marker present -> full-autonomy" "full-autonomy" "$(acollect fx-marked --session F1)"
+# a window MIXING a marked and an unmarked session cannot claim the marked one's
+# answer — the rule is EVERY selected session, not the newest or the majority.
+check "autonomy: mixed window -> unknown" "unknown" "$(acollect fx-mixed --all-sessions)"
+: > "$FXST/F2.fixed-rules"
+check "autonomy: every session marked -> full-autonomy" "full-autonomy" "$(acollect fx-both --all-sessions)"
+# no sessions selected at all is not vacuously full-autonomy
+check "autonomy: no sessions -> unknown" "unknown" "$(acollect fx-nosess --session NOPE)"
+# the two retired inputs are DEAD, not merely deprioritised: both present, both ignored.
+printf '# Default autonomy level for this repo.\n#   interactive | supervised | autonomous\n\nautonomous\n' \
+  > "$FXREPO/.agents/autonomy"
+check "autonomy: ORCH_AUTONOMY + .agents/autonomy ignored when marked" "full-autonomy" \
+  "$(ORCH_AUTONOMY=interactive acollect fx-env --all-sessions)"
+rm -f "$FXST/F1.fixed-rules" "$FXST/F2.fixed-rules"
+check "autonomy: ORCH_AUTONOMY + .agents/autonomy ignored when unmarked" "unknown" \
+  "$(ORCH_AUTONOMY=interactive acollect fx-env2 --all-sessions)"
+# the field keeps its name and place: `show` still renders it the same way.
+: > "$FXST/F1.fixed-rules"; : > "$FXST/F2.fixed-rules"
+acollect fx-show --all-sessions >/dev/null
+check "autonomy: show still renders the field" "1" \
+  "$("$METRICS" show "$ROOT/fx-show.json" | grep -c 'autonomy: full-autonomy')"
+
+echo "== routing audit: override = passed model differs from the stamped routing (per-agent-model-routing T5) =="
+# Each case is its own throwaway repo + one session so a count isolates ONE dispatch
+# shape. Fixture routing: implementer (frontmatter sonnet) mapped to opus; reviewer
+# (frontmatter opus) unmapped. routing_resolved "" = the dispatch should pass nothing.
+rcollect() { # rcollect <name> <events-jsonl> -> prints the run-metrics.json path
+  local r="$ROOT/route-$1"; mkdir -p "$r/.agents/metrics/events"
+  git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+  echo a > "$r/f"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="2026-07-22T09:00:05Z" GIT_COMMITTER_DATE="2026-07-22T09:00:05Z" \
+    git -C "$r" commit -q -m "work
+
+[orch packet:$1-p]"
+  printf '%s\n' "$2" > "$r/.agents/metrics/events/R$1.jsonl"
+  "$METRICS" collect --main-root "$r" --projects-dir "$ROOT/none" --out "$r/out.json" >/dev/null 2>&1 \
+    || bad "routing $1: collect exits 0" "collect returned nonzero"
+  printf '%s\n' "$r/out.json"
+}
+RT_MAP='"routing_table":{"implementer":"opus"}'
+RB='"ts":"2026-07-22T09:00:01Z","session_id":"R","agent_id":"","agent_type":"main","ok":true'
+R0="$(rcollect maprouted "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: map-routed dispatch counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$R0")"
+check "routing: map-routed by_dispatch_model_override empty" "{}" "$(jq -c '.audit.by_dispatch_model_override' "$R0")"
+R1="$(rcollect offmap "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"haiku\",\"routing_resolved\":\"\",$RT_MAP}")"
+check "routing: off-map model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R1")"
+check "routing: off-map keyed by passed model" "1" "$(jq -r '.audit.by_dispatch_model_override.haiku' "$R1")"
+R2="$(rcollect backtofm "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"sonnet\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: mapped agent sent back to its frontmatter model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R2")"
+R3="$(rcollect ownfm "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"opus\",\"routing_resolved\":\"\",$RT_MAP}")"
+check "routing: unmapped agent passed its own frontmatter model counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R3")"
+check "routing: unmapped own-frontmatter keyed by passed model" "1" "$(jq -r '.audit.by_dispatch_model_override.opus' "$R3")"
+R4="$(rcollect nomodel "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: mapped agent passed nothing counts 1" "1" "$(jq -r '.audit.dispatches_with_model_override' "$R4")"
+check "routing: passed-nothing override keyed (none)" "1" "$(jq -r '.audit.by_dispatch_model_override["(none)"]' "$R4")"
+R5="$(rcollect unmappedplain "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"routing_resolved\":\"\",\"routing_table\":{}}")"
+check "routing: unmapped agent passing nothing counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$R5")"
+check "routing: empty table records as {}" "{}" "$(jq -c '.audit.configured_routing' "$R5")"
+# configured_routing = the LATEST stamped table by PARSED ts. 09:00:02.500Z is later
+# than 09:00:02Z but sorts BEFORE it as a string ("." < "Z"), so a string sort would
+# pick the reviewer-less first table; the parse must pick the later one.
+RCFG="$(rcollect latest "{\"ts\":\"2026-07-22T09:00:02.500Z\",\"session_id\":\"R\",\"agent_id\":\"\",\"agent_type\":\"main\",\"ok\":true,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"fable\",\"routing_resolved\":\"fable\",\"routing_table\":{\"implementer\":\"opus\",\"reviewer\":\"fable\"}}
+{\"ts\":\"2026-07-22T09:00:02Z\",\"session_id\":\"R\",\"agent_id\":\"\",\"agent_type\":\"main\",\"ok\":true,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}")"
+check "routing: configured_routing equals the latest stamped table" '{"implementer":"opus","reviewer":"fable"}' "$(jq -c '.audit.configured_routing' "$RCFG")"
+check "routing: both dispatches map-routed across a mid-run change" "0" "$(jq -r '.audit.dispatches_with_model_override' "$RCFG")"
+check "routing: mid-run change note names 2 distinct tables" "1" \
+  "$(jq -r '[.notes[]|select(startswith("routing: model routing CHANGED mid-run") and contains("2 distinct routing tables"))]|length' "$RCFG")"
+check "routing: single-table run has no mid-run note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("routing: model routing CHANGED"))]|length' "$R0")"
+# legacy: instrumented (ok present) but the hook predates the routing stamp
+RLEG="$(rcollect legacy "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"sonnet\"}")"
+check "routing: legacy unstamped configured_routing null" "null" "$(jq -r '.audit.configured_routing' "$RLEG")"
+check "routing: legacy unstamped override count null" "null" "$(jq -r '.audit.dispatches_with_model_override' "$RLEG")"
+RMIX="$(rcollect mixed "{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:implementer\",\"model\":\"opus\",\"routing_resolved\":\"opus\",$RT_MAP}
+{$RB,\"tool\":\"Agent\",\"subagent_type\":\"gaffer:reviewer\",\"model\":\"sonnet\"}")"
+check "routing: mixed-stamp run override count null" "null" "$(jq -r '.audit.dispatches_with_model_override' "$RMIX")"
+check "routing: mixed-stamp run note (1 of 2 unstamped)" "1" \
+  "$(jq -r '[.notes[]|select(contains("1 of 2 dispatches carry no routing stamp"))]|length' "$RMIX")"
+check "routing: mixed-stamp configured_routing from the stamped event" '{"implementer":"opus"}' "$(jq -c '.audit.configured_routing' "$RMIX")"
+RNONE="$(rcollect nodispatch "{$RB,\"tool\":\"Bash\",\"cmd_class\":\"git status\"}")"
+check "routing: no dispatches counts 0" "0" "$(jq -r '.audit.dispatches_with_model_override' "$RNONE")"
+check "routing: no dispatches configured_routing null" "null" "$(jq -r '.audit.configured_routing' "$RNONE")"
+check "routing: fully-stamped run carries no unstamped note" "0" \
+  "$(jq -r '[.notes[]|select(contains("carry no routing stamp"))]|length' "$R0")"
+# show: null must render as unmeasured, {} as none, a table as "<agent> <alias>"
+check "show routing: null renders unmeasured — pre-routing run" "1" \
+  "$("$METRICS" show "$RLEG" 2>/dev/null | grep -c 'configured routing: unmeasured — pre-routing run')"
+check "show routing: {} renders none" "1" \
+  "$("$METRICS" show "$R5" 2>/dev/null | grep -c 'configured routing: none$')"
+check "show routing: table renders agent alias" "1" \
+  "$("$METRICS" show "$RCFG" 2>/dev/null | grep -c 'configured routing: implementer opus, reviewer fable')"
+check "show routing: null override count not rendered as 0" "1" \
+  "$("$METRICS" show "$RMIX" 2>/dev/null | grep -c 'model overrides vs routing resolved at dispatch: unmeasured')"
+check "show routing: no // {} or // 0 fallback on routing fields" "0" \
+  "$(grep -cE '(configured_routing|dispatches_with_model_override|by_dispatch_model_override) // (\{\}|0)' "$METRICS")"
 
 # =============================================================================
 # ADR 0019 v3 — phantom-packet window bound, by_tool, sticky by_skill
@@ -919,13 +1132,13 @@ echo "== v3.3: show reports unmeasured counters as unmeasured, not as clean zero
 # that predates the counter) as 0, which reads as "checked, nothing found".
 SHOW_OUT="$("$METRICS" show "$EOUT" 2>/dev/null)"
 check "show: audit present"        "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^routing audit')"
-check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'explicit model overrides')"
+check "show: override printed once" "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'model overrides vs routing resolved at dispatch')"
 # audit must come BEFORE the packets table, not be buried under it
 check "show: audit above packets"  "before" \
   "$(printf '%s\n' "$SHOW_OUT" | awk '/^routing audit/{a=NR} /^packets \(id/{p=NR} END{print (a>0 && a<p) ? "before" : "after"}')"
 # a legacy run must read as UNMEASURED, never as a clean zero
 SHOW_LEG="$("$METRICS" show "$OUT" 2>/dev/null)"
-check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'explicit model overrides: unmeasured')"
+check "show: legacy unmeasured"    "1" "$(printf '%s\n' "$SHOW_LEG" | grep -c 'model overrides vs routing resolved at dispatch: unmeasured')"
 # the retracted cost claim must not come back in the by_tool heading
 check "show: no waste claim"       "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'is waste')"
 # ...nor the retracted DENOMINATOR. 279M was the pre-dedup inflated figure (v3.3);
@@ -941,7 +1154,7 @@ check "show: no retracted 279M"    "0" "$(grep -c '279M lifetime' "$METRICS")"
 check "show: cc_shape rendered"    "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c 'median=.*p90=.*max=9000')"
 check "show: cc_shape not unmeasured" "0" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^cc_shape: unmeasured')"
 # outcome must appear in the packets table, and render as ? (not green) when unattested
-check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | wave | outcome')"
+check "show: outcome column"       "1" "$(printf '%s\n' "$SHOW_OUT" | grep -c '^packets (id | outcome')"
 check "show: null outcome is not green" "0" \
   "$(printf '%s\n' "$SHOW_OUT" | awk '/^packets \(id/{p=1;next} p&&/^  /{print}' | grep -c '| green |')"
 
@@ -1049,6 +1262,536 @@ check "show: contention named"        "1" "$(printf '%s\n' "$XSHOW" | grep -c 's
 # and the hook must stamp a hash for it in the first place
 check "hook: MultiEdit on write surface" "1" \
   "$(grep -c 'Edit|Write|MultiEdit|NotebookEdit)' "${HERE}/../hooks/metrics-log.sh")"
+
+echo
+echo "== retire-unused-loop-modes T3: same-file overlap between file-editing agents =="
+# Parallel mode's mechanical file-disjointness guarantee is gone; this is the
+# observability that replaces it. A subagent's span is its first-to-last event; the
+# main session pairs with it only through the main session's OWN edit events falling
+# INSIDE that span; a pair counts once no matter how many hashes it shares.
+#
+# i1 shares TWO files with main while main's edits sit inside i1's span -> ONE pair,
+# not two (the "counts once" rule). i2 shares NO file with main even though main also
+# edits inside i2's span -> must not add a pair. Expected total: 1.
+OVREPO="$ROOT/ovrepo"; mkdir -p "$OVREPO"; git -C "$OVREPO" init -q
+OVEV="$OVREPO/.agents/metrics/events"; mkdir -p "$OVEV"
+cat > "$OVEV/OV1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"OV1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"OV1","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:05Z","session_id":"OV1","agent_id":"i2","agent_type":"gaffer:reviewer","tool":"Edit","file_hash":"dddddddddddd"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"OV1","agent_id":"","agent_type":"main","tool":"Edit","file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:07Z","session_id":"OV1","agent_id":"i2","agent_type":"gaffer:reviewer","tool":"Edit","file_hash":"ffffffffffff"}
+JSON
+OVOUT="$ROOT/ovrun.json"
+"$METRICS" collect --main-root "$OVREPO" --projects-dir "$ROOT/none" --out "$OVOUT" >/dev/null 2>&1 \
+  || bad "overlap collect exits 0" "collect returned nonzero"
+check "overlap: measured (every edit carries a hash)" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: main-subagent pair sharing two files counts ONCE" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: no-shared-file subagent does not add a pair" "1" \
+  "$(jq -r '.totals.same_file_overlaps' "$OVOUT")"
+check "overlap: diagnostics count every edit event" "7" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events' "$OVOUT")"
+check "overlap: diagnostics report 0 missing hashes when measured" "0" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events_missing_hash' "$OVOUT")"
+check "overlap: show renders the measured count" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$OVOUT" 2>/dev/null)" | grep -c '^same-file overlaps.*: 1$')"
+
+echo "== retire-unused-loop-modes T3: a run with a hash-less edit event reads unmeasured =="
+# $OUT (the S1 scenario at the top of this file) predates file_hash: its implementer
+# Edit events carry no hash at all. 0 and unmeasured must never be conflated — this
+# repo has already shipped a bug where `show` rendered a null as 0.
+check "overlap: unmeasured (hash-less edit event) is null, not 0" "null" \
+  "$(jq -r '.totals.same_file_overlaps' "$OUT")"
+check "overlap: hash-less diagnostics name the missing count" "2" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events_missing_hash' "$OUT")"
+check "overlap: hash-less note explains why" "1" \
+  "$(jq -r '[.notes[]|select(startswith("same_file_overlaps=unmeasured") and contains("carry no file_hash"))]|length' "$OUT")"
+check "overlap: show renders unmeasured, not a bare 0" "1" \
+  "$(printf '%s\n' "$("$METRICS" show "$OUT" 2>/dev/null)" | grep -c '^same-file overlaps.*: unmeasured')"
+
+echo "== retire-unused-loop-modes T3: an event-less run reads unmeasured, not 0 =="
+# $OUT3 (the BARE repo above) has no .agents/metrics/events directory at all.
+check "overlap: unmeasured (no events) is null, not 0" "null" \
+  "$(jq -r '.totals.same_file_overlaps' "$OUT3")"
+check "overlap: event-less diagnostics are zeroed" "0" \
+  "$(jq -r '.totals.same_file_overlap_diagnostics.edit_events' "$OUT3")"
+check "overlap: event-less note explains why" "1" \
+  "$(jq -r '[.notes[]|select(startswith("same_file_overlaps=unmeasured") and contains("no events"))]|length' "$OUT3")"
+
+# --- packet-graph.yaml / wave map / by_lane are gone: metrics.sh must not depend on
+# scripts/packet-graph.sh (a later task deletes it). A stray packet-graph.yaml must
+# be silently ignored, not read.
+GONEREPO="$ROOT/gonerepo"; mkdir -p "$GONEREPO/.agents"; git -C "$GONEREPO" init -q
+echo 'waves:
+  - wave: 1
+    packets:
+      - id: x' > "$GONEREPO/.agents/packet-graph.yaml"
+GONEOUT="$ROOT/gonerun.json"
+"$METRICS" collect --main-root "$GONEREPO" --projects-dir "$ROOT/none" --out "$GONEOUT" >/dev/null 2>&1 \
+  || bad "packet-graph-ignored collect exits 0" "collect returned nonzero"
+check "packet-graph.yaml present but unread: no wave key anywhere" "0" \
+  "$(jq -r '[.. | objects | keys[]? | select(. == "wave")] | length' "$GONEOUT")"
+check "packet-graph.yaml present but unread: no by_lane key" "0" \
+  "$(jq -r '(.totals | has("by_lane")) | if . then 1 else 0 end' "$GONEOUT")"
+
+echo
+echo "== loop-measurement T4: packet rows come from records too, not just trailers =="
+# Two packets in ONE run: "never-committed" started and failed with no commit at all
+# (the collector must build a row for it from record-start/record-outcome alone), and
+# "paused-one" started AND got a commit trailer (a pause committing unfinished work)
+# but no terminal outcome — proving a trailer never implies green, and that a started
+# record-only packet and a trailer-carrying one can coexist and order correctly.
+# Fresh directory/session names (FC* = "failed, never-committed"): this repo's own
+# fixture directories are reused by earlier sections under NREPO/NOUT/IREPO/IOUT, and
+# reusing those paths here would additively pile these commits onto their git history.
+FCREPO="$ROOT/fc-repo"; mkdir -p "$FCREPO/.agents/metrics/events" "$FCREPO/.agents/metrics/outcomes"
+git -C "$FCREPO" init -q; git -C "$FCREPO" config user.email t@t; git -C "$FCREPO" config user.name t
+echo a > "$FCREPO/f.txt"; git -C "$FCREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:05Z" GIT_COMMITTER_DATE="2026-07-21T10:00:05Z" \
+  git -C "$FCREPO" commit -q -m "pause: unfinished work
+
+[orch packet:paused-one]"
+cat > "$FCREPO/.agents/metrics/events/FC1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"FC1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:06Z","session_id":"FC1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$FCREPO/.agents/metrics/outcomes/FC1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:02.000Z","packet":"never-committed","session":"FC1","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"never-committed","session":"FC1","outcome":"failed"}
+{"ts":"2026-07-21T10:00:04.000Z","packet":"paused-one","session":"FC1","kind":"start"}
+JSON
+FCOUT="$ROOT/fc-run.json"
+"$METRICS" collect --main-root "$FCREPO" --projects-dir "$ROOT/none" --out "$FCOUT" >/dev/null 2>&1
+check "T4: never-committed packet appears"   "1"      "$(jq -r '[.packets[]|select(.id=="never-committed")]|length' "$FCOUT")"
+check "T4: never-committed outcome=failed"   "failed" "$(jq -r '.packets[]|select(.id=="never-committed")|.outcome' "$FCOUT")"
+check "T4: paused-one packet appears (trailer)" "1"   "$(jq -r '[.packets[]|select(.id=="paused-one")]|length' "$FCOUT")"
+# the whole point: a pause commit's trailer must NOT read as green — it stays null,
+# same as any unattested packet.
+check "T4: paused commit trailer is not green" "null" "$(jq -r '.packets[]|select(.id=="paused-one")|.outcome' "$FCOUT")"
+check "T4: totals.packets counts both"       "2"      "$(jq -r '.totals.packets' "$FCOUT")"
+
+echo "== loop-measurement T4: an interruption swept by a LATER session is still joined =="
+# sweep-open writes the closing record into the SWEEPING session's own log file, but
+# copies ts/session VERBATIM from the start it closes. A collector that selects files
+# by NAME (the pre-T4 shape) would miss this, because the closing record physically
+# lives in a session (SW-B) this run never selects. Attribution must be by the
+# record's OWN session/ts fields, not by which file it is sitting in.
+SWREPO="$ROOT/sw-repo"; mkdir -p "$SWREPO/.agents/metrics/events" "$SWREPO/.agents/metrics/outcomes"
+git -C "$SWREPO" init -q; git -C "$SWREPO" config user.email t@t; git -C "$SWREPO" config user.name t
+cat > "$SWREPO/.agents/metrics/events/SW-A.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"SW-A","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"SW-A","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+# session SW-A's own start record...
+cat > "$SWREPO/.agents/metrics/outcomes/SW-A.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"int-one","session":"SW-A","kind":"start"}
+JSON
+# ...closed by a LATER session SW-B's sweep-open, into SW-B's OWN file, naming SW-A's start.
+cat > "$SWREPO/.agents/metrics/outcomes/SW-B.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"int-one","session":"SW-A","outcome":"interrupted"}
+JSON
+SWOUT="$ROOT/sw-run.json"
+"$METRICS" collect --main-root "$SWREPO" --projects-dir "$ROOT/none" --out "$SWOUT" >/dev/null 2>&1
+check "T4: interrupted record joined despite living in a foreign file" "interrupted" \
+  "$(jq -r '.packets[]|select(.id=="int-one")|.outcome' "$SWOUT")"
+check "T4: interrupted packet counted once"  "1" "$(jq -r '.totals.packets' "$SWOUT")"
+
+echo "== loop-measurement C1: a SWEPT packet's derived metrics are null, not a lying zero =="
+# sweep-open closes an open packet by copying the boundary's ts VERBATIM into the
+# terminal record (SW-B above closes int-one with the SAME ts SW-A's start carries:
+# 10:00:01.500Z on both sides). That collapses the packet's window to zero width, so
+# tool_calls/active_seconds/edits/etc must read null (unmeasured), never 0 (which
+# would read as "this packet genuinely did nothing" -- the opposite of true for a
+# packet the loop was mid-way through when its session died).
+check "C1: swept packet is flagged"           "true" "$(jq -r '.packets[]|select(.id=="int-one")|.swept' "$SWOUT")"
+check "C1: swept packet end is null"          "null" "$(jq -r '.packets[]|select(.id=="int-one")|.end' "$SWOUT")"
+check "C1: swept packet tool_calls is null, not 0"    "null" "$(jq -r '.packets[]|select(.id=="int-one")|.tool_calls' "$SWOUT")"
+check "C1: swept packet active_seconds is null, not 0" "null" "$(jq -r '.packets[]|select(.id=="int-one")|.active_seconds' "$SWOUT")"
+check "C1: swept packet edits is null"        "null" "$(jq -r '.packets[]|select(.id=="int-one")|.edits' "$SWOUT")"
+check "C1: swept packet dispatched is null"   "null" "$(jq -r '.packets[]|select(.id=="int-one")|.dispatched' "$SWOUT")"
+check "C1: swept packet tokens is null"       "null" "$(jq -r '.packets[]|select(.id=="int-one")|.tokens' "$SWOUT")"
+check "DPM T2: swept packet dispatches is null, not []" "null" "$(jq -c '.packets[]|select(.id=="int-one")|.dispatches' "$SWOUT")"
+check "C1: notes name the swept packet"       "1" \
+  "$(jq -r '[.notes[]|select(test("swept") and test("int-one"))]|length' "$SWOUT")"
+SWSHOW="$("$METRICS" show "$SWOUT" 2>/dev/null)"
+check "C1: show marks the swept packet"       "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'swept by a later session')"
+check "C1: show does not print a bare null for tool_calls" "0" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'int-one .*null calls')"
+
+# NEGATIVE case: a DIRECTLY recorded outcome (record-outcome, not sweep-open) with its
+# own distinct/later ts is NOT swept -- it must keep its real measured fields, proving
+# the detector keys on ts equality (the sweep signature), not on outcome value alone
+# (both "interrupted" and "abandoned" can also be written directly).
+DAREPO="$ROOT/da-repo"; mkdir -p "$DAREPO/.agents/metrics/events" "$DAREPO/.agents/metrics/outcomes"
+git -C "$DAREPO" init -q; git -C "$DAREPO" config user.email t@t; git -C "$DAREPO" config user.name t
+cat > "$DAREPO/.agents/metrics/events/DA1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DA1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DA1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$DAREPO/.agents/metrics/outcomes/DA1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"abandoned-direct","session":"DA1","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"abandoned-direct","session":"DA1","outcome":"abandoned"}
+JSON
+DAOUT="$ROOT/da-run.json"
+"$METRICS" collect --main-root "$DAREPO" --projects-dir "$ROOT/none" --out "$DAOUT" >/dev/null 2>&1
+check "C1: a directly-recorded (non-swept) abandoned is not flagged swept" "false" \
+  "$(jq -r '.packets[]|select(.id=="abandoned-direct")|.swept' "$DAOUT")"
+check "C1: its tool_calls stay measured, not nulled" "1" \
+  "$(jq -r '.packets[]|select(.id=="abandoned-direct")|.tool_calls' "$DAOUT")"
+
+echo "== packet-bundling T1: a commit with exactly ONE trailer is byte-identical to today =="
+# Baseline for the bundled case below: a single trailer, plus the tier/impl
+# routing trailers, on its own commit -- must read exactly as it did before the
+# trailer scan learned to accumulate ids[] instead of overwriting a scalar.
+PBSREPO="$ROOT/pbs-repo"; mkdir -p "$PBSREPO/.agents/metrics/events"
+git -C "$PBSREPO" init -q; git -C "$PBSREPO" config user.email t@t; git -C "$PBSREPO" config user.name t
+cat > "$PBSREPO/.agents/metrics/events/S1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"S1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"cmd_class":"git status"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"S1","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":20}
+JSON
+echo x >> "$PBSREPO/log.txt"; git -C "$PBSREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:03Z" GIT_COMMITTER_DATE="2026-07-21T10:00:03Z" \
+  git -C "$PBSREPO" commit -q -m "work
+
+[orch packet:solo-001]
+[orch tier:mechanical]
+[orch impl:inline]"
+PBSOUT="$ROOT/pbs-run.json"
+"$METRICS" collect --main-root "$PBSREPO" --projects-dir "$ROOT/none" --out "$PBSOUT" >/dev/null 2>&1
+check "PBS: exactly one packet row"           "1"          "$(jq -r '.packets|length' "$PBSOUT")"
+check "PBS: id"                               "solo-001"   "$(jq -r '.packets[0].id' "$PBSOUT")"
+check "PBS: tier"                             "mechanical" "$(jq -r '.packets[0].tier' "$PBSOUT")"
+check "PBS: impl"                             "inline"     "$(jq -r '.packets[0].impl' "$PBSOUT")"
+check "PBS: end is the commit's own author date" "2026-07-21T10:00:03Z" \
+  "$(jq -r '.packets[0].end' "$PBSOUT")"
+check "PBS: tool_calls stays measured (window (start,end])" "1" \
+  "$(jq -r '.packets[0].tool_calls' "$PBSOUT")"
+check "PBS: not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBSOUT")"
+check "PBS: not flagged swept"                "false" "$(jq -r '.packets[0].swept' "$PBSOUT")"
+
+echo "== packet-bundling T1: a commit with MULTIPLE [orch packet:] trailers emits one row per trailer =="
+# Same events/transcripts as the top-of-file single-trailer fixture (S1,
+# feat-001/feat-002 -- see "collect (full: ...)" above, whose totals are pinned
+# there: totals.tool_calls=5, totals.packets=2, tokens 540/270/300/2800,
+# duration_ms=150, unattributed_tool_calls=1), but landed as ONE commit
+# carrying BOTH trailers plus one shared [orch tier:]/[orch impl:] pair -- a
+# bundled landing of two tasks in one commit. Proves a bundled commit now
+# reads as N packet rows (message order), each labelled, with the derived
+# per-packet fields carried on the first and nulled (not zeroed) on every
+# sibling, while the RUN-LEVEL totals -- which sum over the whole event
+# window, not over packet rows -- are unaffected by how the work was split
+# into commits.
+PBREPO="$ROOT/pb-repo"; mkdir -p "$PBREPO/.agents/metrics/events"
+git -C "$PBREPO" init -q; git -C "$PBREPO" config user.email t@t; git -C "$PBREPO" config user.name t
+cp "$EV" "$PBREPO/.agents/metrics/events/S1.jsonl"
+echo bundled >> "$PBREPO/log.txt"; git -C "$PBREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:06Z" GIT_COMMITTER_DATE="2026-07-21T10:00:06Z" \
+  git -C "$PBREPO" commit -q -m "work
+
+[orch packet:feat-001]
+[orch packet:feat-002]
+[orch tier:integration]
+[orch impl:delegated]"
+PBOUT="$ROOT/pb-run.json"
+"$METRICS" collect --main-root "$PBREPO" --projects-dir "$PROJ" --out "$PBOUT" >/dev/null 2>&1
+check "PB: exactly one row per trailer"      "2" "$(jq -r '.packets|length' "$PBOUT")"
+check "PB: row order is message order"       "feat-001 feat-002" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$PBOUT")"
+check "PB: first row tier labelled"          "integration" "$(jq -r '.packets[0].tier' "$PBOUT")"
+check "PB: first row impl labelled"          "delegated"   "$(jq -r '.packets[0].impl' "$PBOUT")"
+check "PB: sibling row tier ALSO labelled"   "integration" "$(jq -r '.packets[1].tier' "$PBOUT")"
+check "PB: sibling row impl ALSO labelled"   "delegated"   "$(jq -r '.packets[1].impl' "$PBOUT")"
+check "PB: sibling end carries the commit's own author date, not null" \
+  "2026-07-21T10:00:06Z" "$(jq -r '.packets[1].end' "$PBOUT")"
+check "PB: first row's window is measured (real tool_calls)" "4" \
+  "$(jq -r '.packets[0].tool_calls' "$PBOUT")"
+check "PB: sibling tool_calls is null, not 0"     "null" "$(jq -r '.packets[1].tool_calls' "$PBOUT")"
+check "PB: sibling active_seconds is null, not 0" "null" "$(jq -r '.packets[1].active_seconds' "$PBOUT")"
+check "PB: sibling duration_ms is null, not 0"    "null" "$(jq -r '.packets[1].duration_ms' "$PBOUT")"
+check "PB: sibling by_agent is null"              "null" "$(jq -r '.packets[1].by_agent' "$PBOUT")"
+check "PB: sibling by_tool is null"               "null" "$(jq -r '.packets[1].by_tool' "$PBOUT")"
+check "PB: sibling edits is null"                 "null" "$(jq -r '.packets[1].edits' "$PBOUT")"
+check "PB: sibling by_command_class is null"      "null" "$(jq -r '.packets[1].by_command_class' "$PBOUT")"
+check "PB: sibling failed_tool_calls is null"     "null" "$(jq -r '.packets[1].failed_tool_calls' "$PBOUT")"
+check "PB: sibling human_interactions is null"    "null" "$(jq -r '.packets[1].human_interactions' "$PBOUT")"
+check "PB: sibling dispatched is null"            "null" "$(jq -r '.packets[1].dispatched' "$PBOUT")"
+check "PB: sibling tokens is null"                "null" "$(jq -r '.packets[1].tokens' "$PBOUT")"
+check "DPM T2: sibling dispatches is null, not []" "null" "$(jq -c '.packets[1].dispatches' "$PBOUT")"
+check "DPM T2: first bundle row dispatches is an array" "array" "$(jq -r '.packets[0].dispatches|type' "$PBOUT")"
+check "PB: sibling audit.orchestrator_impl_edits is null too" "null" \
+  "$(jq -r '.packets[1].audit.orchestrator_impl_edits' "$PBOUT")"
+check "PB: sibling carries the shared-boundary audit flag" "1" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBOUT")"
+check "PB: first row does NOT carry the shared-boundary flag" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PBOUT")"
+# This fixture carries impl:delegated -- a sibling's window is always zero-width
+# ($impl_dispatched derives from that window, so it reads false), which without
+# the null-scoped flag filter would falsely accuse every delegated sibling of
+# contradicting its own label. The label itself is not window-derived (it is the
+# commit's trailer), so it must not be flagged from an interval this row already
+# declares unmeasured.
+check "PB: sibling does NOT carry a false label-contradiction flag" "0" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(startswith("label-contradiction:"))]|length' "$PBOUT")"
+check "PB: sibling is not also flagged swept (a different unmeasured cause)" "false" \
+  "$(jq -r '.packets[1].swept' "$PBOUT")"
+check "PB: totals.packets matches the single-trailer fixture's"      "2"   "$(jq -r '.totals.packets' "$PBOUT")"
+check "PB: totals.tool_calls matches the single-trailer fixture's"   "5"   "$(jq -r '.totals.tool_calls' "$PBOUT")"
+check "PB: totals.tokens.input matches the single-trailer fixture's" "540" "$(jq -r '.totals.tokens.input' "$PBOUT")"
+check "PB: totals.tokens.output matches the single-trailer fixture's" "270" "$(jq -r '.totals.tokens.output' "$PBOUT")"
+check "PB: totals.tokens.cache_creation matches the single-trailer fixture's" "300" \
+  "$(jq -r '.totals.tokens.cache_creation' "$PBOUT")"
+check "PB: totals.tokens.cache_read matches the single-trailer fixture's" "2800" \
+  "$(jq -r '.totals.tokens.cache_read' "$PBOUT")"
+check "PB: totals.duration_ms matches the single-trailer fixture's"  "150" "$(jq -r '.totals.duration_ms' "$PBOUT")"
+check "PB: totals.unattributed_tool_calls matches the single-trailer fixture's" "1" \
+  "$(jq -r '.totals.unattributed_tool_calls' "$PBOUT")"
+
+echo "== packet-bundling T1: same-second single-trailer commits sort deterministically =="
+# Two UNRELATED single-trailer commits (both seq==1, so they tie on [end, seq])
+# landing in the same author-date second must not depend on the awk dedup's
+# hash-order iteration for their final order -- that is exactly the
+# byte-identical-for-a-single-trailer-commit guarantee this feature promises.
+# Landed id "same-sec-z" BEFORE "same-sec-a" so a hash-order regression would
+# be free to put z first; the .id tie-break must put a first regardless.
+TOREPO="$ROOT/to-repo"; mkdir -p "$TOREPO/.agents/metrics/events"
+git -C "$TOREPO" init -q; git -C "$TOREPO" config user.email t@t; git -C "$TOREPO" config user.name t
+# An events log is required to bound the trailer scan window (win_start/win_end):
+# with no events, collection falls back to `<integration_branch>..HEAD`, which is
+# empty here (this repo has only one branch), so the commits below would never be
+# seen at all.
+cat > "$TOREPO/.agents/metrics/events/S1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:08Z","session_id":"S1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":10,"cmd_class":"git status"}
+JSON
+echo z >> "$TOREPO/log.txt"; git -C "$TOREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$TOREPO" commit -q -m "work z
+
+[orch packet:same-sec-z]"
+echo a >> "$TOREPO/log.txt"; git -C "$TOREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:09Z" GIT_COMMITTER_DATE="2026-07-21T10:00:09Z" \
+  git -C "$TOREPO" commit -q -m "work a
+
+[orch packet:same-sec-a]"
+TOOUT="$ROOT/to-run.json"
+"$METRICS" collect --main-root "$TOREPO" --projects-dir "$ROOT/none" --out "$TOOUT" >/dev/null 2>&1
+check "TO: same-second single-trailer commits sort by id, not hash order" "same-sec-a same-sec-z" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$TOOUT")"
+check "TO: neither same-second row is flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[]|.audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$TOOUT")"
+
+echo "== packet-bundling T8: a bundle that did NOT land green nulls its later members =="
+# A rolled-back bundle has no commit and so no [orch packet:] trailers -- its three
+# members reach the collector ONLY through the record-only (recordjoin) join.
+# record-start/record-outcome write one line per member per call, in ONE call, cursor
+# id first (packet-bundling T3), all sharing one timestamp and one session -- so
+# before this fix every member got the fixed `seq: 1` the trailer-FIRST value uses,
+# which made $is_sibling false for members 2/3 too: they fell into the ordinary
+# per-packet branch, whose $start collapses to the row before it (identical shared
+# end), producing a REAL, honest-looking 0 for a window that never existed. The fix
+# groups record-only ids by (session, ts) of their winning terminal record and gives
+# each a seq ordinal from write order, so members 2/3 take the same null+flag path a
+# trailer sibling already gets.
+PB8REPO="$ROOT/pb8-repo"; mkdir -p "$PB8REPO/.agents/metrics/events" "$PB8REPO/.agents/metrics/outcomes"
+git -C "$PB8REPO" init -q; git -C "$PB8REPO" config user.email t@t; git -C "$PB8REPO" config user.name t
+cat > "$PB8REPO/.agents/metrics/events/BT8.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"BT8","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"BT8","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:03Z","session_id":"BT8","agent_id":"a1","agent_type":"implementer","tool":"Edit","duration_ms":10}
+JSON
+# One record-start call and one record-outcome call, each writing the whole bundle in
+# ONE go -- cursor id (bt8-a) first, then bt8-b, bt8-c -- all three lines per call
+# sharing a single timestamp and session, exactly as runstate.sh's `record-start`/
+# `record-outcome` write a bundle (packet-bundling T3).
+cat > "$PB8REPO/.agents/metrics/outcomes/BT8.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-a","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-b","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8-c","session":"BT8","kind":"start"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-a","session":"BT8","outcome":"rolled-back"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-b","session":"BT8","outcome":"rolled-back"}
+{"ts":"2026-07-21T10:00:06.000Z","packet":"bt8-c","session":"BT8","outcome":"rolled-back"}
+JSON
+PB8OUT="$ROOT/pb8-run.json"
+"$METRICS" collect --main-root "$PB8REPO" --projects-dir "$ROOT/none" --out "$PB8OUT" >/dev/null 2>&1
+check "PB8: three rows, no commit -- all record-only" "3" "$(jq -r '.packets|length' "$PB8OUT")"
+check "PB8: row order is write order, cursor first" "bt8-a bt8-b bt8-c" \
+  "$(jq -r '[.packets[].id]|join(" ")' "$PB8OUT")"
+check "PB8: every row shares the same outcome"      "rolled-back rolled-back rolled-back" \
+  "$(jq -r '[.packets[].outcome]|join(" ")' "$PB8OUT")"
+check "PB8: cursor row (seq 1) is measured, not nulled" "2" \
+  "$(jq -r '.packets[0].tool_calls' "$PB8OUT")"
+check "PB8: cursor row is not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: cursor row is not swept"                 "false" "$(jq -r '.packets[0].swept' "$PB8OUT")"
+check "PB8: sibling row 2 tool_calls is null, not 0" "null" "$(jq -r '.packets[1].tool_calls' "$PB8OUT")"
+check "PB8: sibling row 3 tool_calls is null, not 0" "null" "$(jq -r '.packets[2].tool_calls' "$PB8OUT")"
+check "PB8: sibling row 2 active_seconds is null, not 0" "null" "$(jq -r '.packets[1].active_seconds' "$PB8OUT")"
+check "PB8: sibling row 3 active_seconds is null, not 0" "null" "$(jq -r '.packets[2].active_seconds' "$PB8OUT")"
+check "PB8: sibling row 2 tokens is null"            "null" "$(jq -r '.packets[1].tokens' "$PB8OUT")"
+check "PB8: sibling row 3 tokens is null"            "null" "$(jq -r '.packets[2].tokens' "$PB8OUT")"
+check "PB8: sibling row 2 carries the shared-boundary flag" "1" \
+  "$(jq -r '[.packets[1].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: sibling row 3 carries the shared-boundary flag" "1" \
+  "$(jq -r '[.packets[2].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8OUT")"
+check "PB8: sibling row 2 is not ALSO flagged swept"  "false" "$(jq -r '.packets[1].swept' "$PB8OUT")"
+check "PB8: sibling row 3 is not ALSO flagged swept"  "false" "$(jq -r '.packets[2].swept' "$PB8OUT")"
+check "PB8: sibling row 2 end still carries its own outcome ts, not null" \
+  "2026-07-21T10:00:06.000Z" "$(jq -r '.packets[1].end' "$PB8OUT")"
+check "PB8: totals.packets counts all three rows"    "3" "$(jq -r '.totals.packets' "$PB8OUT")"
+
+echo "== packet-bundling T8: a LONE record-only packet (no sibling) is byte-identical to today =="
+# Same shape as above but n=1 -- must NOT be treated as a bundle: seq stays 1 (the
+# group-of-one case), so it is measured exactly like the never-committed/abandoned-
+# direct fixtures above and carries no shared-boundary flag.
+PB8LREPO="$ROOT/pb8l-repo"; mkdir -p "$PB8LREPO/.agents/metrics/events" "$PB8LREPO/.agents/metrics/outcomes"
+git -C "$PB8LREPO" init -q; git -C "$PB8LREPO" config user.email t@t; git -C "$PB8LREPO" config user.name t
+cat > "$PB8LREPO/.agents/metrics/events/BT8L.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"BT8L","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"BT8L","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$PB8LREPO/.agents/metrics/outcomes/BT8L.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.500Z","packet":"bt8l-only","session":"BT8L","kind":"start"}
+{"ts":"2026-07-21T10:00:03.000Z","packet":"bt8l-only","session":"BT8L","outcome":"failed"}
+JSON
+PB8LOUT="$ROOT/pb8l-run.json"
+"$METRICS" collect --main-root "$PB8LREPO" --projects-dir "$ROOT/none" --out "$PB8LOUT" >/dev/null 2>&1
+check "PB8L: one row"                       "1"      "$(jq -r '.packets|length' "$PB8LOUT")"
+check "PB8L: outcome"                       "failed" "$(jq -r '.packets[0].outcome' "$PB8LOUT")"
+check "PB8L: measured, not nulled"          "1"      "$(jq -r '.packets[0].tool_calls' "$PB8LOUT")"
+check "PB8L: not flagged as a shared boundary" "0" \
+  "$(jq -r '[.packets[0].audit.flags[]|select(.=="unmeasured:shared-packet-boundary")]|length' "$PB8LOUT")"
+check "PB8L: not swept"                     "false"  "$(jq -r '.packets[0].swept' "$PB8LOUT")"
+
+echo "== loop-measurement M1: one malformed ts anywhere does not zero every outcome =="
+# ts_ms runs unconditionally over EVERY record in the outcomes log before any
+# window filter narrows it; fromdateiso8601 THROWS on an unparseable value, and
+# the caller-side `2>/dev/null || echo [] ` fallback used to turn that one bad
+# record into an empty attributed.json for the WHOLE run -- every packet's
+# outcome and record_end disappearing, not just the bad one's.
+M1REPO="$ROOT/m1-repo"; mkdir -p "$M1REPO/.agents/metrics/events" "$M1REPO/.agents/metrics/outcomes"
+git -C "$M1REPO" init -q; git -C "$M1REPO" config user.email t@t; git -C "$M1REPO" config user.name t
+cat > "$M1REPO/.agents/metrics/events/M1S.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"M1S","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$M1REPO/.agents/metrics/outcomes/M1S.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.100Z","packet":"good-one","session":"M1S","kind":"start"}
+{"ts":"2026-07-21T10:00:01.500Z","packet":"good-one","session":"M1S","outcome":"green"}
+{"ts":"garbage","packet":"bad-one","session":"M1S","kind":"start"}
+JSON
+M1OUT="$ROOT/m1-run.json"
+"$METRICS" collect --main-root "$M1REPO" --projects-dir "$ROOT/none" --out "$M1OUT" >/dev/null 2>&1
+check "M1: collect exits 0 despite a malformed ts elsewhere in the log" "0" "$?"
+check "M1: the unrelated packet's outcome survives the bad record" "green" \
+  "$(jq -r '.packets[]|select(.id=="good-one")|.outcome' "$M1OUT")"
+
+echo "== loop-measurement I1: packet windows compare by PARSED time, not string, at the event/turn join =="
+# The bug this pins: a record-only packet's sub-second end ("...:05.500Z") sorts BELOW
+# a whole-second event landing in the SAME second ("...:05Z") as a raw string, because
+# "." (0x2E) < "Z" (0x5A) -- so the old `.ts > $start and .ts <= $p.end` string compare
+# excluded a same-second event from the packet it belongs to and shifted it into the
+# NEXT packet's window instead. p1-record ends sub-second (05.500Z, record-only, no
+# trailer); p2-trailer ends whole-second (08Z, trailer commit). Events land at :01
+# (before either window), :05 (same second as p1-record's end -- belongs to p1-record),
+# :07 (belongs to p2-trailer) and :09 (after p2-trailer's end -- unattributed).
+WIREPO="$ROOT/wi-repo"; mkdir -p "$WIREPO/.agents/metrics/events" "$WIREPO/.agents/metrics/outcomes"
+git -C "$WIREPO" init -q; git -C "$WIREPO" config user.email t@t; git -C "$WIREPO" config user.name t
+echo a > "$WIREPO/f.txt"; git -C "$WIREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:08Z" GIT_COMMITTER_DATE="2026-07-21T10:00:08Z" \
+  git -C "$WIREPO" commit -q -m "packet: p2-trailer
+
+[orch packet:p2-trailer]"
+cat > "$WIREPO/.agents/metrics/events/WI1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:05Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:07Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:09Z","session_id":"WI1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$WIREPO/.agents/metrics/outcomes/WI1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.100Z","packet":"p1-record","session":"WI1","kind":"start"}
+{"ts":"2026-07-21T10:00:05.500Z","packet":"p1-record","session":"WI1","outcome":"green"}
+JSON
+WIOUT="$ROOT/wi-run.json"
+"$METRICS" collect --main-root "$WIREPO" --projects-dir "$ROOT/none" --out "$WIOUT" >/dev/null 2>&1
+check "I1: same-second event lands in the record-only packet it belongs to" "1" \
+  "$(jq -r '.packets[]|select(.id=="p1-record")|.tool_calls' "$WIOUT")"
+check "I1: same-second event does NOT also leak into the next packet" "1" \
+  "$(jq -r '.packets[]|select(.id=="p2-trailer")|.tool_calls' "$WIOUT")"
+
+echo "== loop-measurement T4: same-second records compare by PARSED time, not string =="
+# The bug this regression pins directly: "...:01.500Z" (a T1-shaped sub-second stamp)
+# sorts BELOW "...:01Z" (win_start, always whole-second) as a raw string, because "."
+# (0x2E) sorts before "Z" (0x5A) — so a record landing in the SAME wall-clock second
+# as win_start, logically at-or-after it, was silently dropped by a string compare
+# (`(.ts // "") >= $ws`). win_start here is exactly "...:01Z" (the first event's ts)
+# and the boundary/terminal records both land at "...:01.5xxZ"/"...:01.9xxZ" — the
+# same second, sub-second. Under the pre-T4 string compare this run reports outcome
+# `null` (both records dropped); with parsed-time comparison it reports `green`.
+SSREPO="$ROOT/ss-repo"; mkdir -p "$SSREPO/.agents/metrics/events" "$SSREPO/.agents/metrics/outcomes"
+git -C "$SSREPO" init -q; git -C "$SSREPO" config user.email t@t; git -C "$SSREPO" config user.name t
+cat > "$SSREPO/.agents/metrics/events/SS1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"SS1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+{"ts":"2026-07-21T10:00:02Z","session_id":"SS1","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":5,"ok":true}
+JSON
+cat > "$SSREPO/.agents/metrics/outcomes/SS1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.500Z","packet":"same-second","session":"SS1","kind":"start"}
+{"ts":"2026-07-21T10:00:01.900Z","packet":"same-second","session":"SS1","outcome":"green"}
+JSON
+SSOUT="$ROOT/ss-run.json"
+"$METRICS" collect --main-root "$SSREPO" --projects-dir "$ROOT/none" --out "$SSOUT" >/dev/null 2>&1
+check "T4: same-second sub-second record is not dropped" "1" \
+  "$(jq -r '[.packets[]|select(.id=="same-second")]|length' "$SSOUT")"
+check "T4: same-second record's outcome is joined" "green" \
+  "$(jq -r '.packets[]|select(.id=="same-second")|.outcome' "$SSOUT")"
+
+echo "== loop-measurement T5: outcome_counts, started_without_outcome, outcome_coverage =="
+# never-committed(failed) + paused-one(no outcome, open): failed tallied once,
+# started_without_outcome=1 (paused-one), coverage=incomplete (NOT unmeasured — this
+# run DOES carry record-start boundaries, it just has one still open).
+check "T5: outcome_counts.failed"          "1"          "$(jq -r '.totals.outcome_counts.failed' "$FCOUT")"
+check "T5: started_without_outcome"        "1"          "$(jq -r '.totals.started_without_outcome' "$FCOUT")"
+check "T5: outcome_coverage=incomplete"    "incomplete" "$(jq -r '.totals.outcome_coverage' "$FCOUT")"
+# int-one has both a start AND a terminal record -> fully covered. "complete" must
+# NOT be read as "all green" — its only outcome is "interrupted".
+check "T5: outcome_coverage=complete when every started packet is closed" "complete" \
+  "$(jq -r '.totals.outcome_coverage' "$SWOUT")"
+check "T5: started_without_outcome=0 when every started packet is closed" "0" \
+  "$(jq -r '.totals.started_without_outcome' "$SWOUT")"
+# a pre-feature run (no record-start boundary anywhere) must read UNMEASURED, never
+# "complete" (which would silently claim 0 open packets) and never "incomplete"
+# (which would silently claim every trailer packet is a known failure).
+check "T5: pre-feature run reads outcome_coverage=unmeasured" "unmeasured" \
+  "$(jq -r '.totals.outcome_coverage' "$OUT")"
+# the replaced notes[] line must no longer claim failed/uncommitted packets are absent
+check "T5: notes no longer claim uncommitted packets are absent" "0" \
+  "$(jq -r '[.notes[]|select(test("failed/uncommitted packets do not appear"))]|length' "$FCOUT")"
+check "T5: notes mention outcome_coverage" "1" \
+  "$(jq -r '[.notes[]|select(test("outcome_coverage"))]|length' "$FCOUT")"
+
+echo "== loop-measurement T6: show labels never render an unmeasured/incomplete run as clean =="
+FCSHOW="$("$METRICS" show "$FCOUT" 2>/dev/null)"
+check "T6: show renders incomplete coverage" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c '^outcome coverage: incomplete')"
+check "T6: show names the open-packet count" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c 'outcome coverage: incomplete — 1 started packet')"
+check "T6: show renders by-outcome breakdown" "1" \
+  "$(printf '%s\n' "$FCSHOW" | grep -c '^  failed: 1')"
+
+SWSHOW="$("$METRICS" show "$SWOUT" 2>/dev/null)"
+check "T6: show renders complete coverage, not as all-green" "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c '^outcome coverage: complete')"
+check "T6: show complete label does not claim green" "1" \
+  "$(printf '%s\n' "$SWSHOW" | grep -c 'not all necessarily green')"
+
+LEGSHOW="$("$METRICS" show "$OUT" 2>/dev/null)"
+check "T6: a pre-feature run renders unmeasured, never as clean" "1" \
+  "$(printf '%s\n' "$LEGSHOW" | grep -c '^outcome coverage: unmeasured')"
+check "T6: unmeasured label never says complete or incomplete" "0" \
+  "$(printf '%s\n' "$LEGSHOW" | grep -cE '^outcome coverage: (complete|incomplete)')"
 
 echo
 echo "== self_host: marker present only when driving THIS repo, never touches other fields =="
@@ -1205,6 +1948,905 @@ HSBROKENOUT="$ROOT/hs-broken-submodule.json"
   --projects-dir "$ROOT/none" --out "$HSBROKENOUT" >/dev/null 2>&1 )
 check "self_host: non-git --main-root under a real plugin root -> false" "false" \
   "$(jq -r '.self_host' "$HSBROKENOUT" 2>/dev/null)"
+
+echo "== thin-loop-driver T20: main-session-edits success metric (agents_dir/driver_mode) =="
+# --- hook: agents_dir/driver_mode are stamped only for Edit/Write/MultiEdit/NotebookEdit,
+# from a REAL main checkout so the driver-mode marker file can be resolved (the
+# ORCH_METRICS_DIR fast-path other hook tests use has no main checkout to check against,
+# so this exercises the hook the way a live session would: cd into the repo, no override).
+DMREPO="$ROOT/dm-hookrepo"; mkdir -p "$DMREPO/.agents/driver-mode" "$DMREPO/.agents/metrics/events"
+git -C "$DMREPO" init -q
+touch "$DMREPO/.agents/driver-mode/DMSESS"
+dmhook() { # dmhook <payload>
+  ( cd "$DMREPO" && printf '%s' "$1" | "$HOOK" >/dev/null 2>&1 )
+}
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/foo.cs"},"tool_response":{"filePath":"src/foo.cs"}}'
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":".agents/run-state.yaml"},"tool_response":{"filePath":".agents/run-state.yaml"}}'
+dmhook '{"session_id":"DMSESS","tool_name":"Edit","agent_id":"i1","agent_type":"implementer","tool_input":{"file_path":"src/bar.cs"},"tool_response":{"filePath":"src/bar.cs"}}'
+DML="$DMREPO/.agents/metrics/events/DMSESS.jsonl"
+check "hook: agents_dir=false outside .agents/" "false" \
+  "$(jq -r 'select(.file_hash=="c3f180a9db6f").agents_dir' "$DML" 2>/dev/null)"
+check "hook: agents_dir=true under .agents/" "true" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][1].agents_dir' "$DML" 2>/dev/null)"
+check "hook: driver_mode=true, marked session + no agent_id" "true" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][0].driver_mode' "$DML" 2>/dev/null)"
+check "hook: driver_mode=false when agent_id is present" "false" \
+  "$(jq -rs '[.[]|select(.tool=="Edit")][2].driver_mode' "$DML" 2>/dev/null)"
+# a session with NO mark, but a resolvable main checkout -> driver_mode is a definite
+# `false` (present, not omitted): the mark's absence IS knowable here, so reporting
+# it is a real claim, not an unmeasured gap. `jq -r '.driver_mode // "null"'` would
+# read this the SAME as a genuinely absent key (jq's `//` treats `false` as falsy
+# too) -- caught by mutation-testing this very case -- so the check below asserts
+# presence and value separately instead.
+mkdir -p "$ROOT/dm-unmarked/.agents/metrics/events"; git -C "$ROOT/dm-unmarked" init -q
+( cd "$ROOT/dm-unmarked" && printf '%s' '{"session_id":"NOMARK","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/x.cs"}}' | "$HOOK" >/dev/null 2>&1 )
+NOMARKLINE="$ROOT/dm-unmarked/.agents/metrics/events/NOMARK.jsonl"
+check "hook: driver_mode key present for an unmarked (but resolvable) session" "true" \
+  "$(jq -r 'has("driver_mode")' "$NOMARKLINE" 2>/dev/null)"
+check "hook: driver_mode=false for an unmarked (but resolvable) session" "false" \
+  "$(jq -r '.driver_mode' "$NOMARKLINE" 2>/dev/null)"
+# main_root genuinely UNRESOLVABLE (the ORCH_METRICS_DIR fast-path other hook tests use
+# has no main checkout to check the mark against) -> driver_mode is OMITTED, not a
+# guessed false -- an unknown must never be stamped as a definite non-leak.
+DMNOROOT="$ROOT/dm-noroot-events"; mkdir -p "$DMNOROOT"
+printf '%s' '{"session_id":"NOROOT","tool_name":"Edit","agent_id":"","agent_type":"main","tool_input":{"file_path":"src/y.cs"}}' \
+  | ORCH_METRICS_DIR="$DMNOROOT" "$HOOK" >/dev/null 2>&1
+check "hook: driver_mode omitted when main_root cannot be resolved" "false" \
+  "$(jq -r 'has("driver_mode")' "$DMNOROOT/NOROOT.jsonl" 2>/dev/null)"
+check "hook: agents_dir still stamped when main_root cannot be resolved" "false" \
+  "$(jq -r '.agents_dir' "$DMNOROOT/NOROOT.jsonl" 2>/dev/null)"
+
+# --- collect: the count itself, and the four discriminators a wrong implementation
+# would blur (driver_mode, agents_dir, ok, and whether the metric is even scoped to
+# edit-type tools) -- one run carrying all four shapes at once so a filter dropped
+# from ANY of them changes the count, not just one isolated case.
+#  1. leak (Edit):        driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  2. .agents/ edit:      driver_mode=true,  ok=true,  agents_dir=true  -> excluded (agents_dir)
+#  3. subagent edit:      driver_mode=false, ok=true,  agents_dir=false -> excluded (driver_mode)
+#  4. failed leak:        driver_mode=true,  ok=false, agents_dir=false -> excluded (ok)
+#  5. leak (Write):       driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  6. leak (MultiEdit):   driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+#  7. leak (NotebookEdit):driver_mode=true,  ok=true,  agents_dir=false -> COUNTS
+# 5-7 pin the metric to the FULL registered write surface: a filter that quietly
+# narrowed $edit_events to "Edit" only (a plausible one-tool oversight, the same
+# under-count guard.sh's own history warns about for MultiEdit) passes 1-4 unchanged
+# but silently drops these three leaks and their diagnostics contribution.
+DMEREPO="$ROOT/dme-mixed"; mkdir -p "$DMEREPO/.agents/metrics/events"; git -C "$DMEREPO" init -q
+cat > "$DMEREPO/.agents/metrics/events/DME1.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"aaaaaaaaaaaa"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":true,"driver_mode":true,"file_hash":"bbbbbbbbbbbb"}
+{"ts":"2026-07-21T10:00:03Z","session_id":"DME1","agent_id":"i1","agent_type":"implementer","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":false,"file_hash":"cccccccccccc"}
+{"ts":"2026-07-21T10:00:04Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Edit","ok":false,"agents_dir":false,"driver_mode":true,"file_hash":"dddddddddddd"}
+{"ts":"2026-07-21T10:00:05Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"Write","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:06Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"MultiEdit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"ffffffffffff"}
+{"ts":"2026-07-21T10:00:07Z","session_id":"DME1","agent_id":"","agent_type":"main","tool":"NotebookEdit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"111111111111"}
+JSON
+DMEOUT="$ROOT/dme-mixed.json"
+"$METRICS" collect --main-root "$DMEREPO" --projects-dir "$ROOT/none" --out "$DMEOUT" >/dev/null 2>&1
+check "collect: leaks counted across all 4 write tools, others excluded" "4" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMEOUT")"
+check "collect: diagnostics edit_events=7"                            "7" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMEOUT")"
+check "collect: diagnostics edit_events_missing_agents_dir=0 (all tagged)" "0" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir' "$DMEOUT")"
+check "show: renders the measured count" "main-session edits outside .agents/ in driver mode: 4" \
+  "$("$METRICS" show "$DMEOUT" | grep -F 'main-session edits outside .agents/')"
+
+# --- pre-feature event: one edit event predating this feature (no agents_dir/driver_mode
+# at all) taints the WHOLE run to null, even though a second, fully-tagged event in the
+# same run would otherwise have counted a leak. Absence of the field, not absence of a
+# match, is what must force unmeasured.
+DMPREREPO="$ROOT/dme-prefeature"; mkdir -p "$DMPREREPO/.agents/metrics/events"; git -C "$DMPREREPO" init -q
+cat > "$DMPREREPO/.agents/metrics/events/DME2.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01Z","session_id":"DME2","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"file_hash":"eeeeeeeeeeee"}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DME2","agent_id":"","agent_type":"main","tool":"Edit","ok":true,"agents_dir":false,"driver_mode":true,"file_hash":"ffffffffffff"}
+JSON
+DMPREOUT="$ROOT/dme-prefeature.json"
+"$METRICS" collect --main-root "$DMPREREPO" --projects-dir "$ROOT/none" --out "$DMPREOUT" >/dev/null 2>&1
+check "collect: pre-feature edit event forces null (not the 1 it would otherwise read)" "null" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMPREOUT")"
+check "collect: diagnostics edit_events=2 despite null count" "2" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMPREOUT")"
+check "collect: diagnostics names the 1 missing-agents_dir event" "1" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events_missing_agents_dir' "$DMPREOUT")"
+check "show: pre-feature run renders unmeasured, not a lying 0 or 1" \
+  "main-session edits outside .agents/ in driver mode: unmeasured (2 edit event(s), 1 missing agents_dir)" \
+  "$("$METRICS" show "$DMPREOUT" | grep -F 'main-session edits outside .agents/')"
+
+# --- event-less run: no event records at all -> null, distinct from "no edit-type events"
+# (a run with only Bash events and zero edits is measured 0, a real claim -- only the
+# literal absence of ANY event must read as unmeasured).
+DMEMPTYREPO="$ROOT/dme-eventless"; mkdir -p "$DMEMPTYREPO"; git -C "$DMEMPTYREPO" init -q
+DMEMPTYOUT="$ROOT/dme-eventless.json"
+"$METRICS" collect --main-root "$DMEMPTYREPO" --projects-dir "$ROOT/none" --out "$DMEMPTYOUT" >/dev/null 2>&1
+check "collect: event-less run -> null" "null" \
+  "$(jq -r '.totals.driver_mode_edits_outside_agents' "$DMEMPTYOUT")"
+check "collect: event-less run diagnostics edit_events=0" "0" \
+  "$(jq -r '.totals.driver_mode_edit_diagnostics.edit_events' "$DMEMPTYOUT")"
+
+echo "== thin-loop-driver T21: main-session-context success metric (driver-mode enter/exit windows) =="
+# --- shared fixture builder: one session with one enter/exit driver-mode window,
+# one main-thread transcript turn (or two), and matching events so win_start/win_end
+# resolve. `dmc_repo <name> <threshold>` sets up the repo/events/driver-mode log;
+# the caller then drops turns into <name>/proj/<sid>.jsonl before collecting.
+dmc_repo() { # dmc_repo <dirname> <sid> <threshold>
+  local dir="$ROOT/$1" sid="$2" thr="$3"
+  mkdir -p "$dir/.agents/metrics/events" "$dir/.agents/metrics/driver-mode"
+  git -C "$dir" init -q
+  cat > "$dir/.agents/metrics/events/$sid.jsonl" <<EVJSON
+{"ts":"2026-07-22T10:00:00Z","session_id":"$sid","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-22T10:00:10Z","session_id":"$sid","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+EVJSON
+  cat > "$dir/.agents/metrics/driver-mode/$sid.jsonl" <<DMJSON
+{"ts":"2026-07-22T10:00:00Z","session":"$sid","kind":"enter","model":"claude-opus-5","effort":"high","threshold":"$thr"}
+{"ts":"2026-07-22T10:00:10Z","session":"$sid","kind":"exit"}
+DMJSON
+}
+
+# --- case 1: a turn UNDER a stated threshold. Two turns (3000, 4000) discriminate
+# MAX from a plausible SUM bug (7000 != 4000) -- the field is "the LARGEST turn
+# context", not a total, so a wrong implementation that reused this file's own
+# sumtok() pattern would read a different, wrong number here, not merely a
+# differently-labelled one.
+dmc_repo "dmc-under" "DCU1" "10000"
+mkdir -p "$ROOT/dmc-under-proj/proj"
+cat > "$ROOT/dmc-under-proj/proj/DCU1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"u1","model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":1000}}}
+{"type":"assistant","timestamp":"2026-07-22T10:00:04Z","message":{"id":"u2","model":"claude-opus-5","usage":{"input_tokens":1500,"output_tokens":10,"cache_creation_input_tokens":1500,"cache_read_input_tokens":1000}}}
+JSON
+DCUOUT="$ROOT/dmc-under.json"
+"$METRICS" collect --main-root "$ROOT/dmc-under" --projects-dir "$ROOT/dmc-under-proj" --out "$DCUOUT" >/dev/null 2>&1
+check "collect: under threshold -- max_context is the MAX turn (4000), not the sum (7000)" "4000" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCUOUT")"
+check "collect: under threshold -- threshold reported beside it" "10000" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCUOUT")"
+check "collect: under threshold -- diagnostics windows=1" "1" \
+  "$(jq -r '.totals.driver_mode_context_diagnostics.windows' "$DCUOUT")"
+check "collect: under threshold -- diagnostics turns_in_window=2" "2" \
+  "$(jq -r '.totals.driver_mode_context_diagnostics.turns_in_window' "$DCUOUT")"
+check "show: renders under threshold, no OVER flag" "main-session context (driver mode): 4000 tokens vs threshold 10000  under threshold" \
+  "$("$METRICS" show "$DCUOUT" | grep -F 'main-session context')"
+
+# --- case 2: a turn OVER a stated threshold. input=100, cache_creation=200,
+# cache_read=800, output=9999 -- correct context (in+ccC+ccR=1100) is OVER the
+# threshold (500); a plausible bug that forgets cache_read (100+200=300) reads
+# UNDER instead, flipping the very relationship this case exists to prove. output
+# is excluded on purpose (huge here, at 9999) -- a bug that summed output in would
+# also read "over" but at the wrong number, so the exact value is what is checked.
+dmc_repo "dmc-over" "DCO1" "500"
+mkdir -p "$ROOT/dmc-over-proj/proj"
+cat > "$ROOT/dmc-over-proj/proj/DCO1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"o1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":9999,"cache_creation_input_tokens":200,"cache_read_input_tokens":800}}}
+JSON
+DCOOUT="$ROOT/dmc-over.json"
+"$METRICS" collect --main-root "$ROOT/dmc-over" --projects-dir "$ROOT/dmc-over-proj" --out "$DCOOUT" >/dev/null 2>&1
+check "collect: over threshold -- max_context excludes output, includes cache_read (1100)" "1100" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCOOUT")"
+check "collect: over threshold -- threshold reported beside it" "500" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCOOUT")"
+check "show: renders the OVER threshold flag" "main-session context (driver mode): 1100 tokens vs threshold 500  ⚠ OVER threshold" \
+  "$("$METRICS" show "$DCOOUT" | grep -F 'main-session context')"
+
+# --- case 3: NO threshold stated (enter recorded "unknown", the literal default
+# `compact-threshold`/cmd_driver_mode_enter write when neither repo nor operator
+# has one set -- thin-loop-driver T6 removed the invented gaffer-default constant
+# that used to fill this gap). A plausible bug invents a number here instead of
+# null -- both fields must read null together (PRD: "a run lacking usage data or
+# a stated threshold reports unmeasured"), even though real usage data (a
+# 50000-token turn) exists for this window. scripts/metrics.sh needed no edit for
+# T6 -- it already nulls a non-numeric threshold and forces max_context null with
+# it -- so this case pins that third consumer's behaviour rather than assuming it.
+dmc_repo "dmc-none" "DCN1" "unknown"
+mkdir -p "$ROOT/dmc-none-proj/proj"
+cat > "$ROOT/dmc-none-proj/proj/DCN1.jsonl" <<'JSON'
+{"type":"assistant","timestamp":"2026-07-22T10:00:02Z","message":{"id":"n1","model":"claude-opus-5","usage":{"input_tokens":10000,"output_tokens":10,"cache_creation_input_tokens":20000,"cache_read_input_tokens":20000}}}
+JSON
+DCNOUT="$ROOT/dmc-none.json"
+"$METRICS" collect --main-root "$ROOT/dmc-none" --projects-dir "$ROOT/dmc-none-proj" --out "$DCNOUT" >/dev/null 2>&1
+check "collect: no threshold stated -- threshold is null, no invented number" "null" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCNOUT")"
+check "collect: no threshold stated -- max_context is null too, despite real usage data" "null" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCNOUT")"
+check "collect: no threshold stated -- diagnostics still show the window and turn were seen" "1 1" \
+  "$(jq -r '"\(.totals.driver_mode_context_diagnostics.windows) \(.totals.driver_mode_context_diagnostics.turns_in_window)"' "$DCNOUT")"
+check "show: renders unmeasured, not a lying number" \
+  "main-session context (driver mode): unmeasured — no compaction threshold was set here, not a quantity that cannot be measured; the settings key autoCompactWindow supplies one (1 window(s), 1 turn(s))" \
+  "$("$METRICS" show "$DCNOUT" | grep -F 'main-session context')"
+# driver-context-window-default T2: the unmeasured line names the settings key
+# that would supply a threshold, and carries NO number other than the two
+# diagnostics counts -- a remedy clause suggesting a value (e.g. "set
+# autoCompactWindow to 200000") would reinstate in prose the invented default
+# thin-loop-driver T6 removed. Strip the "(N window(s), M turn(s))" tail and
+# require no digit to remain.
+DCN_LINE="$("$METRICS" show "$DCNOUT" | grep -F 'main-session context')"
+check "show: null-threshold line names the settings key autoCompactWindow" "yes" \
+  "$([[ "$DCN_LINE" == *autoCompactWindow* ]] && echo yes || echo no)"
+check "show: null-threshold line carries no number but the two diagnostics counts" "none" \
+  "$(printf '%s' "$DCN_LINE" | sed -E 's/\([0-9]+ window\(s\), [0-9]+ turn\(s\)\)$//' | grep -oE '[0-9]+' | tr '\n' ' ' | sed 's/ $//' | grep . || echo none)"
+
+# --- case 4: a threshold IS stated but no main-thread turn with usage data falls
+# inside the window (no transcript at all here). This is the state the two-fields-
+# null-together phrasing in SKILL.md/metrics.sh wrongly claimed was impossible --
+# threshold and max_context are null INDEPENDENTLY, and a stated threshold must
+# survive on its own when only usage is missing (never fall back to null-both, and
+# never invent a 0 for max_context).
+dmc_repo "dmc-nousage" "DCX1" "10000"
+mkdir -p "$ROOT/dmc-nousage-proj/proj"
+DCXOUT="$ROOT/dmc-nousage.json"
+"$METRICS" collect --main-root "$ROOT/dmc-nousage" --projects-dir "$ROOT/dmc-nousage-proj" --out "$DCXOUT" >/dev/null 2>&1
+check "collect: threshold stated, no usage -- threshold survives on its own" "10000" \
+  "$(jq -r '.totals.driver_mode_context.threshold' "$DCXOUT")"
+check "collect: threshold stated, no usage -- max_context is null, not 0" "null" \
+  "$(jq -r '.totals.driver_mode_context.max_context' "$DCXOUT")"
+check "collect: threshold stated, no usage -- diagnostics show the window, zero turns" "1 0" \
+  "$(jq -r '"\(.totals.driver_mode_context_diagnostics.windows) \(.totals.driver_mode_context_diagnostics.turns_in_window)"' "$DCXOUT")"
+check "show: renders unmeasured for missing usage, names the stated threshold" \
+  "main-session context (driver mode): unmeasured — no main-thread usage data in 1 window(s) (threshold 10000)" \
+  "$("$METRICS" show "$DCXOUT" | grep -F 'main-session context')"
+
+echo "== dispatch-progress-metrics T2: packets[].dispatches[] -- one row per implementer dispatch =="
+# Events are in REAL PostToolUse order: a subagent own tool calls are logged as they
+# return, and the main thread Agent event is logged only when the dispatch itself
+# returns, so it comes AFTER every event of the subagent it dispatched. The dispatch
+# span is back-dated from the Agent event: [ts - duration_ms, ts], each bound widened
+# by 1 s, inclusive. One packet (dp-001) holds five implementer dispatches and one
+# reviewer dispatch (not a row):
+#   d1  i1 (:02-:04)      Agent :05 dur 4000 -> span [:00,:06]      -> 3 calls, 60 ms, 2 edits
+#   d2  i2 (:07-:08)      Agent :09 dur 2500 -> span [:05.5,:10]    -> 2 calls, 10 ms, 1 edit
+#   d3  none              Agent :20 dur 1000 -> span [:18,:21]      -> unresolved (null)
+#       ...though two main-thread events with agent_type and NO agent_id sit at :19/:20
+#   d4  i4 (:23)          Agent :24 NO duration_ms                  -> unresolved (null)
+#   d5  i5a (:31,:33) and i5b (:32) both first-seen in span [:28,:35] -> the earliest, i5a
+DPREPO="$ROOT/dp-repo"; mkdir -p "$DPREPO/.agents/metrics/events"
+git -C "$DPREPO" init -q; git -C "$DPREPO" config user.email t@t; git -C "$DPREPO" config user.name t
+echo dp > "$DPREPO/log.txt"; git -C "$DPREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$DPREPO" commit -q -m "work
+
+[orch packet:dp-001]"
+cat > "$DPREPO/.agents/metrics/events/DP.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":10}
+{"ts":"2026-07-21T10:00:03Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Write","duration_ms":20}
+{"ts":"2026-07-21T10:00:04Z","session_id":"DP","agent_id":"i1","agent_type":"gaffer:implementer","tool":"Bash","duration_ms":30}
+{"ts":"2026-07-21T10:00:05Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":4000}
+{"ts":"2026-07-21T10:00:07Z","session_id":"DP","agent_id":"i2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":5}
+{"ts":"2026-07-21T10:00:08Z","session_id":"DP","agent_id":"i2","agent_type":"gaffer:implementer","tool":"Read","duration_ms":5}
+{"ts":"2026-07-21T10:00:09Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":2500}
+{"ts":"2026-07-21T10:00:11Z","session_id":"DP","agent_id":"r1","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":9}
+{"ts":"2026-07-21T10:00:12Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":2000}
+{"ts":"2026-07-21T10:00:19Z","session_id":"DP","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":11}
+{"ts":"2026-07-21T10:00:20Z","session_id":"DP","agent_id":"","agent_type":"gaffer:loop-driver","tool":"Write","duration_ms":12}
+{"ts":"2026-07-21T10:00:20Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}
+{"ts":"2026-07-21T10:00:23Z","session_id":"DP","agent_id":"i4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":7}
+{"ts":"2026-07-21T10:00:24Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer"}
+{"ts":"2026-07-21T10:00:31Z","session_id":"DP","agent_id":"i5a","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":3}
+{"ts":"2026-07-21T10:00:32Z","session_id":"DP","agent_id":"i5b","agent_type":"gaffer:implementer","tool":"Write","duration_ms":100}
+{"ts":"2026-07-21T10:00:33Z","session_id":"DP","agent_id":"i5a","agent_type":"gaffer:implementer","tool":"Bash","duration_ms":4}
+{"ts":"2026-07-21T10:00:34Z","session_id":"DP","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":5000}
+JSON
+DPOUT="$ROOT/dp-run.json"
+"$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT" >/dev/null 2>&1 \
+  || bad "DPM T2: collect exits 0" "collect returned nonzero"
+# `kind` (T3), `tokens` (T4), `progress` (T5) and `effort` (session-effort-reporting
+# T3) are checked in their own sections below; these cases pin T2's cost fields.
+dp_row() { jq -c --argjson n "$1" '.packets[]|select(.id=="dp-001")|.dispatches[$n]|del(.kind, .tokens, .effort, .progress)' "$DPOUT"; }
+check "DPM T2: one row per implementer-role Agent event (reviewer dispatch is not a row)" "5" \
+  "$(jq -r '.packets[]|select(.id=="dp-001")|.dispatches|length' "$DPOUT")"
+check "DPM T2: first of two sequential dispatches credits the agent BEFORE its Agent event" \
+  '{"tool_calls":3,"duration_ms":60,"edits":2}' "$(dp_row 0)"
+check "DPM T2: second sequential dispatch credits its own agent, not the first" \
+  '{"tool_calls":2,"duration_ms":10,"edits":1}' "$(dp_row 1)"
+check "DPM T2: a dispatch with no agent_id in its span is a row with null cost fields" \
+  '{"tool_calls":null,"duration_ms":null,"edits":null}' "$(dp_row 2)"
+check "DPM T2: an Agent event with no duration_ms is a row, unresolved" \
+  '{"tool_calls":null,"duration_ms":null,"edits":null}' "$(dp_row 3)"
+check "DPM T2: two qualifying agent_ids -- the earliest first event wins" \
+  '{"tool_calls":2,"duration_ms":7,"edits":1}' "$(dp_row 4)"
+check "DPM T2: packet-level dispatched[] still counts the reviewer too (meaning unchanged)" \
+  '{"gaffer:implementer":5,"gaffer:reviewer":1}' \
+  "$(jq -c '.packets[]|select(.id=="dp-001")|.dispatched' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T3: dispatches[].kind from start + routing records =="
+# kind = the latest start or routing record for the packet strictly before the
+# dispatch Agent event: start (with or without --continue) -> initial, a `continue`
+# routing record -> continuation, fix/retry -> that verdict; a routing record wins
+# over a start written at the same boundary (no Agent event between them). Records
+# are read from the outcomes log and EVERY .agents/loop/*/routing.jsonl — never via
+# a run_id: the decoy run-state below names a run directory that holds none of them.
+#   k-001  start :01.1 -> d1 (Agent :04)                          -> initial
+#          fix (RUN-OLD) :07.2 -> d2 (Agent :09)                   -> fix
+#          continue (RUN-NEW) :10.1 + start --continue :10.6 -> d3 -> continuation
+#   k-002  d4 (Agent :53) with no k-002 record before it           -> null
+#          fix :56, decider Agent :58, resume start --continue :60.5 -> d5 -> initial
+#   k-003  start :91.1 -> d6 (Agent :94)                          -> initial
+#          fix :100.2, then resume start --continue :101.5 with NO Agent event of
+#          any role between them -> d7 (Agent :104)               -> initial
+#          (only a `continue` routing record pairs with a following start; a
+#          fix/retry arm records no start, so that start is a resume's)
+KDREPO="$ROOT/kd-repo"
+mkdir -p "$KDREPO/.agents/metrics/events" "$KDREPO/.agents/metrics/outcomes" \
+         "$KDREPO/.agents/loop/RUN-OLD" "$KDREPO/.agents/loop/RUN-NEW" "$KDREPO/.agents/loop/RUN-DECOY"
+git -C "$KDREPO" init -q; git -C "$KDREPO" config user.email t@t; git -C "$KDREPO" config user.name t
+echo a > "$KDREPO/a.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$KDREPO" commit -q -m "k1
+
+[orch packet:k-001]"
+echo b > "$KDREPO/b.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:01:30Z" GIT_COMMITTER_DATE="2026-07-21T10:01:30Z" \
+  git -C "$KDREPO" commit -q -m "k2
+
+[orch packet:k-002]"
+echo c > "$KDREPO/c.txt"; git -C "$KDREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:02:30Z" GIT_COMMITTER_DATE="2026-07-21T10:02:30Z" \
+  git -C "$KDREPO" commit -q -m "k3
+
+[orch packet:k-003]"
+printf 'schema: "4"\nrun_id: "RUN-DECOY"\nstatus: "running"\n' > "$KDREPO/.agents/run-state.yaml"
+cat > "$KDREPO/.agents/metrics/events/KD.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"KD","agent_id":"k1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:05Z","session_id":"KD","agent_id":"kr","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:06Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:08Z","session_id":"KD","agent_id":"k2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:11Z","session_id":"KD","agent_id":"k3","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:12Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:52Z","session_id":"KD","agent_id":"k4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:53Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:57Z","session_id":"KD","agent_id":"kc","agent_type":"gaffer:chief-engineer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:58Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:chief-engineer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:02Z","session_id":"KD","agent_id":"k5","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:03Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:33Z","session_id":"KD","agent_id":"k6","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:34Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:36Z","session_id":"KD","agent_id":"kr3","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:01:37Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:43Z","session_id":"KD","agent_id":"k7","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:44Z","session_id":"KD","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$KDREPO/.agents/metrics/outcomes/KD.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"k-001","session":"KD","kind":"start"}
+{"ts":"2026-07-21T10:00:10.600Z","packet":"k-001","session":"KD","kind":"continue"}
+{"ts":"2026-07-21T10:01:00.500Z","packet":"k-002","session":"KD","kind":"continue"}
+{"ts":"2026-07-21T10:01:31.100Z","packet":"k-003","session":"KD","kind":"start"}
+{"ts":"2026-07-21T10:01:41.500Z","packet":"k-003","session":"KD","kind":"continue"}
+JSON
+cat > "$KDREPO/.agents/loop/RUN-OLD/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"k-001","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+{"ts":"2026-07-21T10:00:56.000Z","packet":"k-002","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+{"ts":"2026-07-21T10:01:40.200Z","packet":"k-003","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+cat > "$KDREPO/.agents/loop/RUN-NEW/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:10.100Z","packet":"k-001","token":"continue","action":"continue","status":"continue · budget reached · result: needs-reading · /i.md"}
+JSON
+KDOUT="$ROOT/kd-run.json"
+"$METRICS" collect --main-root "$KDREPO" --projects-dir "$ROOT/none" --out "$KDOUT" >/dev/null 2>&1 \
+  || bad "DPM T3: collect exits 0" "collect returned nonzero"
+kd_kinds() { jq -c --arg id "$1" '[.packets[]|select(.id==$id)|.dispatches[].kind]' "$KDOUT"; }
+check "DPM T3: initial -> fix -> continuation (routing continue wins over the start at one boundary)" \
+  '["initial","fix","continuation"]' "$(kd_kinds k-001)"
+check "DPM T3: no prior record -> null; a resume --continue start reads initial, not the earlier fix" \
+  '[null,"initial"]' "$(kd_kinds k-002)"
+check "DPM T3: a fix route then a resume start with no Agent event between reads initial (only continue pairs with a start)" \
+  '["initial","initial"]' "$(kd_kinds k-003)"
+check "DPM T3: a measured run carries no routing-unmeasured note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind: routing-unmeasured"))]|length' "$KDOUT")"
+
+# Pruned routing log: start records survive, no routing.jsonl holds a record for any
+# of the run packets (only a foreign packet in the current run directory), so the
+# fix dispatch reads null — never the `initial` the start record alone would give.
+PRREPO="$ROOT/pr-repo"
+mkdir -p "$PRREPO/.agents/metrics/events" "$PRREPO/.agents/metrics/outcomes" "$PRREPO/.agents/loop/RUN-CUR"
+git -C "$PRREPO" init -q; git -C "$PRREPO" config user.email t@t; git -C "$PRREPO" config user.name t
+echo a > "$PRREPO/a.txt"; git -C "$PRREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$PRREPO" commit -q -m "p1
+
+[orch packet:p-001]"
+cat > "$PRREPO/.agents/metrics/events/PR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"PR","agent_id":"p1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:08Z","session_id":"PR","agent_id":"p2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"PR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$PRREPO/.agents/metrics/outcomes/PR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"p-001","session":"PR","kind":"start"}
+JSON
+cat > "$PRREPO/.agents/loop/RUN-CUR/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"zz-999","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+PROUT="$ROOT/pr-run.json"
+"$METRICS" collect --main-root "$PRREPO" --projects-dir "$ROOT/none" --out "$PROUT" >/dev/null 2>&1 \
+  || bad "DPM T3: pruned-routing collect exits 0" "collect returned nonzero"
+check "DPM T3: pruned routing log -> every kind null (the fix dispatch is not read as initial)" \
+  '[null,null]' "$(jq -c '[.packets[]|select(.id=="p-001")|.dispatches[].kind]' "$PROUT")"
+check "DPM T3: pruned routing log names the reason in notes[]" "1" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind: routing-unmeasured — 1 start record(s)"))]|length' "$PROUT")"
+
+# Legacy run (the T2 fixture: no start record, no routing log): every kind null, no
+# routing-unmeasured note, and re-collecting it yields identical output.
+check "DPM T3: legacy run -> every kind null" '[null,null,null,null,null]' \
+  "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].kind]' "$DPOUT")"
+check "DPM T3: legacy run carries no routing-unmeasured note" "0" \
+  "$(jq -r '[.notes[]|select(startswith("dispatch kind:"))]|length' "$DPOUT")"
+DPOUT2="$ROOT/dp-run-2.json"
+"$METRICS" collect --main-root "$DPREPO" --projects-dir "$ROOT/none" --out "$DPOUT2" >/dev/null 2>&1 \
+  || bad "DPM T3: legacy re-collect exits 0" "collect returned nonzero"
+if [ "$(jq -S -c 'del(.generated_at)' "$DPOUT")" = "$(jq -S -c 'del(.generated_at)' "$DPOUT2")" ]; then
+  ok "DPM T3: legacy run re-collects identically"
+else bad "DPM T3: legacy run re-collects identically" "second collect differs from the first"; fi
+
+echo "== dispatch-progress-metrics T4: dispatches[].tokens from the agent_id transcript =="
+# One packet (tk-001), three implementer dispatches:
+#   d1  agent tk1 -> subagents/agent-tk1.jsonl: message m1 logged TWICE (identical
+#       usage, the later copy +26 s), m2 once, one id-less row -> m1 counted once
+#   d2  agent tk2 -> no transcript file on disk              -> tokens null
+#   d3  no agent_id in its span (unresolved)                 -> tokens null
+# A second projects dir holds the same tk1 transcript with NO per-turn timestamps,
+# so the packet tokens are null there (per-packet split unmeasurable) and every
+# dispatch row must be null too, never the tk1 sum it could still compute.
+TKREPO="$ROOT/tk-repo"; mkdir -p "$TKREPO/.agents/metrics/events"
+git -C "$TKREPO" init -q; git -C "$TKREPO" config user.email t@t; git -C "$TKREPO" config user.name t
+echo tk > "$TKREPO/log.txt"; git -C "$TKREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$TKREPO" commit -q -m "work
+
+[orch packet:tk-001]"
+cat > "$TKREPO/.agents/metrics/events/TK.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"TK","agent_id":"tk1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:08Z","session_id":"TK","agent_id":"tk2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:20Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}
+{"ts":"2026-07-21T10:00:45Z","session_id":"TK","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+JSON
+TKPROJ="$ROOT/tk-proj"; mkdir -p "$TKPROJ/proj/TK/subagents"
+cat > "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:02.100Z","message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5}}}
+{"timestamp":"2026-07-21T10:00:02.300Z","message":{"id":"m2","model":"claude-sonnet-5","usage":{"input_tokens":20,"output_tokens":2,"cache_creation_input_tokens":200,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:02.900Z","message":{"model":"claude-sonnet-5","usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":5,"cache_read_input_tokens":6}}}
+{"timestamp":"2026-07-21T10:00:28.100Z","message":{"id":"m1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5}}}
+JSON
+TKPROJN="$ROOT/tk-proj-nots"; mkdir -p "$TKPROJN/proj/TK/subagents"
+jq -c 'del(.timestamp)' "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" > "$TKPROJN/proj/TK/subagents/agent-tk1.jsonl"
+TKOUT="$ROOT/tk-run.json"; TKOUTN="$ROOT/tk-run-nots.json"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$TKPROJ" --out "$TKOUT" >/dev/null 2>&1 \
+  || bad "DPM T4: collect exits 0" "collect returned nonzero"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$TKPROJN" --out "$TKOUTN" >/dev/null 2>&1 \
+  || bad "DPM T4: no-ts collect exits 0" "collect returned nonzero"
+tk_tok() { jq -c --argjson n "$2" '.packets[]|select(.id=="tk-001")|.dispatches[$n].tokens' "$1"; }
+check "DPM T4: fixture reads token_source=transcript" "transcript" "$(jq -r '.token_source' "$TKOUT")"
+check "DPM T4: a duplicated message id is counted once; the id-less row is kept" \
+  '{"input":123,"output":16,"cache_creation":1205,"cache_read":12}' "$(tk_tok "$TKOUT" 0)"
+check "DPM T4: a resolved dispatch with no transcript on disk -> tokens null (not 0)" "null" "$(tk_tok "$TKOUT" 1)"
+check "DPM T4: an unresolved dispatch -> tokens null" "null" "$(tk_tok "$TKOUT" 2)"
+check "DPM T4: no-ts fixture -> packet tokens null" "null" \
+  "$(jq -c '.packets[]|select(.id=="tk-001")|.tokens' "$TKOUTN")"
+check "DPM T4: a null packet tokens nulls every dispatch row (tk1 still has turns on disk)" \
+  '[null,null,null]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].tokens]' "$TKOUTN")"
+check "DPM T4: the T2 fixture (no transcripts) reads tokens null on every row" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].tokens]' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T5: dispatches[].progress =="
+# progress, in the PRD order: null (no bounded trailer window, legacy run, unresolved
+# dispatch), landed (the commit trailer author time falls in [this dispatch start,
+# next implementer dispatch start), the last up to the trailer window end), advanced
+# (>=1 edit event, no such commit), none (zero edit events).
+#   pg-001 (commit :50)  start :01.1 -> d1 initial, 1 edit, start :01   -> advanced
+#                        fix :07.2   -> d2 fix,     1 edit, start :07.5 -> landed
+#                        (d1 edits were carried by the commit d2 landed: advanced, not landed)
+#   pg-002 (record-only, no commit; abandoned :72)
+#                        d3 no agent_id in its span (unresolved)         -> null
+#                        d4 zero edits (a Read)                          -> none
+#                        d5 one edit, last in the packet                 -> advanced
+#                        (last on purpose: reading the record-only end as a
+#                        commit time would land it, and the case would show it)
+PGREPO="$ROOT/pg-repo"
+mkdir -p "$PGREPO/.agents/metrics/events" "$PGREPO/.agents/metrics/outcomes" "$PGREPO/.agents/loop/RUN-PG"
+git -C "$PGREPO" init -q; git -C "$PGREPO" config user.email t@t; git -C "$PGREPO" config user.name t
+echo a > "$PGREPO/a.txt"; git -C "$PGREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$PGREPO" commit -q -m "pg1
+
+[orch packet:pg-001]"
+cat > "$PGREPO/.agents/metrics/events/PG.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"PG","agent_id":"g1","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3000}
+{"ts":"2026-07-21T10:00:05Z","session_id":"PG","agent_id":"gr","agent_type":"gaffer:reviewer","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:06Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:reviewer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:08Z","session_id":"PG","agent_id":"g2","agent_type":"gaffer:implementer","tool":"Write","duration_ms":1}
+{"ts":"2026-07-21T10:00:09Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:01Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":200}
+{"ts":"2026-07-21T10:01:03Z","session_id":"PG","agent_id":"g3","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:01:04Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:01:07Z","session_id":"PG","agent_id":"g4","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:01:08Z","session_id":"PG","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+JSON
+cat > "$PGREPO/.agents/metrics/outcomes/PG.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:01.100Z","packet":"pg-001","session":"PG","kind":"start"}
+{"ts":"2026-07-21T10:01:00.100Z","packet":"pg-002","session":"PG","kind":"start"}
+{"ts":"2026-07-21T10:01:12.000Z","packet":"pg-002","session":"PG","outcome":"abandoned"}
+JSON
+cat > "$PGREPO/.agents/loop/RUN-PG/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:07.200Z","packet":"pg-001","token":"fix","action":"attempt","status":"fix · x · result: needs-reading · /r.md"}
+JSON
+PGOUT="$ROOT/pg-run.json"
+"$METRICS" collect --main-root "$PGREPO" --projects-dir "$ROOT/none" --out "$PGOUT" >/dev/null 2>&1 \
+  || bad "DPM T5: collect exits 0" "collect returned nonzero"
+pg_rows() { jq -c --arg id "$1" '[.packets[]|select(.id==$id)|.dispatches[]|[.kind, .progress]]' "$PGOUT"; }
+check "DPM T5: initial -> fix, only the fix row reads landed; the initial row whose edits the commit carried reads advanced" \
+  '[["initial","advanced"],["fix","landed"]]' "$(pg_rows pg-001)"
+check "DPM T5: no commit -> zero-edit none, edited advanced, unresolved null" \
+  '[["initial",null],["initial","none"],["initial","advanced"]]' "$(pg_rows pg-002)"
+check "DPM T5: at most one landed dispatch per trailer, across every packet of the run" \
+  '[1,0]' "$(jq -c '[.packets[]|[.dispatches[]?|select(.progress=="landed")]|length]' "$PGOUT")"
+check "DPM T5: routing-unmeasured run still measures progress (only kind is nulled)" \
+  '["advanced","landed"]' "$(jq -c '[.packets[]|select(.id=="p-001")|.dispatches[].progress]' "$PROUT")"
+check "DPM T5: legacy run -> every progress null (a commit and edits notwithstanding)" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].progress]' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T6: totals.dispatch_waste =="
+# One packet (wr-001, commit :50), two implementer dispatches:
+#   d1 agent w1: three Reads, zero edits -> initial, progress none, tool_calls 3,
+#      transcript total 1000 tokens
+#   routing `continue` at :05
+#   d2 agent w2: one Edit, last dispatch -> continuation, landed, tool_calls 1,
+#      transcript total 3000 tokens
+# Variants are copies of the base repo with one thing changed each:
+#   ovr   implementer_turn_budget: 2 -> d1 over threshold, share 1000/4000
+#   base  no override -> threshold 150 (default), nothing over
+#   notok w1 transcript absent -> d1 tokens null: only the sums and share null
+#   nokind  start record absent -> d1 kind null: only continuations null
+#   noprog  an extra unresolved dispatch d3 (no agent_id in its span) -> progress
+#           and tool_calls null on it: zero_progress and (T13) over_threshold null
+#   nodisp  start record, commit, no implementer Agent event -> all null
+# The legacy run is the T2 fixture ($DPOUT).
+WRREPO="$ROOT/wr-repo"
+mkdir -p "$WRREPO/.agents/metrics/events" "$WRREPO/.agents/metrics/outcomes" "$WRREPO/.agents/loop/RUN-WR"
+git -C "$WRREPO" init -q; git -C "$WRREPO" config user.email t@t; git -C "$WRREPO" config user.name t
+echo w > "$WRREPO/w.txt"; git -C "$WRREPO" add -A
+GIT_AUTHOR_DATE="2026-07-21T10:00:50Z" GIT_COMMITTER_DATE="2026-07-21T10:00:50Z" \
+  git -C "$WRREPO" commit -q -m "wr1
+
+[orch packet:wr-001]"
+cat > "$WRREPO/.agents/metrics/events/WR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+{"ts":"2026-07-21T10:00:01Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:02Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:03Z","session_id":"WR","agent_id":"w1","agent_type":"gaffer:implementer","tool":"Read","duration_ms":1}
+{"ts":"2026-07-21T10:00:04Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":3500}
+{"ts":"2026-07-21T10:00:06Z","session_id":"WR","agent_id":"w2","agent_type":"gaffer:implementer","tool":"Edit","duration_ms":1}
+{"ts":"2026-07-21T10:00:07Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1500}
+{"ts":"2026-07-21T10:00:45Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Bash","duration_ms":1}
+JSON
+cat > "$WRREPO/.agents/metrics/outcomes/WR.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:00.200Z","packet":"wr-001","session":"WR","kind":"start"}
+JSON
+cat > "$WRREPO/.agents/loop/RUN-WR/routing.jsonl" <<'JSON'
+{"ts":"2026-07-21T10:00:05.000Z","packet":"wr-001","token":"continue","action":"continue","status":"continue · x"}
+JSON
+WRPROJ="$ROOT/wr-proj"; mkdir -p "$WRPROJ/proj/WR/subagents"
+cat > "$WRPROJ/proj/WR/subagents/agent-w1.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:01.500Z","message":{"id":"w1m","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":800,"cache_read_input_tokens":90}}}
+JSON
+cat > "$WRPROJ/proj/WR/subagents/agent-w2.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:06.500Z","message":{"id":"w2m","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":100,"cache_creation_input_tokens":800,"cache_read_input_tokens":2000}}}
+JSON
+WRPROJN="$ROOT/wr-proj-notok"; mkdir -p "$WRPROJN/proj/WR/subagents"
+cp "$WRPROJ/proj/WR/subagents/agent-w2.jsonl" "$WRPROJN/proj/WR/subagents/"
+wr_variant() { # wr_variant <name> -> prints a fresh copy of the base repo
+  rm -rf "$ROOT/wr-$1"; cp -R "$WRREPO" "$ROOT/wr-$1"; printf '%s' "$ROOT/wr-$1"
+}
+WROVR="$(wr_variant ovr)"; printf 'schema: 1\nimplementer_turn_budget: 2   # tool calls\n' > "$WROVR/.agents/project-overrides.yaml"
+WRNOKIND="$(wr_variant nokind)"; : > "$WRNOKIND/.agents/metrics/outcomes/WR.jsonl"
+WRNOPROG="$(wr_variant noprog)"
+printf '%s\n' '{"ts":"2026-07-21T10:00:20Z","session_id":"WR","agent_id":"","agent_type":"main","tool":"Agent","subagent_type":"gaffer:implementer","duration_ms":1000}' \
+  >> "$WRNOPROG/.agents/metrics/events/WR.jsonl"
+WRNODISP="$(wr_variant nodisp)"
+jq -c 'select(.agent_type == "main" and .tool != "Agent")' "$WRREPO/.agents/metrics/events/WR.jsonl" > "$ROOT/wr-nodisp.jsonl"
+mv "$ROOT/wr-nodisp.jsonl" "$WRNODISP/.agents/metrics/events/WR.jsonl"
+wr_collect() { # wr_collect <repo> <projects-dir> <out-name> -> prints the out path
+  local o="$ROOT/wr-$3.json"
+  "$METRICS" collect --main-root "$1" --projects-dir "$2" --out "$o" >/dev/null 2>&1 \
+    || bad "DPM T6: $3 collect exits 0" "collect returned nonzero"
+  printf '%s' "$o"
+}
+WROUT_OVR="$(wr_collect "$WROVR" "$WRPROJ" ovr-run)"
+WROUT_DEF="$(wr_collect "$WRREPO" "$WRPROJ" def-run)"
+WROUT_NOTOK="$(wr_collect "$WROVR" "$WRPROJN" notok-run)"
+WROUT_NOKIND="$(wr_collect "$WRNOKIND" "$WRPROJ" nokind-run)"
+WROUT_NOPROG="$(wr_collect "$WRNOPROG" "$WRPROJ" noprog-run)"
+WROUT_NODISP="$(wr_collect "$WRNODISP" "$WRPROJ" nodisp-run)"
+dw() { jq -c '.totals.dispatch_waste' "$1"; }
+dwn() { jq -c '[.notes[]|select(startswith("dispatch_waste"))|split(":")[0]]' "$1"; }
+check "DPM T6: fixture rows read as designed ([kind, progress, tool_calls])" \
+  '[["initial","none",3],["continuation","landed",1]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.kind,.progress,.tool_calls]]' "$WROUT_OVR")"
+check "DPM T6: fully measured run with the override (threshold 2 tool calls)" \
+  '{"zero_progress":{"count":1,"tokens":{"input":100,"output":10,"cache_creation":800,"cache_read":90}},"continuations":1,"over_threshold":{"count":1,"token_share":0.25},"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(dw "$WROUT_OVR")"
+check "DPM T6: a fully measured run carries no dispatch_waste note" '[]' "$(dwn "$WROUT_OVR")"
+check "DPM T6: no override -> the default 150 tool calls, nothing over it (a measured 0 and 0 share)" \
+  '{"count":0,"token_share":0}|{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(jq -c '.totals.dispatch_waste | "\(.over_threshold|tojson)|\(.turn_threshold|tojson)"' -r "$WROUT_DEF")"
+printf 'implementer_turn_budget: 0\n' > "$WRREPO/.agents/project-overrides.yaml"
+WROUT_ZERO="$(wr_collect "$WRREPO" "$WRPROJ" zero-run)"; rm -f "$WRREPO/.agents/project-overrides.yaml"
+check "DPM T6: implementer_turn_budget: 0 is not a positive integer -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' "$(jq -c '.totals.dispatch_waste.turn_threshold' "$WROUT_ZERO")"
+# DPM T14: the threshold comes from runstate.sh's ONE strict reader -- the whole
+# value, with a trailing comment, surrounding whitespace and one pair of quotes
+# removed, must be a positive integer; the fallback (150) stays this rollup's.
+# MUTATION RULED OUT: the old per-token scan, which read the `2` out of
+# `lots   # 2` and so reported a measured-looking threshold of 2 the repository
+# never configured; and a copy of the reader that drifts from runstate.sh's.
+wr_threshold() { # wr_threshold <override-line> <name> -> turn_threshold JSON
+  printf '%s\n' "$1" > "$WRREPO/.agents/project-overrides.yaml"
+  local o; o="$(wr_collect "$WRREPO" "$WRPROJ" "$2")"
+  rm -f "$WRREPO/.agents/project-overrides.yaml"
+  jq -c '.totals.dispatch_waste.turn_threshold' "$o"
+}
+check "DPM T14: a digit only inside a trailing comment is not read -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(wr_threshold 'implementer_turn_budget: lots   # 2' t14-cmt-run)"
+check "DPM T14: a negative value is not read -> the default" \
+  '{"value":150,"unit":"tool_calls","source":"default"}' \
+  "$(wr_threshold 'implementer_turn_budget: -2' t14-neg-run)"
+check "DPM T14: a quoted, comment-trailed positive integer is read" \
+  '{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}' \
+  "$(wr_threshold "implementer_turn_budget: '2'   # tool calls" t14-q-run)"
+check "DPM T14: a plain positive integer is read" \
+  '{"value":3,"unit":"tool_calls","source":"implementer_turn_budget"}' \
+  "$(wr_threshold 'implementer_turn_budget: 3' t14-plain-run)"
+check "DPM T6: one null tokens nulls only the sums and share" \
+  '{"zero_progress":{"count":1,"tokens":null},"continuations":1,"over_threshold":{"count":1,"token_share":null},"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(dw "$WROUT_NOTOK")"
+check "DPM T6: null tokens names the token sum and the share in notes[]" \
+  '["dispatch_waste.zero_progress.tokens","dispatch_waste.over_threshold.token_share"]' "$(dwn "$WROUT_NOTOK")"
+check "DPM T6: one null kind nulls only continuations" \
+  '{"zero_progress":{"count":1,"tokens":{"input":100,"output":10,"cache_creation":800,"cache_read":90}},"continuations":null,"over_threshold":{"count":0,"token_share":0},"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
+  "$(dw "$WROUT_NOKIND")"
+check "DPM T6: null kind names continuations in notes[]" '["dispatch_waste.continuations"]' "$(dwn "$WROUT_NOKIND")"
+check "DPM T6: the no-progress fixture has one unresolved row" \
+  '[["initial","none"],["continuation","advanced"],["continuation",null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.kind,.progress]]' "$WROUT_NOPROG")"
+check "DPM T6: one unresolved row nulls zero_progress and over_threshold only" \
+  '{"zero_progress":null,"continuations":2,"over_threshold":null,"turn_threshold":{"value":150,"unit":"tool_calls","source":"default"}}' \
+  "$(dw "$WROUT_NOPROG")"
+check "DPM T6: an unresolved row names zero_progress and over_threshold in notes[]" \
+  '["dispatch_waste.zero_progress","dispatch_waste.over_threshold"]' "$(dwn "$WROUT_NOPROG")"
+DW_ALLNULL='{"zero_progress":null,"continuations":null,"over_threshold":null,"turn_threshold":null}'
+check "DPM T6: a run with no implementer dispatch reads all-null" "$DW_ALLNULL" "$(dw "$WROUT_NODISP")"
+check "DPM T6: no implementer dispatch is named in notes[]" '["dispatch_waste"]' "$(dwn "$WROUT_NODISP")"
+check "DPM T6: the no-dispatch run is named as such, not as legacy (its start record is in the window)" \
+  '1' "$(jq -r '[.notes[]|select(startswith("dispatch_waste: unmeasured — this run has no implementer dispatch"))]|length' "$WROUT_NODISP")"
+check "DPM T6: a legacy run reads all-null" "$DW_ALLNULL" "$(dw "$DPOUT")"
+check "DPM T6: the legacy run names dispatch_waste as unmeasured (legacy) in notes[]" '1' \
+  "$(jq -r '[.notes[]|select(startswith("dispatch_waste: unmeasured — legacy run"))]|length' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T7: per-packet waste:*-dispatch flags =="
+# Reuses the T6 wr-* fixtures: d1 is progress none with 3 tool calls, d2 landed with 1.
+#   ovr     threshold 2 -> d1 is both zero-progress and over budget
+#   base    threshold 150 (default) -> zero-progress only
+#   allnull the ovr repo with no subagent event: both dispatches unresolved, so
+#           progress and tool_calls are null on each -> no flag, never a (0)
+#   legacyovr the ovr repo with no start or routing record: a legacy run, where d1
+#           still measures 3 tool calls over the threshold of 2 -> no waste: flag
+wf() { jq -c '[.packets[]|select(.id=="wr-001")|.audit.flags[]|select(startswith("waste:"))]' "$1"; }
+check "DPM T7: zero-progress and over-budget flags, counted against the rollup threshold" \
+  '["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]' "$(wf "$WROUT_OVR")"
+check "DPM T7: under the default threshold only the zero-progress flag" \
+  '["waste:zero-progress-dispatch(1)"]' "$(wf "$WROUT_DEF")"
+check "DPM T7: totals.audit.flagged_packets lists the flagged packet as it lists any other" \
+  '[{"id":"wr-001","tier":null,"impl":null,"flags":["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]}]' \
+  "$(jq -c '.audit.flagged_packets' "$WROUT_OVR")"
+WRALLNULL="$(wr_variant allnull)"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRALLNULL/.agents/project-overrides.yaml"
+jq -c 'select(.agent_type == "main")' "$WRREPO/.agents/metrics/events/WR.jsonl" > "$ROOT/wr-allnull.jsonl"
+mv "$ROOT/wr-allnull.jsonl" "$WRALLNULL/.agents/metrics/events/WR.jsonl"
+WROUT_ALLNULL="$(wr_collect "$WRALLNULL" "$WRPROJ" allnull-run)"
+check "DPM T7: the all-null fixture has two unresolved rows ([progress, tool_calls])" \
+  '[[null,null],[null,null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]' "$WROUT_ALLNULL")"
+check "DPM T7: a packet of all-null dispatches carries no flag" '[]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.audit.flags[]]' "$WROUT_ALLNULL")"
+WRLEGACY="$(wr_variant legacyovr)"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRLEGACY/.agents/project-overrides.yaml"
+: > "$WRLEGACY/.agents/metrics/outcomes/WR.jsonl"; rm -rf "$WRLEGACY/.agents/loop/RUN-WR"
+WROUT_LEGACY="$(wr_collect "$WRLEGACY" "$WRPROJ" legacyovr-run)"
+check "DPM T7: the legacy fixture is legacy and still measures d1 over the threshold ([progress, tool_calls])" \
+  'true|[[null,3],[null,1]]' \
+  "$(jq -r --argjson n "$DW_ALLNULL" '"\(.totals.dispatch_waste == $n)|\([.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]|tojson)"' "$WROUT_LEGACY")"
+check "DPM T7: a legacy run carries no waste: flag" '[]' "$(wf "$WROUT_LEGACY")"
+check "DPM T7: the T2 legacy run carries no waste: flag on any packet" '[]' \
+  "$(jq -c '[.packets[].audit.flags[]|select(startswith("waste:"))]' "$DPOUT")"
+
+echo "== dispatch-progress-metrics T8: show renders dispatch_waste in the audit block =="
+# Rendered text, not the packet: the lines between the routing-audit header and the
+# packets table. Reuses the T6/T7 fixtures:
+#   ovr    fully measured (zero_progress 1, continuations 1, over 1, share 0.25)
+#   def    a measured 0 over threshold and a 0 share -> must print 0, not unmeasured
+#   notok  partly null: token sum and share null, counts measured
+#   noprog partly null: zero_progress and over_threshold null (an unresolved row)
+#   DPOUT  the legacy run: every component null
+dws() { # dws <packet> -> the dispatch_waste lines show prints, joined by |
+  "$METRICS" show "$1" 2>/dev/null \
+    | awk '/^routing audit/{a=1} /^packets \(/{a=0} a && /dispatch_waste|^    (zero_progress|continuations|over_threshold)|^      note:/' \
+    | sed 's/^ *//' | paste -sd'|' -
+}
+dwpos() { # dwpos <packet> -> "audit<dw<packets" when ordered as required
+  "$METRICS" show "$1" 2>/dev/null | awk '
+    /^routing audit/ && !r {r=NR} /dispatch_waste/ && !d {d=NR} /^packets \(/ && !p {p=NR}
+    END { if (r && d && p && r < d && d < p) print "audit<dw<packets"; else print "r=" r " d=" d " p=" p }'
+}
+check "DPM T8: dispatch_waste sits inside the audit block, above the packets table" \
+  'audit<dw<packets' "$(dwpos "$WROUT_OVR")"
+check "DPM T8: a fully measured run renders every component as a number" \
+  'dispatch_waste (turn threshold: 2 tool_calls, source implementer_turn_budget):|zero_progress=1   tokens: in=100 out=10 cacheR=90 cacheC=800|continuations=1|over_threshold=1   token_share: 0.25' \
+  "$(dws "$WROUT_OVR")"
+check "DPM T8: a measured zero renders as 0, not unmeasured" \
+  'over_threshold=0   token_share: 0' "$(dws "$WROUT_DEF" | tr '|' '\n' | grep '^over_threshold')"
+check "DPM T8: partly null (tokens) renders the null parts unmeasured with their notes[] reason" \
+  'zero_progress=1   tokens: unmeasured — 1 of 1 progress-none dispatch row(s) carry null tokens (unresolved agent_id, missing transcript, or null packet tokens), so the token sum is null; the count stands.|continuations=1|over_threshold=1   token_share: unmeasured — 1 of 2 counted dispatch row(s) carry null tokens (missing transcript or null packet tokens), so the share is null; the count stands.' \
+  "$(dws "$WROUT_NOTOK" | cut -d'|' -f2-)"
+check "DPM T8: partly null (unresolved row) renders zero_progress and over_threshold unmeasured" \
+  'zero_progress=unmeasured — 1 of 3 dispatch row(s) carry a null progress (an unresolved dispatch), so the count and token sum are null, never 0.|continuations=2|over_threshold=unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows.' \
+  "$(dws "$WROUT_NOPROG" | cut -d'|' -f2-)"
+check "DPM T8: partly null (kind) renders continuations unmeasured with its notes[] reason" \
+  'continuations=unmeasured — 1 of 2 dispatch row(s) carry a null kind (no prior start or routing record, or a routing-unmeasured run), so continuations is null, never 0.' \
+  "$(dws "$WROUT_NOKIND" | tr '|' '\n' | grep '^continuations')"
+check "DPM T8: a legacy run renders dispatch_waste unmeasured with the legacy reason, no 0" \
+  'dispatch_waste: unmeasured — legacy run (no start or routing record for any of its packets falls in this window), so every dispatch kind and progress is null and zero_progress, continuations, over_threshold and turn_threshold are all null, never 0.' \
+  "$(dws "$DPOUT")"
+jq 'del(.totals.dispatch_waste) | .notes |= map(select(startswith("dispatch_waste") | not))' "$DPOUT" > "$ROOT/dw-predates.json"
+check "DPM T8: a packet predating the rollup renders unmeasured, never clean" \
+  'dispatch_waste: unmeasured — this packet predates the dispatch_waste rollup' "$(dws "$ROOT/dw-predates.json")"
+
+echo "== dispatch-progress-metrics T13: an unresolved dispatch nulls over_threshold =="
+# Before T13 a row with null tool_calls was left out of over_threshold and the count
+# over the other rows read as a measurement. Reuses the T6 wr-* fixtures:
+#   noprogovr the noprog repo (d3 unresolved) under the threshold-2 override: d1 is
+#             over, so the old exclusion reported {count 1, share 0.25}; now null
+#   ovr/notok fully resolved runs: over_threshold unchanged, no over_threshold note
+# An unresolved row is null in tool_calls AND progress (T2 builds it that way), so
+# zero_progress is already null on it under T6; T13 changes over_threshold alone,
+# which the before/after comparison below pins against the T6 values.
+WRNOPROGOVR="$(wr_variant noprogovr)"
+cp "$WRNOPROG/.agents/metrics/events/WR.jsonl" "$WRNOPROGOVR/.agents/metrics/events/WR.jsonl"
+cp "$WROVR/.agents/project-overrides.yaml" "$WRNOPROGOVR/.agents/project-overrides.yaml"
+WROUT_NOPROGOVR="$(wr_collect "$WRNOPROGOVR" "$WRPROJ" noprogovr-run)"
+check "DPM T13: the fixture has d1 over the threshold and d3 unresolved ([progress, tool_calls])" \
+  '[["none",3],["advanced",1],[null,null]]' \
+  "$(jq -c '[.packets[]|select(.id=="wr-001")|.dispatches[]|[.progress,.tool_calls]]' "$WROUT_NOPROGOVR")"
+check "DPM T13: one unresolved dispatch nulls over_threshold, count and share, never a count over the rest" \
+  'null' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_NOPROGOVR")"
+check "DPM T13: every other component reads exactly as T6 made it (only over_threshold moved)" \
+  '{"zero_progress":null,"continuations":2,"turn_threshold":{"value":2,"unit":"tool_calls","source":"implementer_turn_budget"}}' \
+  "$(jq -c '.totals.dispatch_waste | del(.over_threshold)' "$WROUT_NOPROGOVR")"
+check "DPM T13: the notes[] reason names the unresolved dispatch by packet and position" \
+  '["dispatch_waste.over_threshold: unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows."]' \
+  "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))]' "$WROUT_NOPROGOVR")"
+check "DPM T13: show renders over_threshold unmeasured with that reason" \
+  'over_threshold=unmeasured — 1 of 3 dispatch row(s) carry null tool_calls (an unresolved dispatch: wr-001 dispatch 3 of 3), so the count and the token share are null, never a count over the other rows.' \
+  "$(dws "$WROUT_NOPROGOVR" | tr '|' '\n' | grep '^over_threshold')"
+check "DPM T13: the per-packet over-budget flag still counts only measured rows" \
+  '["waste:zero-progress-dispatch(1)","waste:over-budget-dispatch(1)"]' "$(wf "$WROUT_NOPROGOVR")"
+check "DPM T13: a fully resolved run is unchanged (count 1, share 0.25, no over_threshold note)" \
+  '{"count":1,"token_share":0.25}|[]' \
+  "$(printf '%s|%s' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_OVR")" \
+     "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))]' "$WROUT_OVR")")"
+check "DPM T13: a fully resolved run with null tokens keeps its count and names only the share" \
+  '{"count":1,"token_share":null}|["dispatch_waste.over_threshold.token_share"]' \
+  "$(printf '%s|%s' "$(jq -c '.totals.dispatch_waste.over_threshold' "$WROUT_NOTOK")" \
+     "$(jq -c '[.notes[]|select(startswith("dispatch_waste.over_threshold"))|split(":")[0]]' "$WROUT_NOTOK")")"
+
+echo "== dispatch-progress-metrics T10: CRLF-jq over dispatch kind and progress =="
+# The ADR 0019 v3.1 byte-identity check, run over fixtures that carry the new fields:
+#   KDREPO  start records, `fix` routing records (RUN-OLD) and a `continue` routing
+#           record (RUN-NEW) -> kinds initial/fix/continuation, progress on every row
+#   WROVR   start + `continue` routing, transcripts and a threshold override ->
+#           dispatch tokens, totals.dispatch_waste and the waste:*-dispatch flags
+# Each is collected again with the CRLF shim on PATH ($SHIM, built above) and must be
+# byte-identical to its clean collect. The non-null counts are asserted FIRST: over an
+# all-null fixture the identity would hold vacuously, since a null carries no CR.
+crlf_same() { [ "$(jq -S 'del(.generated_at)' "$1")" = "$(jq -S 'del(.generated_at)' "$2")" ]; }
+crlf_case() { # crlf_case <label> <clean packet> <crlf packet>
+  if crlf_same "$2" "$3"; then ok "DPM T10: CRLF-jq $1 identical to clean run"
+  else
+    bad "DPM T10: CRLF-jq $1 identical to clean run" "differing fields (< clean, > CRLF-jq):"
+    diff <(jq -S 'del(.generated_at)' "$2") <(jq -S 'del(.generated_at)' "$3") \
+      | head -40 | sed 's/^/       /'
+  fi
+}
+KDCRLF="$ROOT/kd-crlf.json"; WRCRLF="$ROOT/wr-ovr-crlf.json"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$KDREPO" --projects-dir "$ROOT/none" --out "$KDCRLF" >/dev/null 2>&1 \
+  || bad "DPM T10: CRLF-jq KD collect exits 0" "collect returned nonzero"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$WROVR" --projects-dir "$WRPROJ" --out "$WRCRLF" >/dev/null 2>&1 \
+  || bad "DPM T10: CRLF-jq WR collect exits 0" "collect returned nonzero"
+# Non-vacuity: distinct non-null kinds, then non-null kind and progress row counts.
+crlf_nonnull() { jq -c '[.packets[].dispatches[]?] | [([.[].kind|select(. != null)]|unique), ([.[]|select(.kind != null)]|length), ([.[]|select(.progress != null)]|length)]' "$1"; }
+check "DPM T10: CRLF-jq KD run carries non-null kinds (initial, fix, continuation) and progress" \
+  '[["continuation","fix","initial"],6,7]' "$(crlf_nonnull "$KDCRLF")"
+check "DPM T10: CRLF-jq WR run carries non-null kinds, progress, tokens and a measured dispatch_waste" \
+  '[["continuation","initial"],2,2]|2|1' \
+  "$(printf '%s|%s|%s' "$(crlf_nonnull "$WRCRLF")" \
+     "$(jq -r '[.packets[].dispatches[]?|select(.tokens != null)]|length' "$WRCRLF")" \
+     "$(jq -r '.totals.dispatch_waste.continuations' "$WRCRLF")")"
+crlf_case "KD run (start, fix and continue records)" "$KDOUT" "$KDCRLF"
+crlf_case "WR run (tokens, dispatch_waste, waste flags)" "$WROUT_OVR" "$WRCRLF"
+# The identity must go red on a CR inside a new field: a `kind` (and a `progress`)
+# value carrying a trailing \r — what a `read`-fed routing token would leave behind.
+jq '.packets[0].dispatches[1].kind += "\r"' "$KDCRLF" > "$ROOT/kd-crlf-kind.json"
+check "DPM T10: the kind mutant carries a CR ('fix' + CR)" '"fix\r"' \
+  "$(jq -c '.packets[0].dispatches[1].kind' "$ROOT/kd-crlf-kind.json")"
+if crlf_same "$KDOUT" "$ROOT/kd-crlf-kind.json"; then
+  bad "DPM T10: a kind with a trailing CR fails the CRLF-jq identity" "the CR-carrying kind still matched the clean run"
+else ok "DPM T10: a kind with a trailing CR fails the CRLF-jq identity"; fi
+jq '.packets[0].dispatches[2].progress += "\r"' "$KDCRLF" > "$ROOT/kd-crlf-prog.json"
+if crlf_same "$KDOUT" "$ROOT/kd-crlf-prog.json"; then
+  bad "DPM T10: a progress with a trailing CR fails the CRLF-jq identity" "the CR-carrying progress still matched the clean run"
+else ok "DPM T10: a progress with a trailing CR fails the CRLF-jq identity"; fi
+
+echo "== session-effort-reporting T3: dispatches[].effort from the agent_id transcript =="
+# The T4 fixture's events ($TKREPO: d1 -> tk1, d2 -> tk2, d3 unresolved), read against
+# two new projects dirs that carry per-turn `effort`:
+#   EFPROJ   tk1: m1 (logged twice) and m2 both `high`         -> "high"
+#            tk2: ids e3/e1/e2 at ts .100/.200/.300 carrying medium/high/medium
+#                 -> ["medium","high"]: first-seen by ts. Sorting by message id
+#                 would give ["high","medium"], and a sorted set the same.
+#   EFPROJN  the same, except tk1's id-less row has no `effort` -> d1 null
+#            (tk2 is still an array: the null is per dispatch, not per run)
+# d3 (unresolved) is null in both. The legacy run is $TKOUT: the same tk1 transcript
+# with no `.effort` on any turn, and tk2 with no transcript at all.
+EFPROJ="$ROOT/ef-proj"; mkdir -p "$EFPROJ/proj/TK/subagents"
+jq -c '. + {effort: "high"}' "$TKPROJ/proj/TK/subagents/agent-tk1.jsonl" > "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl"
+cat > "$EFPROJ/proj/TK/subagents/agent-tk2.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T10:00:08.100Z","effort":"medium","message":{"id":"e3","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:08.200Z","effort":"high","message":{"id":"e1","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+{"timestamp":"2026-07-21T10:00:08.300Z","effort":"medium","message":{"id":"e2","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1}}}
+JSON
+EFPROJN="$ROOT/ef-proj-nulleff"; mkdir -p "$EFPROJN/proj/TK/subagents"
+jq -c 'if .message.id == null then del(.effort) else . end' "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl" \
+  > "$EFPROJN/proj/TK/subagents/agent-tk1.jsonl"
+cp "$EFPROJ/proj/TK/subagents/agent-tk2.jsonl" "$EFPROJN/proj/TK/subagents/"
+EFOUT="$ROOT/ef-run.json"; EFOUTN="$ROOT/ef-run-nulleff.json"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJ" --out "$EFOUT" >/dev/null 2>&1 \
+  || bad "SER T3: collect exits 0" "collect returned nonzero"
+"$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJN" --out "$EFOUTN" >/dev/null 2>&1 \
+  || bad "SER T3: null-effort collect exits 0" "collect returned nonzero"
+ef_row() { jq -c --argjson n "$2" '.packets[]|select(.id=="tk-001")|.dispatches[$n].effort' "$1"; }
+check "SER T3: fixture tk1 turns carry effort (null-row fixture has exactly one without)" "0|1" \
+  "$(jq -r '[inputs|select(.effort == null)]|length' -n "$EFPROJ/proj/TK/subagents/agent-tk1.jsonl")|$(jq -r '[inputs|select(.effort == null)]|length' -n "$EFPROJN/proj/TK/subagents/agent-tk1.jsonl")"
+check "SER T3: every turn at one level -> that level as a string" '"high"' "$(ef_row "$EFOUT" 0)"
+check "SER T3: a level changed mid-dispatch -> distinct levels in first-seen (ts) order" \
+  '["medium","high"]' "$(ef_row "$EFOUT" 1)"
+check "SER T3: one turn with no effort nulls the row (never the other turns' level)" "null" "$(ef_row "$EFOUTN" 0)"
+check "SER T3: ...and only that row: the other dispatch keeps its levels" '["medium","high"]' "$(ef_row "$EFOUTN" 1)"
+check "SER T3: an unresolved dispatch -> effort null" "null" "$(ef_row "$EFOUT" 2)"
+check "SER T3: legacy run (no .effort on any turn) -> null on every row" \
+  '[null,null,null]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].effort]' "$TKOUT")"
+check "SER T3: the T2 fixture (no transcripts, no turn resolves) -> null on every row" \
+  '[null,null,null,null,null]' "$(jq -c '[.packets[]|select(.id=="dp-001")|.dispatches[].effort]' "$DPOUT")"
+# high = tk1 m1 (once, deduped) + m2 + the id-less row + tk2 e1; medium = e3 + e2.
+check "SER T3: totals.by_effort is unchanged in meaning (per-turn counts over the deduped set)" \
+  '{"high":4,"medium":2}' "$(jq -c '.totals.by_effort|map_values(.turns)' "$EFOUT")"
+# CRLF byte-identity (ADR 0019 v3.1) over a run whose rows carry effort values: a
+# string and an array. Non-vacuity first, then the identity, then a CR mutant.
+EFCRLF="$ROOT/ef-crlf.json"
+PATH="$SHIM:$PATH" "$METRICS" collect --main-root "$TKREPO" --projects-dir "$EFPROJ" --out "$EFCRLF" >/dev/null 2>&1 \
+  || bad "SER T3: CRLF-jq collect exits 0" "collect returned nonzero"
+check "SER T3: CRLF-jq run carries non-null effort values (a string and an array)" \
+  '["high",["medium","high"]]' "$(jq -c '[.packets[]|select(.id=="tk-001")|.dispatches[].effort|select(. != null)]' "$EFCRLF")"
+crlf_case "effort run (string and array effort)" "$EFOUT" "$EFCRLF"
+jq '.packets[0].dispatches[0].effort += "\r"' "$EFCRLF" > "$ROOT/ef-crlf-eff.json"
+if crlf_same "$EFOUT" "$ROOT/ef-crlf-eff.json"; then
+  bad "SER T3: an effort with a trailing CR fails the CRLF-jq identity" "the CR-carrying effort still matched the clean run"
+else ok "SER T3: an effort with a trailing CR fails the CRLF-jq identity"; fi
 
 echo
 if [ "$fail" -eq 0 ]; then

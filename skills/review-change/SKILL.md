@@ -11,17 +11,17 @@ verdict the human acts on. The scope is one of two modes; decide from $ARGUMENTS
 in step 1.
 
 **Before you write the verdict in step 5, `Read`
-`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`** — the glyph vocabulary, the
-indentation contract, and the decision block that every human-facing report in this
-plugin owes. The verdict has **no shape of its own**, so those conventions *are* its
-format; naming the path is not reading it, and unread they produce free prose. You do
-**not** need `report-templates.md`: it holds the guided loop's shapes, which this never
+`${CLAUDE_PLUGIN_ROOT}/templates/report-conventions.md`.** The verdict has **no shape
+of its own**, so those conventions *are* its format; naming the path is not reading it.
+You do **not** need `report-templates.md`: it holds the guided loop's shapes, which this never
 emits.
 
 ## 1. Collect the diff (Chief Engineer)
 Delegate to the **chief-engineer** agent to gather the change set and pull in the
 relevant spec/acceptance criteria or task packet so the review has a contract to
-check against. Pick the scope mode from $ARGUMENTS:
+check against. Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve chief-engineer` immediately
+before the dispatch (non-empty → pass it as `model`; empty → omit `model`).
+Pick the scope mode from $ARGUMENTS:
 
 - **Branch-range mode** — when $ARGUMENTS names a base branch or an explicit range
   (a ref like `main`, or a range like `main...develop`). This is the **primary
@@ -46,6 +46,8 @@ failures verbatim. (If the commands aren't known, ask the human or infer them fr
 the repo, but do not run anything that mutates state beyond building/testing.)
 
 ## 3. Review (Reviewer)
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve reviewer` immediately
+before the dispatch (non-empty → pass it as `model`; empty → omit `model`).
 Delegate to the **reviewer** agent (read-only): check the diff against
 acceptance criteria, flag spec↔code drift, and inspect security and correctness —
 with extra scrutiny on auth/authz, secrets/PII in code or logs, and the
@@ -69,7 +71,8 @@ its absence as a failure).
 ## 4. Design check (Architect)
 Delegate to the **architect** agent: confirm the change is consistent with the
 existing architecture and boundaries, and flag any ADR that should be written or
-updated.
+updated. Run `${CLAUDE_PLUGIN_ROOT}/scripts/routing.sh resolve architect` immediately
+before the dispatch (non-empty → pass it as `model`; empty → omit `model`).
 
 ## 5. Verdict (Chief Engineer)
 The **chief-engineer** consolidates into one report. This verdict has no shape of its
@@ -84,15 +87,12 @@ omitted rather than written as "none", and no diff or test-output dumps:
   the required change (described, not applied). Lead with the consequence, not the
   severity label: "silently drops the last page of results" tells the human whether
   to care; `Important` does not. Order by severity, but let the sentence carry it.
-- **🔀 Risks — as decision blocks, not observations.** "Things a human should weigh" is
-  the shape that gets skimmed and forgotten. A risk worth reporting is a choice: the
+- **🔀 Risks — as decision blocks, not observations.** A risk worth reporting is a choice: the
   two real options, what follows from each, your lean, and what happens by default if
   they say nothing. If it is genuinely not a choice — a fact they should simply know —
   it belongs in an issue line or nowhere.
 - **▶ Recommended next step** — the single best next action.
 
-No header tally here: a review is not a run and has nothing to count. The tally means
-"this is a run and here is its state" — bolting it onto a verdict is decoration, and
-decoration is what teaches a reader to stop trusting the glyphs.
+No header tally here: a review is not a run and has nothing to count.
 
 Stop there. Any commit or merge is the human's call.

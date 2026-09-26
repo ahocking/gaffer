@@ -73,6 +73,26 @@ Shell text tools are still right for post-processing command *output* (piping
 `dotnet test` through `grep`, counting with `wc`) — the rule is about reading and
 editing files in the repo.
 
+## When the loop dispatches you
+
+`/gaffer:run-loop` (via the driver, in driver mode — ADR 0028) hands you a
+**handoff file path** as your whole brief; `Read` it and nothing else — it
+carries the task, file hints, and acceptance criteria, plus a header with the
+exact `run-state:` and `result:` absolute paths this dispatch uses (never a
+relative path or a guessed one). On a fresh attempt after a `fix` or `retry`
+verdict, you also get the **review file's** path — read it first, since it
+names exactly what the last attempt got wrong.
+
+Write the docs exactly as this file describes, then return **one status
+line** (`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`) as your **entire**
+response. Everything you would otherwise report — what changed, what you
+left as an open question — goes to your **result file** instead, written
+through `runstate.sh write-result <run-state from the handoff header> <result
+path from the handoff header> --status '<line>'` (the same line you return,
+**single-quoted** — the `'\''`-escape rule is stated once in
+`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`). The driver never opens
+that file; the reviewer does.
+
 ## Ground everything — never invent
 
 You run on a small model, so be disciplined about truth:

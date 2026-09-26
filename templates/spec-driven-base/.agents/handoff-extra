@@ -1,0 +1,26 @@
+# .agents/handoff-extra — this repository's own verification criteria
+#
+# Every handoff `scripts/runstate.sh handoff` writes ends with the plugin's
+# verification contract: six generic REQUIRED lines from
+# `templates/handoff-required.md`. Each non-blank, non-`#` line of THIS file is
+# appended after those six as a further `REQUIRED` line, verbatim, and the
+# reviewer holds the result file to it exactly as it holds it to the six.
+#
+# One criterion per line, phrased as a demand on the work — what must be done
+# or shown, not advice to weigh. A line applies to every packet; there is no
+# syntax for making one conditional. Lines from every discovered config root
+# are unioned, so a nested repository can add criteria but never remove yours.
+#
+# Blank lines and lines beginning with `#` are ignored, so this file as shipped
+# changes no handoff. Uncomment nothing; write your own.
+#
+# Examples of the kind of line that belongs here:
+#
+#   a change to money movement, balances or ledger state states the invariant
+#   it preserves and the test that observes it holding
+#
+#   a change to a generated fixture regenerates it with the project's own
+#   command and reports that command's output, never hand-edits the fixture
+#
+#   a schema change names the migration that accompanies it and the rollback
+#   that was run against it

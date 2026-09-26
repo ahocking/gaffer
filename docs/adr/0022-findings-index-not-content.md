@@ -219,3 +219,126 @@ unrecoverable, to save relaying one line through a check-in the scheduler alread
   outside `gspec/` — ADR 0020 D2).
 - **Add a schema'd `resolved_questions:` list.** Reproduces the original problem with
   a nicer name: still unbounded, still in the file every packet reads.
+
+## Relocated from CLAUDE.md (2026-09-22) — run-state write-integrity notes with no other home
+
+There is no ADR 0027 file; the write-integrity rationale lives mostly in the
+`runstate-write-integrity`, `runstate-write-integrity-gaps` and
+`runstate-set-shape-detection` PRDs. These points, previously carried only in the
+repo-root `CLAUDE.md`, are recorded here because they were not in any of those.
+
+- **The reader's strip is load-bearing, not tidy-up.** Once `runstate.sh` quotes every
+  value it writes, `cmd_get` must strip the quoting symmetrically on read. Without it a
+  crashed run reads as `status: 'running'`, and `hooks/session-start.sh`'s `case` falls
+  through to its `paused|*` arm, telling the human the run "was paused cleanly".
+- **The YAML-parse assertions in `test-runstate.sh` were vacuous until 2026-08-11.** The
+  helper fell back to `return 0` when PyYAML was absent, so on a stock host (python3
+  present, PyYAML not in the standard library) **21 cases passed while checking nothing**
+  and the sweep still reported 213/0 green. They now skip loudly, counted and named in the
+  summary line, and CI declares PyYAML rather than hoping the runner ships it.
+- **`hooks/pause-check.sh` carries a deliberate third copy of the decode rule** rather
+  than sourcing the several-thousand-line `runstate.sh` on every tool call. The shell
+  `_yaml_decode_value` and the awk `rs_decode` (in `_YAML_AWK_DECODE`) are the other two;
+  the shared decoder fixture table in `test-runstate.sh` is the anti-drift mechanism.
+
+## Relocated from skills (2026-09-25) — the pause skill's findings and run-record reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the pause's stash leaves the run record alone** (pause step 1):
+
+  > `.agents/run-state.yaml` is gitignored (ADR 0009) — as are the finding bodies in
+  > `.agents/findings/` and `run-state-note-archive.md`, which travel with it (ADR
+  > 0022) — so `--include-untracked` sweeps the disposable scratch but leaves the
+  > whole run record in place.
+
+- **Why future work is not a finding** (pause step 3's routing table):
+
+  > Not a finding; a findings file holding future work is a shadow backlog
+  > competing with gspec (ADR 0020).
+
+- **The measurement behind "do not invent a `resolved_questions:` list"** (pause
+  step 3; the same figure as this ADR's Context table):
+
+  > a real run grew one to 21,664 chars because there was nowhere else to put it,
+  > and every later dispatch paid for it.
+
+- **Why `write` comes before every `add-finding`, and why existing index entries
+  are carried through** (pause step 3):
+
+  > Run every `add-finding` from the routing table above *after* this write, not
+  > before: a finding recorded first is erased by the write, and because the body
+  > in `.agents/findings/` survives on disk you are left with an orphaned body and
+  > no index entry pointing at it — the one failure the index exists to prevent.
+  > For the same reason, any finding already in the index from earlier in the run
+  > must be carried through the heredoc verbatim; dropping a line here silently
+  > unlinks a body that is still sitting on disk.
+
+## Relocated from skills (2026-09-25) — the resume skill's index-before-bodies reason
+
+Moved out of `skills/resume/SKILL.md` §1 by `skill-prompt-trim`. The skill keeps
+"The index is mandatory — skipping it repeats the rework a finding was recorded to
+prevent — and a body is opened **only** when its summary bears on the packet you are
+about to run". It used to read:
+
+> Both failure modes are real, so neither instinct is safe on its own. Reading every
+> body rebuilds the 41k-token run-state this design took apart, just in another file.
+> Skipping the index means a gotcha recorded specifically to prevent rework goes unseen
+> and the rework happens — which costs more than the reading would have. The index is
+> cheap and mandatory; the bodies are not free and are conditional.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's fresh-run carry reasons
+
+Moved out of `skills/run-loop/SKILL.md` §2's fresh-run carry-through clause by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **How this write relates to the packet-close write.** The skill keeps "`write`
+  REPLACES the file, so an omitted entry is unlinked, not edited out". It used to
+  read:
+
+  > It is the same consequence §3.6's packet-close write states, at the write where
+  > the file being replaced belongs to a *different* run
+
+- **Why the index is carried inside the one `write`.** The skill keeps "a crash in
+  between loses it". It used to read:
+
+  > a checkpoint that exists for any interval without the index is an interval in
+  > which a crash loses it.
+
+- **Why the index is copied from the file line-for-line.** The skill keeps "so its
+  quoting carries over". It used to read:
+
+  > The quoting the file carries is then the quoting the new file carries.
+
+- **Why `runstate.sh findings` is not a source.** The skill keeps "it strips the
+  single-quoting the durable-state writer applies (ADR 0027)". It used to read:
+
+  > that subcommand prints a tab-separated projection for one caller, and it strips
+  > the single-quoting the durable-state writer applies (ADR 0027), so re-emitting
+  > its output as index lines re-opens the `": "` corruption that quoting exists to
+  > prevent, in the one file whose parse failure is unrecoverable. This says where
+  > the index is read from, never when it lands — the carry stays inside the one
+  > `write` above.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's packet-close carry reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step, the
+packet-close `write`, by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **What an omitted findings entry leaves behind.** The skill keeps "An omitted entry
+  is unlinked, not edited out". It used to add:
+
+  > the body stays on disk with nothing left pointing at it.
+
+- **Why every carried key is copied from the on-disk file.** The skill keeps "so the
+  file's quoting survives" and "`runstate.sh findings` is not a source for the index
+  (its projection strips that quoting, ADR 0027)". It used to read:
+
+  > the same source rule §2's fresh-run write states, and for the same reason: the
+  > quoting the file carries is the quoting the new file carries, `runstate.sh
+  > findings` is not a source for the index (its projection strips that quoting, ADR
+  > 0027), and a value restated from memory of an earlier read is a value this write
+  > can silently change.

@@ -82,8 +82,18 @@ mk_plan_v2() { # mk_plan_v2 <root> <slug> <<<body
 # =============================================================================
 printf '\n== pin ==\n'
 out="$("$ADAPTER" pin)"
-check 'pin reports the pinned gspec version' 'GSPEC_PINNED_VERSION=3.1.1' "$out"
-check 'pin reports the install command'      'npx gspec@3.1.1' "$out"
+# Shape only: the value itself lives in GSPEC_PINNED_VERSION in gspec-backlog.sh
+# and nowhere else, so this sweep must not carry a second copy of it.
+if printf '%s\n' "$out" | grep -Eq '^GSPEC_PINNED_VERSION=[0-9]+\.[0-9]+\.[0-9]+$'; then
+  ok 'pin reports an x.y.z gspec version'
+else
+  bad 'pin reports an x.y.z gspec version' "got: $out"
+fi
+pinv="$(printf '%s\n' "$out" | sed -n 's/^GSPEC_PINNED_VERSION=//p')"
+check 'pin reports the install command for that version' "INSTALL=npx gspec@$pinv --target claude" "$out"
+out9="$(ORCH_GSPEC_PINNED_VERSION=9.9.9 "$ADAPTER" pin)"
+check 'ORCH_GSPEC_PINNED_VERSION overrides the pin'   'GSPEC_PINNED_VERSION=9.9.9' "$out9"
+check 'and the override reaches the install command'  'npx gspec@9.9.9' "$out9"
 # BOTH artifact versions, deliberately: v2 is what gspec 3.x writes, v1 is what
 # every unmigrated consumer repo still has on disk, and the adapter reads both.
 check 'pin supports both artifact versions'  'GSPEC_SPEC_VERSIONS=v1 v2' "$out"
@@ -387,16 +397,146 @@ check 'and names the remedy'          '/gspec-migrate' "$out"
 out="$("$ADAPTER" features "$R")"
 refute 'a .plan.md is never a feature' 'old.plan' "$out"
 
+# The third nothing-to-do state, and it is asserted over SEVERAL complete
+# features rather than one: the other two states are corrected by making their
+# branches reachable again, and a correction must not be evidenced by a branch
+# that has simply stopped being reached. So this case pins that a backlog whose
+# every feature reads as complete still answers NEXT=none with that reason, and
+# carries neither of the other two states' per-feature lines.
 R="$TMPROOT/alldone"; mkdir -p "$R"
 mk_prd "$R" finished 2 0
+mk_prd "$R" also-finished 1 0
+mk_prd "$R" finished-too 3 0
 out="$("$ADAPTER" next "$R")"
-check 'all-complete reports none' 'REASON=all features complete' "$out"
+check 'all-complete reports none'          'NEXT=none' "$out"
+check 'all-complete names the reason'      'REASON=all features complete' "$out"
+refute 'all-complete is not reported as blocked'  'BLOCKED=' "$out"
+refute 'all-complete is not reported as deferred' 'DEFERRED=' "$out"
 
 R="$TMPROOT/allblocked"; mkdir -p "$R"
 mk_prd "$R" pre 0 1
 mk_prd "$R" post 0 1 pre
 out="$("$ADAPTER" next "$R" | grep -c 'NEXT=pre')"
 [ "$out" = "1" ] && ok 'blocked feature is skipped for its dependency' || bad 'blocked feature skipped' "got=$out"
+
+# =============================================================================
+printf '\n== next: the nothing-to-do branches at a size that reproduces the pipe race ==\n'
+# Both of these fixtures are LARGE on purpose, and the size is the whole point.
+# `cmd_next` used to test each nothing-to-do condition with
+# `printf '%s\n' "$rows" | awk -F'\t' '…' | grep -q .`: `grep -q` exits on its
+# first match and closes the pipe, the awk still writing takes the signal, and
+# the file-wide `pipefail` reports that signal in place of grep's success — so a
+# TRUE condition reads as false and control falls through to the last branch,
+# which reports the backlog finished. The window only opens once the filtered
+# payload outgrows a single buffered write, so a small fixture certifies the fix
+# while exercising nothing: the same construct showed 0 failures in 400
+# iterations at 733 bytes. Each fixture below therefore builds a filtered
+# payload of at least 40 KiB (twice the 18,756-byte reproduction recorded in the
+# PRD), asserted rather than assumed, and each assertion runs over a repeat loop
+# because the failure is a race and a single draw proves nothing.
+#
+# Both assert the branch's own REASON= text AND its per-feature lines by feature
+# name — the full set, compared as a sorted block. An assertion that the output
+# merely differs from `all features complete` passes on several wrong answers.
+BIGWHY="$(awk 'BEGIN{ while (length(s) < 2200) s = s "roadmap rationale text that makes every feature row long "; print substr(s, 1, 2200) }')"
+BIGN=20
+BIGITER=50
+
+# --- every incomplete feature blocked ---------------------------------------
+# OBSERVED PRE-FIX: run against the unfixed `cmd_next` (the `printf | awk |
+# grep -q .` condition) this case failed 40 of 50 and 45 of 50 invocations over
+# two sweep runs — each failure reporting `REASON=all features complete` over a
+# backlog in which nothing was complete and every feature was blocked.
+#
+# Every feature depends on its successor and the last on the first: with no
+# deferred entries and no dependency on a finished feature, that cycle is the
+# shape in which every incomplete feature is genuinely blocked, so the blocked
+# branch is the one under test and the deferred capture is empty.
+R="$TMPROOT/bigblocked"; mkdir -p "$R/.agents"
+exp=""
+{ printf 'schema: 1\nfeatures:\n'
+  for ((i=0;i<BIGN;i++)); do
+    s="$(printf 'bigblk-%02d' "$i")"
+    nxt="$(printf 'bigblk-%02d' $(( (i+1) % BIGN )))"
+    mk_prd "$R" "$s" 0 1 "$nxt"
+    printf '  - slug: %s\n    order: %d\n    why: %s %d\n' "$s" "$((10+i))" "$BIGWHY" "$i"
+    exp="$exp$(printf 'BLOCKED=%s depends_on=%s' "$s" "$nxt")"$'\n'
+  done
+} > "$R/.agents/roadmap.yaml"
+exp_blocked="$(printf '%s' "$exp" | sort)"
+bytes="$("$ADAPTER" features "$R" | awk -F'\t' '$3=="0" && $7!="1"' | wc -c | tr -d ' ')"
+# 44,700 bytes over 20 filtered rows when this comment was written.
+[ "$bytes" -ge 40960 ] \
+  && ok "the blocked fixture's filtered payload is at least 40 KiB ($bytes bytes)" \
+  || bad 'blocked fixture is large enough to reproduce the race' "filtered payload is only $bytes bytes — below the buffer threshold, so this case would certify the fix while exercising nothing"
+
+misreason=0; misline=0
+for ((i=0;i<BIGITER;i++)); do
+  out="$("$ADAPTER" next "$R")"
+  case "$out" in
+    *'REASON=every incomplete feature is blocked by an unfinished dependency'*) ;;
+    *) misreason=$((misreason+1)) ;;
+  esac
+  got="$(printf '%s\n' "$out" | grep '^BLOCKED=' | sort)"
+  [ "$got" = "$exp_blocked" ] || misline=$((misline+1))
+done
+[ "$misreason" -eq 0 ] \
+  && ok "an all-blocked backlog reports the blocked reason on every one of $BIGITER runs" \
+  || bad 'all-blocked reports the blocked reason every time' "wrong reason in $misreason of $BIGITER runs"
+[ "$misline" -eq 0 ] \
+  && ok "and one BLOCKED= line per feature, by name, on every one of $BIGITER runs" \
+  || bad 'all-blocked names every blocked feature every time' "per-feature lines wrong in $misline of $BIGITER runs
+     last run: $out"
+refute 'and never says the backlog is finished' 'all features complete' "$out"
+
+# --- every remaining feature deferred ---------------------------------------
+# OBSERVED PRE-FIX: run against the unfixed `cmd_next` this case failed 45 of 50
+# and 48 of 50 invocations over two sweep runs, each reporting `REASON=all
+# features complete` over a backlog whose every feature was deferred — a human
+# decision, reversible by editing one line, reported as finished work. The same
+# construct at this site showed 0 failures in 400 iterations against the
+# repository's real 733-byte payload; the size is what opens the window.
+R="$TMPROOT/bigdeferred"; mkdir -p "$R/.agents"
+exp=""
+{ printf 'schema: 1\nfeatures:\n'
+  for ((i=0;i<BIGN;i++)); do
+    s="$(printf 'bigdef-%02d' "$i")"
+    mk_prd "$R" "$s" 0 1
+    printf '  - slug: %s\n    order: %d\n    why: %s %d\n    deferred: true\n' "$s" "$((10+i))" "$BIGWHY" "$i"
+    exp="$exp$(printf 'DEFERRED=%s why=%s %d' "$s" "$BIGWHY" "$i")"$'\n'
+  done
+} > "$R/.agents/roadmap.yaml"
+exp_deferred="$(printf '%s' "$exp" | sort)"
+bytes="$("$ADAPTER" features "$R" | awk -F'\t' '$3=="0" && $7=="1"' | wc -c | tr -d ' ')"
+# 44,500 bytes over 20 filtered rows when this comment was written.
+[ "$bytes" -ge 40960 ] \
+  && ok "the deferred fixture's filtered payload is at least 40 KiB ($bytes bytes)" \
+  || bad 'deferred fixture is large enough to reproduce the race' "filtered payload is only $bytes bytes — below the buffer threshold, so this case would certify the fix while exercising nothing"
+
+misreason=0; misline=0; mishint=0
+for ((i=0;i<BIGITER;i++)); do
+  out="$("$ADAPTER" next "$R")"
+  case "$out" in
+    *'REASON=every remaining feature is deferred in .agents/roadmap.yaml'*) ;;
+    *) misreason=$((misreason+1)) ;;
+  esac
+  case "$out" in
+    *'HINT=remove `deferred: true` from an entry to bring it back into the backlog'*) ;;
+    *) mishint=$((mishint+1)) ;;
+  esac
+  got="$(printf '%s\n' "$out" | grep '^DEFERRED=' | sort)"
+  [ "$got" = "$exp_deferred" ] || misline=$((misline+1))
+done
+[ "$misreason" -eq 0 ] \
+  && ok "an all-deferred backlog reports the deferred reason on every one of $BIGITER runs" \
+  || bad 'all-deferred reports the deferred reason every time' "wrong reason in $misreason of $BIGITER runs"
+[ "$misline" -eq 0 ] \
+  && ok "and one DEFERRED= line per feature, with its why, on every one of $BIGITER runs" \
+  || bad 'all-deferred names every deferred feature every time' "per-feature lines wrong in $misline of $BIGITER runs"
+[ "$mishint" -eq 0 ] \
+  && ok "and the HINT= line saying how to undo it, on every one of $BIGITER runs" \
+  || bad 'all-deferred always says how to undo it' "HINT missing in $mishint of $BIGITER runs"
+refute 'and never says the backlog is finished' 'all features complete' "$out"
 
 # =============================================================================
 printf '\n== nodes: task deps become graph edges ==\n'
@@ -424,10 +564,13 @@ t2line="$(printf '%s\n' "$out" | awk -F'\t' '$1=="api-t2"')"
 # not "no token" but "no EDGE": nothing produces api#T1 because a checked task is
 # not a node, so done work cannot block T2. Asserted on the graph, not the TSV.
 check 'consumes token is still emitted for a checked dep' 'api#T1' "$t2line"
+# packet-graph.sh (retired) used to derive "no edge" from this by finding no
+# producer for the consumed token; asserted directly on the TSV now — a
+# checked task never becomes a node, so nothing can produce api#T1.
 "$ADAPTER" nodes api "$R" > "$TMPROOT/checkeddep.tsv"
-gdep="$("$HERE/packet-graph.sh" build "$TMPROOT/checkeddep.tsv" 2>&1)"
-t2dep="$(printf '%s\n' "$gdep" | awk '/id: api-t2$/{f=1} f&&/depends_on:/{print;exit}')"
-refute 'a dep on a checked task produces NO edge' 'api-t1' "$t2dep"
+prod1="$(awk -F'\t' '$5=="api#T1"' "$TMPROOT/checkeddep.tsv")"
+[ -z "$prod1" ] && ok 'a dep on a checked task has no producer row (no edge for a scheduler to find)' \
+  || bad 'a dep on a checked task has no producer row (no edge for a scheduler to find)' "$prod1"
 
 printf '\n== nodes: optional files: (forward-compat with U1) ==\n'
 mk_plan "$R" api <<'EOF'
@@ -498,7 +641,7 @@ out="$("$ADAPTER" nodes svc "$R" 2>/dev/null | awk -F'\t' '$1=="svc-t1"{print $3
 [ "$out" = 'authoritative/from-plan.sql' ] && ok 'plan-authored files: beats the sidecar' \
   || bad 'plan files: precedence' "got=$out"
 
-printf '\n== sidecar: end-to-end, scope actually unlocks a wave ==\n'
+printf '\n== sidecar: end-to-end, scope resolves as expected (was: unlocks a wave in packet-graph.sh, retired in retire-unused-loop-modes T2 — asserted directly on file scope now) ==\n'
 R="$TMPROOT/sidecar-e2e"; mkdir -p "$R/.agents"
 mk_prd "$R" par 0 1
 mk_plan "$R" par <<'EOF'
@@ -507,11 +650,11 @@ mk_plan "$R" par <<'EOF'
 - [ ] **T2** **P0** build the right side
   - deps: —
 EOF
-"$ADAPTER" nodes par "$R" > "$TMPROOT/par-noscope.tsv" 2>/dev/null
-g="$("$HERE/packet-graph.sh" build "$TMPROOT/par-noscope.tsv")"
-printf '%s\n' "$g" > "$TMPROOT/par-noscope.yaml"
-v="$("$HERE/packet-graph.sh" validate "$TMPROOT/par-noscope.yaml" 2>&1)"
-check 'with no scope both packets are conservatively serialized' 'conservatively_serialized: 2' "$v"
+out="$("$ADAPTER" nodes par "$R" 2>/dev/null)"
+t1f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t1"{print $3}')"
+t2f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t2"{print $3}')"
+[ -z "$t1f" ] && [ -z "$t2f" ] && ok 'with no files: line and no sidecar entry, both packets carry empty scope' \
+  || bad 'with no files: line and no sidecar entry, both packets carry empty scope' "t1=$t1f t2=$t2f"
 cat > "$R/.agents/task-files.yaml" <<'EOF'
 schema: 1
 tasks:
@@ -522,13 +665,11 @@ tasks:
     files: [src/right/**]
     fingerprint: build the right side
 EOF
-"$ADAPTER" nodes par "$R" > "$TMPROOT/par-scoped.tsv" 2>/dev/null
-printf '%s\n' "$("$HERE/packet-graph.sh" build "$TMPROOT/par-scoped.tsv")" > "$TMPROOT/par-scoped.yaml"
-v="$("$HERE/packet-graph.sh" validate "$TMPROOT/par-scoped.yaml" 2>&1)"
-check 'scoping removes the conservative serialization' 'conservatively_serialized: 0' "$v"
-rdy="$("$HERE/packet-graph.sh" ready "$TMPROOT/par-scoped.yaml" --max 5 2>&1)"
-[ "$(printf '%s\n' "$rdy" | grep -c .)" = 2 ] && ok 'both disjoint packets become concurrently dispatchable' \
-  || bad 'disjoint packets dispatchable' "ready=$rdy"
+out="$("$ADAPTER" nodes par "$R" 2>/dev/null)"
+t1f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t1"{print $3}')"
+t2f="$(printf '%s\n' "$out" | awk -F'\t' '$1=="par-t2"{print $3}')"
+[ "$t1f" = 'src/left/**' ] && [ "$t2f" = 'src/right/**' ] && ok 'sidecar scoping resolves each task to its own disjoint file scope' \
+  || bad 'sidecar scoping resolves each task to its own disjoint file scope' "t1=$t1f t2=$t2f"
 
 printf '\n== files-status: the sidecar audit ==\n'
 R="$TMPROOT/fstat"; mkdir -p "$R/.agents"
@@ -592,7 +733,12 @@ refute 'completed feature is skipped' 'finished-t1' "$out"
 refute 'blocked feature is skipped'   'waiting-t1' "$out"
 
 # =============================================================================
-printf '\n== nodes feed packet-graph.sh end to end ==\n'
+# retire-unused-loop-modes T2 deleted packet-graph.sh, the former end-to-end
+# consumer of `nodes` output; the loop now reads the TSV directly. That T2
+# packet's own requirement is that `nodes` and file-scope resolution are
+# UNCHANGED, so this case asserts the exact TSV bytes rather than piping
+# through a scheduler that no longer exists.
+printf '\n== nodes: TSV is byte-identical (id/feature/files/consumes/produces/fdeps) ==\n'
 R="$TMPROOT/e2e"; mkdir -p "$R"
 mk_prd "$R" svc 0 1
 mk_plan "$R" svc <<'EOF'
@@ -606,19 +752,16 @@ mk_plan "$R" svc <<'EOF'
   - deps: T1
   - files: [docs/api.md]
 EOF
-nodes="$TMPROOT/e2e-nodes.tsv"
-"$ADAPTER" nodes svc "$R" > "$nodes"
-if graph="$("$HERE/packet-graph.sh" build "$nodes" 2>&1)"; then
-  ok 'packet-graph.sh accepts adapter output'
-  check 'T1 lands in the first wave' 'svc-t1' "$graph"
-  printf '%s\n' "$graph" > "$TMPROOT/e2e-graph.yaml"   # validate needs a real file
-  v="$("$HERE/packet-graph.sh" validate "$TMPROOT/e2e-graph.yaml" 2>&1 || true)"
-  check 'the emitted graph validates' 'VALIDATE=ok' "$v"
-else
-  bad 'packet-graph.sh accepts adapter output' "$graph"
-fi
+out="$("$ADAPTER" nodes svc "$R")"
+expected="$(printf 'svc-t1\tsvc\tdb/schema.sql\t\tsvc#T1\t\nsvc-t2\tsvc\tsrc/api.ts\tsvc#T1\tsvc#T2\t\nsvc-t3\tsvc\tdocs/api.md\tsvc#T1\tsvc#T3\t')"
+[ "$out" = "$expected" ] && ok 'nodes TSV bytes unchanged (file scope carried through as before)' \
+  || bad 'nodes TSV bytes unchanged (file scope carried through as before)' "got:
+$out
+want:
+$expected"
 
-# A dangling consumes (dep on a checked task) must not crash the graph.
+# A dangling consumes (dep on a checked task) must not crash the adapter, and
+# the raw dep text still lands in the consumes column with no producer for it.
 R="$TMPROOT/dangle"; mkdir -p "$R"
 mk_prd "$R" d 0 1
 mk_plan "$R" d <<'EOF'
@@ -626,12 +769,13 @@ mk_plan "$R" d <<'EOF'
 - [ ] **T2** **P0** depends on done work
   - deps: T1
 EOF
-"$ADAPTER" nodes d "$R" > "$TMPROOT/dangle.tsv"
-if g2="$("$HERE/packet-graph.sh" build "$TMPROOT/dangle.tsv" 2>&1)"; then
-  ok 'dangling dep does not break graph build'
-else
-  bad 'dangling dep does not break graph build' "$g2"
-fi
+out2="$("$ADAPTER" nodes d "$R")"
+expected2="$(printf 'd-t2\td\t\td#T1\td#T2\t')"
+[ "$out2" = "$expected2" ] && ok 'dangling dep (checked producer) still emits a clean, unchanged TSV row' \
+  || bad 'dangling dep (checked producer) still emits a clean, unchanged TSV row' "got:
+$out2
+want:
+$expected2"
 
 # =============================================================================
 printf '\n== interlock: fail-soft outside the pinned contract (D5) ==\n'
@@ -988,6 +1132,15 @@ R="$TMPROOT/taskstatus"; mkdir -p "$R/gspec/tasks"
   printf -- '  - deps: T1\n'
 } > "$R/gspec/tasks/ts.md"
 
+# `$R` is a real git repo from here on: `gone` (loop-measurement T2) now
+# requires positive evidence from the plan's OWN git history, so the fixtures
+# below that exercise it need genuine commits, not just files on disk.
+git -C "$R" init -q
+git -C "$R" config user.email t@t
+git -C "$R" config user.name t
+git -C "$R" add -A
+git -C "$R" commit -q -m 'initial: ts T1 T2'
+
 out="$("$ADAPTER" task-status 'ts#T1' "$R")"; rc=$?
 check 'a finished task reads state finished'  "$(printf 'ts#T1\tfinished')" "$out"
 check 'the FINISHED= trailer names it'        'FINISHED=ts#T1' "$out"
@@ -1021,13 +1174,160 @@ check 'no plan file for that feature slug -> unknown' "$(printf 'other#T1\tunkno
 check 'and names the missing plan'                     'no plan file for feature other' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 with no plan file' || bad 'exit 0 with no plan file' "rc=$rc"
 
+# `gone` now requires POSITIVE EVIDENCE from the plan's own git history
+# (loop-measurement T2 "gone must require positive evidence"), so give T99 a
+# real history: add it as a real task line, commit, then remove it again and
+# commit -- restoring ts.md to the exact T1/T2 content every other case in
+# this section still relies on.
+{
+  printf -- '---\nspec-version: v1\nfeature: ts\n---\n\n# Plan: ts\n\n## Plan\n\n'
+  printf -- '- [x] **T1** **P0** already finished\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** still open\n'
+  printf -- '  - deps: T1\n'
+  printf -- '- [ ] **T99** **P0** a task later re-decomposed away\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$R/gspec/tasks/ts.md"
+git -C "$R" add -A
+git -C "$R" commit -q -m 'ts: add T99'
+{
+  printf -- '---\nspec-version: v1\nfeature: ts\n---\n\n# Plan: ts\n\n## Plan\n\n'
+  printf -- '- [x] **T1** **P0** already finished\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** still open\n'
+  printf -- '  - deps: T1\n'
+} > "$R/gspec/tasks/ts.md"
+git -C "$R" add -A
+git -C "$R" commit -q -m 'ts: re-decompose away T99'
+
 out="$("$ADAPTER" task-status 'ts#T99' "$R")"; rc=$?
-check 'a task id absent from an EXISTING plan -> unknown' "$(printf 'ts#T99\tunknown')" "$out"
+check 'a task id absent from an EXISTING plan, WITH history evidence -> gone (loop-measurement T2)' "$(printf 'ts#T99\tgone')" "$out"
+refute 'and is NOT reported as unknown'                    "$(printf 'ts#T99\tunknown')" "$out"
 check 'and names the plan it looked in'                    'ts.md' "$out"
+check 'and the reason cites the history evidence'          'git history' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 on a task id absent from an existing plan (READ-ONLY: never the exit-4 drift signal check-task uses)' \
   || bad 'exit 0 on drift for task-status' "rc=$rc"
 
-# a mixed set: the exact FINISHED= line, comma-separated, no spaces
+# --- loop-measurement T2: gone requires POSITIVE EVIDENCE, not just absence -
+# The reviewer's remaining hole: a non-gspec packet id that merely happens to
+# prefix-match a live feature's slug (`ts-fix-login-bug` against feature
+# `ts`) must NOT read `gone` just because `ts` has a plan and the id is
+# absent from it -- it was never a gspec task here, so it must read `unknown`
+# (which `sweep-open` then sweeps as `interrupted`, the safe direction per
+# the plan preamble).
+out="$("$ADAPTER" task-status 'ts-fix-login-bug' "$R")"; rc=$?
+check 'a non-gspec id that prefix-collides with a live feature slug -> unknown, not gone' \
+  "$(printf 'ts-fix-login-bug\tunknown')" "$out"
+refute 'and must not be misreported as gone -- absence alone is not evidence' \
+  "$(printf 'ts-fix-login-bug\tgone')" "$out"
+check 'and the reason says the id never appears in that plan history' 'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a prefix-colliding non-gspec id' || bad 'exit 0 on a prefix-colliding non-gspec id' "rc=$rc"
+
+# the false-positive guard: an id mentioned only in PROSE in a historical
+# version of the plan (never as its own task line) must not read as evidence
+# either -- a bare substring search over history would get this wrong; the
+# structural task-line regex must not.
+RP="$TMPROOT/taskstatus-prose"; mkdir -p "$RP/gspec/tasks"
+git -C "$RP" init -q; git -C "$RP" config user.email t@t; git -C "$RP" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: pr\n---\n\n# Plan: pr\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** something; note: replaces the old T77 approach\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RP/gspec/tasks/pr.md"
+git -C "$RP" add -A
+git -C "$RP" commit -q -m 'T77 mentioned only in prose, never as a task line'
+out="$("$ADAPTER" task-status 'pr#T77' "$RP")"; rc=$?
+check 'an id mentioned only in PROSE in plan history -> unknown, not gone' "$(printf 'pr#T77\tunknown')" "$out"
+refute 'a prose mention must not be misread as a historical task line' "$(printf 'pr#T77\tgone')" "$out"
+check 'and the reason says it never appears as a task line' 'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an id that only ever appeared in prose' || bad 'exit 0 on an id that only ever appeared in prose' "rc=$rc"
+
+# fail-soft: the plan file exists and parses, but there is no git history to
+# consult at all -- must read unknown (history unavailable), never gone.
+RNG="$TMPROOT/taskstatus-nogit"; mkdir -p "$RNG/gspec/tasks"
+{
+  printf -- '---\nspec-version: v1\nfeature: ng\n---\n\n# Plan: ng\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task in a plan with no git repo at all\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RNG/gspec/tasks/ng.md"
+out="$("$ADAPTER" task-status 'ng#T99' "$RNG")"; rc=$?
+check 'no git repo at all -> unknown (history unavailable), not gone' "$(printf 'ng#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone'                          "$(printf 'ng#T99\tgone')" "$out"
+check 'and the reason says history is unavailable, not that the task never existed' 'unavailable' "$out"
+refute 'and must not claim positive evidence it does not have'                       'never appears' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with no git repo at all' || bad 'exit 0 with no git repo at all' "rc=$rc"
+
+# fail-soft: a real git repo, but the plan file itself was never committed --
+# same "cannot confirm" reason, not "never existed".
+RUT="$TMPROOT/taskstatus-untracked"; mkdir -p "$RUT/gspec/tasks"
+git -C "$RUT" init -q; git -C "$RUT" config user.email t@t; git -C "$RUT" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: ut\n---\n\n# Plan: ut\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task in an untracked plan file\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RUT/gspec/tasks/ut.md"
+out="$("$ADAPTER" task-status 'ut#T99' "$RUT")"; rc=$?
+check 'plan file untracked in a real git repo -> unknown (history unavailable), not gone' \
+  "$(printf 'ut#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone'                          "$(printf 'ut#T99\tgone')" "$out"
+check 'and the reason says history is unavailable' 'unavailable' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 with an untracked plan file' || bad 'exit 0 with an untracked plan file' "rc=$rc"
+
+# --- Critical 1 (loop-measurement T2 reviewer finding): an empty or ---------
+# unparseable plan must read unknown for EVERY id, never gone -- absence of
+# ANY parseable task line in the whole file is not positive evidence that one
+# specific id was removed. Pre-fix, `_task_lookup` prints nothing for both "no
+# such id" and "no ids at all here", and both fell into the gone catch-all.
+: > "$R/gspec/tasks/empty.md"
+out="$("$ADAPTER" task-status 'empty#T1' "$R")"; rc=$?
+check 'plan file EXISTS but is EMPTY -> unknown, not gone' "$(printf 'empty#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone'                "$(printf 'empty#T1\tgone')" "$out"
+check 'and the reason names the real cause'                 'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an empty plan file' || bad 'exit 0 on an empty plan file' "rc=$rc"
+
+{
+  printf -- '---\nspec-version: v1\nfeature: noparse\n---\n\n# Plan: noparse\n\n'
+  printf -- 'This plan has content, but no line this adapter recognizes as a task.\n'
+} > "$R/gspec/tasks/noparse.md"
+out="$("$ADAPTER" task-status 'noparse#T1' "$R")"; rc=$?
+check 'plan EXISTS with content, NO parseable task lines -> unknown, not gone' "$(printf 'noparse#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone'                                    "$(printf 'noparse#T1\tgone')" "$out"
+check 'and the reason names the real cause'                                     'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a plan with no parseable task lines' || bad 'exit 0 on a plan with no parseable task lines' "rc=$rc"
+
+# --- Critical 2 (loop-measurement T2 reviewer finding): the documented ------
+# `phase` / `phase-t2` packet-id collision (see `_resolve_task_id`) must not
+# silently read `gone` -- the longest-slug-wins guess that is safe for
+# check-task (a wrong guess there is a loud rc=4 "no such task") is not safe
+# here, because task-status has a silent-success state check-task lacks.
+RC="$TMPROOT/collision"; mkdir -p "$RC/gspec/tasks"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase\n---\n\n# Plan: phase\n\n## Plan\n\n'
+  printf -- '- [ ] **T2-T1** **P0** live unchecked task, in the SHORTER-slug feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RC/gspec/tasks/phase.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** an unrelated task, in the colliding SIBLING feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RC/gspec/tasks/phase-t2.md"
+
+out="$("$ADAPTER" nodes phase "$RC" 2>/dev/null)"
+check 'nodes phase reproduces the collision: it emits the ambiguous packet id' 'phase-t2-t1' "$out"
+
+out="$("$ADAPTER" task-status 'phase-t2-t1' "$RC")"; rc=$?
+check 'an ambiguous packet-id resolution -> unknown, not gone' "$(printf 'phase-t2-t1\tunknown')" "$out"
+refute 'and must not silently claim the live task in the OTHER feature was abandoned' \
+  "$(printf 'phase-t2-t1\tgone')" "$out"
+check 'and the reason names the collision'  'ambiguous' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an ambiguous packet-id resolution' || bad 'exit 0 on an ambiguous packet-id resolution' "rc=$rc"
+
+# a mixed set: the exact FINISHED= line, comma-separated, no spaces. This
+# fixture carries all four states (finished, unchecked, unknown, gone) and is
+# the regression guard for `skills/run-loop/SKILL.md`, which feeds FINISHED=
+# VERBATIM to `runstate.sh findings --stale --finished` -- the line's format
+# and content for every already-supported state must stay byte-identical to
+# what it was before `gone` existed.
 out="$("$ADAPTER" task-status 'ts#T1,ts#T2,fix-login-bug' "$R")"; rc=$?
 check 'finished line'   "$(printf 'ts#T1\tfinished')" "$out"
 check 'unchecked line'  "$(printf 'ts#T2\tunchecked')" "$out"
@@ -1035,6 +1335,166 @@ check 'unknown line'    "$(printf 'fix-login-bug\tunknown')" "$out"
 check 'the FINISHED= trailer names only the finished id, comma-separated, no spaces' 'FINISHED=ts#T1' "$out"
 refute 'and never includes the unchecked or unknown ids'                             'FINISHED=ts#T1,ts#T2' "$out"
 [ "$rc" -eq 0 ] && ok 'exit 0 on a mixed set, including unknown members' || bad 'exit 0 on a mixed set' "rc=$rc"
+
+out="$("$ADAPTER" task-status 'ts#T1,ts#T2,fix-login-bug,ts#T99' "$R")"; rc=$?
+check 'same fixture plus a gone id: finished line unchanged'  "$(printf 'ts#T1\tfinished')" "$out"
+check 'unchecked line unchanged'                                "$(printf 'ts#T2\tunchecked')" "$out"
+check 'unknown line unchanged'                                  "$(printf 'fix-login-bug\tunknown')" "$out"
+check 'the new gone line'                                       "$(printf 'ts#T99\tgone')" "$out"
+# exact-match, not substring: `check` would pass this even if `gone` leaked
+# into the trailer (FINISHED=ts#T1 is a substring of FINISHED=ts#T1,ts#T99),
+# which is exactly what the refute below is for -- and pinning it against the
+# line as a whole, not a fixed member order, is what actually proves gone
+# never joins the list.
+finished_line="$(printf '%s\n' "$out" | grep '^FINISHED=')"
+[ "$finished_line" = 'FINISHED=ts#T1' ] \
+  && ok 'FINISHED= still names the finished id, and only it -- gone does not change it' \
+  || bad 'FINISHED= still names the finished id, and only it -- gone does not change it' "$finished_line"
+refute 'gone is excluded from FINISHED= same as unchecked and unknown' 'FINISHED=ts#T1,ts#T99' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a mixed set including a gone member' || bad 'exit 0 on a mixed set including gone' "rc=$rc"
+
+# --- loop-measurement T2 round 2: cases the first sweep missed -------------
+# (reviewer finding: forcing each of these to break produced ZERO or only
+# vacuous failures). Each fixture below is built so the assertion genuinely
+# depends on the thing it names, not on an incidental fixture property.
+
+# Case 1 (Important 2, #1): the parseable-line-count gate (Critical 1) must
+# win over a FOUND -- a plan that is EMPTY right now, but was COMMITTED with
+# real content earlier (so the history probe ALONE would say FOUND), must
+# still read unknown. Without the tcount==0 short-circuit, `_task_lookup` on
+# an empty file returns nothing (indistinguishable from "no such id"), falls
+# through to the history probe, and the probe genuinely finds the earlier
+# commit. This needs REAL git history behind an empty file -- an untracked
+# empty file (as the earlier Critical-1 cases use) reads UNAVAILABLE and
+# never reaches this gate at all.
+REH="$TMPROOT/taskstatus-emptyhist"; mkdir -p "$REH/gspec/tasks"
+git -C "$REH" init -q; git -C "$REH" config user.email t@t; git -C "$REH" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: em\n---\n\n# Plan: em\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task that will be truncated away with the whole file\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$REH/gspec/tasks/em.md"
+git -C "$REH" add -A; git -C "$REH" commit -q -m 'em: T1 present'
+: > "$REH/gspec/tasks/em.md"
+git -C "$REH" add -A; git -C "$REH" commit -q -m 'em: truncate the whole plan to empty'
+out="$("$ADAPTER" task-status 'em#T1' "$REH")"; rc=$?
+check 'a plan EMPTY now but with real committed history for the id -> unknown, not gone (parseable-line count wins over history)' \
+  "$(printf 'em#T1\tunknown')" "$out"
+refute 'and must not be misreported as gone even though the history probe alone would say FOUND' \
+  "$(printf 'em#T1\tgone')" "$out"
+check 'and the reason names the real cause (no parseable lines), not history' 'no task lines this adapter can parse' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an empty-with-history plan' || bad 'exit 0 on an empty-with-history plan' "rc=$rc"
+
+# Case 2 (Important 2, #2): the ambiguity gate (Critical 2) must sit AHEAD of
+# the history probe -- an ambiguous packet id whose longest-slug guess
+# genuinely has history evidence for that id (a real task there once, later
+# removed) must still read unknown, not gone, because the guess itself is
+# unconfirmed. Both plan files stay present on disk so the collision itself
+# still fires; only the guessed slug's plan needs the history.
+RCH="$TMPROOT/collision-history"; mkdir -p "$RCH/gspec/tasks"
+git -C "$RCH" init -q; git -C "$RCH" config user.email t@t; git -C "$RCH" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: phase\n---\n\n# Plan: phase\n\n## Plan\n\n'
+  printf -- '- [ ] **T9** **P0** an unrelated live task, in the SHORTER-slug feature\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** live for now, in the LONGER-slug feature (the longest-slug guess)\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase-t2.md"
+git -C "$RCH" add -A; git -C "$RCH" commit -q -m 'initial: T1 live in phase-t2'
+{
+  printf -- '---\nspec-version: v1\nfeature: phase-t2\n---\n\n# Plan: phase-t2\n\n## Plan\n\n'
+  printf -- '- [ ] **T5** **P0** replaces T1 after re-decomposition\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RCH/gspec/tasks/phase-t2.md"
+git -C "$RCH" add -A; git -C "$RCH" commit -q -m 'phase-t2: re-decompose away T1'
+out="$("$ADAPTER" task-status 'phase-t2-t1' "$RCH")"; rc=$?
+check 'an ambiguous id whose longest-slug guess genuinely has history evidence -> unknown, not gone' \
+  "$(printf 'phase-t2-t1\tunknown')" "$out"
+refute "the ambiguity gate must block gone even though the history probe alone would say FOUND for the guessed slug" \
+  "$(printf 'phase-t2-t1\tgone')" "$out"
+check 'and the reason still names the collision' 'ambiguous' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on an ambiguous id with genuine history for the guessed slug' \
+  || bad 'exit 0 on an ambiguous id with genuine history for the guessed slug' "rc=$rc"
+
+# Case 3 (Important 2, #3): the shallow-clone demotion must be load-bearing
+# -- a FULL clone of $R already reads gone for ts#T99 (asserted above); a
+# `--depth 1` SHALLOW clone of the exact same data, where the commit that
+# added T99 has fallen outside the shallow boundary, must read unknown.
+RSH="$TMPROOT/taskstatus-shallow"
+git clone -q --depth 1 "file://$R" "$RSH" 2>/dev/null
+out="$("$ADAPTER" task-status 'ts#T99' "$RSH")"; rc=$?
+check 'the same gone-worthy id, from a shallow clone of the same repo -> unknown (shallow demotion is load-bearing)' \
+  "$(printf 'ts#T99\tunknown')" "$out"
+refute 'and must not be misreported as gone from a shallow clone' "$(printf 'ts#T99\tgone')" "$out"
+check 'and the reason says history is unavailable' 'unavailable' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on a shallow clone' || bad 'exit 0 on a shallow clone' "rc=$rc"
+
+# Case 4 (Important 2, #4): a REAL git mv across the 3.x relocation (2.x
+# gspec/tasks/<slug>.md -> 3.x gspec/features/<slug>/tasks.md), with the
+# target id removed BEFORE the move -- so only the old, pre-relocation
+# path's history carries the evidence -- proves multi-path probing still
+# finds it now that `--follow` is gone.
+RMV="$TMPROOT/taskstatus-relocated"; mkdir -p "$RMV/gspec/tasks"
+git -C "$RMV" init -q; git -C "$RMV" config user.email t@t; git -C "$RMV" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: mv\n---\n\n# Plan: mv\n\n## Plan\n\n'
+  printf -- '- [ ] **T77** **P0** a task removed before the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T1** **P0** a task that survives the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RMV/gspec/tasks/mv.md"
+git -C "$RMV" add -A; git -C "$RMV" commit -q -m 'mv: T77 present under the 2.x layout'
+{
+  printf -- '---\nspec-version: v1\nfeature: mv\n---\n\n# Plan: mv\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** a task that survives the relocation\n'
+  printf -- '  - deps: \342\200\224\n'
+} > "$RMV/gspec/tasks/mv.md"
+git -C "$RMV" add -A; git -C "$RMV" commit -q -m 'mv: re-decompose away T77, still under the 2.x layout'
+mkdir -p "$RMV/gspec/features/mv"
+git -C "$RMV" mv gspec/tasks/mv.md gspec/features/mv/tasks.md
+git -C "$RMV" commit -q -m 'mv: relocate to the 3.x feature-folder layout (pure rename, no content change)'
+out="$("$ADAPTER" task-status 'mv#T77' "$RMV")"; rc=$?
+check 'an id removed BEFORE a real 3.x relocation -> gone, found via the pre-relocation path (multi-path probing, no --follow)' \
+  "$(printf 'mv#T77\tgone')" "$out"
+check 'and names the CURRENT (3.x) plan path' 'gspec/features/mv/tasks.md' "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 across a genuine 3.x relocation' || bad 'exit 0 across a genuine 3.x relocation' "rc=$rc"
+
+# The Critical's own regression guard: the cross-feature bait. One commit
+# deletes ONE feature's plan and adds a DIFFERENT feature's plan with heavily
+# overlapping boilerplate (gspec plan files are boilerplate-heavy by
+# construction), which is exactly the shape `git log --follow`'s similarity
+# heuristic mis-paired as one file's continuous history. `beta#T99` must read
+# unknown: T99 was only ever alpha's task, and alpha's path is never one of
+# beta's candidate paths under any layout.
+RBAIT="$TMPROOT/taskstatus-bait"; mkdir -p "$RBAIT/gspec/tasks"
+git -C "$RBAIT" init -q; git -C "$RBAIT" config user.email t@t; git -C "$RBAIT" config user.name t
+{
+  printf -- '---\nspec-version: v1\nfeature: alpha\n---\n\n# Plan: alpha\n\n## Plan\n\n'
+  printf -- '- [ ] **T99** **P0** alpha'"'"'s own task, later abandoned when alpha itself was retired\n'
+  printf -- '  - deps: \342\200\224\n'
+  printf -- '- [ ] **T1** **P0** filler task A\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** filler task B\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T3** **P0** filler task C\n  - deps: \342\200\224\n'
+} > "$RBAIT/gspec/tasks/alpha.md"
+git -C "$RBAIT" add -A; git -C "$RBAIT" commit -q -m 'alpha: T99 present'
+rm "$RBAIT/gspec/tasks/alpha.md"
+{
+  printf -- '---\nspec-version: v1\nfeature: beta\n---\n\n# Plan: beta\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** filler task A\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T2** **P0** filler task B\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T3** **P0** filler task C\n  - deps: \342\200\224\n'
+  printf -- '- [ ] **T4** **P0** filler task D, new to beta\n  - deps: \342\200\224\n'
+} > "$RBAIT/gspec/tasks/beta.md"
+git -C "$RBAIT" add -A; git -C "$RBAIT" commit -q -m 'retire alpha, introduce beta (unrelated feature, similar boilerplate)'
+out="$("$ADAPTER" task-status 'beta#T99' "$RBAIT")"; rc=$?
+check 'the cross-feature bait: an id that only ever belonged to the RETIRED feature, asked about under the NEW one -> unknown' \
+  "$(printf 'beta#T99\tunknown')" "$out"
+refute "and must not read gone from the OTHER feature's history via similarity-based rename pairing" \
+  "$(printf 'beta#T99\tgone')" "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 on the cross-feature bait' || bad 'exit 0 on the cross-feature bait' "rc=$rc"
 
 # task-status is READ-ONLY: never touches gspec/ (check-task stays the one write)
 cp "$R/gspec/tasks/ts.md" "$TMPROOT/ts.before.md"
@@ -1112,6 +1572,38 @@ check 'DESIGN is surfaced when present'       'DESIGN=gspec/features/folded/desi
 # than YAML frontmatter must not fail it.
 out="$("$ADAPTER" check "$R" 2>&1)"
 check 'enriched siblings are outside the asserted contract' 'CHECK=ok' "$out"
+
+# The two siblings resolve through `_resolve_arch_path`/`_resolve_design_path`,
+# each walking its own layout list. Pin each resolver independently (one present,
+# the other absent, both ways) and pin the LIST: a copy sitting anywhere the list
+# does not name is never surfaced, so a resolver pointed at another directory
+# turns these red rather than quietly reading the wrong file.
+mv "$R/gspec/features/folded/design.html" "$R/gspec/features/folded.design.html.bak"
+out="$("$ADAPTER" next "$R")"
+check  'arch resolver finds arch.md with design.html absent' 'ARCH=gspec/features/folded/arch.md' "$out"
+refute 'design resolver returns nothing when design.html is absent' 'DESIGN=' "$out"
+mv "$R/gspec/features/folded.design.html.bak" "$R/gspec/features/folded/design.html"
+mv "$R/gspec/features/folded/arch.md" "$R/gspec/features/folded.arch.md.bak"
+out="$("$ADAPTER" next "$R")"
+check  'design resolver finds design.html with arch.md absent' 'DESIGN=gspec/features/folded/design.html' "$out"
+refute 'arch resolver returns nothing when arch.md is absent' 'ARCH=' "$out"
+# Off-layout copies: shapes a guess might try. Neither file ever lived there, so
+# neither may be read from there. (No stray under gspec/features/*.md -- that
+# glob is the pre-3.x PRD layout and would add a phantom feature to `next`.)
+mkdir -p "$R/gspec/arch" "$R/gspec/design"
+printf 'stray\n' > "$R/gspec/arch/folded.md"
+printf 'stray\n' > "$R/gspec/design/folded.html"
+mv "$R/gspec/features/folded/design.html" "$R/gspec/features/folded.design.html.bak"
+out="$("$ADAPTER" next "$R")"
+refute 'arch resolver ignores files outside its layout list'   'ARCH=' "$out"
+refute 'design resolver ignores files outside its layout list' 'DESIGN=' "$out"
+rm -f "$R/gspec/arch/folded.md" "$R/gspec/design/folded.html"
+rmdir "$R/gspec/arch" "$R/gspec/design"
+mv "$R/gspec/features/folded.design.html.bak" "$R/gspec/features/folded/design.html"
+mv "$R/gspec/features/folded.arch.md.bak" "$R/gspec/features/folded/arch.md"
+out="$("$ADAPTER" next "$R")"
+check 'fixture restored: ARCH back'   'ARCH=gspec/features/folded/arch.md' "$out"
+check 'fixture restored: DESIGN back' 'DESIGN=gspec/features/folded/design.html' "$out"
 
 out="$("$ADAPTER" nodes folded "$R")"
 check 'nodes emits the folder plans tasks'    'folded-t1' "$out"
@@ -1293,6 +1785,2822 @@ check 'check-task writes to the folder plan, never the stale flat one' 'gspec/fe
 grep -q 'the stale flat copy' "$R/gspec/tasks/both.md" \
   && ok 'the shadowed flat plan is left byte-untouched' \
   || bad 'the shadowed flat plan is left untouched' "$(cat "$R/gspec/tasks/both.md")"
+
+# =============================================================================
+printf '\n== handoff: task text, file scope shared with nodes, covers capabilities ==\n'
+# (thin-loop-driver T2 / ADR 0020 D2 amendment)
+R="$TMPROOT/handoff"; mkdir -p "$R/gspec/features/hoff"
+cat > "$R/gspec/features/hoff/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: hoff
+
+## Capabilities
+
+- [ ] **P0**: First capability text
+  - first criterion, one line
+  - second criterion wraps
+    onto a second physical
+    line, verbatim
+- [ ] **P1**: Second capability text
+  - only criterion here
+
+## Dependencies
+
+- none
+EOF
+mk_plan_v2 "$R" hoff <<'EOF'
+- [ ] **T1** **P0** do the first thing
+  - deps: —
+  - covers: First capability text · Second capability text
+  - files: [src/a.ts, src/b.ts]
+- [x] **T2** **P1** already done thing
+  - deps: T1
+  - covers: A quote nothing matches
+  - files: [should/not/appear.ts]
+EOF
+
+out="$("$ADAPTER" handoff hoff-t1 "$R")"
+check 'handoff prints the task text'                'TEXT=do the first thing' "$out"
+check 'handoff resolves file scope via nodes (plan files: wins)' 'FILES=src/a.ts|src/b.ts' "$out"
+check 'handoff prints the first covers capability'  'COVERS=First capability text' "$out"
+check 'a multi-capability covers is split on the middle dot' 'COVERS=Second capability text' "$out"
+check 'a single-line criterion prints verbatim'     'first criterion, one line' "$out"
+check 'a multi-line wrapped criterion stays whole (line 1)' 'second criterion wraps' "$out"
+check 'a multi-line wrapped criterion stays whole (line 2)' 'onto a second physical'  "$out"
+check 'a multi-line wrapped criterion stays whole (line 3)' 'line, verbatim'          "$out"
+check 'handoff prints the PRD path'                 'PRD=gspec/features/hoff/prd.md' "$out"
+refute 'no ARCH= line of any form when arch.md is absent (the absent sentinel is gone)' $'\nARCH=' $'\n'"$out"
+
+# The capability-block boundary: this is exactly what removing `if (found)
+# exit` in `_prd_capability` would break (`found` is sticky, so without that
+# `exit`, `inblock` would stay set across the non-matching "Second capability
+# text" header and its own criterion would bleed into the first block).
+block1="$(printf '%s\n' "$out" | awk '/^COVERS=First capability text$/{f=1; next} /^COVERS=Second capability text$/{exit} f')"
+refute 'the first COVERS block does not leak the second capability'"'"'s criterion' \
+  'only criterion here' "$block1"
+
+out="$("$ADAPTER" handoff 'hoff#T1' "$R")"
+check 'the canonical <feature>#T<n> form resolves identically' 'PACKET=hoff-t1' "$out"
+
+touch "$R/gspec/features/hoff/arch.md"
+out="$("$ADAPTER" handoff hoff-t1 "$R")"
+refute 'no ARCH= line of any form once arch.md exists either' $'\nARCH=' $'\n'"$out"
+refute 'and the arch.md path is not named' 'arch.md' "$out"
+
+printf '\n== handoff: a checked task still prints, and a bad covers quote is reported ==\n'
+out="$("$ADAPTER" handoff hoff-t2 "$R")"
+check 'a checked task still prints (handoff is a read)'   'CHECKED=1' "$out"
+check 'and its task text too'                             'TEXT=already done thing' "$out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+# T2 DOES declare a files: line (should/not/appear.ts) -- this is the point:
+# a checked task's FILES is forced empty regardless, never merely "empty
+# because nothing was configured" (which the earlier fixture, with no files:
+# line at all on T2, could not tell apart from this).
+[ "$filesline" = 'FILES=' ] && ok 'a checked task always carries empty FILES even when the plan has a files: line for it' \
+  || bad 'checked task FILES should be empty' "got: $filesline"
+refute 'the checked task'"'"'s own files: line never leaks into FILES=' 'should/not/appear.ts' "$out"
+check 'and says why, so empty does not read as "forgot to scope it"' 'NOTE=' "$out"
+check 'a covers quote matching no capability is reported, never guessed' \
+  'UNMATCHED=A quote nothing matches' "$out"
+refute 'an unmatched quote never becomes a COVERS= block' 'COVERS=A quote nothing matches' "$out"
+
+printf '\n== handoff: each arch: anchor inlines the arch.md section it names (handoff-spec-inlining-t2) ==\n'
+# No handoff line may START with `ARCH=` (the old path line, `absent` included).
+# The newline prefix makes the refute line-anchored: `UNMATCHED-ARCH=` also
+# contains the bytes `ARCH=`, and a bare substring refute would read it as one.
+no_arch_line() { refute "$1" $'\nARCH=' $'\n'"$2"; }
+# The fixed statement line a fully inlined handoff ends with (t5).
+SPEC_INLINED='SPEC=inlined: the specification text this task needs is inlined under the section markers above; there is no spec file to open for it'
+RA="$TMPROOT/handoff-arch"; mkdir -p "$RA/gspec/features/shop"
+cat > "$RA/gspec/features/shop/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: shop
+
+## Capabilities
+
+- [ ] **P0**: Shop capability
+  - a criterion
+
+## Dependencies
+EOF
+cat > "$RA/gspec/features/shop/arch.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Architecture: shop
+
+## Data
+
+### Entity: Order
+- **module:** api
+- **defined-in:** gspec/features/shop/arch.md
+
+Order body line.
+
+#### Added
+- a sub-heading is block text
+
+### Entity: OrderLine
+- **module:** api
+
+OrderLine body line.
+
+### Model: Invoice
+Invoice is under a heading outside the grammar.
+
+### Entity: Refund
+Refund body line.
+
+## API
+
+### Endpoint: GET /orders/{id}
+Endpoint body line.
+
+### Entity: Misplaced
+An Entity under ## API is outside the grammar.
+
+## UI
+
+### Screen: Checkout
+- **module:** web
+- **route:** /checkout
+Screen text after the route line.
+
+```
+## not a heading inside a fence
+```
+Screen text after the fence.
+
+### Component: Cart
+Cart body line.
+
+## Logic
+
+### Rule: Pricing
+Pricing body line.
+EOF
+mk_plan_v2 "$RA" shop <<'EOF'
+- [ ] **T1** **P0** hash form
+  - deps: —
+  - covers: Shop capability
+  - arch: #entity-order
+- [ ] **T2** **P0** heading form
+  - deps: —
+  - covers: Shop capability
+  - arch: ### Entity: Order
+- [ ] **T3** **P0** bare form, several anchors
+  - deps: —
+  - covers: Shop capability
+  - arch: Entity: OrderLine · Rule: Pricing
+- [ ] **T4** **P0** unmatched anchor on an unchecked task
+  - deps: —
+  - covers: Shop capability
+  - arch: Entity: Ord · Entity: Refund
+- [x] **T5** **P0** unmatched anchor on a checked task
+  - deps: —
+  - covers: Shop capability
+  - arch: #entity-superseded
+- [ ] **T6** **P0** no anchors
+  - deps: —
+  - covers: Shop capability
+  - arch: —
+- [ ] **T7** **P0** a screen block with a route line
+  - deps: —
+  - covers: Shop capability
+  - arch: Screen: Checkout
+- [ ] **T8** **P0** headings outside the grammar
+  - deps: —
+  - covers: Shop capability
+  - arch: Model: Invoice · #entity-misplaced
+- [ ] **T9** **P0** no arch line at all
+  - deps: —
+  - covers: Shop capability
+EOF
+# The three forms name one anchor, so each must print the same block. A blank
+# line inside a block is indented like every other line (`COVERS=`'s rule).
+order_block='  ### Entity: Order
+  - **module:** api
+  - **defined-in:** gspec/features/shop/arch.md
+  
+  Order body line.
+  
+  #### Added
+  - a sub-heading is block text'
+for pair in 't1|#entity-order' 't2|### Entity: Order'; do
+  t="${pair%%|*}"; a="${pair#*|}"
+  out="$("$ADAPTER" handoff "shop-$t" "$RA")"
+  check "anchor form '$a' prints its marker" "ARCH-SECTION=$a" "$out"
+  check "anchor form '$a' inlines the whole H3 block, indented, H4 included" \
+    "ARCH-SECTION=$a
+$order_block" "$out"
+  [ "${out##*$order_block}" = $'\n'"$SPEC_INLINED" ] && ok "anchor form '$a': trailing blank lines are dropped, only the statement line follows the block" \
+    || bad "anchor form '$a' block end" "got: $out"
+  refute "anchor form '$a' stops before the next H3" 'OrderLine body line.' "$out"
+  no_arch_line "anchor form '$a' prints no ARCH= line" "$out"
+  refute "anchor form '$a' leaves the arch: line out of the body" '- arch:' "$out"
+done
+out="$("$ADAPTER" handoff shop-t3 "$RA")"
+check 'bare form Entity: OrderLine resolves by slug' 'ARCH-SECTION=Entity: OrderLine
+  ### Entity: OrderLine
+  - **module:** api
+  
+  OrderLine body line.
+ARCH-SECTION=Rule: Pricing
+  ### Rule: Pricing
+  Pricing body line.' "$out"
+refute 'OrderLine is not Order: slugs compare whole, never by prefix' 'Order body line.' "$out"
+# f: markers follow every COVERS=/UNMATCHED= block (and the PRD= line).
+order_ok="$(printf '%s\n' "$out" | awk '/^COVERS=/{c=NR} /^PRD=/{p=NR} /^ARCH-SECTION=/ && !a{a=NR} END{print (c && p && a > c && a > p) ? "yes" : "no"}')"
+[ "$order_ok" = "yes" ] && ok 'arch markers print after the COVERS= block and PRD= line' \
+  || bad 'arch markers print after the COVERS= block' "got: $out"
+
+out="$("$ADAPTER" handoff shop-t4 "$RA")"
+check 'an anchor naming no heading prints UNMATCHED-ARCH= (unchecked task)' 'UNMATCHED-ARCH=Entity: Ord' "$out"
+refute 'and never inlines a nearest (prefix) match for it' 'Order body line.' "$out"
+refute 'and never a marker for it' 'ARCH-SECTION=Entity: Ord' "$out"
+check 'a matched anchor beside it still resolves' 'ARCH-SECTION=Entity: Refund
+  ### Entity: Refund
+  Refund body line.' "$out"
+no_arch_line 'an unmatched anchor prints no ARCH= line' "$out"
+
+out="$("$ADAPTER" handoff shop-t5 "$RA")"
+check 'a frozen anchor on a CHECKED task is reported unmatched too' 'UNMATCHED-ARCH=#entity-superseded' "$out"
+no_arch_line 'the checked task prints no ARCH= line' "$out"
+
+for t in t6 t9; do
+  out="$("$ADAPTER" handoff "shop-$t" "$RA")"
+  refute "no-anchor task ($t) prints no ARCH-SECTION= marker" 'ARCH-SECTION=' "$out"
+  refute "no-anchor task ($t) prints no UNMATCHED-ARCH= marker" 'UNMATCHED-ARCH=' "$out"
+  no_arch_line "no-anchor task ($t) prints no ARCH= line" "$out"
+  refute "no-anchor task ($t) names no arch.md path" 'arch.md' "$out"
+done
+
+out="$("$ADAPTER" handoff shop-t7 "$RA")"
+check 'a route: line is block text and never ends its screen block' 'ARCH-SECTION=Screen: Checkout
+  ### Screen: Checkout
+  - **module:** web
+  - **route:** /checkout
+  Screen text after the route line.
+' "$out"
+check 'an H2 inside a fence does not end the block' 'Screen text after the fence.' "$out"
+refute 'the screen block still ends at the next H3' 'Cart body line.' "$out"
+
+out="$("$ADAPTER" handoff shop-t8 "$RA")"
+check 'an H3 outside the grammar resolves to nothing (unmatched)' 'UNMATCHED-ARCH=Model: Invoice' "$out"
+check 'a kind under another section'"'"'s H2 is outside the grammar too' 'UNMATCHED-ARCH=#entity-misplaced' "$out"
+refute 'no text is inlined for an out-of-grammar heading' 'Invoice is under' "$out"
+refute 'nor for a misplaced kind' 'An Entity under ## API' "$out"
+
+# The Endpoint form: method and path slug with punctuation dropped.
+mk_plan_v2 "$RA" shop <<'EOF'
+- [ ] **T1** **P0** endpoint
+  - deps: —
+  - arch: Endpoint: GET /orders/{id}
+EOF
+out="$("$ADAPTER" handoff shop-t1 "$RA")"
+check 'an Endpoint anchor resolves' 'ARCH-SECTION=Endpoint: GET /orders/{id}
+  ### Endpoint: GET /orders/{id}
+  Endpoint body line.' "$out"
+
+# No arch.md at all: every anchor is unmatched, and no path is named.
+rm "$RA/gspec/features/shop/arch.md"
+out="$("$ADAPTER" handoff shop-t1 "$RA")"
+check 'with no arch.md, an anchor is reported unmatched' 'UNMATCHED-ARCH=Endpoint: GET /orders/{id}' "$out"
+no_arch_line 'and no ARCH= line (not even absent)' "$out"
+
+printf '\n== handoff: a word budget bounds what one handoff inlines (handoff-spec-inlining-t3) ==\n'
+# Word counts are exact by construction: a heading `### Entity: X` is 3 words,
+# and each body line is 100 words. Alpha = 3 + 50*100 = 5003 words over 51
+# lines; Beta = 3 + 15*100 = 1503 over 16; Gamma = 3 + 10 = 13 over 2. Under
+# the 6000 default Alpha fits, Beta would cross it (6506), and Gamma -- small
+# enough to fit on its own (5016) -- is named by heading anyway, because every
+# section from the crossing one on is. A reader that took a non-numeric value
+# as unbounded inlines all three; one that took it as 0 inlines none.
+RW="$TMPROOT/handoff-budget"; mkdir -p "$RW/gspec/features/big"
+words100="$(awk 'BEGIN { for (i = 1; i <= 100; i++) printf "%sw%d", (i > 1 ? " " : ""), i; print "" }')"
+crit500="$(awk 'BEGIN { for (i = 1; i <= 500; i++) printf "%sc%d", (i > 1 ? " " : ""), i; print "" }')"
+{ printf -- '---\nspec-version: v2\n---\n\n# Feature: big\n\n## Capabilities\n\n'
+  printf -- '- [ ] **P0**: Big capability\n  - %s\n\n## Dependencies\n' "$crit500"
+} > "$RW/gspec/features/big/prd.md"
+{ printf -- '---\nspec-version: v2\n---\n\n# Architecture: big\n\n## Data\n\n'
+  printf '### Entity: Alpha\n'; for i in $(seq 1 50); do printf '%s\n' "$words100"; done; printf '\n'
+  printf '### Entity: Beta\n';  for i in $(seq 1 15); do printf '%s\n' "$words100"; done; printf '\n'
+  printf '### Entity: Gamma\n'; printf 'g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\n'
+} > "$RW/gspec/features/big/arch.md"
+mk_plan_v2 "$RW" big <<'EOF'
+- [ ] **T1** **P0** three sections
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Alpha · Entity: Beta · Entity: Gamma
+- [ ] **T2** **P0** one small section, big criteria
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma
+EOF
+default_shape() { # default_shape <label> <out> — Alpha inlined, Beta+Gamma by heading, 6000 stated
+  check  "$1: Alpha fits and is inlined" 'ARCH-SECTION=Entity: Alpha
+  ### Entity: Alpha
+  w1 w2' "$2"
+  check  "$1: Beta would cross the budget and is named by heading and line count" 'ARCH-HEADING=Entity: Beta lines=16
+  ### Entity: Beta
+' "$2"
+  check  "$1: Gamma, though small enough to fit, is named by heading too" 'ARCH-HEADING=Entity: Gamma lines=2
+  ### Entity: Gamma
+BUDGET-REACHED=6000 words' "$2"
+  refute "$1: Gamma's text is not inlined" 'g1 g2' "$2"
+  [ "$(printf '%s\n' "$2" | grep -c '^BUDGET-REACHED=')" = "1" ] \
+    && ok "$1: exactly one BUDGET-REACHED= line, and only the SPEC= line follows it" \
+    || bad "$1: exactly one BUDGET-REACHED= line" "got: $(printf '%s\n' "$2" | grep '^BUDGET-REACHED=')"
+  [ "$(printf '%s\n' "$2" | tail -n 2 | head -n 1)" = "BUDGET-REACHED=6000 words" ] \
+    || bad "$1: BUDGET-REACHED= is the line before the SPEC= line" "tail: $(printf '%s\n' "$2" | tail -n 2)"
+  case "$(printf '%s\n' "$2" | tail -n 1)" in
+    SPEC=*) ;;
+    *) bad "$1: the SPEC= statement line is the last line" "last: $(printf '%s\n' "$2" | tail -n 1)" ;;
+  esac
+  [ "$(printf '%s\n' "$2" | grep -c '^  w1 w2')" = "50" ] \
+    && ok "$1: only Alpha's 50 body lines are inlined" \
+    || bad "$1: only Alpha's 50 body lines are inlined" "count: $(printf '%s\n' "$2" | grep -c '^  w1 w2')"
+}
+
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+default_shape 'no overrides file (default 6000)' "$out"
+
+mkdir -p "$RW/.agents"
+printf 'integration_branch: develop\n# handoff_inline_word_budget: 99999\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'key missing (a commented-out key does not count)' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget:\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'empty value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget: lots\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'non-numeric value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf 'handoff_inline_word_budget: 0\n' > "$RW/.agents/project-overrides.yaml"
+default_shape 'zero value' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+# An override is read back: quoted, with a trailing comment, it still reads.
+printf "handoff_inline_word_budget: '100'  # small on purpose\n" > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+check  'an override of 100 is read back in the statement line' 'BUDGET-REACHED=100 words' "$out"
+check  'at 100 the first section already crosses, so it is named by heading' 'ARCH-HEADING=Entity: Alpha lines=51
+  ### Entity: Alpha
+ARCH-HEADING=Entity: Beta lines=16' "$out"
+refute 'and no section is inlined' 'ARCH-SECTION=' "$out"
+
+# Under budget: every section inlined, no statement line.
+printf 'handoff_inline_word_budget: 7000\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+check  'under budget: Gamma is inlined' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2 g3' "$out"
+check  'under budget: Beta is inlined' 'ARCH-SECTION=Entity: Beta' "$out"
+refute 'under budget: no ARCH-HEADING= marker' 'ARCH-HEADING=' "$out"
+refute 'under budget: no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+
+# Criteria are not counted: 500 words of criterion plus Gamma's 13 fit a
+# 20-word budget only if the criterion is outside the count. And the criterion
+# still prints whole.
+printf 'handoff_inline_word_budget: 20\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff big-t2 "$RW")"
+check  'criteria text is not counted: a 13-word section fits a 20-word budget beside 500 criterion words' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2' "$out"
+refute 'and no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+check  'the COVERS= criterion is inlined unchanged' "COVERS=Big capability
+    - $crit500
+PRD=" "$out"
+rm -f "$RW/.agents/project-overrides.yaml"
+
+printf '\n== handoff bundle: inlining and the budget carry across members (handoff-spec-inlining-t4) ==\n'
+# Same exact word counts as above (Alpha 5003, Beta 1503, Gamma 13), plus
+# Delta = 3 + 3 = 6 words over 2 lines. A bundle shares ONE seen-anchor set
+# and ONE running count, so a reader that resets either per member inlines a
+# repeated section twice, or never crosses a budget no single member crosses.
+mkdir -p "$RW/gspec/features/bnd"
+cp "$RW/gspec/features/big/prd.md" "$RW/gspec/features/bnd/prd.md"
+{ cat "$RW/gspec/features/big/arch.md"
+  printf '\n### Entity: Delta\nd1 d2 d3\n'
+} > "$RW/gspec/features/bnd/arch.md"
+mk_plan_v2 "$RW" bnd <<'EOF'
+- [ ] **T1** **P0** first names gamma
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma
+- [ ] **T2** **P0** names delta only
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Delta
+- [ ] **T3** **P0** names gamma again, another form
+  - deps: —
+  - covers: Big capability
+  - arch: #entity-gamma
+- [ ] **T4** **P0** alpha alone fits
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Alpha
+- [ ] **T5** **P0** beta crosses the bundle budget
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Beta · Entity: Gamma
+- [ ] **T6** **P0** delta after the crossing
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Delta
+- [ ] **T7** **P0** one task naming gamma twice
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · #entity-gamma
+EOF
+
+# A three-member bundle where two members name one anchor: text once, at the
+# first member; the later one points back at it by packet id.
+out="$("$ADAPTER" handoff bnd-t3,bnd-t2,bnd-t1 "$RW")"
+[ "$(printf '%s\n' "$out" | grep -c '^  g1 g2 g3')" = "1" ] \
+  && ok 'bundle: a section two members name is inlined exactly once' \
+  || bad 'bundle: a section two members name is inlined exactly once' \
+      "count: $(printf '%s\n' "$out" | grep -c '^  g1 g2 g3')"
+m1="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t1$/{f=1} /^PACKET=bnd-t2$/{exit} f')"
+m3="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t3$/{f=1} f')"
+check  'bundle: the text sits at the FIRST member that names it' 'ARCH-SECTION=Entity: Gamma
+  ### Entity: Gamma
+  g1 g2 g3' "$m1"
+check  'bundle: the later member prints ARCH-SEEN= naming the first member' 'ARCH-SEEN=#entity-gamma packet=bnd-t1' "$out"
+refute 'bundle: the later member carries no Gamma text' 'g1 g2' "$m3"
+refute 'bundle: the later member prints no ARCH-SECTION= for it' 'ARCH-SECTION=' "$m3"
+check  'bundle: the other member still inlines its own distinct section' 'ARCH-SECTION=Entity: Delta
+  ### Entity: Delta
+  d1 d2 d3' "$out"
+refute 'bundle under budget: no BUDGET-REACHED= line' 'BUDGET-REACHED=' "$out"
+refute 'bundle under budget: no ARCH-HEADING= marker' 'ARCH-HEADING=' "$out"
+no_arch_line 'bundle (seen case): no ARCH= line in any member' "$out"
+
+# A bundle crossing the budget in its SECOND member: no member alone crosses
+# 6000 (T4 5003, T5 1516, T6 6), only their sum does.
+for t in t4 t5 t6; do
+  refute "bnd-$t alone stays under budget" 'BUDGET-REACHED=' "$("$ADAPTER" handoff "bnd-$t" "$RW")"
+done
+out="$("$ADAPTER" handoff bnd-t4,bnd-t5,bnd-t6 "$RW")"
+m4="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t4$/{f=1} /^PACKET=bnd-t5$/{exit} f')"
+m5="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t5$/{f=1} /^PACKET=bnd-t6$/{exit} f')"
+m6="$(printf '%s\n' "$out" | awk '/^PACKET=bnd-t6$/{f=1} f')"
+check  'bundle budget: the first member inlines Alpha' 'ARCH-SECTION=Entity: Alpha' "$m4"
+check  'bundle budget: the second member names Beta by heading' 'ARCH-HEADING=Entity: Beta lines=16
+  ### Entity: Beta' "$m5"
+check  'bundle budget: and Gamma after it by heading' 'ARCH-HEADING=Entity: Gamma lines=2
+  ### Entity: Gamma' "$m5"
+check  'bundle budget: the third member names Delta by heading' 'ARCH-HEADING=Entity: Delta lines=2
+  ### Entity: Delta' "$m6"
+refute 'bundle budget: Delta text is not inlined' 'd1 d2' "$out"
+refute 'bundle budget: Gamma text is not inlined' 'g1 g2' "$out"
+[ "$(printf '%s\n' "$out" | grep -c '^BUDGET-REACHED=')" = "1" ] \
+  && ok 'bundle budget: exactly one BUDGET-REACHED= line' \
+  || bad 'bundle budget: exactly one BUDGET-REACHED= line' "got: $(printf '%s\n' "$out" | grep '^BUDGET-REACHED=')"
+[ "$(printf '%s\n' "$out" | tail -n 2 | head -n 1)" = "BUDGET-REACHED=6000 words" ] \
+  && ok 'bundle budget: BUDGET-REACHED= follows the last member, only SPEC= after it' \
+  || bad 'bundle budget: BUDGET-REACHED= follows the last member' "tail: $(printf '%s\n' "$out" | tail -n 2)"
+no_arch_line 'bundle (budget case): no ARCH= line in any member' "$out"
+
+# A single id is unchanged: the seen set is not consulted (one task naming a
+# section twice inlines it twice, as before t4), and state never leaks in.
+expected="$(printf 'PACKET=bnd-t7\nFEATURE=bnd\nID=T7\nCHECKED=0\nTEXT=one task naming gamma twice\nFILES=\nCOVERS=Big capability\n    - %s\nPRD=gspec/features/bnd/prd.md\nARCH-SECTION=Entity: Gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\nARCH-SECTION=#entity-gamma\n  ### Entity: Gamma\n  g1 g2 g3 g4 g5 g6 g7 g8 g9 g10\n%s' "$crit500" "$SPEC_INLINED")"
+out="$("$ADAPTER" handoff bnd-t7 "$RW")"
+[ "$out" = "$expected" ] && ok 'single id: output byte-identical to the pre-bundle-state shape' \
+  || bad 'single id: output changed' "expected:
+$expected
+got:
+$out"
+refute 'single id: no ARCH-SEEN= marker' 'ARCH-SEEN=' "$out"
+default_shape 'single id after t4 (default 6000)' "$("$ADAPTER" handoff big-t1 "$RW")"
+
+printf '\n== handoff: the statement line says whether the spec is in it (handoff-spec-inlining-t5) ==\n'
+# spec_count <out> — how many SPEC= lines the output carries.
+spec_count() { printf '%s\n' "$1" | grep -c '^SPEC=' || true; }
+# not_prd_lines <out> — every output line except PRD=, the one path line the
+# handoff carried before t5 and still carries (resume/run-loop restore from it).
+not_prd_lines() { printf '%s\n' "$1" | grep -v '^PRD=' || true; }
+
+# Fully inlined (big-t2: Gamma alone, well under the default): the fixed line,
+# once, last, and no gspec/features/ path on any line but PRD=.
+out="$("$ADAPTER" handoff big-t2 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'fully inlined: exactly one SPEC= line' \
+  || bad 'fully inlined: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'fully inlined: the last line is the fixed statement line' \
+  || bad 'fully inlined: the last line is the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+refute 'fully inlined: no gspec/features/ path outside the PRD= line' 'gspec/features/' "$(not_prd_lines "$out")"
+refute 'fully inlined: arch.md is not named at all' 'arch.md' "$out"
+
+# Budget reached (big-t1 under the default): the line names arch.md, once.
+out="$("$ADAPTER" handoff big-t1 "$RW")"
+spec_line="$(printf '%s\n' "$out" | grep '^SPEC=' || true)"
+check  'budget reached: the SPEC= line names the arch.md path' 'SPEC=read by heading: gspec/features/big/arch.md --' "$spec_line"
+check  'budget reached: and says to read the named sections by heading, not whole' 'by its heading, not the whole file' "$spec_line"
+[ "$(printf '%s\n' "$out" | grep -o 'arch\.md' | wc -l | tr -d ' ')" = "1" ] \
+  && ok 'budget reached: arch.md is named exactly once in the whole output' \
+  || bad 'budget reached: arch.md is named exactly once' "count: $(printf '%s\n' "$out" | grep -o 'arch\.md' | wc -l)"
+refute 'budget reached: not the fixed line' "$SPEC_INLINED" "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'budget reached: exactly one SPEC= line' \
+  || bad 'budget reached: exactly one SPEC= line' "count: $(spec_count "$out")"
+
+# Unmatched: one anchor inlines, one matches no heading. Nothing named by
+# heading, so only the unmatched report can keep the fixed line away.
+mkdir -p "$RW/gspec/features/spc"
+cp "$RW/gspec/features/big/prd.md"  "$RW/gspec/features/spc/prd.md"
+cp "$RW/gspec/features/big/arch.md" "$RW/gspec/features/spc/arch.md"
+mk_plan_v2 "$RW" spc <<'EOF'
+- [ ] **T1** **P0** one inlined, one unmatched
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · Entity: Nowhere
+- [ ] **T2** **P0** no anchors
+  - deps: —
+  - covers: Big capability
+  - arch: —
+- [ ] **T3** **P0** no arch line at all
+  - deps: —
+  - covers: Big capability
+EOF
+out="$("$ADAPTER" handoff spc-t1 "$RW")"
+check  'unmatched: the matched anchor is still inlined' 'ARCH-SECTION=Entity: Gamma' "$out"
+check  'unmatched: the other is reported' 'UNMATCHED-ARCH=Entity: Nowhere' "$out"
+refute 'unmatched: the fixed line is NOT printed despite an inlined section' "$SPEC_INLINED" "$out"
+check  'unmatched: the SPEC= line names arch.md instead' 'SPEC=read by heading: gspec/features/spc/arch.md --' "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'unmatched: exactly one SPEC= line' \
+  || bad 'unmatched: exactly one SPEC= line' "count: $(spec_count "$out")"
+
+# No anchors ('—', or no arch: line at all): no SPEC= line.
+for t in t2 t3; do
+  out="$("$ADAPTER" handoff "spc-$t" "$RW")"
+  refute "no anchors (spc-$t): no SPEC= line" 'SPEC=' "$out"
+done
+
+# Bundles: exactly one SPEC= line, after the last member, whatever the shape.
+out="$("$ADAPTER" handoff bnd-t3,bnd-t2,bnd-t1 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'bundle, fully inlined (ARCH-SEEN= included): exactly one SPEC= line' \
+  || bad 'bundle, fully inlined: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'bundle, fully inlined: the fixed line is the last line, after the last member' \
+  || bad 'bundle, fully inlined: the fixed line is the last line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+out="$("$ADAPTER" handoff bnd-t4,bnd-t5,bnd-t6 "$RW")"
+[ "$(spec_count "$out")" = "1" ] && ok 'bundle, budget reached: exactly one SPEC= line' \
+  || bad 'bundle, budget reached: exactly one SPEC= line' "count: $(spec_count "$out")"
+case "$(printf '%s\n' "$out" | tail -n 1)" in
+  'SPEC=read by heading: gspec/features/bnd/arch.md --'*) ok 'bundle, budget reached: the last line names arch.md once, after BUDGET-REACHED=' ;;
+  *) bad 'bundle, budget reached: the last line names arch.md' "last: $(printf '%s\n' "$out" | tail -n 1)" ;;
+esac
+
+printf '\n== handoff: the design block an inlined screen section names rides with it (handoff-spec-inlining-t6) ==\n'
+# Screen: OrderList slugifies to screen-order-list (CamelCase split) and its
+# element holds a NESTED <section> whose close comes first: a reader closing at
+# the first </section> drops `after-inner` and the real close. Screen: HTMLPage
+# slugifies to screen-html-page, which design.html does not hold. Word counts:
+# the OrderList arch block is 5 words (`### Screen: OrderList` + `Shows
+# orders.`); its design element is 9 words over 7 lines.
+mkdir -p "$RW/gspec/features/scr" "$RW/gspec/features/scrn"
+cp "$RW/gspec/features/big/prd.md" "$RW/gspec/features/scr/prd.md"
+cat > "$RW/gspec/features/scr/arch.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Architecture: scr
+
+## UI
+
+### Screen: OrderList
+Shows orders.
+
+### Screen: HTMLPage
+No design element for this one.
+
+### Component: Badge
+badge text
+
+## Data
+
+### Entity: Gamma
+g1 g2 g3 g4 g5 g6 g7 g8 g9 g10
+EOF
+cat > "$RW/gspec/features/scr/design.html" <<'EOF'
+<!-- spec-version: v2 -->
+<html><body>
+<section id="screen-order-list">
+  <h2>Orders</h2>
+  <section class="filters">
+    <p>inner</p>
+  </section>
+  <p>after-inner</p>
+</section>
+<section id="screen-other">
+  <p>other-screen</p>
+</section>
+</body></html>
+EOF
+mk_plan_v2 "$RW" scr <<'EOF'
+- [ ] **T1** **P0** one screen
+  - deps: —
+  - covers: Big capability
+  - arch: Screen: OrderList
+- [ ] **T2** **P0** no screen at all
+  - deps: —
+  - covers: Big capability
+  - arch: Entity: Gamma · Component: Badge
+- [ ] **T3** **P0** a screen the design file does not hold
+  - deps: —
+  - covers: Big capability
+  - arch: Screen: HTMLPage
+- [ ] **T4** **P0** the same screen again, another form
+  - deps: —
+  - covers: Big capability
+  - arch: #screen-orderlist
+EOF
+# scrn: the same arch.md and plan, and no design.html at all.
+cp "$RW/gspec/features/scr/prd.md" "$RW/gspec/features/scrn/prd.md"
+cp "$RW/gspec/features/scr/arch.md" "$RW/gspec/features/scrn/arch.md"
+awk 'f; /^## Plan$/ { f = 1 }' "$RW/gspec/features/scr/tasks.md" | mk_plan_v2 "$RW" scrn
+
+design_expected='ARCH-SECTION=Screen: OrderList
+  ### Screen: OrderList
+  Shows orders.
+DESIGN-SECTION=screen-order-list
+  <section id="screen-order-list">
+    <h2>Orders</h2>
+    <section class="filters">
+      <p>inner</p>
+    </section>
+    <p>after-inner</p>
+  </section>
+SPEC=inlined:'
+out="$("$ADAPTER" handoff scr-t1 "$RW")"
+check  'screen: its design element is inlined after its ARCH-SECTION= block, through the MATCHING close' "$design_expected" "$out"
+refute 'screen: another screen'"'"'s element is not inlined' 'other-screen' "$out"
+refute 'screen: fully inlined, design.html is not named' 'design.html' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'screen: fully inlined, the last line is the fixed statement line' \
+  || bad 'screen: fully inlined, the last line is the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
+out="$("$ADAPTER" handoff scr-t2 "$RW")"
+check  'no screen inlined: the non-screen sections still inline' 'ARCH-SECTION=Component: Badge' "$out"
+refute 'no screen inlined: no DESIGN marker of any form' 'DESIGN' "$out"
+refute 'no screen inlined: design.html is not named' 'design.html' "$out"
+refute 'no screen inlined: no screen- marker' 'screen-' "$out"
+
+out="$("$ADAPTER" handoff scrn-t1 "$RW")"
+check  'no design.html: the screen section still inlines' 'ARCH-SECTION=Screen: OrderList' "$out"
+refute 'no design.html: no DESIGN marker of any form' 'DESIGN' "$out"
+refute 'no design.html: design.html is not named' 'design.html' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'no design.html: the fixed statement line, no empty marker' \
+  || bad 'no design.html: the fixed statement line' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
+out="$("$ADAPTER" handoff scr-t3 "$RW")"
+check  'unmatched design: reported after the screen section, nothing inlined' 'ARCH-SECTION=Screen: HTMLPage
+  ### Screen: HTMLPage
+  No design element for this one.
+UNMATCHED-DESIGN=screen-html-page
+SPEC=' "$out"
+refute 'unmatched design: no DESIGN-SECTION=' 'DESIGN-SECTION=' "$out"
+refute 'unmatched design: not the fixed line' "$SPEC_INLINED" "$out"
+check  'unmatched design: the SPEC= line names arch.md and design.html' 'SPEC=read by heading: gspec/features/scr/arch.md, gspec/features/scr/design.html --' "$out"
+[ "$(spec_count "$out")" = "1" ] && ok 'unmatched design: exactly one SPEC= line' \
+  || bad 'unmatched design: exactly one SPEC= line' "count: $(spec_count "$out")"
+[ "$(printf '%s\n' "$out" | grep -o 'design\.html' | wc -l | tr -d ' ')" = "1" ] \
+  && ok 'unmatched design: design.html is named exactly once' \
+  || bad 'unmatched design: design.html is named exactly once' "count: $(printf '%s\n' "$out" | grep -o 'design\.html' | wc -l)"
+
+# A design block tipping the budget: the 5-word screen fits a 6-word budget,
+# its 12-word design element does not, so it is named by heading instead.
+mkdir -p "$RW/.agents"
+printf 'handoff_inline_word_budget: 6\n' > "$RW/.agents/project-overrides.yaml"
+out="$("$ADAPTER" handoff scr-t1 "$RW")"
+check  'design over budget: the screen section still inlines' 'ARCH-SECTION=Screen: OrderList' "$out"
+check  'design over budget: named by heading and line count' 'ARCH-HEADING=screen-order-list lines=7
+  <section id="screen-order-list">
+BUDGET-REACHED=6 words
+SPEC=read by heading: gspec/features/scr/arch.md, gspec/features/scr/design.html --' "$out"
+refute 'design over budget: its markup is not inlined' '<h2>Orders</h2>' "$out"
+refute 'design over budget: no DESIGN-SECTION=' 'DESIGN-SECTION=' "$out"
+rm -f "$RW/.agents/project-overrides.yaml"
+
+# Bundle: a later member naming the same screen points back at both blocks.
+out="$("$ADAPTER" handoff scr-t1,scr-t4 "$RW")"
+[ "$(printf '%s\n' "$out" | grep -c '<h2>Orders</h2>')" = "1" ] \
+  && ok 'bundle: a design block two members reach is inlined exactly once' \
+  || bad 'bundle: a design block is inlined exactly once' "count: $(printf '%s\n' "$out" | grep -c '<h2>Orders</h2>')"
+check  'bundle: the later member prints ARCH-SEEN= then DESIGN-SEEN=' 'ARCH-SEEN=#screen-orderlist packet=scr-t1
+DESIGN-SEEN=screen-order-list packet=scr-t1' "$out"
+[ "$(printf '%s\n' "$out" | tail -n 1)" = "$SPEC_INLINED" ] \
+  && ok 'bundle: DESIGN-SEEN= counts as inlined for the statement line' \
+  || bad 'bundle: DESIGN-SEEN= counts as inlined' "last: $(printf '%s\n' "$out" | tail -n 1)"
+
+printf '\n== handoff: a multi-line task body is captured whole, metadata excluded ==\n'
+# The real trigger (thin-loop-driver T8/T9/T11/T14/T15): nested nubblets, a
+# wrapped continuation line, a blank separator and a trailing paragraph, with
+# deps:/covers:/arch:/files: metadata lines that must NOT appear as body text.
+R5="$TMPROOT/handoff-multiline"; mkdir -p "$R5/gspec/features/multi"
+cat > "$R5/gspec/features/multi/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: multi
+
+## Capabilities
+
+- [ ] **P0**: Multi-line tasks keep their whole body
+  - the body survives
+
+## Dependencies
+EOF
+mk_plan_v2 "$R5" multi <<'EOF'
+- [ ] **T1** **P0** Add two writers, first line only:
+  - first nested bullet wraps
+    onto a second physical line as continuation
+  - second nested bullet, one line
+
+  A trailing paragraph after a blank separator, at the same indent as the bullets.
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+  - arch: —
+  - files: src/a.ts, src/b.ts
+EOF
+out="$("$ADAPTER" handoff multi-t1 "$R5")"
+check 'TEXT= carries only the header'"'"'s own inline text'          'TEXT=Add two writers, first line only:' "$out"
+check 'a nested bullet is captured'                             'first nested bullet wraps'                "$out"
+check 'its wrapped continuation line is captured too'           'onto a second physical line as continuation' "$out"
+check 'a second nested bullet is captured'                      'second nested bullet, one line'             "$out"
+check 'a trailing paragraph after a blank line is captured'     'A trailing paragraph after a blank separator' "$out"
+refute 'the deps: metadata line never leaks into the body'      '- deps:'    "$out"
+refute 'the covers: metadata line never leaks into the body'    '- covers:'  "$out"
+refute 'the arch: metadata line never leaks into the body'      '- arch:'    "$out"
+refute 'the files: metadata line never leaks into the body'     '- files:'   "$out"
+check 'the files: line is still consumed for FILES='            'FILES=src/a.ts|src/b.ts' "$out"
+
+printf '\n== handoff: a markdown heading ends a task body (phase sections, trailing notes) ==\n'
+R5h="$TMPROOT/handoff-headings"; mkdir -p "$R5h/gspec/features/multi"
+cp "$R5/gspec/features/multi/prd.md" "$R5h/gspec/features/multi/prd.md"
+mk_plan_v2 "$R5h" multi <<'EOF'
+- [ ] **T1** **P0** First phase task
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+
+## Phase 2
+
+Phase two prose that belongs to no task.
+
+- [ ] **T2** **P0** Second phase task
+  body line of the second task
+  - deps: T1
+  - covers: Multi-line tasks keep their whole body
+
+## Notes
+
+Trailing notes prose after the last task.
+EOF
+out="$("$ADAPTER" handoff multi-t1 "$R5h")"
+check  'a task before a heading still resolves'                 'TEXT=First phase task'   "$out"
+refute 'the heading after a task is not captured as its body'   'Phase 2'                  "$out"
+refute 'prose under that heading is not captured either'        'Phase two prose'          "$out"
+out="$("$ADAPTER" handoff multi-t2 "$R5h")"
+check  'a task after a heading still resolves'                  'TEXT=Second phase task'   "$out"
+check  'its own body line is kept'                              'body line of the second task' "$out"
+refute 'a trailing notes section is not captured as the last task body' 'Trailing notes prose' "$out"
+
+printf '\n== handoff: a literal backslash in a covers quote is not corrupted (awk ENVIRON, not -v) ==\n'
+R6="$TMPROOT/handoff-backslash"; mkdir -p "$R6/gspec/features/bs"
+cat > "$R6/gspec/features/bs/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bs
+
+## Capabilities
+
+- [ ] **P0**: Match \d literally, not a digit class
+  - one criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R6" bs <<'EOF'
+- [ ] **T1** **P0** backslash task
+  - deps: —
+  - covers: Match \d literally, not a digit class
+EOF
+out="$("$ADAPTER" handoff bs-t1 "$R6")"
+check 'a literal backslash-d in a covers quote still matches verbatim' \
+  'COVERS=Match \d literally, not a digit class' "$out"
+refute 'and is never reported as unmatched' 'UNMATCHED=Match \d' "$out"
+check 'its criterion still prints' 'one criterion' "$out"
+
+printf '\n== handoff: a tab embedded in free text never shifts a field (no cut on a joined row) ==\n'
+R7="$TMPROOT/handoff-tab"; mkdir -p "$R7/gspec/features/tabby"
+{
+  printf -- '---\nspec-version: v2\n---\n\n# Feature: tabby\n\n## Capabilities\n\n'
+  printf -- '- [ ] **P0**: Cap\twith an embedded tab\n  - one criterion\n\n## Dependencies\n'
+} > "$R7/gspec/features/tabby/prd.md"
+{
+  printf -- '---\nspec-version: v2\nfeature: tabby\n---\n\n# Plan: tabby\n\n## Plan\n\n'
+  printf -- '- [ ] **T1** **P0** task text with a\ttab inside it\n'
+  printf -- '  - deps: -\n'
+  printf -- '  - covers: Cap\twith an embedded tab\n'
+} > "$R7/gspec/features/tabby/tasks.md"
+out="$("$ADAPTER" handoff tabby-t1 "$R7")"
+expect_text="$(printf 'TEXT=task text with a\ttab inside it')"
+expect_covers="$(printf 'COVERS=Cap\twith an embedded tab')"
+check 'a tab inside the task text is preserved, not truncated' "$expect_text" "$out"
+check 'a tab inside a covers quote still matches its capability' "$expect_covers" "$out"
+check 'the criterion after the tabbed capability still prints' 'one criterion' "$out"
+
+printf '\n== handoff: a task with no covers: prints COVERS=none, never silence ==\n'
+cat > "$R5/gspec/features/multi/tasks.md" <<'EOF'
+---
+spec-version: v2
+feature: multi
+---
+
+# Plan: multi
+
+## Plan
+
+- [ ] **T1** **P0** Add two writers, first line only:
+  - first nested bullet wraps
+    onto a second physical line as continuation
+  - second nested bullet, one line
+
+  A trailing paragraph after a blank separator, at the same indent as the bullets.
+  - deps: —
+  - covers: Multi-line tasks keep their whole body
+  - arch: —
+  - files: src/a.ts, src/b.ts
+- [ ] **T2** **P1** a task that declares no covers at all
+  - deps: —
+EOF
+out="$("$ADAPTER" handoff multi-t2 "$R5")"
+check 'a task with no covers: prints COVERS=none' 'COVERS=none' "$out"
+refute 'and never a bare UNMATCHED= with nothing to unmatch' 'UNMATCHED=' "$out"
+
+printf '\n== handoff: a blank line inside a capability block does not end it early, and a stray top-level bullet is never absorbed ==\n'
+cat > "$R5/gspec/features/multi/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: multi
+
+## Capabilities
+
+- [ ] **P0**: Multi-line tasks keep their whole body
+  - the body survives
+
+- [ ] **P1**: Cap with an interior blank line
+  - first bullet
+
+  - second bullet, after a blank line, still part of this capability
+
+- [ ] **P2**: Cap with trailing garbage after it
+  - only real bullet
+
+- a stray top-level bullet that must never be absorbed
+## Dependencies
+EOF
+cat >> "$R5/gspec/features/multi/tasks.md" <<'EOF'
+- [ ] **T3** **P1** blank-line-continuation task
+  - deps: —
+  - covers: Cap with an interior blank line
+- [ ] **T4** **P2** trailing-garbage task
+  - deps: —
+  - covers: Cap with trailing garbage after it
+EOF
+out="$("$ADAPTER" handoff multi-t3 "$R5")"
+check 'a bullet before an interior blank line prints'  'first bullet' "$out"
+check 'a bullet after an interior blank line still prints (blank does not end the block when more indented content follows)' \
+  'second bullet, after a blank line, still part of this capability' "$out"
+
+out="$("$ADAPTER" handoff multi-t4 "$R5")"
+check 'the real bullet of a trailing-garbage capability prints' 'only real bullet' "$out"
+refute 'a stray top-level bullet after the block is never pulled in' \
+  'a stray top-level bullet that must never be absorbed' "$out"
+
+printf '\n== handoff: the 2.x and pre-2.0 plan layouts ==\n'
+# (3.x is covered above; this rounds out AC5's "all three layouts".)
+R2="$TMPROOT/handoff-2x"; mkdir -p "$R2"
+mk_prd "$R2" htwo 0 1              # generates "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R2" htwo <<'EOF'
+- [ ] **T1** **P0** a 2.x task
+  - deps: —
+  - covers: open capability 1
+EOF
+out="$("$ADAPTER" handoff htwo-t1 "$R2")"
+check '2.x layout: handoff resolves the flat PRD' 'PRD=gspec/features/htwo.md' "$out"
+check '2.x layout: covers matches the capability'  'COVERS=open capability 1'   "$out"
+check '2.x layout: its criterion prints'           'criterion'                 "$out"
+
+R3="$TMPROOT/handoff-pre20"; mkdir -p "$R3/gspec/features"
+mk_prd "$R3" hpre 0 1
+cat > "$R3/gspec/features/hpre.plan.md" <<'EOF'
+---
+spec-version: v1
+feature: hpre
+---
+
+# Plan: hpre
+
+## Plan
+
+- [ ] **T1** **P0** a pre-2.0 task
+  - deps: —
+  - covers: open capability 1
+EOF
+out="$("$ADAPTER" handoff hpre-t1 "$R3")"
+check 'pre-2.0 layout: handoff resolves the flat PRD' 'PRD=gspec/features/hpre.md'   "$out"
+check 'pre-2.0 layout: handoff reads the .plan.md file' 'COVERS=open capability 1'   "$out"
+
+printf '\n== handoff: a non-gspec id prints unknown and never crashes ==\n'
+R4="$TMPROOT/handoff-none"; mkdir -p "$R4"
+out="$("$ADAPTER" handoff not-a-real-packet-t9 "$R4" 2>&1)"; rc=$?
+check 'no gspec/ at all reads HANDOFF=unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 (mirrors task-status, gspec is optional)' \
+  || bad 'exit 0 with no gspec/' "rc=$rc"
+
+out="$("$ADAPTER" handoff zzz-t1 "$R" 2>&1)"; rc=$?
+check 'an id matching no feature slug also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and also exits 0' || bad 'exit 0 on an unresolved id' "rc=$rc"
+
+out="$("$ADAPTER" handoff hoff-t99 "$R" 2>&1)"; rc=$?
+check 'a resolvable feature with no such task also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 too' || bad 'exit 0 on no-such-task' "rc=$rc"
+
+out="$("$ADAPTER" handoff 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a missing packet id is a genuine usage error (non-zero)' \
+  || bad 'missing packet id should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" handoff 'a/b#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug with a path separator is refused, matching check-task/task-status' \
+  || bad 'path separator refused' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+
+# =============================================================================
+# group (packet-bundling-t4). Every scenario below is run in BOTH layouts:
+# mk_prd_v2/mk_plan_v2 (the 3.x feature-folder layout) first, then
+# mk_prd/mk_plan (the flat 2.x layout) as a second, independent fixture --
+# `group` shares `_nodes_for`'s layout resolution, but a case here is the
+# only thing that actually exercises `group` itself against both.
+
+printf '\n== group: a cap of 1 yields exactly the cursor; cap raised groups whole; cap truncates mid-run; a non-overlapping neighbour ends the group (feature-folder layout) ==\n'
+R="$TMPROOT/group-a-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-a 0 1
+mk_plan_v2 "$R" grp-a <<'EOF'
+- [ ] **T1** **P1** first task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T3** **P1** third task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T4** **P1** fourth task, different scope
+  - deps: —
+  - files: [src/z.ts]
+EOF
+
+out="$("$ADAPTER" group grp-a-t1 "$R")"
+check 'default cap (1) is inert: GROUP names the cursor' 'GROUP=grp-a-t1' "$out"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'default cap: exactly one member' || bad 'default cap: exactly one member' "got $n: $out"
+check 'default cap: the one member is the cursor, with its title'  "$(printf 'MEMBER=grp-a-t1\tfirst task')" "$out"
+check 'default cap: FILES is the cursor'"'"'s own scope'           'FILES=src/a.ts' "$out"
+check 'default cap: STOP=cap — the command arrives inert'          'STOP=cap' "$out"
+
+out="$("$ADAPTER" group grp-a-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "3" ] && ok 'cap raised above the run: the three same-scope tasks group whole' \
+  || bad 'three overlapping tasks should group whole' "got $n members: $out"
+check 'member 1' "$(printf 'MEMBER=grp-a-t1\tfirst task')"  "$out"
+check 'member 2' "$(printf 'MEMBER=grp-a-t2\tsecond task')" "$out"
+check 'member 3' "$(printf 'MEMBER=grp-a-t3\tthird task')"  "$out"
+refute 'the fourth (non-overlapping) task never joins' 'MEMBER=grp-a-t4' "$out"
+check 'FILES is still just the shared file — no duplicate entries from three members' 'FILES=src/a.ts' "$out"
+check 'a non-overlapping neighbour ends the group: STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-a-t1 --cap 2 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'a cap of 2 truncates mid-run at exactly two members' \
+  || bad 'cap should truncate at 2' "got $n members: $out"
+refute 'the third task, which would otherwise still qualify, is excluded by the cap' 'MEMBER=grp-a-t3' "$out"
+check 'a cap truncating mid-run reports STOP=cap, not STOP=scope' 'STOP=cap' "$out"
+
+out2="$("$ADAPTER" group 'grp-a#T1' "$R")"
+check 'the canonical <feature>#T<n> form resolves identically to the packet-id form' \
+  'GROUP=grp-a-t1' "$out2"
+
+printf '\n== group: an empty-scope cursor and an empty-scope neighbour each run alone (feature-folder layout) ==\n'
+R="$TMPROOT/group-b-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-b 0 1
+mk_plan_v2 "$R" grp-b <<'EOF'
+- [ ] **T1** **P1** cursor with scope
+  - deps: —
+  - files: [src/x.ts]
+- [ ] **T2** **P1** empty-scope neighbour
+  - deps: —
+- [ ] **T3** **P1** another task with scope
+  - deps: —
+  - files: [src/x.ts]
+EOF
+
+out="$("$ADAPTER" group grp-b-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'an empty-scope neighbour cannot join: the group stops at just the cursor' \
+  || bad 'empty-scope neighbour should end the group' "got $n members: $out"
+check 'the excluded neighbour never appears as a member' 'MEMBER=grp-b-t1' "$out"
+refute 'and T2 (empty scope) is not silently absorbed' 'MEMBER=grp-b-t2' "$out"
+check 'STOP=scope: an empty scope overlaps nothing' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-b-t2 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'the SAME empty-scope task, run as its own cursor, also groups alone' \
+  || bad 'empty-scope cursor should run alone' "got $n members: $out"
+check 'the lone member is the empty-scope cursor itself' 'MEMBER=grp-b-t2' "$out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+[ "$filesline" = 'FILES=' ] && ok 'FILES is empty — the cursor itself declared no scope' \
+  || bad 'FILES should be empty for an empty-scope cursor' "got: $filesline"
+check 'STOP=scope: the empty union can never admit the next candidate either' 'STOP=scope' "$out"
+
+printf '\n== group: a deps: dependency on an unchecked task outside the group excludes it (feature-folder layout) ==\n'
+R="$TMPROOT/group-c-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-c 0 1
+mk_plan_v2 "$R" grp-c <<'EOF'
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/c.ts]
+- [ ] **T2** **P1** depends on an outside unchecked task
+  - deps: T5
+  - files: [src/c.ts]
+- [ ] **T5** **P1** the outside dependency, still unchecked
+  - deps: —
+  - files: [src/c.ts]
+EOF
+out="$("$ADAPTER" group grp-c-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'T2 is excluded: its dep T5 is neither in the group nor checked' \
+  || bad 'unmet deps should exclude the candidate' "got $n members: $out"
+refute 'T2 never joins' 'MEMBER=grp-c-t2' "$out"
+refute 'T5 (never reached) never joins either' 'MEMBER=grp-c-t5' "$out"
+check 'STOP=deps names the reason' 'STOP=deps' "$out"
+
+printf '\n== group: a checked task between two members does not break consecutiveness (feature-folder layout) ==\n'
+R="$TMPROOT/group-e-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-e 0 1
+mk_plan_v2 "$R" grp-e <<'EOF'
+- [x] **T0** **P1** already done, before the cursor
+  - deps: —
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/e.ts]
+- [x] **T2** **P1** checked task sitting between two members
+  - deps: —
+  - files: [src/should-not-appear.ts]
+- [ ] **T3** **P1** third member, depends on the checked T2 and the earlier T1
+  - deps: T1, T2
+  - files: [src/e.ts]
+EOF
+out="$("$ADAPTER" group grp-e-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'the checked T2 between T1 and T3 does not break the run: both T1 and T3 join' \
+  || bad 'a checked task between two members should not break consecutiveness' "got $n members: $out"
+check 'member 1 is the cursor' 'MEMBER=grp-e-t1' "$out"
+check 'member 2 is the task on the far side of the checked one' 'MEMBER=grp-e-t3' "$out"
+refute 'the checked task itself never appears as a member' 'MEMBER=grp-e-t2' "$out"
+refute 'and its files: line never leaks into the union' 'should-not-appear' "$out"
+check 'FILES is only the shared scope T1 and T3 actually declare' 'FILES=src/e.ts' "$out"
+check 'T3'"'"'s dep on the already-checked T2 is satisfied, and its dep on T1 by T1 being earlier in the group -- STOP=end, ran out of tasks' \
+  'STOP=end' "$out"
+
+printf '\n== group: never crosses into the next feature (feature-folder layout) ==\n'
+R="$TMPROOT/group-f-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" grp-f1 0 1
+mk_plan_v2 "$R" grp-f1 <<'EOF'
+- [ ] **T1** **P1** only task in f1
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+mk_prd_v2 "$R" grp-f2 0 1
+mk_plan_v2 "$R" grp-f2 <<'EOF'
+- [ ] **T1** **P1** only task in f2, deliberately the SAME file scope
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+out="$("$ADAPTER" group grp-f1-t1 --cap 10 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'a high cap and a matching scope in another feature still never pulls it in' \
+  || bad 'group must never cross a feature boundary' "got $n members: $out"
+refute 'the other feature'"'"'s task is never named as a member' 'MEMBER=grp-f2-t1' "$out"
+check 'STOP=end: f1 has no more tasks of its own, cap or not' 'STOP=end' "$out"
+
+printf '\n== group: HANDOFF=unknown refusal shape, and the one genuine usage errors (feature-folder layout) ==\n'
+out="$("$ADAPTER" group not-a-real-packet-t9 "$TMPROOT/group-none" 2>&1)"; rc=$?
+check 'no gspec/ at all reads HANDOFF=unknown, reusing handoff'"'"'s shape' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no gspec/' "rc=$rc"
+
+out="$("$ADAPTER" group zzz-t1 "$R" 2>&1)"; rc=$?
+check 'an id matching no feature slug also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and also exits 0' || bad 'exit 0 on an unresolved id' "rc=$rc"
+
+out="$("$ADAPTER" group grp-e-t0 "$R" 2>&1)"; rc=$?
+check 'an already-checked cursor also reads unknown, never a lone/empty group' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0 too' || bad 'exit 0 on a checked cursor' "rc=$rc"
+
+out="$("$ADAPTER" group grp-e-t99 "$R" 2>&1)"; rc=$?
+check 'a resolvable feature with no such task also reads unknown' 'HANDOFF=unknown' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 on no-such-task' "rc=$rc"
+
+out="$("$ADAPTER" group 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a missing packet id is a genuine usage error (non-zero)' \
+  || bad 'missing packet id should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" group 'a/b#T1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a slug with a path separator is refused, matching handoff/check-task/task-status' \
+  || bad 'path separator refused' "rc=$rc, out=$out"
+check 'and explains why' 'path separator' "$out"
+
+out="$("$ADAPTER" group grp-e-t1 --cap abc "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a non-numeric --cap is a usage error' \
+  || bad 'non-numeric --cap should be non-zero' "rc=$rc, out=$out"
+
+out="$("$ADAPTER" group grp-e-t1 --cap 0 "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a --cap of 0 is a usage error' \
+  || bad '--cap 0 should be non-zero' "rc=$rc, out=$out"
+
+# --- the same eight scenarios, in the flat 2.x layout (mk_prd/mk_plan) -------
+
+printf '\n== group: a cap of 1 yields exactly the cursor; cap raised groups whole; cap truncates mid-run; a non-overlapping neighbour ends the group (flat layout) ==\n'
+R="$TMPROOT/group-a-flat"; mkdir -p "$R"
+mk_prd "$R" grp-a-flat 0 1
+mk_plan "$R" grp-a-flat <<'EOF'
+- [ ] **T1** **P1** first task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T3** **P1** third task
+  - deps: —
+  - files: [src/a.ts]
+- [ ] **T4** **P1** fourth task, different scope
+  - deps: —
+  - files: [src/z.ts]
+EOF
+
+out="$("$ADAPTER" group grp-a-flat-t1 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: default cap (1) is inert — exactly one member' \
+  || bad 'flat layout: default cap should yield one member' "got $n: $out"
+check 'flat layout: STOP=cap' 'STOP=cap' "$out"
+
+out="$("$ADAPTER" group grp-a-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "3" ] && ok 'flat layout: three overlapping tasks group whole' \
+  || bad 'flat layout: three overlapping tasks should group whole' "got $n members: $out"
+refute 'flat layout: the fourth, non-overlapping task never joins' 'MEMBER=grp-a-flat-t4' "$out"
+check 'flat layout: a non-overlapping neighbour ends the group with STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-a-flat-t1 --cap 2 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'flat layout: a cap of 2 truncates mid-run' \
+  || bad 'flat layout: cap should truncate at 2' "got $n members: $out"
+check 'flat layout: a cap truncating mid-run reports STOP=cap' 'STOP=cap' "$out"
+
+printf '\n== group: an empty-scope cursor and an empty-scope neighbour each run alone (flat layout) ==\n'
+R="$TMPROOT/group-b-flat"; mkdir -p "$R"
+mk_prd "$R" grp-b-flat 0 1
+mk_plan "$R" grp-b-flat <<'EOF'
+- [ ] **T1** **P1** cursor with scope
+  - deps: —
+  - files: [src/x.ts]
+- [ ] **T2** **P1** empty-scope neighbour
+  - deps: —
+- [ ] **T3** **P1** another task with scope
+  - deps: —
+  - files: [src/x.ts]
+EOF
+out="$("$ADAPTER" group grp-b-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: an empty-scope neighbour ends the group' \
+  || bad 'flat layout: empty-scope neighbour should end the group' "got $n members: $out"
+check 'flat layout: STOP=scope' 'STOP=scope' "$out"
+
+out="$("$ADAPTER" group grp-b-flat-t2 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: the same empty-scope task, as its own cursor, also runs alone' \
+  || bad 'flat layout: empty-scope cursor should run alone' "got $n members: $out"
+filesline="$(printf '%s\n' "$out" | grep '^FILES=')"
+[ "$filesline" = 'FILES=' ] && ok 'flat layout: FILES is empty for the empty-scope cursor' \
+  || bad 'flat layout: FILES should be empty' "got: $filesline"
+
+printf '\n== group: a deps: dependency on an unchecked task outside the group excludes it (flat layout) ==\n'
+R="$TMPROOT/group-c-flat"; mkdir -p "$R"
+mk_prd "$R" grp-c-flat 0 1
+mk_plan "$R" grp-c-flat <<'EOF'
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/c.ts]
+- [ ] **T2** **P1** depends on an outside unchecked task
+  - deps: T5
+  - files: [src/c.ts]
+- [ ] **T5** **P1** the outside dependency, still unchecked
+  - deps: —
+  - files: [src/c.ts]
+EOF
+out="$("$ADAPTER" group grp-c-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: an unmet dep excludes the candidate' \
+  || bad 'flat layout: unmet deps should exclude the candidate' "got $n members: $out"
+check 'flat layout: STOP=deps' 'STOP=deps' "$out"
+
+printf '\n== group: a checked task between two members does not break consecutiveness (flat layout) ==\n'
+R="$TMPROOT/group-e-flat"; mkdir -p "$R"
+mk_prd "$R" grp-e-flat 0 1
+mk_plan "$R" grp-e-flat <<'EOF'
+- [x] **T0** **P1** already done, before the cursor
+  - deps: —
+- [ ] **T1** **P1** cursor
+  - deps: —
+  - files: [src/e.ts]
+- [x] **T2** **P1** checked task sitting between two members
+  - deps: —
+  - files: [src/should-not-appear.ts]
+- [ ] **T3** **P1** third member, depends on the checked T2 and the earlier T1
+  - deps: T1, T2
+  - files: [src/e.ts]
+EOF
+out="$("$ADAPTER" group grp-e-flat-t1 --cap 5 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "2" ] && ok 'flat layout: a checked task between two members does not break the run' \
+  || bad 'flat layout: checked task should not break consecutiveness' "got $n members: $out"
+refute 'flat layout: the checked task itself never appears as a member' 'MEMBER=grp-e-flat-t2' "$out"
+check 'flat layout: STOP=end' 'STOP=end' "$out"
+
+printf '\n== group: never crosses into the next feature (flat layout) ==\n'
+R="$TMPROOT/group-f-flat"; mkdir -p "$R"
+mk_prd "$R" grp-f1-flat 0 1
+mk_plan "$R" grp-f1-flat <<'EOF'
+- [ ] **T1** **P1** only task in f1
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+mk_prd "$R" grp-f2-flat 0 1
+mk_plan "$R" grp-f2-flat <<'EOF'
+- [ ] **T1** **P1** only task in f2, deliberately the SAME file scope
+  - deps: —
+  - files: [shared/scope.ts]
+EOF
+out="$("$ADAPTER" group grp-f1-flat-t1 --cap 10 "$R")"
+n="$(printf '%s\n' "$out" | grep -c '^MEMBER=')"
+[ "$n" = "1" ] && ok 'flat layout: a high cap never pulls in the matching-scope task of another feature' \
+  || bad 'flat layout: group must never cross a feature boundary' "got $n members: $out"
+refute 'flat layout: the other feature'"'"'s task is never a member' 'MEMBER=grp-f2-flat-t1' "$out"
+check 'flat layout: STOP=end' 'STOP=end' "$out"
+
+# =============================================================================
+# handoff bundling (packet-bundling-t5). `handoff` accepts a comma-joined
+# packet-id list on top of the single-id path exercised above.
+
+printf '\n== handoff bundle: three ids, in PLAN order, blocks delimited, criteria intact, union scope correct ==\n'
+R="$TMPROOT/handoff-bundle"; mkdir -p "$R/gspec/features/bun"
+cat > "$R/gspec/features/bun/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bun
+
+## Capabilities
+
+- [ ] **P0**: First capability
+  - first criterion
+- [ ] **P1**: Second capability
+  - second criterion
+- [ ] **P2**: Third capability
+  - third criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bun <<'EOF'
+- [ ] **T1** **P0** first bundle task
+  - deps: —
+  - covers: First capability
+  - files: [src/a.ts]
+- [ ] **T2** **P1** second bundle task
+  - deps: —
+  - covers: Second capability
+  - files: [src/a.ts, src/b.ts]
+- [ ] **T3** **P2** third bundle task
+  - deps: —
+  - covers: Third capability
+  - files: [src/c.ts]
+EOF
+
+# Given SCRAMBLED (not plan order) so the test actually exercises reordering,
+# not just an input list that happened to already be sorted.
+out="$("$ADAPTER" handoff bun-t3,bun-t1,bun-t2 "$R")"
+check 'BUNDLE= lists every member' 'BUNDLE=bun-t1,bun-t2,bun-t3' "$out"
+check 'BUNDLE_FILES= is the union, first-seen order, through the same precedence group uses' \
+  'BUNDLE_FILES=src/a.ts|src/b.ts|src/c.ts' "$out"
+
+pkts="$(printf '%s\n' "$out" | grep '^PACKET=')"
+expected_pkts="$(printf 'PACKET=bun-t1\nPACKET=bun-t2\nPACKET=bun-t3')"
+[ "$pkts" = "$expected_pkts" ] && ok 'every member'"'"'s block is present, in PLAN order regardless of the order given' \
+  || bad 'blocks should appear in plan order bun-t1, bun-t2, bun-t3' "got: $pkts"
+
+filelines="$(printf '%s\n' "$out" | grep '^FILES=')"
+expected_filelines="$(printf 'FILES=src/a.ts\nFILES=src/a.ts|src/b.ts\nFILES=src/c.ts')"
+[ "$filelines" = "$expected_filelines" ] && ok 'each member'"'"'s own FILES= is correct and in plan order' \
+  || bad 'per-member FILES=' "expected:
+$expected_filelines
+got:
+$filelines"
+
+check "member 1's text"  'TEXT=first bundle task'  "$out"
+check "member 2's text"  'TEXT=second bundle task' "$out"
+check "member 3's text"  'TEXT=third bundle task'  "$out"
+
+# Block delimiting: one member's criterion must never bleed into another's.
+block1="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t1$/{f=1} /^PACKET=bun-t2$/{exit} f')"
+check  'block 1 carries its own criterion'                 'first criterion'  "$block1"
+refute 'block 1 does not leak block 2'"'"'s criterion'     'second criterion' "$block1"
+refute 'block 1 does not leak block 3'"'"'s criterion'     'third criterion'  "$block1"
+
+block2="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t2$/{f=1} /^PACKET=bun-t3$/{exit} f')"
+check  'block 2 carries its own criterion'                 'second criterion' "$block2"
+refute 'block 2 does not leak block 1'"'"'s criterion'     'first criterion'  "$block2"
+refute 'block 2 does not leak block 3'"'"'s criterion'     'third criterion'  "$block2"
+
+block3="$(printf '%s\n' "$out" | awk '/^PACKET=bun-t3$/{f=1} f')"
+check  'block 3 carries its own criterion'                 'third criterion'  "$block3"
+refute 'block 3 does not leak block 1'"'"'s criterion'     'first criterion'  "$block3"
+refute 'block 3 does not leak block 2'"'"'s criterion'     'second criterion' "$block3"
+
+n="$(printf '%s\n' "$out" | grep -c '^PACKET=')"
+[ "$n" = "3" ] && ok 'exactly three blocks, one per member' || bad 'exactly three blocks' "got $n: $out"
+
+# The canonical <feature>#T<n> form resolves identically inside a bundle too.
+out2="$("$ADAPTER" handoff 'bun#T1,bun-t2' "$R")"
+check 'a mixed canonical/packet-id member list still resolves' 'BUNDLE=bun-t1,bun-t2' "$out2"
+
+printf '\n== handoff bundle: a single id (no comma) is byte-identical to today, with no BUNDLE= header ==\n'
+R="$TMPROOT/handoff-bundle-solo"; mkdir -p "$R/gspec/features/solo"
+cat > "$R/gspec/features/solo/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: solo
+
+## Capabilities
+
+- [ ] **P0**: Only capability
+  - the only criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" solo <<'EOF'
+- [ ] **T1** **P0** the only task
+  - deps: —
+  - covers: Only capability
+  - files: [src/solo.ts]
+EOF
+expected="$(printf 'PACKET=solo-t1\nFEATURE=solo\nID=T1\nCHECKED=0\nTEXT=the only task\nFILES=src/solo.ts\nCOVERS=Only capability\n    - the only criterion\nPRD=gspec/features/solo/prd.md')"
+out="$("$ADAPTER" handoff solo-t1 "$R")"
+[ "$out" = "$expected" ] && ok 'a single id'"'"'s output is byte-identical to the pre-bundling shape' \
+  || bad 'single id output changed' "expected:
+$expected
+got:
+$out"
+refute 'no BUNDLE= header for a single id' 'BUNDLE=' "$out"
+refute 'no BUNDLE_FILES= header for a single id' 'BUNDLE_FILES=' "$out"
+
+printf '\n== handoff bundle: an unresolvable member refuses the WHOLE call, with no partial output ==\n'
+Rbun="$TMPROOT/handoff-bundle"
+out="$("$ADAPTER" handoff bun-t1,zzz-t1,bun-t2 "$Rbun" 2>&1)"; rc=$?
+check 'names the offending member' 'zzz-t1' "$out"
+check 'reuses the existing HANDOFF=unknown shape' 'HANDOFF=unknown' "$out"
+refute 'no PACKET= line leaks from either resolvable member' 'PACKET=' "$out"
+refute 'the good members never partially print either' 'bun-t1' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0, mirroring the single-id unresolved case' \
+  || bad 'exit 0 on an unresolvable member' "rc=$rc"
+
+printf '\n== handoff bundle: a two-feature list refuses -- grouping across features is out of scope ==\n'
+R="$TMPROOT/handoff-bundle-2feat"; mkdir -p "$R/gspec/features/bunA" "$R/gspec/features/bunB"
+cat > "$R/gspec/features/bunA/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bunA
+
+## Capabilities
+
+- [ ] **P0**: A capability
+  - a criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bunA <<'EOF'
+- [ ] **T1** **P0** feature A task
+  - deps: —
+  - covers: A capability
+EOF
+cat > "$R/gspec/features/bunB/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: bunB
+
+## Capabilities
+
+- [ ] **P0**: B capability
+  - b criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" bunB <<'EOF'
+- [ ] **T1** **P0** feature B task
+  - deps: —
+  - covers: B capability
+EOF
+out="$("$ADAPTER" handoff bunA-t1,bunB-t1 "$R" 2>&1)"; rc=$?
+check 'reuses HANDOFF=unknown, naming the cross-feature member' 'HANDOFF=unknown' "$out"
+check 'and explains why' 'grouping across features is out of scope' "$out"
+refute 'no partial output from the first, resolvable member' 'PACKET=' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 on a two-feature list' "rc=$rc"
+
+printf '\n== handoff bundle: a member already routed hand-off-feature this run refuses the whole call ==\n'
+R="$TMPROOT/handoff-bundle-hof"; mkdir -p "$R/gspec/features/hof"
+cat > "$R/gspec/features/hof/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: hof
+
+## Capabilities
+
+- [ ] **P0**: First hof capability
+  - one criterion
+- [ ] **P1**: Second hof capability
+  - another criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" hof <<'EOF'
+- [ ] **T1** **P0** first hof task
+  - deps: —
+  - covers: First hof capability
+- [ ] **T2** **P1** second hof task, already handed to the operator
+  - deps: —
+  - covers: Second hof capability
+EOF
+mkdir -p "$R/.agents/loop/test-run-1"
+printf "run_id: 'test-run-1'\n" > "$R/.agents/run-state.yaml"
+printf '{"ts":"2026-09-18T01:00:00.000Z","packet":"hof-t2","token":"hand-off-feature","action":"discard-advance","status":"handed to operator"}\n' \
+  > "$R/.agents/loop/test-run-1/routing.jsonl"
+out="$("$ADAPTER" handoff hof-t1,hof-t2 "$R" 2>&1)"; rc=$?
+check 'reuses runstate.sh'"'"'s own HANDOFF=refused shape' 'HANDOFF=refused' "$out"
+check 'names the routing reason' 'REASON=hand-off-feature' "$out"
+check 'names the offending member' 'PACKET=hof-t2' "$out"
+refute 'no partial output from the earlier, unrouted member' 'PACKET=hof-t1' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0, gspec is still optional' || bad 'exit 0 on a hand-off-feature member' "rc=$rc"
+
+# The clean member alone is unaffected -- the routing record is per packet id,
+# never a blanket refusal of the whole feature.
+out="$("$ADAPTER" handoff hof-t1 "$R")"
+check 'the unrouted member alone still hands off normally' 'PACKET=hof-t1' "$out"
+
+printf '\n== handoff bundle: no run-state, no run_id, or no routing.jsonl all fail SOFT -- never a reason to refuse ==\n'
+R="$TMPROOT/handoff-bundle-nohof"; mkdir -p "$R/gspec/features/nohof"
+cat > "$R/gspec/features/nohof/prd.md" <<'EOF'
+---
+spec-version: v2
+---
+
+# Feature: nohof
+
+## Capabilities
+
+- [ ] **P0**: A nohof capability
+  - a criterion
+- [ ] **P1**: Another nohof capability
+  - another criterion
+
+## Dependencies
+EOF
+mk_plan_v2 "$R" nohof <<'EOF'
+- [ ] **T1** **P0** first nohof task
+  - deps: —
+  - covers: A nohof capability
+- [ ] **T2** **P1** second nohof task
+  - deps: —
+  - covers: Another nohof capability
+EOF
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'no .agents/run-state.yaml at all still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+mkdir -p "$R/.agents"
+printf "schema: 3\n" > "$R/.agents/run-state.yaml"
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'a run-state.yaml with no run_id: line still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+printf "run_id: 'no-such-run'\n" > "$R/.agents/run-state.yaml"
+out="$("$ADAPTER" handoff nohof-t1,nohof-t2 "$R")"
+check 'a run_id with no matching .agents/loop/ directory still bundles normally' 'BUNDLE=nohof-t1,nohof-t2' "$out"
+
+printf '\n== handoff bundle: a malformed comma list is a genuine usage error ==\n'
+out="$("$ADAPTER" handoff ',bun-t1' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a leading comma is refused' || bad 'leading comma should be non-zero' "rc=$rc, out=$out"
+out="$("$ADAPTER" handoff 'bun-t1,' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a trailing comma is refused' || bad 'trailing comma should be non-zero' "rc=$rc, out=$out"
+out="$("$ADAPTER" handoff 'bun-t1,,bun-t2' "$R" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok 'a doubled comma is refused' || bad 'doubled comma should be non-zero' "rc=$rc, out=$out"
+
+# =============================================================================
+# capability-drift (completion-record-drift-t1). Output contract, fixed by
+# gspec/features/completion-record-drift/tasks.md and binding on all five
+# tasks in that plan:
+#   DRIFT=<slug>\t<capability text>
+#   UNJUDGEABLE=<class>\t<slug>\t<detail>
+#   CAPABILITY_DRIFT=ok|attention drift=<n> unjudgeable=<n>
+# T1's own scope for this file is exactly the two cases below (the
+# two-capability fixture in the flat layout, plus the no-gspec/ exit-0 case)
+# -- the three UNJUDGEABLE classes and the feature-folder layout are T2's,
+# and the byte-identical detect-never-flip pin is T3's; adding those here
+# too would duplicate work those tasks are chartered to do.
+printf '\n== capability-drift: no gspec/ at all exits 0 with CAPABILITY_DRIFT=none ==\n'
+R="$TMPROOT/capdrift-none"; mkdir -p "$R"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"; rc=$?
+check 'reads CAPABILITY_DRIFT=none' 'CAPABILITY_DRIFT=none' "$out"
+check 'and explains why' 'NOTE=' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no gspec/' "rc=$rc"
+
+# =============================================================================
+printf '\n== capability-drift: the two-capability fixture, flat layout (mk_prd/mk_plan) ==\n'
+# One capability whose covering task is fully checked (DRIFT); one with an
+# unchecked covering task (mid-flight, reported as neither drift nor
+# unjudgeable). A per-feature test -- no unchecked task lines and no checked
+# capabilities -- reports neither here, because the feature still has an
+# unchecked task line (T3); this case fails if the detector is widened back
+# to that per-feature shape.
+R="$TMPROOT/capdrift-main"; mkdir -p "$R"
+mk_prd "$R" capdrift-main 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" capdrift-main <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'the fully-checked-covered capability is named present' \
+  "$(printf 'DRIFT=capdrift-main\topen capability 1')" "$out"
+refute 'the mid-flight capability is named absent' \
+  'open capability 2' "$out"
+check 'the run summary counts the one drift and nothing unjudgeable' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: a feature with no plan is out of scope, not unjudgeable ==\n'
+R="$TMPROOT/capdrift-noplan"; mkdir -p "$R"
+mk_prd "$R" capdrift-noplan 0 1
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"; rc=$?
+refute 'no drift for an undecomposed feature' 'capdrift-noplan' "$out"
+check 'the run summary still prints a clean count' 'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+[ "$rc" -eq 0 ] && ok 'and exits 0' || bad 'exit 0 with no plan file' "rc=$rc"
+
+# =============================================================================
+# completion-record-drift-t2: the three UNJUDGEABLE classes, plus running T1's
+# two-capability drift fixture in the feature-folder layout too. Every case
+# below asserts BOTH halves -- the expected UNJUDGEABLE= line, with its class
+# and feature name, present, AND that feature absent from every DRIFT= line
+# -- since either half alone would pass for the wrong reason: a detector that
+# never emits UNJUDGEABLE= at all would still pass a check() for the line's
+# absence-of-drift half, and a detector that reports everything unjudgeable
+# would still pass a check() for the UNJUDGEABLE= half alone.
+printf '\n== capability-drift: the two-capability fixture, feature-folder layout (mk_prd_v2/mk_plan_v2) ==\n'
+# Identical to T1's flat-layout fixture above, run again through the v2
+# builders -- a detector that reads only the pre-3.x flat layout would fail
+# here rather than silently passing on the newer layout it never reads.
+R="$TMPROOT/capdrift-main-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" capdrift-main-v2 0 2
+mk_plan_v2 "$R" capdrift-main-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the fully-checked-covered capability is named present' \
+  "$(printf 'DRIFT=capdrift-main-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the mid-flight capability is named absent' \
+  'open capability 2' "$out"
+check 'feature-folder layout: the run summary counts the one drift and nothing unjudgeable' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: unmatched-quote reads unjudgeable, never drift (flat layout) ==\n'
+# A checked task whose covers: quote matches no PRD capability at all. The
+# adapter already refuses to guess at the nearest capability for an unmatched
+# quote elsewhere (cmd_handoff's UNMATCHED=); reading one as drift here would
+# turn that same guess back on.
+R="$TMPROOT/cd-unmatched-flat"; mkdir -p "$R"
+mk_prd "$R" cd-unmatched-flat 0 1
+mk_plan "$R" cd-unmatched-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the unmatched quote is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-unmatched-flat\tdoes not match any capability')" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-unmatched-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+printf '\n== capability-drift: unmatched-quote reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-unmatched-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-unmatched-v2 0 1
+mk_plan_v2 "$R" cd-unmatched-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the unmatched quote is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-unmatched-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-unmatched-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: uncovered-capability reads unjudgeable, never drift (flat layout) ==\n'
+# A resolved plan exists, but no task's covers: references this capability at
+# all -- no covering task means no positive evidence of delivery, and
+# absence of evidence must never be read as drift.
+R="$TMPROOT/cd-uncovered-flat"; mkdir -p "$R"
+mk_prd "$R" cd-uncovered-flat 0 1
+mk_plan "$R" cd-uncovered-flat <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the uncovered capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-uncovered-flat\topen capability 1')" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-uncovered-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: uncovered-capability reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-uncovered-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-uncovered-v2 0 1
+mk_plan_v2 "$R" cd-uncovered-v2 <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the uncovered capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-uncovered-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-uncovered-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
+# completion-record-drift-gaps-t6: the anchoring divergence between
+# `_CAPABILITY_LINE_RE` (admits leading whitespace) and `_prd_capability`'s
+# `^-`-anchored quote matcher (column 0 only), recorded rather than aligned
+# (see both patterns' comments in gspec-backlog.sh). An indented but
+# otherwise canonical capability line is enumerated by `_prd_capabilities`
+# (which drives this walk) and declined by `_prd_capability` (which every
+# `covers:` quote is checked against): the quote never registers a MATCH, so
+# the capability reads `uncovered-capability` and its covering task's quote
+# reads `unmatched-quote` -- never `DRIFT=`, whichever way the covering task
+# is checked. Two variations of the SAME indented PRD line pin the safe
+# direction both ways: covering task checked (would be DRIFT if the anchors
+# agreed) and unchecked (would be neither drift nor unjudgeable if the
+# anchors agreed) -- both read identically here, because the quote never
+# matches regardless of the task's checked state.
+printf '\n== capability-drift: an indented capability line never drifts -- the anchor divergence stands (covering task checked) ==\n'
+R="$TMPROOT/cd-indented-checked-flat"; mkdir -p "$R/gspec/features"
+{ printf -- '---\nspec-version: v1\n---\n\n# Feature: cd-indented-checked-flat\n\n## Capabilities\n\n'
+  printf -- '  - [ ] **P1**: indented capability\n    - criterion\n'
+} > "$R/gspec/features/cd-indented-checked-flat.md"
+mk_plan "$R" cd-indented-checked-flat <<'EOF'
+- [x] **T1** finish the indented capability
+  - deps: —
+  - covers: indented capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'checked: the indented capability is reported uncovered, never matched' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-indented-checked-flat\tindented capability')" "$out"
+check 'checked: the covering quote is reported unmatched, never matched' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-indented-checked-flat\tindented capability')" "$out"
+refute 'checked: never a DRIFT= line, even though the covering task is checked' \
+  'DRIFT=cd-indented-checked-flat' "$out"
+check 'checked: the run summary counts both unjudgeable rows and no drift' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+printf '\n== capability-drift: an indented capability line never drifts -- the anchor divergence stands (covering task unchecked) ==\n'
+R="$TMPROOT/cd-indented-unchecked-flat"; mkdir -p "$R/gspec/features"
+{ printf -- '---\nspec-version: v1\n---\n\n# Feature: cd-indented-unchecked-flat\n\n## Capabilities\n\n'
+  printf -- '  - [ ] **P1**: indented capability\n    - criterion\n'
+} > "$R/gspec/features/cd-indented-unchecked-flat.md"
+mk_plan "$R" cd-indented-unchecked-flat <<'EOF'
+- [ ] **T1** finish the indented capability
+  - deps: —
+  - covers: indented capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'unchecked: the indented capability is reported uncovered, never matched' \
+  "$(printf 'UNJUDGEABLE=uncovered-capability\tcd-indented-unchecked-flat\tindented capability')" "$out"
+check 'unchecked: the covering quote is reported unmatched, never matched' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-indented-unchecked-flat\tindented capability')" "$out"
+refute 'unchecked: never a DRIFT= line' 'DRIFT=cd-indented-unchecked-flat' "$out"
+check 'unchecked: the run summary counts both unjudgeable rows and no drift' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+# =============================================================================
+printf '\n== capability-drift: unrecognized-capability reads unjudgeable, never drift (flat layout) ==\n'
+# A legacy **P0 — text** capability line, appended by hand to a
+# builder-written PRD -- the same shape _feature_done still counts toward
+# completion, but _prd_capability's stricter **P<n>**: matcher declines it
+# (it has no reliable verbatim text of its own to reproduce). It must read
+# unjudgeable rather than resolve to either answer.
+R="$TMPROOT/cd-legacy-flat"; mkdir -p "$R"
+mk_prd "$R" cd-legacy-flat 0 0
+cat >> "$R/gspec/features/cd-legacy-flat.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan "$R" cd-legacy-flat <<'EOF'
+- [ ] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat layout: the legacy-shape capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unrecognized-capability\t%s\t' "cd-legacy-flat")" "$out"
+refute 'flat layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-legacy-flat' "$out"
+check 'flat layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: unrecognized-capability reads unjudgeable, never drift (feature-folder layout) ==\n'
+R="$TMPROOT/cd-legacy-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-legacy-v2 0 0
+cat >> "$R/gspec/features/cd-legacy-v2/prd.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan_v2 "$R" cd-legacy-v2 <<'EOF'
+- [ ] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder layout: the legacy-shape capability is reported unjudgeable, with its feature name' \
+  "$(printf 'UNJUDGEABLE=unrecognized-capability\t%s\t' "cd-legacy-v2")" "$out"
+refute 'feature-folder layout: the feature never appears in a DRIFT= line' 'DRIFT=cd-legacy-v2' "$out"
+check 'feature-folder layout: nothing here reads as drift' 'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
+# completion-record-drift-t3: pin detect-never-flip mechanically. A `cksum`
+# manifest of every PRD and plan file under this fixture's gspec/, taken
+# before and compared byte-identical after running capability-drift over a
+# drifted fixture -- so an auto-flip regression (the detector "fixing" the
+# drift it finds) fails a checksum comparison rather than needing a reviewer
+# to notice the write. Paired, in the same case, with the assertion that the
+# run still reported the drift it was given: a no-op scan also leaves the
+# manifest unchanged, so the checksum half alone would pass for a detector
+# that does nothing at all. Both fixtures reuse T1's two-capability
+# drift shape through the sweep's existing builders, run in both layouts it
+# already exercises (T1's flat layout, T2's feature-folder layout) rather
+# than a third builder that could drift from the ones every other case here
+# uses.
+printf '\n== capability-drift: detect-never-flip is pinned by checksum, flat layout ==\n'
+R="$TMPROOT/cd-noflip-flat"; mkdir -p "$R"
+mk_prd "$R" cd-noflip-flat 0 2
+mk_plan "$R" cd-noflip-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flat layout: the drift it was given is still reported' \
+  "$(printf 'DRIFT=cd-noflip-flat\topen capability 1')" "$out"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'flat layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+  || bad 'flat layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+      "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== capability-drift: detect-never-flip is pinned by checksum, feature-folder layout ==\n'
+R="$TMPROOT/cd-noflip-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-noflip-v2 0 2
+mk_plan_v2 "$R" cd-noflip-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'feature-folder layout: the drift it was given is still reported' \
+  "$(printf 'DRIFT=cd-noflip-v2\topen capability 1')" "$out"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'feature-folder layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+  || bad 'feature-folder layout: every PRD and plan file under gspec/ is byte-identical after the scan' \
+      "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
+# completion-record-drift-gaps-t2: this feature's own pin for the corrected
+# all-covering-tasks-checked construct in `_capability_drift_for` (T1,
+# e4f68b2 -- `elif ! grep -qx '0' <<< "$bits"`, replacing a negated
+# `printf | grep -qx` pipeline whose reader could exit before its writer
+# finished under `set -euo pipefail`). Independent of `completion-record-
+# drift`'s own two-capability fixture above: that fixture already carries
+# this exact shape, but the defect it guards is rare enough by construction
+# that a green run of either fixture is weak evidence on its own -- this
+# case is `-gaps`'s own record, not a substitute for reading the construct.
+# Both capabilities sit in the SAME run so the case cannot pass by the
+# detector reporting nothing at all: one capability is covered by both a
+# checked and an unchecked task (mid-flight -- must never read as drift),
+# the other by only checked tasks (must read as drift).
+printf '\n== capability-drift: a mid-flight capability never reads as drift alongside a genuinely finished one (flat layout) ==\n'
+R="$TMPROOT/cd-gaps-t2-flat"; mkdir -p "$R"
+mk_prd "$R" cd-gaps-t2-flat 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" cd-gaps-t2-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'flat layout: the mid-flight capability is absent by name from every DRIFT= (and every other) line' \
+  'open capability 2' "$out"
+check 'flat layout: the genuinely finished capability is named present in a DRIFT= line' \
+  "$(printf 'DRIFT=cd-gaps-t2-flat\topen capability 1')" "$out"
+check 'flat layout: the run summary counts exactly the one drift and no unjudgeable row for either capability' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+printf '\n== capability-drift: a mid-flight capability never reads as drift alongside a genuinely finished one (feature-folder layout) ==\n'
+R="$TMPROOT/cd-gaps-t2-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-gaps-t2-v2 0 2
+mk_plan_v2 "$R" cd-gaps-t2-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'feature-folder layout: the mid-flight capability is absent by name from every DRIFT= (and every other) line' \
+  'open capability 2' "$out"
+check 'feature-folder layout: the genuinely finished capability is named present in a DRIFT= line' \
+  "$(printf 'DRIFT=cd-gaps-t2-v2\topen capability 1')" "$out"
+check 'feature-folder layout: the run summary counts exactly the one drift and no unjudgeable row for either capability' \
+  'CAPABILITY_DRIFT=attention drift=1 unjudgeable=0' "$out"
+
+# =============================================================================
+# completion-record-drift-gaps-t4: pin the completion-skip (T3's `continue` on
+# `_feature_done`) against the SAME fixture in three variations, so the skip
+# is shown to be pinned to the completion DERIVATION `_feature_done` computes
+# rather than to the shorthand `covers:` labels that motivated it. All three
+# share one plan: a single checked task whose `covers:` quote matches no
+# capability at all -- the unmatched-quote shape from earlier in this file --
+# and only the PRD's capability line varies:
+#   done        the capability is checked -> _feature_done=1 -> the feature
+#               is skipped entirely: no DRIFT=, no UNJUDGEABLE= of any class,
+#               and the run's unjudgeable count is NOT raised by it.
+#   unchecked   the capability is unchecked -> _feature_done=0 -> the feature
+#               is scanned, and the unmatched-quote row reappears (alongside
+#               uncovered-capability, since nothing covers the still-open
+#               capability either).
+#   unrecognized  the capability line is written in a shape
+#               `_CAPABILITY_LINE_RE` does not match at all (no `- [ ]`/`- [x]`
+#               checkbox) -> `_prd_capabilities` sees zero capability lines,
+#               `_feature_done` totals 0 and reads NOT done (total>0 required)
+#               -> the feature is scanned, and the unmatched-quote row
+#               reappears with no capability-side row at all, since the
+#               second loop in `_capability_drift_for` has nothing to iterate.
+# If the skip were keyed to the plan's `covers:` labels rather than
+# `_feature_done`'s own derivation, the "unrecognized" case would still be
+# skipped (its plan's shorthand `covers:` label is identical to the "done"
+# case's) -- it is not, because the PRD, not the plan, is what changed.
+printf '\n== capability-drift: the completion-skip is pinned to the completion derivation, not the covers: labels (flat layout) ==\n'
+
+R="$TMPROOT/cd-skip-done-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-done-flat 1 0   # "- [x] **P0**: done capability 1\n  - criterion\n"
+mk_plan "$R" cd-skip-done-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'flat/done: a fully-checked feature never appears in a DRIFT= line' 'DRIFT=cd-skip-done-flat' "$out"
+refute 'flat/done: a fully-checked feature never appears in an UNJUDGEABLE= line' 'cd-skip-done-flat' "$out"
+check 'flat/done: skipped entirely -- the run summary counts nothing at all' \
+  'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+
+R="$TMPROOT/cd-skip-unchecked-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-unchecked-flat 0 1   # "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R" cd-skip-unchecked-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat/unchecked: the SAME plan yields the unmatched-quote row again once the capability is unchecked' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unchecked-flat\tdoes not match any capability')" "$out"
+refute 'flat/unchecked: still never a DRIFT= line' 'DRIFT=cd-skip-unchecked-flat' "$out"
+check 'flat/unchecked: the run summary counts both unjudgeable rows -- the quote and the now-uncovered capability' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+R="$TMPROOT/cd-skip-unrecognized-flat"; mkdir -p "$R"
+mk_prd "$R" cd-skip-unrecognized-flat 0 0
+cat >> "$R/gspec/features/cd-skip-unrecognized-flat.md" <<'EOF'
+- capability one, written with no checkbox at all
+  - criterion
+EOF
+mk_plan "$R" cd-skip-unrecognized-flat <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'flat/unrecognized: the SAME unmatched-quote row reappears when the capability line is a shape the derivation never recognizes' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unrecognized-flat\tdoes not match any capability')" "$out"
+refute 'flat/unrecognized: still never a DRIFT= line' 'DRIFT=cd-skip-unrecognized-flat' "$out"
+check 'flat/unrecognized: the run summary counts only the quote -- no capability-side row exists to count' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+printf '\n== capability-drift: the completion-skip is pinned to the completion derivation, not the covers: labels (feature-folder layout) ==\n'
+
+R="$TMPROOT/cd-skip-done-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-done-v2 1 0
+mk_plan_v2 "$R" cd-skip-done-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+refute 'feature-folder/done: a fully-checked feature never appears in a DRIFT= line' 'DRIFT=cd-skip-done-v2' "$out"
+refute 'feature-folder/done: a fully-checked feature never appears in an UNJUDGEABLE= line' 'cd-skip-done-v2' "$out"
+check 'feature-folder/done: skipped entirely -- the run summary counts nothing at all' \
+  'CAPABILITY_DRIFT=ok drift=0 unjudgeable=0' "$out"
+
+R="$TMPROOT/cd-skip-unchecked-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-unchecked-v2 0 1
+mk_plan_v2 "$R" cd-skip-unchecked-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder/unchecked: the SAME plan yields the unmatched-quote row again once the capability is unchecked' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unchecked-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder/unchecked: still never a DRIFT= line' 'DRIFT=cd-skip-unchecked-v2' "$out"
+check 'feature-folder/unchecked: the run summary counts both unjudgeable rows -- the quote and the now-uncovered capability' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=2' "$out"
+
+R="$TMPROOT/cd-skip-unrecognized-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cd-skip-unrecognized-v2 0 0
+cat >> "$R/gspec/features/cd-skip-unrecognized-v2/prd.md" <<'EOF'
+- capability one, written with no checkbox at all
+  - criterion
+EOF
+mk_plan_v2 "$R" cd-skip-unrecognized-v2 <<'EOF'
+- [x] **T1** a checked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+check 'feature-folder/unrecognized: the SAME unmatched-quote row reappears when the capability line is a shape the derivation never recognizes' \
+  "$(printf 'UNJUDGEABLE=unmatched-quote\tcd-skip-unrecognized-v2\tdoes not match any capability')" "$out"
+refute 'feature-folder/unrecognized: still never a DRIFT= line' 'DRIFT=cd-skip-unrecognized-v2' "$out"
+check 'feature-folder/unrecognized: the run summary counts only the quote -- no capability-side row exists to count' \
+  'CAPABILITY_DRIFT=attention drift=0 unjudgeable=1' "$out"
+
+# =============================================================================
+# complete-capabilities (capability-auto-complete-t1). WRITE. Output contract:
+#   COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#   COMPLETED=<slug>\t<capability text>   (n lines, PRD order)
+#   FILE=<relprd>
+#   REASON=...                            (blocked / none / unresolved)
+# Flips a capability iff capability-drift would have printed DRIFT= for it;
+# never an uncovered-capability or unrecognized-capability row; never unflips
+# a checked one; an UNCHECKED task with an unmatched covers: quote holds
+# EVERY flip in the feature, while the same quote on an already-CHECKED task
+# holds nothing. `_capability_drift_for`/`cmd_capability_drift` are untouched
+# by this -- verified below by re-running capability-drift over one of these
+# same fixtures and checking its output against what its own sweep above
+# already expects.
+printf '\n== complete-capabilities: no gspec/ at all exits 0 with COMPLETE_CAPABILITIES=none (skip, D4) ==\n'
+R="$TMPROOT/cc-none"; mkdir -p "$R"
+out="$("$ADAPTER" complete-capabilities anything "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+check 'and explains why' 'REASON=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0 with no gspec/' || bad 'exits 0 with no gspec/' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug is a usage error, distinct from the skip (flat layout present) ==\n'
+R="$TMPROOT/cc-malformed-flat"; mkdir -p "$R/gspec/features"
+out="$("$ADAPTER" complete-capabilities '../evil' "$R" 2>&1)"; rc=$?
+check 'refuses with a named reason' 'refusing a feature slug' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1 on a malformed slug' || bad 'exits 1 on a malformed slug' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug is a usage error, distinct from the skip (feature-folder layout present) ==\n'
+R="$TMPROOT/cc-malformed-v2"; mkdir -p "$R/gspec/features"
+out="$("$ADAPTER" complete-capabilities 'foo/bar' "$R" 2>&1)"; rc=$?
+check 'refuses with a named reason' 'refusing a feature slug' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1 on a malformed slug' || bad 'exits 1 on a malformed slug' "rc=$rc"
+
+printf '\n== complete-capabilities: a malformed slug in a NON-gspec repo still reads as the skip, not the usage error ==\n'
+R="$TMPROOT/cc-malformed-nogspec"; mkdir -p "$R"
+out="$("$ADAPTER" complete-capabilities '../evil' "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none, same as any other gspec-optional case' \
+  'COMPLETE_CAPABILITIES=none' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0 -- gspec-optional wins over the slug guard' \
+  || bad 'exits 0 -- gspec-optional wins over the slug guard' "rc=$rc"
+
+printf '\n== complete-capabilities: an unresolvable slug fails distinguishably from the skip (flat layout present) ==\n'
+R="$TMPROOT/cc-unresolvable-flat"; mkdir -p "$R"
+mk_prd "$R" someother-flat 0 1
+out="$("$ADAPTER" complete-capabilities nosuchfeature "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+check 'and explains why' 'REASON=' "$out"
+[ "$rc" -eq 4 ] && ok 'exits 4, distinct from the skip exit 0' \
+  || bad 'exits 4 on an unresolvable slug' "rc=$rc"
+
+printf '\n== complete-capabilities: an unresolvable slug fails distinguishably from the skip (feature-folder layout present) ==\n'
+R="$TMPROOT/cc-unresolvable-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" someother-v2 0 1
+out="$("$ADAPTER" complete-capabilities nosuchfeature "$R" 2>&1)"; rc=$?
+check 'reads COMPLETE_CAPABILITIES=none' 'COMPLETE_CAPABILITIES=none' "$out"
+[ "$rc" -eq 4 ] && ok 'exits 4, distinct from the skip exit 0' \
+  || bad 'exits 4 on an unresolvable slug' "rc=$rc"
+
+# =============================================================================
+printf '\n== complete-capabilities: the two-capability fixture, flat layout (mk_prd/mk_plan) ==\n'
+# Same shape as capability-drift's own two-capability fixture: the capability
+# whose covering tasks are all checked is flipped and named; the one with an
+# unchecked covering task is untouched and absent.
+R="$TMPROOT/cc-main-flat"; mkdir -p "$R"
+mk_prd "$R" cc-main-flat 0 2   # "- [ ] **P1**: open capability 1/2\n  - criterion\n"
+mk_plan "$R" cc-main-flat <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" complete-capabilities cc-main-flat "$R" 2>&1)"; rc=$?
+check 'the fully-checked-covered capability is flipped and named' \
+  "$(printf 'COMPLETED=cc-main-flat\topen capability 1')" "$out"
+refute 'the mid-flight capability is never named' 'open capability 2' "$out"
+check 'the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+prd_after="$(cat "$R/gspec/features/cc-main-flat.md")"
+check 'the flipped capability now reads checked in the PRD' \
+  '- [x] **P1**: open capability 1' "$prd_after"
+check 'the mid-flight capability is still unchecked in the PRD' \
+  '- [ ] **P1**: open capability 2' "$prd_after"
+
+printf '\n== complete-capabilities: the two-capability fixture, feature-folder layout (mk_prd_v2/mk_plan_v2) ==\n'
+R="$TMPROOT/cc-main-v2"; mkdir -p "$R"
+mk_prd_v2 "$R" cc-main-v2 0 2
+mk_plan_v2 "$R" cc-main-v2 <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" complete-capabilities cc-main-v2 "$R" 2>&1)"; rc=$?
+check 'feature-folder layout: the fully-checked-covered capability is flipped and named' \
+  "$(printf 'COMPLETED=cc-main-v2\topen capability 1')" "$out"
+refute 'feature-folder layout: the mid-flight capability is never named' 'open capability 2' "$out"
+check 'feature-folder layout: the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'feature-folder layout: exits 0' || bad 'feature-folder layout: exits 0' "rc=$rc"
+prd_after="$(cat "$R/gspec/features/cc-main-v2/prd.md")"
+check 'feature-folder layout: the flipped capability now reads checked in the PRD' \
+  '- [x] **P1**: open capability 1' "$prd_after"
+check 'feature-folder layout: the mid-flight capability is still unchecked in the PRD' \
+  '- [ ] **P1**: open capability 2' "$prd_after"
+
+# =============================================================================
+printf '\n== complete-capabilities: an uncovered capability never flips ==\n'
+R="$TMPROOT/cc-uncovered"; mkdir -p "$R"
+mk_prd "$R" cc-uncovered 0 1
+mk_plan "$R" cc-uncovered <<'EOF'
+- [ ] **T1** a task that covers nothing
+  - deps: —
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-uncovered "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched' \
+  || bad 'the PRD is untouched' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== complete-capabilities: an unrecognized-capability line never flips ==\n'
+R="$TMPROOT/cc-unrecognized"; mkdir -p "$R"
+mk_prd "$R" cc-unrecognized 0 0
+cat >> "$R/gspec/features/cc-unrecognized.md" <<'EOF'
+- [ ] **P0 — legacy capability text**
+  - criterion
+EOF
+mk_plan "$R" cc-unrecognized <<'EOF'
+- [x] **T1** a task unrelated to the legacy capability
+  - deps: —
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-unrecognized "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched' \
+  || bad 'the PRD is untouched' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
+printf '\n== complete-capabilities: an UNCHECKED task with an unmatched covers quote holds an otherwise-eligible flip ==\n'
+# Capability A ("open capability 1") is fully covered by a checked task, which
+# alone would flip it -- but a SECOND, unchecked task in the same feature has
+# a covers: quote matching no capability at all. The flip rule holds every
+# flip in the feature until that is fixed.
+R="$TMPROOT/cc-hold"; mkdir -p "$R"
+mk_prd "$R" cc-hold 0 1   # "- [ ] **P1**: open capability 1\n  - criterion\n"
+mk_plan "$R" cc-hold <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** an unchecked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-hold "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'flips nothing -- holds the whole feature' \
+  'COMPLETE_CAPABILITIES=blocked completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'still exits 0 -- a hold is reported, not a failure' \
+  || bad 'exits 0 when held' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched while the hold is in effect' \
+  || bad 'the PRD is untouched while the hold is in effect' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+printf '\n== complete-capabilities: the SAME unmatched quote on an already-CHECKED task does not hold the flip (converse) ==\n'
+R="$TMPROOT/cc-hold-converse"; mkdir -p "$R"
+mk_prd "$R" cc-hold-converse 0 1
+mk_plan "$R" cc-hold-converse <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** a CHECKED task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+out="$("$ADAPTER" complete-capabilities cc-hold-converse "$R" 2>&1)"; rc=$?
+check 'flips the capability normally -- a checked task with a bad quote holds nothing' \
+  "$(printf 'COMPLETED=cc-hold-converse\topen capability 1')" "$out"
+check 'the run summary counts the one completion' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+# =============================================================================
+printf '\n== complete-capabilities: a checked capability with an unchecked covering task stays checked ==\n'
+R="$TMPROOT/cc-stays-checked"; mkdir -p "$R"
+mk_prd "$R" cc-stays-checked 1 0   # "- [x] **P0**: done capability 1\n  - criterion\n"
+mk_plan "$R" cc-stays-checked <<'EOF'
+- [ ] **T1** an unchecked task covering an already-done capability
+  - deps: —
+  - covers: done capability 1
+EOF
+MANIFEST_BEFORE="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+out="$("$ADAPTER" complete-capabilities cc-stays-checked "$R" 2>&1)"; rc=$?
+MANIFEST_AFTER="$(find "$R/gspec" -type f -name '*.md' | sort | xargs cksum)"
+check 'never unflips it, and never reports it' 'COMPLETE_CAPABILITIES=ok completed=0' "$out"
+refute 'names no completion' 'COMPLETED=' "$out"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ "$MANIFEST_BEFORE" = "$MANIFEST_AFTER" ] \
+  && ok 'the PRD is untouched -- the checked box never moves' \
+  || bad 'the PRD is untouched -- the checked box never moves' "before: $MANIFEST_BEFORE
+after:  $MANIFEST_AFTER"
+
+# =============================================================================
+printf '\n== complete-capabilities: reverting the flipped line yields a PRD byte-identical to the original ==\n'
+R="$TMPROOT/cc-revert"; mkdir -p "$R"
+mk_prd "$R" cc-revert 0 2
+mk_plan "$R" cc-revert <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+ORIGINAL_SUM="$(cksum < "$R/gspec/features/cc-revert.md")"
+out="$("$ADAPTER" complete-capabilities cc-revert "$R" 2>&1)"
+check 'flips the one eligible capability' 'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+sed -i.bak 's/- \[x\] \*\*P1\*\*: open capability 1/- [ ] **P1**: open capability 1/' \
+  "$R/gspec/features/cc-revert.md" && rm -f "$R/gspec/features/cc-revert.md.bak"
+REVERTED_SUM="$(cksum < "$R/gspec/features/cc-revert.md")"
+[ "$ORIGINAL_SUM" = "$REVERTED_SUM" ] \
+  && ok 'reverting the flipped checkbox restores the original file byte-for-byte' \
+  || bad 'reverting the flipped checkbox restores the original file byte-for-byte' \
+      "original: $ORIGINAL_SUM
+reverted: $REVERTED_SUM"
+
+# =============================================================================
+# capability-auto-complete-t6: the same no-trailing-newline guard check-task
+# carries (finding 3 above), on the capability write side. A PRD whose FINAL
+# line is the flippable capability is the only shape that can gain a byte:
+# awk's print always terminates the record it writes, so without the guard a
+# one-character flip would silently append a newline to a file that had none —
+# a whole-file diff on the next reader, and a revert that no longer restores
+# the original bytes.
+printf '\n== complete-capabilities: a PRD with no trailing newline gains no byte ==\n'
+R="$TMPROOT/cc-nonl"; mkdir -p "$R/gspec/features"
+# Hand-built rather than mk_prd: that builder ends every capability with a
+# criterion sub-bullet AND a final newline, and this case needs the flippable
+# capability to be the last line with nothing after it.
+printf -- '---\nspec-version: v1\n---\n\n# Feature: cc-nonl\n\n## Capabilities\n\n- [x] **P0**: done capability 1\n  - criterion\n- [ ] **P1**: open capability 1' \
+  > "$R/gspec/features/cc-nonl.md"
+mk_plan "$R" cc-nonl <<'EOF'
+- [x] **T1** finish the capability on the unterminated final line
+  - deps: —
+  - covers: open capability 1
+EOF
+ORIGINAL_SUM="$(cksum < "$R/gspec/features/cc-nonl.md")"
+before_size="$(wc -c < "$R/gspec/features/cc-nonl.md")"
+out="$("$ADAPTER" complete-capabilities cc-nonl "$R" 2>&1)"; rc=$?
+check 'flips the capability on the unterminated final line' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out"
+check 'and names it' "$(printf 'COMPLETED=cc-nonl\topen capability 1')" "$out"
+[ "$rc" -eq 0 ] && ok 'exit 0 flipping a PRD with no trailing newline' \
+  || bad 'exit 0 flipping a PRD with no trailing newline' "rc=$rc"
+grep -qF -- '- [x] **P1**: open capability 1' "$R/gspec/features/cc-nonl.md" \
+  && ok 'the flip itself landed on the final line' \
+  || bad 'the flip itself landed on the final line' "$(cat "$R/gspec/features/cc-nonl.md")"
+after_size="$(wc -c < "$R/gspec/features/cc-nonl.md")"
+[ "$before_size" -eq "$after_size" ] \
+  && ok 'the PRD byte count is unchanged apart from the flip' \
+  || bad 'the PRD byte count is unchanged apart from the flip' "before=$before_size after=$after_size"
+if [ -n "$(tail -c1 "$R/gspec/features/cc-nonl.md")" ]; then
+  ok 'the PRD still lacks a trailing newline'
+else
+  bad 'the PRD still lacks a trailing newline' 'a trailing newline was added'
+fi
+# Reverted WITHOUT `sed -i`, unlike the case above: BSD/macOS sed appends a
+# final newline to a file that had none, which would fail the checksum below
+# for a reason that has nothing to do with the subcommand.
+#
+# The revert must change the checkbox character and NOTHING else, which means
+# it has to reproduce whatever trailing state the subcommand actually left —
+# NOT the state the fixture was written in. Measuring it here rather than
+# assuming it is what keeps the checksum load-bearing: written the other way
+# (strip every trailing newline unconditionally) the revert silently undoes a
+# newline the subcommand wrongly added, and the comparison passes against a
+# subcommand with no guard at all. Verified by deleting the guard: this form
+# fails, the stripping form did not. Safe because the fixture has no trailing
+# blank line, so the post-flip file ends in at most one newline.
+had_nl=0; [ -z "$(tail -c1 "$R/gspec/features/cc-nonl.md")" ] && had_nl=1
+reverted="$(sed 's/- \[x\] \*\*P1\*\*: open capability 1/- [ ] **P1**: open capability 1/' \
+  "$R/gspec/features/cc-nonl.md")"
+{ printf '%s' "$reverted"; if [ "$had_nl" -eq 1 ]; then printf '\n'; fi; } \
+  > "$R/gspec/features/cc-nonl.md"
+REVERTED_SUM="$(cksum < "$R/gspec/features/cc-nonl.md")"
+[ "$ORIGINAL_SUM" = "$REVERTED_SUM" ] \
+  && ok 'reverting the flipped checkbox restores the unterminated PRD byte-for-byte' \
+  || bad 'reverting the flipped checkbox restores the unterminated PRD byte-for-byte' \
+      "original: $ORIGINAL_SUM
+reverted: $REVERTED_SUM"
+
+# =============================================================================
+printf '\n== complete-capabilities: a second run names nothing and is byte-identical to the first run result ==\n'
+R="$TMPROOT/cc-noop-second"; mkdir -p "$R"
+mk_prd "$R" cc-noop-second 0 2
+mk_plan "$R" cc-noop-second <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out1="$("$ADAPTER" complete-capabilities cc-noop-second "$R" 2>&1)"
+check 'the first run flips the one eligible capability' \
+  'COMPLETE_CAPABILITIES=ok completed=1' "$out1"
+FIRST_SUM="$(cksum < "$R/gspec/features/cc-noop-second.md")"
+out2="$("$ADAPTER" complete-capabilities cc-noop-second "$R" 2>&1)"
+SECOND_SUM="$(cksum < "$R/gspec/features/cc-noop-second.md")"
+check 'the second run names nothing' 'COMPLETE_CAPABILITIES=ok completed=0' "$out2"
+refute 'the second run names no completion' 'COMPLETED=' "$out2"
+[ "$FIRST_SUM" = "$SECOND_SUM" ] \
+  && ok 'the file is byte-identical to the first run result' \
+  || bad 'the file is byte-identical to the first run result' \
+      "after first run:  $FIRST_SUM
+after second run: $SECOND_SUM"
+
+# =============================================================================
+printf '\n== complete-capabilities: capability-drift over the same fixture is unaffected by the write subcommand existing ==\n'
+R="$TMPROOT/cc-drift-unaffected"; mkdir -p "$R"
+mk_prd "$R" cc-drift-unaffected 0 2
+mk_plan "$R" cc-drift-unaffected <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+out="$("$ADAPTER" capability-drift "$R" 2>&1)"
+expected="$(printf 'DRIFT=cc-drift-unaffected\topen capability 1\nCAPABILITY_DRIFT=attention drift=1 unjudgeable=0')"
+[ "$out" = "$expected" ] && ok 'capability-drift output is byte-identical to the pre-subcommand shape' \
+  || bad 'capability-drift output is byte-identical to the pre-subcommand shape' "got:
+$out
+want:
+$expected"
+
+# =============================================================================
+# record-completion (skill-prompt-trim-t2). Holds the landing and scan decisions
+# by calling check-task and complete-capabilities. Each case below pins ONE
+# branch: a check-task exit code, a complete-capabilities outcome, a restore
+# source, the --feature fallback, a skip, the scan form, or the --restore
+# refusal. Fixtures are git repos where staging or restoring is observable.
+rc_git() { # rc_git <root> -- init a repo and commit everything in it
+  git -C "$1" init -q; git -C "$1" config user.email t@t; git -C "$1" config user.name t
+  git -C "$1" add -A; git -C "$1" commit -q -m fixture
+}
+rc_last()   { printf '%s\n' "$1" | tail -n 1; }
+rc_count()  { printf '%s\n' "$2" | grep -c "$1" || true; }
+rc_staged() { git -C "$1" diff --cached --name-only; }
+rc_status() { git -C "$1" status --porcelain --untracked-files=all; }
+
+rc_fixture() { # rc_fixture <root> <slug> -- flat layout: cap 1 covered by open T1 alone; cap 2 by done T2 + open T3
+  mkdir -p "$1"
+  mk_prd "$1" "$2" 0 2
+  mk_plan "$1" "$2" <<'EOF'
+- [ ] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [x] **T2** start capability two
+  - deps: —
+  - covers: open capability 2
+- [ ] **T3** finish capability two
+  - deps: T2
+  - covers: open capability 2
+EOF
+  rc_git "$1"
+}
+
+printf '\n== record-completion: check-task flipped + complete-capabilities completed above 0 -- both staged, nothing staged by the command ==\n'
+R="$TMPROOT/recc-flip"; rc_fixture "$R" rcf
+out="$("$ADAPTER" record-completion --tasks rcf#T1 --restore index "$R" 2>&1)"; rc=$?
+check 'the flipped member prints TASK=<id> with its CHECKED value' "$(printf 'TASK=rcf#T1\trcf#T1')" "$out"
+check 'the one call is for the flipped slug and completed above 0' "$(printf 'CAPABILITIES=rcf\tok\tcompleted=1')" "$out"
+check 'the call is followed by its COMPLETED= line' "$(printf 'COMPLETED=rcf\topen capability 1')" "$out"
+check 'the flipped plan file is named for staging' 'STAGE=gspec/tasks/rcf.md' "$out"
+check 'the PRD that completed above 0 is named for staging' 'STAGE=gspec/features/rcf.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=2 completed=1 held=0 failed=0' ] \
+  && ok 'the summary is the last line and counts both stages and the one completion' \
+  || bad 'the summary is the last line and counts both stages and the one completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+[ -z "$(rc_staged "$R")" ] && ok 'the command itself stages nothing' || bad 'the command itself stages nothing' "$(rc_staged "$R")"
+
+printf '\n== record-completion: check-task already + --feature fallback; complete-capabilities completed 0 is not staged ==\n'
+R="$TMPROOT/recc-already"; rc_fixture "$R" rca
+out="$("$ADAPTER" record-completion --tasks rca#T2 --feature rca --restore index "$R" 2>&1)"; rc=$?
+check 'the already member prints TASK=<id> already' "$(printf 'TASK=rca#T2\talready')" "$out"
+check 'the already plan file is named for staging' 'STAGE=gspec/tasks/rca.md' "$out"
+check 'with no flipped slug, the call falls back to --feature' "$(printf 'CAPABILITIES=rca\tok\tcompleted=0')" "$out"
+refute 'a PRD that completed 0 is never named for staging' 'STAGE=gspec/features/rca.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=0 held=0 failed=0' ] \
+  && ok 'the summary counts the one plan stage and no completion' \
+  || bad 'the summary counts the one plan stage and no completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: every member already and no --feature -- no slug, the call is skipped ==\n'
+R="$TMPROOT/recc-noslug"; rc_fixture "$R" rcn
+out="$("$ADAPTER" record-completion --tasks rcn#T2 --restore index "$R" 2>&1)"; rc=$?
+refute 'no complete-capabilities call is made' 'CAPABILITIES=' "$out"
+check 'the skip says why' 'REASON=' "$out"
+check 'the already plan is still named for staging' 'STAGE=gspec/tasks/rcn.md' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=skipped staged=1 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads skipped' || bad 'the summary reads skipped' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: every member CHECKED=none at exit 0 skips even with --feature ==\n'
+R="$TMPROOT/recc-none"; rc_fixture "$R" rco
+out="$("$ADAPTER" record-completion --tasks not-a-gspec-id,other-thing --feature rco --restore head "$R" 2>&1)"; rc=$?
+check 'a none member prints TASK=<id> none' "$(printf 'TASK=not-a-gspec-id\tnone')" "$out"
+refute 'no complete-capabilities call is made, despite --feature' 'CAPABILITIES=' "$out"
+refute 'nothing is named for staging' 'STAGE=' "$out"
+check 'the skip says why' 'REASON=' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=skipped staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads skipped' || bad 'the summary reads skipped' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a drift member (exit 4) is reported, never a halt, and the --feature fallback still runs ==\n'
+R="$TMPROOT/recc-drift"; rc_fixture "$R" rcd
+out="$("$ADAPTER" record-completion --tasks rcd#T99,not-a-gspec-id --feature rcd --restore index "$R" 2>&1)"; rc=$?
+check 'the drift member prints TASK_DRIFT=<id> with its REASON' "$(printf 'TASK_DRIFT=rcd#T99\trcd has no task T99')" "$out"
+check 'the next member still runs' "$(printf 'TASK=not-a-gspec-id\tnone')" "$out"
+refute 'a drift member is never a halt' 'HALT=' "$out"
+check 'drift is not none: the call falls back to --feature' "$(printf 'CAPABILITIES=rcd\tok\tcompleted=0')" "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads ok' || bad 'the summary reads ok' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a refused member (exit 1) halts -- no capability call, the earlier flip left unstaged ==\n'
+R="$TMPROOT/recc-halt"; rc_fixture "$R" rch
+out="$("$ADAPTER" record-completion --tasks rch#T1,../evil#T1,rch#T3 --feature rch --restore index "$R" 2>&1)"; rc=$?
+check 'the earlier member flipped' "$(printf 'TASK=rch#T1\trch#T1')" "$out"
+check 'the refused member prints HALT=<id> with the reason' "$(printf 'HALT=../evil#T1\tcheck-task: refusing')" "$out"
+refute 'no later member runs' 'rch#T3' "$out"
+refute 'no complete-capabilities call is made' 'CAPABILITIES=' "$out"
+refute 'no STAGE= line is printed on a halt' 'STAGE=' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=halt staged=0 completed=0 held=0 failed=0' ] \
+  && ok 'the summary reads halt' || bad 'the summary reads halt' "last: $(rc_last "$out")"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+check 'the earlier flip is on disk' '- [x] **T1** finish capability one' "$(cat "$R/gspec/tasks/rch.md")"
+[ -z "$(rc_staged "$R")" ] && ok 'the earlier flip is left unstaged' || bad 'the earlier flip is left unstaged' "$(rc_staged "$R")"
+check 'the PRD was not completed (no capability call ran)' '- [ ] **P1**: open capability 1' "$(cat "$R/gspec/features/rch.md")"
+
+printf '\n== record-completion: a blocked call is held -- no stage, no restore ==\n'
+R="$TMPROOT/recc-blocked"; mkdir -p "$R"
+mk_prd "$R" rcb 0 1
+mk_plan "$R" rcb <<'EOF'
+- [ ] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** an unchecked task whose covers quote matches nothing
+  - deps: —
+  - covers: does not match any capability
+EOF
+rc_git "$R"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcb.md"
+out="$("$ADAPTER" record-completion --tasks rcb#T1 --restore head "$R" 2>&1)"; rc=$?
+check 'the call reads blocked' "$(printf 'CAPABILITIES=rcb\tblocked\tcompleted=0')" "$out"
+check 'a blocked call prints HELD=<slug> with its REASON' "$(printf 'HELD=rcb\trcb has an unchecked task')" "$out"
+refute 'a blocked PRD is never named for staging' 'STAGE=gspec/features/rcb.md' "$out"
+refute 'a blocked call restores nothing' 'RESTORED=' "$out"
+check 'the PRD edit survives (no restore ran)' 'uncommitted PRD edit' "$(cat "$R/gspec/features/rcb.md")"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=0 held=1 failed=0' ] \
+  && ok 'the summary counts the hold' || bad 'the summary counts the hold' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: exit 4 with a PRD present restores it from HEAD ==\n'
+R="$TMPROOT/recc-exit4-prd"; mkdir -p "$R"; mk_prd "$R" rcg 0 1; rc_git "$R"
+prd_head="$(cat "$R/gspec/features/rcg.md")"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcg.md"
+out="$(printf 'DRIFT=rcg\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'a non-zero call reads failed' "$(printf 'CAPABILITIES=rcg\tfailed\tcompleted=0')" "$out"
+check 'the PRD is restored and named' "$(printf 'RESTORED=gspec/features/rcg.md\tfrom=head')" "$out"
+[ "$(cat "$R/gspec/features/rcg.md")" = "$prd_head" ] && ok 'the PRD is back to HEAD' || bad 'the PRD is back to HEAD' "$(cat "$R/gspec/features/rcg.md")"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=0 completed=0 held=0 failed=1' ] \
+  && ok 'a failure is counted, never a halt' || bad 'a failure is counted, never a halt' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: restore source index keeps a staged PRD edit ==\n'
+R="$TMPROOT/recc-src-index"; mkdir -p "$R"; mk_prd "$R" rcs 0 1; rc_git "$R"
+printf 'staged PRD edit\n' >> "$R/gspec/features/rcs.md"; git -C "$R" add gspec/features/rcs.md
+printf 'worktree PRD edit\n' >> "$R/gspec/features/rcs.md"
+out="$(printf 'DRIFT=rcs\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore index "$R" 2>&1)"; rc=$?
+check 'the restore names its source' "$(printf 'RESTORED=gspec/features/rcs.md\tfrom=index')" "$out"
+prd_after="$(cat "$R/gspec/features/rcs.md")"
+check 'the staged edit is kept' 'staged PRD edit' "$prd_after"
+refute 'the unstaged edit is dropped' 'worktree PRD edit' "$prd_after"
+check 'the staged edit is still in the index' 'gspec/features/rcs.md' "$(rc_staged "$R")"
+
+printf '\n== record-completion: restore source head resets a staged PRD edit ==\n'
+R="$TMPROOT/recc-src-head"; mkdir -p "$R"; mk_prd "$R" rcs 0 1; rc_git "$R"
+printf 'staged PRD edit\n' >> "$R/gspec/features/rcs.md"; git -C "$R" add gspec/features/rcs.md
+printf 'worktree PRD edit\n' >> "$R/gspec/features/rcs.md"
+out="$(printf 'DRIFT=rcs\topen capability 1\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the restore names its source' "$(printf 'RESTORED=gspec/features/rcs.md\tfrom=head')" "$out"
+prd_after="$(cat "$R/gspec/features/rcs.md")"
+refute 'the staged edit is reset' 'staged PRD edit' "$prd_after"
+refute 'the unstaged edit is dropped' 'worktree PRD edit' "$prd_after"
+[ -z "$(rc_staged "$R")" ] && ok 'nothing is left staged' || bad 'nothing is left staged' "$(rc_staged "$R")"
+
+printf '\n== record-completion: exit 1 (a refused slug) restores nothing and touches no path outside gspec/ ==\n'
+# `../../victim` resolves, through _resolve_prd_path's flat pattern, to
+# <root>/victim.md -- outside gspec/. Only the slug guard keeps it untouched.
+R="$TMPROOT/recc-exit1"; mkdir -p "$R"; mk_prd "$R" rcv 0 1
+printf 'committed\n' > "$R/victim.md"; rc_git "$R"
+printf 'uncommitted victim edit\n' >> "$R/victim.md"
+status_before="$(rc_status "$R")"
+out="$(printf 'DRIFT=../../victim\tx\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the refused call reads failed' "$(printf 'CAPABILITIES=../../victim\tfailed\tcompleted=0')" "$out"
+check 'the restore is refused, with a reason' "$(printf 'RESTORED=none\tslug ../../victim refused')" "$out"
+check 'the file outside gspec/ keeps its edit' 'uncommitted victim edit' "$(cat "$R/victim.md")"
+[ "$status_before" = "$(rc_status "$R")" ] && ok 'the working tree is unchanged' || bad 'the working tree is unchanged' "$(rc_status "$R")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: exit 4 with no PRD restores nothing and touches no path ==\n'
+R="$TMPROOT/recc-exit4-noprd"; mkdir -p "$R"; mk_prd "$R" rcw 0 1; rc_git "$R"
+printf 'uncommitted PRD edit\n' >> "$R/gspec/features/rcw.md"
+status_before="$(rc_status "$R")"
+out="$(printf 'DRIFT=ghost\tx\n' | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+check 'the call reads failed' "$(printf 'CAPABILITIES=ghost\tfailed\tcompleted=0')" "$out"
+check 'no PRD resolves, so nothing is restored' "$(printf 'RESTORED=none\tfeature ghost has no PRD')" "$out"
+[ "$status_before" = "$(rc_status "$R")" ] && ok 'the working tree is unchanged' || bad 'the working tree is unchanged' "$(rc_status "$R")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: the scan form passes stdin through and calls once per distinct DRIFT= slug, first-seen order ==\n'
+R="$TMPROOT/recc-scan"; mkdir -p "$R"
+mk_prd "$R" rcx 0 2
+mk_plan "$R" rcx <<'EOF'
+- [x] **T1** finish capability one
+  - deps: —
+  - covers: open capability 1
+- [ ] **T2** finish capability two
+  - deps: —
+  - covers: open capability 2
+EOF
+mk_prd "$R" rcy 0 1
+mk_plan "$R" rcy <<'EOF'
+- [ ] **T1** not done yet
+  - deps: —
+  - covers: open capability 1
+EOF
+rc_git "$R"
+stdin="$(printf 'DRIFT=rcy\topen capability 1\nUNJUDGEABLE=uncovered-capability\trcz\topen capability 9\nDRIFT=rcx\topen capability 1\nDRIFT=rcy\topen capability 2\nCAPABILITY_DRIFT=attention drift=3 unjudgeable=1')"
+out="$(printf '%s\n' "$stdin" | "$ADAPTER" record-completion --drift --restore head "$R" 2>&1)"; rc=$?
+[ "$(printf '%s\n' "$out" | head -n 5)" = "$stdin" ] \
+  && ok 'every stdin line is passed through unchanged, first' \
+  || bad 'every stdin line is passed through unchanged, first' "$out"
+[ "$(rc_count '^CAPABILITIES=rcy' "$out")" = 1 ] && ok 'a repeated slug is called once' || bad 'a repeated slug is called once' "$out"
+[ "$(printf '%s\n' "$out" | grep '^CAPABILITIES=' | cut -f1 | tr '\n' ' ')" = 'CAPABILITIES=rcy CAPABILITIES=rcx ' ] \
+  && ok 'calls run in first-seen order' || bad 'calls run in first-seen order' "$out"
+refute 'an UNJUDGEABLE= slug is never called' 'CAPABILITIES=rcz' "$out"
+check 'the completing slug is staged' 'STAGE=gspec/features/rcx.md' "$out"
+refute 'no plan file is staged -- the scan form runs no check-task' 'STAGE=gspec/tasks/' "$out"
+[ "$(rc_last "$out")" = 'RECORD_COMPLETION=ok staged=1 completed=1 held=0 failed=0' ] \
+  && ok 'the summary counts the one completion' || bad 'the summary counts the one completion' "last: $(rc_last "$out")"
+[ "$rc" -eq 0 ] && ok 'exits 0' || bad 'exits 0' "rc=$rc"
+
+printf '\n== record-completion: a missing --restore is refused before anything runs ==\n'
+R="$TMPROOT/recc-norestore"; rc_fixture "$R" rcr
+plan_before="$(cat "$R/gspec/tasks/rcr.md")"
+out="$("$ADAPTER" record-completion --tasks rcr#T1 "$R" 2>&1)"; rc=$?
+check 'the landing form refuses, naming --restore' '--restore index|head is required' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+[ "$(cat "$R/gspec/tasks/rcr.md")" = "$plan_before" ] && ok 'no check-task ran' || bad 'no check-task ran' "$(cat "$R/gspec/tasks/rcr.md")"
+out="$(printf 'DRIFT=rcr\tx\n' | "$ADAPTER" record-completion --drift "$R" 2>&1)"; rc=$?
+check 'the scan form refuses too' '--restore index|head is required' "$out"
+refute 'and passes nothing through' 'DRIFT=' "$out"
+[ "$rc" -eq 1 ] && ok 'exits 1' || bad 'exits 1' "rc=$rc"
+
+# =============================================================================
+printf '\n== source guard: no pipe-fed `grep` that can exit early used as a condition in the adapter ==\n'
+# next-state-reporting-integrity T3. The construct this feature removed is a
+# pipeline whose final stage is an early-exiting reader used as a condition:
+# `printf … | awk … | grep -q .`. Under the `pipefail` set at the top of
+# scripts/gspec-backlog.sh, `grep -q` exits on its first match and closes the
+# pipe while the writer is still writing, the writer takes SIGPIPE (141), and
+# `pipefail` reports 141 instead of grep's 0 — a true condition read as false.
+# It only opens once the payload outgrows a single buffered write, so it passes
+# every small test and fails in production. This case is what stops a new one
+# being added to the adapter unnoticed.
+#
+# THE SHAPE (settled in the plan preamble, copied verbatim into
+# scripts/test-runstate.sh by T4, and widened in both by grep-devnull-condition
+# T2 — the two sweeps share no file, and this repo's precedent is to
+# reimplement a small helper rather than add a dependency two standalone CI
+# sweeps both need): a NON-COMMENT source line containing a SINGLE `|` (never
+# `||`) immediately followed by `grep`, where that grep either (a) is given a
+# `q`-bearing option ANYWHERE among its arguments, or (b) sends its STDOUT to
+# `/dev/null`. Because it is a copy, any change to the shape is TWO edits: here
+# and in scripts/test-runstate.sh. They must not drift.
+#
+# Each half of that earns its place:
+#   - non-comment: without it the scan flags the comment in `cmd_next` that
+#     NAMES the construct it removed (verified 2026-09-19: dropping the leading
+#     `[^#[:space:]]` flags scripts/gspec-backlog.sh:839, a comment, and
+#     nothing else). Prose that merely mentions the shape is not the shape.
+#   - single `|`, not `||`: `cmd || grep -q x` is a branch, not a pipeline.
+#   - `grep` immediately after the pipe: the construct is about the FINAL stage
+#     being the condition. A value-producing `… | head -1 | … || true` has a
+#     different final stage and is outside the shape by the PRD's definition,
+#     which is why `orphan_packet_tag` in scripts/runstate.sh is documented by
+#     next-state-reporting-integrity T2 rather than listed as an exception here.
+#   - `q` ANYWHERE in the arguments, not just in the leading flag cluster:
+#     catches `-q`, `-qx`, `-qxF`, `-n -q` and `--quiet`, and — T2's widening —
+#     a `q`-bearing option placed AFTER the pattern (`… | grep -E "$pat" -q`),
+#     which GNU option permutation makes exactly as early-exiting as the same
+#     option in front. A here-string test (`grep -qxF … <<< "$v"`) has no pipe
+#     and is correctly NOT flagged — that is the form this file's subject moved
+#     to, so a scan that flagged it would fail on the fix.
+#   - stdout to `/dev/null` — `>/dev/null`, `> /dev/null`, `1>/dev/null`,
+#     `&>/dev/null` — even with no `q` on the line. This half is flagged on a
+#     DEFENSIVE rationale, and the distinction matters enough to state twice:
+#     it is NOT a measured failure. Measured (grep-devnull-condition T1's
+#     review, 2026-09-19, Linux aarch64 containers, GNU grep 3.8 and 3.11, a
+#     414 KB listing, 20 runs each, against the sibling instance in
+#     scripts/runstate.sh) the redirect form misfired 0/20 while the pipe-fed
+#     `-q` form misfired 20/20 with rc 141: GNU grep stops SCANNING on a null
+#     stdout but drains a non-seekable stdin before it exits, so the writer
+#     never takes SIGPIPE, and only `-q` skips that drain. The shape is flagged
+#     because that safety is an undocumented courtesy of one implementation and
+#     the line is one keystroke from `-q` — never because a short-circuit was
+#     observed. Do not restate it as one.
+#   - a BARE `2>/dev/null` is deliberately NOT matched: stderr to null neither
+#     exits early nor closes the pipe, and this file's three `grep … 2>/dev/null`
+#     lines are stderr redirects, not this hazard.
+#
+# KNOWN BOUNDARY, stated rather than silently excluded. The empty exception
+# list below says the scan finds nothing, not that scripts/gspec-backlog.sh
+# cannot hold this hazard in a form the scan cannot see. Three limits remain:
+#   - a line whose TRAILING COMMENT contains the construct is flagged: the scan
+#     reads whole lines, not shell tokens. That is a false positive rather than
+#     a miss, and the exception list is where it would be absorbed.
+#   - a pipeline split across a `\`-continuation is NOT flagged: the `|` and
+#     the `grep` land on two different lines, and neither half alone is the
+#     shape. This one is a genuine miss.
+#   - a stdout redirect to a path OTHER than `/dev/null` is NOT flagged. That
+#     is the plan's settled Deferred Decision, not an oversight: output to a
+#     regular file has no association with early exit at all, so matching it
+#     would be a false positive the exception list would then have to carry.
+# All three are caught by review rather than here.
+PIPE_GREP_Q_RE='^[[:space:]]*[^#[:space:]].*[^|]\|[[:space:]]*grep([^|]*[[:space:]]-[^[:space:]]*q|[^|]*([^|0-9&]|[[:space:]][1&])>[[:space:]]*/dev/null)'
+
+scan_pipe_grep_q() { # scan_pipe_grep_q <file> -> one `<lineno>:<text>` per unexcepted hit
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      # --- REVIEWED EXCEPTIONS: EMPTY, and that is the record ---------------
+      # next-state-reporting-integrity T1 removed both adapter instances, and
+      # the wider shape grep-devnull-condition T2 added finds nothing new, so
+      # there is nothing to except. The empty list is deliberate: a hit here is
+      # a failure, not a warning.
+      #
+      # To add one, add a branch ABOVE the `*)` catch-all, most specific
+      # fragment first, with the reason on the same line:
+      #
+      #   *'| awk -F: | grep -q .'*) ;; # why it cannot misreport
+      #
+      # SINGLE-quote the fragment. These lines are full of `$`, and a
+      # double-quoted pattern expands it — under this sweep's `set -u` that
+      # aborts the scan mid-file, which reads as "no hits" (verified). The
+      # fragment must also not match the `__guard_selfproof_*` markers below,
+      # or an exception would silently disarm the proof.
+      #
+      # The reason must be a BOUND on the writer's maximum output — the size at
+      # which a single atomic write stops holding is 4096 bytes (PIPE_BUF) —
+      # never an observed pass. A probe that does not reproduce the phenomenon
+      # eliminates nothing (CLAUDE.md). Adding a branch is a deliberate edit
+      # that shows up in review; that is the whole point of the literal list.
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < <(grep -nE "$PIPE_GREP_Q_RE" "$1" || true)
+}
+
+# Run against the real adapter. Recorded at the widening's implementation time
+# (2026-09-19): 0 hits with the wider shape, exception list still empty.
+hits="$(scan_pipe_grep_q "$ADAPTER")"
+[ -z "$hits" ] \
+  && ok 'scripts/gspec-backlog.sh contains no pipe-fed `grep -q` or `grep … >/dev/null` condition outside the (empty) exception list' \
+  || bad 'scripts/gspec-backlog.sh contains no pipe-fed `grep -q` or `grep … >/dev/null` condition' \
+      "unreviewed instances — either rewrite them without the pipe (capture the
+     value, or use a here-string) or add each to the exception list above with
+     the bound that makes it unable to misreport:
+$hits"
+
+# --- self-proof: the guard fails when an instance is introduced --------------
+# An assertion that finds nothing proves nothing on its own — it passes just as
+# happily against a scan that can never match. So the same case injects the
+# construct into a copy of the adapter and asserts the identical scan flags
+# exactly the injected lines and nothing else. Injections are planted in the
+# two places such a line could appear: INSIDE a function body (where every real
+# instance lived) and at END OF FILE (the position a line-anchored or
+# early-terminating scan would miss).
+#
+# One injection per shape the guard claims to catch — grep-devnull-condition T2
+# added the second and third:
+#   - `-q` in the leading flag cluster: INJ_FN, planted inside a function body,
+#     and INJ_EOF, planted as the file's last line.
+#   - stdout to `/dev/null` with no `q` on the line: INJ_DEVNULL, planted
+#     mid-file inside a function body.
+#   - a `q`-bearing option AFTER the pattern: INJ_QAFTER, planted at end of
+#     file.
+# The two new shapes take one position each so that between them both positions
+# are exercised, and the `want` comparison below is what shows each one turns
+# the guard red where it lands. Run at the widening's implementation time
+# (2026-09-19): all four flagged, nothing else — and re-run against the
+# pre-widening regex, which flagged only the two `-q` lines, so the widening is
+# load-bearing rather than decorative.
+#
+# All four carry a `__guard_selfproof_*` marker so that no future exception
+# fragment, however broadly written, can accidentally except a proof itself.
+INJ_FN='  ls "$root" | grep -q __guard_selfproof_fn__ && return 0'
+INJ_DEVNULL='  ls "$root" | grep __guard_selfproof_devnull_fn__ >/dev/null && return 0'
+INJ_QAFTER='printf "%s\n" "$x" | grep -E __guard_selfproof_qafter_eof__ -q'
+INJ_EOF='printf "%s\n" "$x" | grep -qxF __guard_selfproof_eof__'
+INJECTED="$TMPROOT/injected-gspec-backlog.sh"
+export INJ_FN INJ_DEVNULL INJ_QAFTER INJ_EOF
+awk '
+  { print }
+  !placed && /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$/ {
+      print ENVIRON["INJ_FN"]; print ENVIRON["INJ_DEVNULL"]; placed = 1
+  }
+  END { print ENVIRON["INJ_QAFTER"]; print ENVIRON["INJ_EOF"] }
+' "$ADAPTER" > "$INJECTED"
+
+got="$(scan_pipe_grep_q "$INJECTED")"
+want="$(printf '%s\n%s\n%s\n%s\n' "$INJ_FN" "$INJ_DEVNULL" "$INJ_QAFTER" "$INJ_EOF")"
+[ "$(printf '%s\n' "$got" | sed 's/^[0-9]*://')" = "$want" ] \
+  && ok 'the same scan flags exactly the four injected instances — one per shape, two shapes new — and only those' \
+  || bad 'the same scan flags exactly the four injected instances — one per shape, two shapes new — and only those' \
+      "got:
+$got
+want (without line numbers):
+$want"
+
+# And they really are where this case claims: the first sits on the line after
+# a multi-line function opening, and the end-of-file injection is the file's
+# last line.
+inj_line="$(printf '%s\n' "$got" | sed -n '1s/^\([0-9][0-9]*\):.*/\1/p')"
+prev=''
+[ -n "$inj_line" ] && [ "$inj_line" -gt 1 ] \
+  && prev="$(sed -n "$((inj_line - 1))p" "$INJECTED")"
+case "$prev" in
+  *'() {') ok 'the first injected instance sits inside a function body' ;;
+  *) bad 'the first injected instance sits inside a function body' \
+       "first hit was at line ${inj_line:-<none>}; the line above it is: $prev" ;;
+esac
+[ "$(tail -n 1 "$INJECTED")" = "$INJ_EOF" ] \
+  && ok 'the end-of-file injection is the last line of the file' \
+  || bad 'the end-of-file injection is the last line of the file' \
+      "last line is: $(tail -n 1 "$INJECTED")"
 
 # =============================================================================
 printf '\n----------------------------------------\n'

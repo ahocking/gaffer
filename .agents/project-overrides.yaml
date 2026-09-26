@@ -58,10 +58,24 @@ allowed_paths:
 ux:
   preview_mode: none
 
-# Defaults are correct here. Routing is one decision made once —
-# tier -> agent -> that agent's `model:` frontmatter — so overriding per task is
-# how the two disagree (ADR 0019 v2, the `dispatches_with_model_override` counter).
-model_routing: {}
+# Per-agent model overrides (optional). A map keyed by agent name -- the
+# basenames of the plugin's `agents/*.md` files, with no `gaffer:` prefix --
+# to a model alias, in block form (`model_routing:` then indented
+# `implementer: opus` lines) or flow form (`{implementer: opus}`). An agent
+# you do not list keeps the `model:` in its frontmatter. `loop-driver` is
+# excluded: it is the session itself, so routing never sets its model. An
+# invalid entry falls back to that frontmatter default and is reported at
+# run-loop and resume preflight.
+model_routing:
+  reviewer: opus
+  architect: opus
+  chief-engineer: opus
+  ux-designer: opus
+  doc-writer: opus
+  implementer: opus
+  researcher: opus
+# Add model aliases the harness accepts before the plugin's list knows them:
+# extra_models: []
 
 # On top of the plugin's generic defaults (auth, secrets, DB schema, deps,
 # deploys, git history). This repo's domain risk is REFLEXIVITY: the loop editing
@@ -72,10 +86,6 @@ escalate_to_human_on:
   - "changing the ADR 0012 relay crossover, the ADR 0020 gspec pin, or the run-state schema version"
   - "editing gspec/features/run-metrics/tasks.md — a retro-spec of shipped work whose tasks are all checked"
   - "deleting or rewriting an accepted ADR, as opposed to superseding it"
-
-# No ceiling. This repo runs at full-autonomy deliberately (.agents/autonomy) and
-# its central artifact is the guard itself, so a cap here would be self-defeating.
-# autonomy_ceiling:
 
 # ── ASK tier: OFF for this repo (ADR 0015) ───────────────────────────────────
 # Skips every one-click "ask" — routine-but-notable bash AND review-worthy writes.
@@ -89,7 +99,7 @@ escalate_to_human_on:
 #
 # What this does NOT do — the floors are untouched:
 #   - hard-deny still blocks secrets/.env/key material, recursive deletes, and
-#     history rewrite at every autonomy level;
+#     history rewrite, unconditionally;
 #   - the git soft gates still block commit/merge/push to main/master;
 #   - `escalate_to_human_on` above still governs the judgement calls;
 #   - the reviewer and the PR gate remain the real review boundary here.
@@ -104,18 +114,30 @@ escalate_to_human_on:
 bypass-ask-tier: true
 
 # The non-main integration branch (ADR 0009). Packets branch `orch/<task-id>` from
-# here and, at full-autonomy, merge back into it. main is human-gated regardless.
+# here and merge back into it. main is human-gated regardless.
 integration_branch: develop
 
-# Rate-limit auto-pause (ADR 0018) — needs Pro/Max plus a `statusLine` entry in
-# user settings.json, which a plugin cannot write. Turn on with
-# `/gaffer:rate-limit-pause on`; this block is the per-repo gate.
-# rate_limit_pause:
-#   enabled: true
-#   five_hour_threshold_pct: 90
-#   seven_day_threshold_pct: 85
+# How many `fix`/`retry` attempts `runstate.sh route` allows a packet before
+# routing to the escalation decider (thin-loop-driver T9). 1 when missing,
+# invalid, or 0.
+# packet_attempts: 1
 
-# Parallel lanes (ADR 0016). Left at the default 5, but expect far less
-# concurrency than that here: most packets in this repo touch `scripts/` or a
-# prompt file, and overlapping `allowed_files` serializes them by design.
-# max_parallel_packets: 5
+# Pause the loop, exactly as /gaffer:pause does, once this many packets have
+# ended since the loop last started or resumed (thin-loop-driver T10, ADR 0028
+# result 2). Off when missing, invalid, or 0 -- a periodic pause stops an
+# unattended run until someone resumes it, so it must never fire unasked.
+# pause_every_packets: 10
+
+# The largest number of tasks a bundle may hold (packet-bundling T2). 1 when
+# missing, invalid, zero or negative -- bundling is off until raised. A
+# recommended starting value is 4; a larger value costs a larger review diff
+# and more discarded work when a bundle ends non-green.
+# bundle_max_tasks: 4
+
+# The most words of spec-section text one handoff inlines (handoff-spec-inlining
+# T3). Sections past it are named by heading and line count instead. 6000 when
+# missing, empty, non-numeric or 0 -- never unbounded. Only inlined section text
+# counts, not acceptance criteria. A larger value costs a larger handoff, up to
+# that many more words, carried in the implementer's context for every later
+# turn of the packet.
+# handoff_inline_word_budget: 6000

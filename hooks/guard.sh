@@ -19,7 +19,7 @@
 #   READ-ONLY  -> allowed immediately, before any denylist runs, so searching
 #                 FOR a risky string is never mistaken for RUNNING it.
 #   ASK        -> routine-but-notable; returns permissionDecision=ask.
-#   HARD DENY  -> irreversible / never-appropriate; exit 2 at every level.
+#   HARD DENY  -> irreversible / never-appropriate; exit 2, always.
 #
 # Path writes (Edit/Write and shell writes) are TWO tiers (ADR 0014):
 #   SECRET  -> HARD DENY. Irreversible exposure (.env, keys, secret stores).
@@ -42,7 +42,7 @@
 #     merely-absent value: a non-zero return from a `VAR="$(helper …)"`
 #     assignment kills the hook, and Claude Code treats any non-zero-other-than-2
 #     exit as a NON-BLOCKING error — i.e. another silent fail-open. json_field
-#     and read_autonomy_file therefore always return 0.
+#     therefore always returns 0.
 #   - Coverage is defense-in-depth, not a sandbox: it closes the obvious holes
 #     (writes to sensitive paths via the shell, git flags before the subcommand)
 #     but a determined shell can still evade it. Treat it as a backstop.
@@ -66,15 +66,14 @@ set -euo pipefail
 GIT_PREFIX='(^|[^[:alnum:]])git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+'
 
 # (1) HARD-DENY Bash commands (exit 2). Irreversible or never-appropriate:
-#     history destruction, recursive delete, raw-device writes. Denied at EVERY
-#     autonomy level; never downgraded to a prompt. Per-repo `.agents/guard-extra-bash`
+#     history destruction, recursive delete, raw-device writes. Always denied;
+#     never downgraded to a prompt. Per-repo `.agents/guard-extra-bash`
 #     patterns are appended here (declared risk -> ENFORCED as a hard floor).
 #     NOTE: `git commit`/`merge`/`rebase`/`push` are deliberately NOT here — each is
-#     a SOFT gate handled by its check_*_policy below (autonomy-aware). commit is
-#     delegable >= supervised; merge/rebase/push are delegable only at full-autonomy
-#     and only onto NON-main targets.
+#     a SOFT gate handled by its check_*_policy below. All four are delegable, and
+#     only onto NON-main targets.
 DENY_BASH_PATTERNS=(
-  # --- version control: history-destruction (hard-deny at EVERY level) ---
+  # --- version control: history-destruction (always hard-denied) ---
   "${GIT_PREFIX}.*--force([^[:alnum:]]|\$)"
   "${GIT_PREFIX}reset[[:space:]]+--hard([^[:alnum:]]|\$)"
   "${GIT_PREFIX}clean[[:space:]]+.*-[[:alnum:]]*f"
@@ -141,6 +140,7 @@ READ_ONLY_GIT='status|log|diff|show|blame|rev-parse|rev-list|describe|shortlog|r
 #      or `cp … .env` would otherwise bypass the Edit/Write sensitive-path check.
 BASH_WRITE_PATTERNS=(
   '>[[:space:]]*[^|&>[:space:]]'                          # output redirection to a file
+  '>\|[[:space:]]*[^&>[:space:]]'                         # clobber redirect (>|) -- N5
   '(^|[^[:alnum:]])tee([^[:alnum:]]|$)'
   '(^|[^[:alnum:]])sed[[:space:]]+.*-i'                   # in-place sed
   '(^|[^[:alnum:]])(cp|mv|dd|rsync|install|ln)([^[:alnum:]]|$)'
@@ -188,7 +188,7 @@ _AUTH_STRONG='(auth(entication|orization|n|z)?|oauth2?|oidc|jwt|rbac|sso|login|l
 _AUTH_WEAK='(identity|sessions?|tokens?|policy|policies|permissions?)'
 _AUTH_QUAL='(auth(entication|orization|n|z)?|oauth2?|oidc|jwt|rbac|sso|login|logout|signin|providers?|cookies?|claims?|principals?|bearer|csrf|refresh|tickets?|credentials?|tokens?)'
 
-# (2a) SECRET tier — HARD DENY (exit 2), every autonomy level. Irreversible
+# (2a) SECRET tier — HARD DENY (exit 2), always. Irreversible
 #      exposure only. `.agents/guard-extra-paths` is appended here at runtime.
 SECRET_PATH_PATTERNS=(
   # --- secrets / credentials / env / key material ---
@@ -223,30 +223,24 @@ REVIEW_PATH_PATTERNS=(
   '(^|/)(\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|\.circleci/)'
 )
 
-# (3) Autonomy levels, lowest -> highest privilege (ADR 0004 / ADR 0006). The
-#     active level is resolved at runtime below (env ORCH_AUTONOMY > .agents/autonomy
-#     > default), then clamped DOWN to `autonomy_ceiling` in
-#     .agents/project-overrides.yaml. It gates the SOFT git decisions only —
-#     `git commit` (delegable >= supervised) and `git merge`/`rebase`/`push`
-#     (delegable only at `full-autonomy`, and only onto NON-main targets). It does
-#     NOT affect the other tiers: DENY_BASH_PATTERNS (history destruction, rm -rf,
-#     raw-device writes) and SECRET-path writes hard-deny regardless of level;
-#     ASK_BASH_PATTERNS (migrations, deps, deploys) and REVIEW-path writes (auth
-#     code, CI/deploy config) always prompt regardless of level — UNLESS the repo
-#     sets `bypass-ask-tier: true` in .agents/project-overrides.yaml, which skips
-#     the ASK tier entirely (hard-deny floors and git soft gates still enforce).
-#     See resolve_bypass_ask below. Default false; resolved restrictively (every
+# (3) The git SOFT gates are ONE fixed rule set, the same in every repository
+#     (ADR 0004 / ADR 0006, superseded in part). There is no level to raise or
+#     lower: `git commit`, `git merge`, `git rebase` and `git push` are always
+#     delegable, and always only onto a NON-main target. Each is handled by its
+#     check_*_policy below, which still denies a commit on `main`/`master`; a
+#     merge into, rebase of, or push to `main`/`master`; a history rewrite
+#     (`commit --amend`, `rebase -i`, a forced push); and a commit or merge that
+#     carries a SECRET_PATH_PATTERNS path.
+#
+#     The other tiers are independent of the git gates and unchanged:
+#     DENY_BASH_PATTERNS (history destruction, rm -rf, raw-device writes) and
+#     SECRET-path writes always hard-deny; ASK_BASH_PATTERNS (migrations, deps,
+#     deploys) and REVIEW-path writes (auth code, CI/deploy config) always
+#     prompt — UNLESS the repo sets `bypass-ask-tier: true` in
+#     .agents/project-overrides.yaml, which skips the ASK tier entirely
+#     (hard-deny floors and git soft gates still enforce). See
+#     resolve_bypass_ask below. Default false; resolved restrictively (every
 #     discovered config root must opt in).
-ORCH_AUTONOMY_DEFAULT="interactive"
-autonomy_rank() {   # interactive < supervised < autonomous < full-autonomy; unknown -> -1
-  case "$1" in
-    interactive)   echo 0 ;;
-    supervised)    echo 1 ;;
-    autonomous)    echo 2 ;;
-    full-autonomy) echo 3 ;;
-    *)             echo -1 ;;
-  esac
-}
 
 # -----------------------------------------------------------------------------
 # Below this line is mechanism, not policy. Prefer editing the blocks above.
@@ -424,9 +418,9 @@ fi
 # base the git soft gates judge against (see resolve_git_dir below) and it is NOT
 # the config root -- an agent's cwd is routinely a SUBDIRECTORY of the project
 # (a package cache, a submodule, src/). Resolving per-repo config from it made
-# `.agents/*` vanish for any non-root cwd: autonomy silently fell back to
-# `interactive` (fail closed, merely confusing) while `guard-extra-*` silently
-# stopped loading (fail OPEN -- the repo's declared hard-gates disappeared).
+# `.agents/*` vanish for any non-root cwd: `guard-extra-*` silently stopped
+# loading (fail OPEN -- the repo's declared hard-gates disappeared) and
+# `project-overrides.yaml` went unread with it.
 SHELL_CWD="$(json_field "$INPUT" cwd)"
 [ -z "${SHELL_CWD:-}" ] && SHELL_CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 
@@ -441,7 +435,7 @@ SHELL_CWD="$(json_field "$INPUT" cwd)"
 #
 # Multiple roots are merged RESTRICTIVELY, never by picking a winner:
 #   - guard-extra-* patterns are UNIONed  (patterns are only ever ADDED)
-#   - autonomy takes the MINIMUM vote     (privilege is only ever REDUCED)
+#   - bypass-ask-tier needs EVERY vote    (prompts are only ever KEPT)
 # so resolution can never yield a config LESS restrictive than the real project's,
 # even if a foreign `.agents/` is discovered. Ambiguity fails closed by construction.
 CONFIG_ROOTS=()
@@ -467,8 +461,8 @@ _walk_up_for_config() {
 # unioning are wrapped in `discover_config`, called LAZILY — only for commands that
 # are not read-only (the read-only fast-path in the Bash case exits before this),
 # so a read-only command pays none of it (the ADR 0008 hot path). Memoized per
-# process so it runs at most once per invocation (both the Bash gate and
-# ensure_autonomy may ask for it).
+# process so it runs at most once per invocation (both the Bash gate and the
+# Edit/Write path gate may ask for it).
 _CONFIG_DISCOVERED=""
 discover_config() {
   [ -n "$_CONFIG_DISCOVERED" ] && return 0
@@ -512,84 +506,612 @@ discover_config() {
   done
 }
 
-# --- resolve the active autonomy level (ADR 0004) ----------------------------
-# Precedence: env ORCH_AUTONOMY > <repo>/.agents/autonomy > default. An unknown
-# value falls back to the default (the most restrictive, fail-safe choice). The
-# result is then clamped DOWN to the repo's ceiling if project-overrides.yaml
-# declares `autonomy_ceiling:`. Exposed as ORCH_AUTONOMY for check_commit_policy.
-read_autonomy_ceiling() {   # $1 = a config root
-  local f="${1}/.agents/project-overrides.yaml" v
-  [ -f "$f" ] || return 0
-  v="$(grep -Ei '^[[:space:]]*autonomy_ceiling[[:space:]]*:' "$f" 2>/dev/null | head -n1)" || return 0
-  [ -n "$v" ] || return 0
-  # strip `key:`, trailing comment, surrounding quotes and whitespace.
-  printf '%s' "$v" \
-    | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^["'"'"']//; s/["'"'"']$//; s/[[:space:]]*$//' \
-    | tr '[:upper:]' '[:lower:]'
-}
-
-# Read the declared level from one root's `.agents/autonomy`, or "" if absent.
-# Reads only the LAST non-comment, non-blank line: the set-autonomy skill writes an
-# explanatory `#` header above the bare level, and stripping whitespace from the
-# whole file would fold that header into the token and never parse (a silent
-# fallback-to-interactive bug). Strip any inline `# comment`, then whitespace.
-# Always returns 0: an autonomy file that is entirely comments makes the leading
-# `grep -v` exit 1, which `pipefail` propagates and `set -e` turns into a dead
-# hook (exit 1 = a non-blocking error to Claude Code = the guard is bypassed).
-read_autonomy_file() {   # $1 = a config root
-  local f="${1}/.agents/autonomy"
-  [ -f "$f" ] || return 0
-  grep -vE '^[[:space:]]*(#|$)' "$f" 2>/dev/null \
-    | tail -n1 | sed -E 's/[[:space:]]*#.*$//' \
-    | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true
+# --- driver mode (ADR 0028 / thin-loop-driver T5) -----------------------------
+# A driver-mode mark is a FILE `.agents/driver-mode/<session_id>` in a
+# discovered config root, written/removed only by `runstate.sh driver-mode`
+# (T3). Its CONTENT is irrelevant -- existence alone means "this session is
+# the loop driver." The guard refuses a write only when ALL of:
+#   1) the payload's session_id has a mark in some discovered config root,
+#   2) the payload carries NO agent_id (a dispatched subagent always does --
+#      ADR 0028 Result 1. NEVER branch on agent_type: a `claude --agent` main
+#      thread carries agent_type with no agent_id and must still be refused),
+#   3) the target COULD REACH A PACKET'S COMMIT -- i.e. it is inside the
+#      repository the loop is driving and outside that repository's .agents/,
+#      or its real location cannot be verified at all.
+# On (3): the reason this tier exists is that the driver must not make a
+# packet's edits itself (cost, and the reviewer is the boundary) -- so the
+# permitted class is stated as a CRITERION, not a list of paths. A target that
+# RESOLVES OUTSIDE every discovered config root cannot enter any packet's
+# commit, so driver mode does not refuse it (a driver writing its own
+# agent-memory file, which lives outside the repository entirely, is the worked
+# example); every OTHER tier still judges that call, the secret/key-material
+# floor first. What stays refused is anything the guard cannot place outside the
+# repository: an unresolved $VAR, a `..` segment, a relative path whose cwd is
+# not the repository root, an unrecognised shell write shape. Wrong-and-refused
+# costs a pause; wrong-and-allowed is the leak this tier exists to stop.
+# Known limit, stated rather than guessed at: a SECOND CHECKOUT of the driven
+# repository (a worktree whose own .agents/ is not discovered) reads as outside.
+# Nothing in the loop creates one during a run, and its commits are not this
+# run's packet commits -- but do not read "outside every config root" as a
+# stronger claim than it is.
+# Checked AFTER the secret floor (a secret path is refused as a secret first)
+# and BEFORE the ask tier -- and it refuses even when bypass-ask-tier is true,
+# because this is a hard deny via deny(), not something ask()'s bypass skips.
+#
+# session_id becomes a PATH COMPONENT below, so it is validated FIRST: anything
+# outside [A-Za-z0-9._-], or exactly "." or "..", is treated as NO mark -- judge
+# the call exactly as it is today, never deny, never stat an arbitrary path.
+_valid_session_id() {   # $1 = raw session_id
+  local s="$1"
+  [ -n "$s" ] || return 1
+  case "$s" in
+    .|..)                return 1 ;;
+    *[!A-Za-z0-9._-]*)   return 1 ;;
+  esac
   return 0
 }
 
-# Precedence: env ORCH_AUTONOMY > the discovered `.agents/autonomy` files > default.
-# Every discovered root VOTES and the LOWEST vote wins; a root that declares a
-# `.agents/` but no (or an unparseable) autonomy votes the default. So a foreign or
-# nested `.agents/` can only ever LOWER the level, never raise it. The result is
-# then clamped DOWN to the LOWEST `autonomy_ceiling` any root declares.
-resolve_autonomy() {
-  local level="" ceiling="" root rlevel rceil
-  if [ -n "${ORCH_AUTONOMY:-}" ]; then
-    level="$(printf '%s' "$ORCH_AUTONOMY" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    [ "$(autonomy_rank "$level")" = "-1" ] && level="$ORCH_AUTONOMY_DEFAULT"
-  else
-    for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-      rlevel="$(read_autonomy_file "$root")"
-      [ -n "$rlevel" ] && [ "$(autonomy_rank "$rlevel")" != "-1" ] || rlevel="$ORCH_AUTONOMY_DEFAULT"
-      if [ -z "$level" ] || [ "$(autonomy_rank "$rlevel")" -lt "$(autonomy_rank "$level")" ]; then
-        level="$rlevel"
-      fi
-    done
-    [ -n "$level" ] || level="$ORCH_AUTONOMY_DEFAULT"
-  fi
+# Does a mark exist for this (already-validated) session id, in ANY discovered
+# config root? Existence only -- content is never read.
+driver_mode_marked() {   # $1 = validated session_id
+  local root
+  discover_config
   for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
-    rceil="$(read_autonomy_ceiling "$root")"
-    [ -n "$rceil" ] && [ "$(autonomy_rank "$rceil")" != "-1" ] || continue
-    if [ -z "$ceiling" ] || [ "$(autonomy_rank "$rceil")" -lt "$(autonomy_rank "$ceiling")" ]; then
-      ceiling="$rceil"
-    fi
+    [ -f "${root}/.agents/driver-mode/${1}" ] && return 0
   done
-  if [ -n "$ceiling" ] && [ "$(autonomy_rank "$level")" -gt "$(autonomy_rank "$ceiling")" ]; then
-    level="$ceiling"
-  fi
-  printf '%s' "$level"
+  return 1
 }
 
-# Resolve the autonomy level LAZILY: only the git soft gates (commit/merge/rebase/
-# push) consult it, so a read-only command or a non-git write never pays for it.
-# Memoized. resolve_autonomy reads the ENV ORCH_AUTONOMY first (still intact here),
-# then this overwrites the shell var with the fully-resolved value — same result as
-# the old eager call, just deferred to first use. discover_config must run first
-# (resolve_autonomy votes across CONFIG_ROOTS).
-_AUTONOMY_RESOLVED=""
-ensure_autonomy() {
-  [ -n "$_AUTONOMY_RESOLVED" ] && return 0
+# Does the payload cwd RESOLVE to a discovered config root exactly (not merely
+# live somewhere under one)? A relative `.agents/...` target only unambiguously
+# names the repo's real .agents/ directory when cwd IS that root.
+#
+# On success it PUBLISHES the matched root in DRIVER_MODE_CWD_ROOT, which is
+# already physical (both sides of the comparison go through `pwd -P`). That
+# value is load-bearing, not a convenience: a relative target has to be judged
+# on where it really lands, and doing that needs an absolute candidate built
+# from the cwd's PHYSICAL root. Never build one from $SHELL_CWD directly -- the
+# payload cwd may itself be a symlinked path, and assuming otherwise is the
+# asymmetry this whole defect family comes from.
+DRIVER_MODE_CWD_ROOT=""
+_cwd_is_config_root() {
+  local resolved r
+  DRIVER_MODE_CWD_ROOT=""
+  resolved="$(cd "$SHELL_CWD" 2>/dev/null && pwd -P)" || return 1
+  for r in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    if [ "$r" = "$resolved" ]; then DRIVER_MODE_CWD_ROOT="$r"; return 0; fi
+  done
+  return 1
+}
+
+# Is `$1` (a normalized path) inside `<root>/.agents/` for some discovered
+# config root? Case-insensitive, for Windows path/drive-letter casing.
+_driver_mode_in_agents_dir() {   # $1 = normalized path
+  local lc root lc_root
+  lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
+    case "$lc" in "${lc_root}/.agents/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Is `$1` (a normalized path) inside -- or exactly -- a discovered config root?
+# That is the "could reach a packet's commit" test: the loop commits from the
+# repository whose `.agents/` was discovered, so a target under it can land in a
+# packet, and a target under none of them cannot.
+_driver_mode_in_repo() {   # $1 = normalized path
+  local lc root lc_root
+  lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for root in ${CONFIG_ROOTS[@]+"${CONFIG_ROOTS[@]}"}; do
+    lc_root="$(printf '%s' "${root%/}" | tr '[:upper:]' '[:lower:]')"
+    case "$lc" in "$lc_root"|"${lc_root}/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Resolve a target whose FINAL component is itself an existing symlink, by
+# following it. `_driver_mode_resolve_abs` deliberately leaves the tail
+# unresolved (a write legitimately creates a new file), and a symlink leaf is
+# the one case where that tail names an existing object somewhere else -- so an
+# out-of-repository leaf pointing INTO the repository would otherwise compare as
+# outside and be permitted while the write lands in the checkout.
+#
+# Plain `readlink` ONLY, one hop per iteration: `readlink -f` is not a safe
+# dependency under the stock-Git-Bash constraint this hook is built around, and
+# it is probed by EXECUTION, not `command -v` (a Windows shim can be on PATH and
+# still not work). A relative link target resolves against the LINK's own
+# directory. Every failure -- no usable `readlink`, an empty target, a chain
+# longer than the hop bound, a symlink loop, a tail of `.`/`..` that names no
+# file -- prints nothing and returns 1, i.e. REFUSE. Interior `..` segments in a
+# link target are NOT refused here: the caller re-resolves the result's
+# ancestors through `cd`/`pwd -P`, which resolves them physically.
+#
+# A `\` in a link target is rewritten to `/`, matching how `norm` is normalized
+# in `_driver_mode_path_ok` and right for Windows; on POSIX a backslash is a
+# legal filename character, so a contrived target containing one resolves to a
+# path that is not literally the link's own. It errs toward judging a
+# repository-shaped path, i.e. toward refusing -- the safe direction here.
+_driver_mode_follow_leaf() {   # $1 = absolute path whose final component is a symlink
+  local cur="$1" tgt hops=0
+  while [ -L "$cur" ] && [ "$hops" -lt 16 ]; do
+    tgt="$(readlink "$cur" 2>/dev/null)" || return 1
+    [ -n "$tgt" ] || return 1
+    tgt="${tgt//\\//}"
+    case "$tgt" in
+      /*|[A-Za-z]:/*) cur="$tgt" ;;                 # absolute link target
+      *)              cur="${cur%/*}/${tgt}" ;;     # relative to the link's dir
+    esac
+    hops=$((hops + 1))
+  done
+  if [ -L "$cur" ]; then return 1; fi              # hop bound hit: unverifiable
+  case "$cur" in */*) : ;; *) return 1 ;; esac
+  case "${cur##*/}" in .|..) return 1 ;; esac      # not a file target
+  printf '%s' "$cur"
+}
+
+# PHYSICAL location of an absolute target: the nearest EXISTING ancestor
+# directory resolved with `pwd -P`, plus the not-yet-existing tail (a write
+# legitimately creates the file, and may create directories under it). Two
+# symlink forms would otherwise compare as OUTSIDE the repository and be
+# permitted while writing straight into it, and each is handled by a different
+# half of this function:
+#   - a symlinked ANCESTOR -- `/var/...` -> `/private/var/...` on macOS, or a
+#     link whose target directory is the checkout, INCLUDING one in the middle
+#     of an otherwise `.agents/`-named path (`.agents/d -> ../src`) -- by the
+#     `pwd -P` below;
+#   - an existing symlink LEAF pointing into the checkout -- by following it
+#     first, via `_driver_mode_follow_leaf`, and resolving the result's
+#     ancestors here.
+# Prints nothing and returns 1 when the target cannot be placed, which the
+# caller must treat as REFUSE -- including a symlink leaf that cannot be
+# followed. That direction is the tier's own rule: wrong-and-refused costs a
+# pause, wrong-and-allowed is the leak it exists to stop.
+_driver_mode_resolve_abs() {   # $1 = normalized absolute target
+  local dir tail phys followed
+  if [ -L "$1" ]; then
+    followed="$(_driver_mode_follow_leaf "$1")" || return 1
+    set -- "$followed"
+  fi
+  case "$1" in */*) dir="${1%/*}"; tail="${1##*/}" ;; *) return 1 ;; esac
+  [ -n "$dir" ] || dir="/"
+  while [ ! -d "$dir" ]; do
+    case "$dir" in
+      /) break ;;
+      */?*) tail="${dir##*/}/${tail}"; dir="${dir%/*}"; [ -n "$dir" ] || dir="/" ;;
+      *) return 1 ;;   # a drive-letter root or anything else we cannot walk
+    esac
+  done
+  [ -d "$dir" ] || return 1
+  phys="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$phys" ] || return 1
+  printf '%s/%s' "${phys%/}" "$tail"
+}
+
+# ANCHORED judgment of a single candidate write target -- not a substring
+# test. Used for Edit/Write/MultiEdit/NotebookEdit paths directly, and for
+# every target `_driver_mode_extract_targets` pulls out of a Bash command.
+#   - an unresolved shell variable ($VAR) in the target can never be verified
+#     safe -> refuse;
+#   - any ".." path segment -> refuse (traversal, and an unverifiable way to
+#     leave the repository: a repository-relative target resolving outside is
+#     refused for being unverifiable, not permitted for being outside);
+#   - an absolute path (POSIX or a Windows drive letter) becomes the candidate
+#     as-is;
+#   - a relative path must match `^(\./)?\.agents/` AND the payload cwd must
+#     itself be a discovered config root (see _cwd_is_config_root); the
+#     candidate is then that root's PHYSICAL path joined to the target. Every
+#     other relative target is refused as unverifiable -- the cwd it would be
+#     resolved against is not known to be the repository root. Naming
+#     `.agents/` is NECESSARY here, not SUFFICIENT: it decides only which
+#     cwd-relative names are judgeable at all, never the outcome.
+#
+# Then ONE judgment, shared by both forms, on where the write PHYSICALLY lands:
+# under some root's `.agents/` -> OK (the driver's own surface); elsewhere
+# inside a discovered root -> refuse (it could reach a packet's commit);
+# outside every root -> OK (it cannot).
+#
+# That order -- name gate, then physical judgment, with NO lexical fast path --
+# is the whole design, because "it is called `.agents/`" is precisely what a
+# symlink can lie about. "Physically" covers ALL THREE ways a name can lie, and
+# each is closed by a different mechanism:
+#   - a symlinked ANCESTOR (`/var/...` -> `/private/var/...`, or a link whose
+#     target directory is the checkout) -- by `pwd -P` in
+#     `_driver_mode_resolve_abs`;
+#   - an existing symlink LEAF (`.agents/x -> ../src/util.ts`) -- by following
+#     it in `_driver_mode_follow_leaf`, and refusing when it cannot be
+#     followed;
+#   - a symlinked DIRECTORY under `.agents/` (`.agents/d -> ../src`, so
+#     `.agents/d/util.ts` writes repository source) -- by that same `pwd -P`,
+#     which now reaches it only because nothing short-circuits on the name
+#     first. This is why the lexical `<root>/.agents/` test could not stay a
+#     fast path even once the leaf form was handled: a leaf test cannot see a
+#     link in the path's MIDDLE.
+#
+# When resolution FAILS the fallback is deliberately asymmetric:
+#   - an existing symlink leaf -> REFUSE. Unverifiable, and this tier's rule is
+#     that wrong-and-refused costs a pause while wrong-and-allowed is the leak.
+#   - anything else lexically under `<root>/.agents/` -> OK. This is the ONLY
+#     surviving use of the lexical test, and it exists so the driver can still
+#     write its own run-state on a layout whose ancestors this hook cannot walk
+#     (a drive-letter root it cannot descend from, an unreadable ancestor).
+#   - anything else -> refuse.
+_driver_mode_path_ok() {   # $1 = raw candidate target
+  local raw="${1:-}" norm abs phys
+  [ -n "$raw" ] || return 1
+  # unresolved variable, or the sanitizer's quoted-region placeholder -> a
+  # target we cannot verify at all is refused, never guessed at (N1).
+  case "$raw" in *'$'*|*'__Q__'*) return 1 ;; esac
+  norm="${raw//\\//}"
+  case "/${norm}/" in *'/../'*) return 1 ;; esac  # any ".." segment -> refuse
   discover_config
-  ORCH_AUTONOMY="$(resolve_autonomy)"
-  _AUTONOMY_RESOLVED=1
+  # (1) NAME gate -> one absolute candidate to judge.
+  case "$norm" in
+    /*|[A-Za-z]:/*)
+      abs="$norm"
+      ;;
+    *)
+      # A relative target is anchored only when cwd IS the repository root, and
+      # only `.agents/...` is judgeable from there. The candidate is built from
+      # the root's PHYSICAL path so this arm reaches exactly the same judgment
+      # as the absolute one -- it is the arm where a lexical `.agents/*` permit
+      # used to END the story, which let `.agents/link -> ../src/util.ts` (a
+      # link the driver can create with one permitted `ln -s`) write repository
+      # source under an `.agents/` name, in the path form a driver writes by
+      # default.
+      _cwd_is_config_root || return 1
+      case "$norm" in
+        .agents/*|./.agents/*) : ;;
+        *)                     return 1 ;;
+      esac
+      # Belt and braces: an empty root would build `/.agents/...`, which
+      # resolves outside every root and would PERMIT. A control must not
+      # fail open on a value it only believes is set.
+      [ -n "$DRIVER_MODE_CWD_ROOT" ] || return 1
+      abs="${DRIVER_MODE_CWD_ROOT%/}/${norm#./}"
+      ;;
+  esac
+  # (2) judge on where the write REALLY lands.
+  if phys="$(_driver_mode_resolve_abs "$abs")"; then
+    _driver_mode_in_agents_dir "$phys" && return 0
+    _driver_mode_in_repo "$phys" && return 1   # in the repo, outside .agents/
+    return 0                                   # outside the driven repository
+  fi
+  # (3) resolution failed. An existing symlink leaf is unverifiable and must
+  #     NOT fall through to a test on its own name.
+  #     (Written as an `if`, not `[ -L … ] || _in_agents_dir … && return 0`:
+  #     `&&`/`||` are left-associative, so that reads as
+  #     `([ -L ] || _in_agents_dir) && return 0` and would PERMIT every symlink
+  #     leaf -- the exact inverse of this rule.)
+  if [ -L "$abs" ]; then return 1; fi
+  _driver_mode_in_agents_dir "$abs" && return 0
+  return 1
+}
+
+# --- driver mode: sanitizing and target-extraction for Bash writes -----------
+# A raw Bash command cannot be judged by pattern-matching the whole string (a
+# BASH_WRITE_PATTERNS hit inside a commit message, a heredoc body, a quoted
+# arg, or a `2>/dev/null`/`2>&1` redirect is not a real write). So in driver
+# mode ONLY, the command is reduced to a form safe to re-match and to extract
+# real targets from. This NEVER changes how the existing SECRET/REVIEW/ASK
+# checks match -- those still run against the raw command exactly as before.
+
+# Drop every heredoc BODY (and its terminator line), on ANY line of the
+# command, then keep scanning what follows -- a command AFTER the terminator
+# is a real, separate statement and must still be judged (N2). The delimiter
+# is read off the SAME line as `<<`/`<<-`: an optional `-` (strips leading
+# tabs from candidate terminator lines too), optional surrounding quotes, then
+# the delimiter's leading `[A-Za-z0-9_]+` run. No terminator found before the
+# command ends -> drop to the end (the same fail-safe direction as before,
+# now reached only when it's actually true, not the default).
+_driver_mode_drop_heredocs() {   # $1 = raw command
+  local cmd="$1" out='' line delim='' in_heredoc=0 strip_tabs=0 rest tag k tn ch check
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_heredoc" = 1 ]; then
+      check="$line"
+      if [ "$strip_tabs" = 1 ]; then
+        while [ "${check:0:1}" = "$(printf '\t')" ]; do check="${check:1}"; done
+      fi
+      [ "$check" = "$delim" ] && in_heredoc=0
+      continue   # the body line, and the terminator line itself, are dropped
+    fi
+    out="${out}${line}"$'\n'
+    case "$line" in
+      *'<<'*)
+        rest="${line#*<<}"
+        strip_tabs=0
+        case "$rest" in -*) strip_tabs=1; rest="${rest#-}" ;; esac
+        while [ -n "$rest" ]; do
+          case "${rest:0:1}" in
+            ' '|"$(printf '\t')") rest="${rest:1}" ;;
+            *) break ;;
+          esac
+        done
+        tag="${rest#[\"\']}"
+        delim=""
+        tn=${#tag}
+        for ((k = 0; k < tn; k++)); do
+          ch="${tag:$k:1}"
+          case "$ch" in
+            [A-Za-z0-9_]) delim="${delim}${ch}" ;;
+            *) break ;;
+          esac
+        done
+        [ -n "$delim" ] && in_heredoc=1
+        ;;
+    esac
+  done <<< "$cmd"
+  printf '%s' "${out%$'\n'}"
+}
+
+# Blank every quoted region to ONE placeholder word (never spaces -- see N1)
+# and every `#` comment (only when `#` starts a word: at the very start, or
+# right after whitespace / `;` / `&` / `|` / `(`, and only to the next
+# newline, per N3), leaving redirection operators, command names and real
+# (unquoted) targets untouched so they can still be pattern-matched and
+# extracted. A single placeholder word means a quoted arg still occupies
+# exactly one token position (so e.g. a quoted sed EXPRESSION doesn't
+# silently vanish and shift a real file onto seen_expr -- N1), and it can
+# never itself look like a safe target: `_driver_mode_path_ok` refuses it.
+_driver_mode_sanitize_cmd() {   # $1 = raw command
+  local cmd firstline
+  cmd="$(_driver_mode_drop_heredocs "$1")"
+  local out='' i=0 n=${#cmd} c q='' prev=''
+  while [ "$i" -lt "$n" ]; do
+    c="${cmd:$i:1}"
+    if [ -n "$q" ]; then
+      if [ "$q" = '"' ] && [ "$c" = '\' ]; then
+        i=$((i + 2)); continue        # escaped char inside "..." -> consumed
+      fi
+      if [ "$c" = "$q" ]; then
+        q=''; out="${out} __Q__ "; prev='x'
+      fi
+      i=$((i + 1)); continue
+    fi
+    case "$c" in
+      "'"|'"') q="$c"; i=$((i + 1)); continue ;;
+      '\')
+        out="${out}${c}${cmd:$((i + 1)):1}"; prev='x'; i=$((i + 2)); continue ;;
+      '#')
+        case "$prev" in
+          ''|' '|$'\t'|$'\n'|';'|'&'|'|'|'(')
+            while [ "$i" -lt "$n" ] && [ "${cmd:$i:1}" != $'\n' ]; do i=$((i + 1)); done
+            continue
+            ;;
+          *) out="${out}${c}"; prev="$c"; i=$((i + 1)); continue ;;
+        esac
+        ;;
+      *) out="${out}${c}"; prev="$c"; i=$((i + 1)); continue ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Remove redirects that never name a real file -- `>`/`>>`/`N>` to /dev/null,
+# and fd-duplication (`2>&1`, `1>&2`, `2>&-`). Applied on top of the sanitized
+# copy, before both the write-pattern re-check and target extraction, so a
+# command whose ONLY "write" is one of these is never treated as a write at
+# all (e.g. `bash x.sh > /dev/null`, `scripts/runstate.sh status 2>/dev/null`).
+_driver_mode_neutralize_redirects() {   # $1 = sanitized command
+  printf '%s' "$1" \
+    | sed -E 's/[0-9]?(>>?|>\|)[[:space:]]*\/dev\/null//g' \
+    | sed -E 's/[0-9]?>&[0-9-]+//g'
+}
+
+# Constructs that can hide an additional write or target from this simple
+# scanner, so their presence alongside a matched write form is refused rather
+# than guessed at: command substitution, backticks, `eval`, `xargs`, and
+# `sh -c`/`bash -c`. Checked on the sanitized copy, so one QUOTED (inert) is
+# not mistaken for a real one.
+_driver_mode_bash_dangerous() {   # $1 = sanitized command
+  local s="$1"
+  case "$s" in
+    *'$('*|*'`'*) return 0 ;;
+  esac
+  printf '%s' "$s" | grep -Eq '(^|[^[:alnum:]])(eval|xargs)([^[:alnum:]]|$)' && return 0
+  printf '%s' "$s" | grep -Eq '(^|[^[:alnum:]])(sh|bash)[[:space:]]+-c([^[:alnum:]]|$)' && return 0
+  return 1
+}
+
+# Split a sanitized command into segments on `;`, `&&`, `||` and `|` (plain
+# substring replace -- the sanitizer already blanked every quoted region, so
+# none of these can be DATA at this point). One segment per output line.
+_driver_mode_bash_segments() {   # $1 = sanitized (and redirect-neutralized) command
+  local s="$1"
+  s="${s//'&&'/$'\n'}"
+  s="${s//'||'/$'\n'}"
+  s="${s//;/$'\n'}"
+  s="${s//|/$'\n'}"
+  printf '%s\n' "$s"
+}
+
+# Extracts every write TARGET from one segment, one per output line. Narrow by
+# design: it recognizes exactly the forms BASH_WRITE_PATTERNS matches (a bare
+# `>`/`>>` redirect, `tee`, `sed -i`, the `cp`/`mv`/`install`/`ln`/`rsync`
+# last-arg family, `dd of=`, `truncate`) and prints NOTHING for anything else
+# -- an unrecognized write shape yields no target, which the caller treats as
+# "refuse", never as "allow".
+_driver_mode_extract_targets() {   # $1 = one segment
+  local seg="$1" tok first
+  # (1) explicit `>`/`>>`/`>|` (optionally fd-numbered) redirection targets.
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    case "$tok" in
+      '&'*) ;;
+      *) printf '%s\n' "$tok" ;;
+    esac
+  done < <(printf '%s' "$seg" \
+    | grep -oE '[0-9]?(>{1,2}|>\|)[[:space:]]*[^[:space:];&|]+' \
+    | sed -E 's/^[0-9]?(>{1,2}|>\|)[[:space:]]*//')
+
+  # Tokenize on whitespace via `read -a` (never unquoted `( )`, which would
+  # glob-expand `*`/`?`/`[` against the guard process's own cwd).
+  local -a words plain
+  read -ra words <<< "$seg"
+  [ "${#words[@]}" -gt 0 ] || return 0
+
+  # Drop any redirection operator (bare or glued to its target, e.g. `>`,
+  # `>file`, `>|file`, `2>&1`) and, for a BARE operator, the token right after
+  # it too -- so a `<`/`>`/`>|` target is never mistaken for a plain argument.
+  plain=()
+  local w skip_next=0
+  for w in "${words[@]}"; do
+    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$w" in
+      '>'|'>>'|'>|'|'<'|[0-9]'>'|[0-9]'>>'|[0-9]'>|'|[0-9]'<') skip_next=1; continue ;;
+      '>'*|'>>'*|'>|'*|'<'*|[0-9]'>'*|[0-9]'>>'*|[0-9]'>|'*|[0-9]'<'*) continue ;;
+      *) plain+=("$w") ;;
+    esac
+  done
+  [ "${#plain[@]}" -gt 0 ] || return 0
+  first="${plain[0]##*/}"
+
+  case "$first" in
+    tee)
+      for w in "${plain[@]:1}"; do
+        case "$w" in -*) ;; *) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+    cp|install|ln)
+      # -t/--target-directory NAMES the real destination (N7a): without it,
+      # every other positional arg is a SOURCE (only read), and only the last
+      # positional arg is written. rsync has no -t/--target-directory (its
+      # own -t means "preserve times") so it is NOT in this case.
+      local tdir='' k
+      for ((k = 1; k < ${#plain[@]}; k++)); do
+        case "${plain[$k]}" in
+          -t) tdir="${plain[$((k + 1))]:-}"; break ;;
+          --target-directory=*) tdir="${plain[$k]#--target-directory=}"; break ;;
+        esac
+      done
+      if [ -n "$tdir" ]; then
+        printf '%s\n' "$tdir"
+      elif [ "${#plain[@]}" -gt 1 ]; then
+        printf '%s\n' "${plain[${#plain[@]}-1]}"
+      fi
+      ;;
+    mv)
+      # mv REMOVES every source it renames away from, which is a write at
+      # that path too (N7b) -- so every positional arg is a target, not just
+      # the destination (or the -t/--target-directory value, if given).
+      local tdir='' k
+      for ((k = 1; k < ${#plain[@]}; k++)); do
+        case "${plain[$k]}" in
+          -t) tdir="${plain[$((k + 1))]:-}"; break ;;
+          --target-directory=*) tdir="${plain[$k]#--target-directory=}"; break ;;
+        esac
+      done
+      [ -n "$tdir" ] && printf '%s\n' "$tdir"
+      for w in "${plain[@]:1}"; do
+        case "$w" in -*) ;; *) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+    rsync)
+      [ "${#plain[@]}" -gt 1 ] && printf '%s\n' "${plain[${#plain[@]}-1]}"
+      ;;
+    dd)
+      printf '%s' "$seg" | grep -oE '(^|[^[:alnum:]])of=[^[:space:];&|]+' | sed -E 's/^.*of=//'
+      ;;
+    truncate)
+      local i=1 n=${#plain[@]}
+      while [ "$i" -lt "$n" ]; do
+        case "${plain[$i]}" in
+          -s)          i=$((i + 2)); continue ;;
+          --size=*|-s*|-*) ;;
+          *)           printf '%s\n' "${plain[$i]}" ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+    sed)
+      case "$seg" in
+        *-i*)
+          local j=1 m=${#plain[@]} seen_expr=0
+          while [ "$j" -lt "$m" ]; do
+            case "${plain[$j]}" in
+              -*) ;;
+              *)
+                if [ "$seen_expr" = 0 ]; then seen_expr=1
+                else printf '%s\n' "${plain[$j]}"
+                fi
+                ;;
+            esac
+            j=$((j + 1))
+          done
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# The whole driver-mode Bash decision: 0 = REFUSE, 1 = no objection.
+_driver_mode_bash_refuses() {   # $1 = raw command
+  local raw="$1" san neutral seg tgt matched=1 targets_found=0 wp saw_cd=0 first_word
+
+  san="$(_driver_mode_sanitize_cmd "$raw")"
+  neutral="$(_driver_mode_neutralize_redirects "$san")"
+
+  for wp in "${BASH_WRITE_PATTERNS[@]}"; do
+    if printf '%s' "$neutral" | grep -Eq "$wp"; then matched=0; break; fi
+  done
+  [ "$matched" = 1 ] && return 1   # nothing left that looks like a real write
+
+  _driver_mode_bash_dangerous "$neutral" && return 0   # can't be judged safely
+
+  # N6: `cd`/`pushd` anywhere in the command invalidates every RELATIVE
+  # target -- once the working directory can change mid-command, a relative
+  # target that looks like `.agents/...` may really land at `src/.agents/...`,
+  # which this scanner has no way to resolve. Scanned as its own pass (not
+  # sequentially) because a change anywhere makes every relative target
+  # suspect, not only the ones after it.
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    read -r first_word _ <<< "$seg"
+    case "$first_word" in cd|pushd) saw_cd=1 ;; esac
+  done < <(_driver_mode_bash_segments "$neutral")
+
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    while IFS= read -r tgt; do
+      [ -n "$tgt" ] || continue
+      targets_found=$((targets_found + 1))
+      if [ "$saw_cd" = 1 ]; then
+        case "$tgt" in
+          /*|[A-Za-z]:/*) ;;             # absolute -- unaffected by cd/pushd
+          *) return 0 ;;                 # relative after a cd/pushd -- refuse
+        esac
+      fi
+      _driver_mode_path_ok "$tgt" || return 0   # a bad/unresolvable target
+    done < <(_driver_mode_extract_targets "$seg")
+  done < <(_driver_mode_bash_segments "$neutral")
+
+  [ "$targets_found" -ge 1 ] || return 0   # write matched, no target found
+  return 1
+}
+
+# Lazy + memoized: session_id/agent_id are read from the payload only once, and
+# only by a caller that actually reaches a driver-mode check (Edit/Write/
+# MultiEdit/NotebookEdit, or a matched Bash write pattern) -- never paid for on
+# the read-only Bash fast-path.
+_DRIVER_MODE_INFO_READ=""
+SESSION_ID=""
+AGENT_ID=""
+_read_driver_mode_info() {
+  [ -n "$_DRIVER_MODE_INFO_READ" ] && return 0
+  SESSION_ID="$(json_field "$INPUT" session_id)"
+  AGENT_ID="$(json_field "$INPUT" agent_id)"
+  _DRIVER_MODE_INFO_READ=1
+}
+
+# True iff this call must be judged as a MAIN-THREAD driver-mode call: a
+# validated session_id carries a mark, and the payload has no agent_id. A
+# payload with no session_id (or an invalid one) is judged exactly as it is
+# today, because _valid_session_id already returns false for it.
+driver_mode_active() {
+  _read_driver_mode_info
+  [ -n "${AGENT_ID:-}" ] && return 1
+  _valid_session_id "$SESSION_ID" || return 1
+  driver_mode_marked "$SESSION_ID"
 }
 
 # --- resolve `bypass-ask-tier` (project-overrides.yaml) -----------------------
@@ -599,7 +1121,7 @@ ensure_autonomy() {
 # the git soft gates. Default false. A repo opts out of prompts by declaring
 # `bypass-ask-tier: true` in .agents/project-overrides.yaml.
 #
-# Resolution is RESTRICTIVE, mirroring autonomy: every discovered config root must
+# Resolution is RESTRICTIVE: every discovered config root must
 # opt in. A root that declares a `.agents/` but does not set the flag (or sets it
 # false / an unparseable value) VETOES the bypass — so a foreign or nested
 # `.agents/` can only ever KEEP the prompts, never silently remove them. With no
@@ -687,21 +1209,19 @@ deny() {
   echo "  rule     : $2" >&2
   echo "  target   : $3" >&2
   echo "  tool     : ${TOOL}" >&2
-  # Category-specific remediation — especially useful on Claude Desktop, where
-  # you cannot prepend `ORCH_AUTONOMY=… claude` to change autonomy per session.
+  # Category-specific remediation — especially useful on Claude Desktop, where a
+  # dead-end denial is otherwise all the human sees.
   case "$1" in
-    commit-gate:autonomy)
-      echo "  hint     : raise autonomy in-session with /gaffer:set-autonomy supervised (or set env ORCH_AUTONOMY, e.g. .claude/settings.json -> env). A main/master commit still ALWAYS requires the human, regardless of autonomy." >&2 ;;
     commit-gate:branch)
-      echo "  hint     : main/master is a hard gate at every autonomy level — commit on a feature branch, or run the commit yourself." >&2 ;;
-    merge-gate:autonomy|rebase-gate:autonomy|push-gate:autonomy)
-      echo "  hint     : merge/rebase/push are delegated only at full-autonomy — raise it with /gaffer:set-autonomy full-autonomy (or env ORCH_AUTONOMY). Even then, only NON-main targets are allowed." >&2 ;;
+      echo "  hint     : main/master is a hard gate — commit on a feature branch, or run the commit yourself." >&2 ;;
     merge-gate:branch|rebase-gate:branch|push-gate:target)
-      echo "  hint     : merging/pushing to main/master (or remote main) ALWAYS requires the human, at every level. Target a non-main integration/feature branch, or run it yourself." >&2 ;;
+      echo "  hint     : merging/pushing to main/master (or remote main) ALWAYS requires the human. Target a non-main integration/feature branch, or run it yourself." >&2 ;;
     commit-gate:secret-path|merge-gate:secret-path)
-      echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor holds at every autonomy level — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
+      echo "  hint     : this change touches a SECRET path (.env / key material / a secrets or credentials store, plus any per-repo path in .agents/guard-extra-paths). The exposure floor always holds — escalate it to the human. (Auth CODE and CI config are the ask tier now, not this hard floor — ADR 0014.)" >&2 ;;
     payload-unreadable)
       echo "  hint     : the guardrail could not read this tool call's payload, so it cannot judge it — and a control that cannot read its input must DENY, not allow. Install a working JSON parser on PATH: 'jq' is the reliable one. On Windows/Git Bash, 'python3' is usually the Microsoft Store App Execution Alias, which is on PATH but is NOT a parser. Check with: hooks/guard.sh --selftest" >&2 ;;
+    driver-mode|driver-mode-via-bash)
+      echo "  hint     : this session is in driver mode (ADR 0028) — it dispatches agents to make the packet's edits and must not edit the repository it is driving. Two things are refused, each with its own way forward: (a) a target INSIDE this repository and outside .agents/ — dispatch an agent to make that edit, or keep driver-owned scratch under .agents/; (b) a target whose real location can't be verified — an unresolved shell variable (\$VAR), a '..' segment, a path relative to a cwd that isn't the repository root, or a shell write whose target can't be read — re-issue it as a fully resolved absolute path and it will be judged on where it actually lands. A write that resolves OUTSIDE this repository is not refused here (every other tier still judges it). If you need to make this edit by hand yourself, pause the loop first: /gaffer:pause." >&2 ;;
   esac
   echo "If this is intended, approve it explicitly (or run it yourself)." >&2
   exit 2
@@ -816,7 +1336,12 @@ split_pipeline() {
 is_read_only() {
   local cmd="$1" seg first
   case "$cmd" in
-    *'>'*|*'<'*|*'`'*|*'$'*|*';'*|*'&'*) return 1 ;;
+    # A literal newline is a statement separator exactly like `;` -- without
+    # this, only the FIRST word of a multi-line command was ever checked
+    # (e.g. "echo hi\ncp a .env" fast-pathed on "echo" alone, and the second
+    # line's write never got judged at all -- a pre-existing hole, not a
+    # driver-mode one). This can only DECLINE more commands, never allow one.
+    *'>'*|*'<'*|*'`'*|*'$'*|*';'*|*'&'*|*$'\n'*) return 1 ;;
   esac
   split_pipeline "$cmd" || return 1
   for seg in "${SPLIT_SEGS[@]}"; do
@@ -837,10 +1362,9 @@ is_read_only() {
   return 0
 }
 
-# `git commit` is a SOFT gate (ADR 0004): allowed only when ALL hold —
-#   1) autonomy >= supervised,
-#   2) the current branch is not main/master, and
-#   3) the diff this commit would create touches no SECRET_PATH_PATTERNS path.
+# `git commit` is a SOFT gate (ADR 0004): allowed only when BOTH hold —
+#   1) the current branch is not main/master, and
+#   2) the diff this commit would create touches no SECRET_PATH_PATTERNS path.
 #      (ADR 0014: the SECRET tier only — committing auth *code* or CI config is a
 #      normal delegable commit, reviewed downstream; sweeping in a secret is not.)
 # Anything else DENIES with the standard explanation. Fails CLOSED on any error
@@ -855,11 +1379,7 @@ check_commit_policy() {
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])--amend([^[:alnum:]]|$)'; then
     deny "git-history-rewrite" "commit --amend" "$cmd"
   fi
-  # (1) autonomy must be at least supervised.
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank supervised)" ]; then
-    deny "commit-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs >= supervised)" "$cmd"
-  fi
-  # (2) must be on a feature branch, not main/master. Fail closed if undetectable.
+  # (1) must be on a feature branch, not main/master. Fail closed if undetectable.
   #     Read from GIT_CWD (the tree the command targets), not the payload cwd.
   local branch
   branch="$(git -C "$GIT_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
@@ -870,7 +1390,7 @@ check_commit_policy() {
   case "$branch" in
     main|master) deny "commit-gate:branch" "commit to protected branch '${branch}'" "$cmd" ;;
   esac
-  # (3) the paths this commit would include must hit no SECRET pattern.
+  # (2) the paths this commit would include must hit no SECRET pattern.
   #     Normally the staged diff; with -a/--all, also the tracked-but-unstaged
   #     changes `git commit -a` sweeps in (closes the staging-area bypass).
   local files
@@ -909,23 +1429,18 @@ resolve_branch_or_deny() {
   fi
 }
 
-# `git merge` is a SOFT gate (ADR 0006): allowed only when ALL hold —
-#   1) autonomy == full-autonomy,
-#   2) the branch being merged INTO (current HEAD) is not main/master, and
-#   3) best-effort: the incoming change touches no SECRET_PATH_PATTERNS path.
-# Merging to main/master is a hard gate at EVERY level. Below full-autonomy this
-# denies exactly as before. Never reached on deny (deny exits 2); returns 0 to
-# continue to the shell-write check.
+# `git merge` is a SOFT gate (ADR 0006): allowed only when BOTH hold —
+#   1) the branch being merged INTO (current HEAD) is not main/master, and
+#   2) best-effort: the incoming change touches no SECRET_PATH_PATTERNS path.
+# Merging to main/master is always a hard gate. Never reached on deny (deny
+# exits 2); returns 0 to continue to the shell-write check.
 check_merge_policy() {
   local cmd="$1"
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "merge-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
-  fi
   resolve_branch_or_deny merge-gate:branch "$cmd"
   case "$CURRENT_BRANCH" in
     main|master) deny "merge-gate:branch" "merge into protected branch '${CURRENT_BRANCH}'" "$cmd" ;;
   esac
-  # (3) Defense in depth: if we can identify the source ref and read the incoming
+  # (2) Defense in depth: if we can identify the source ref and read the incoming
   #     file list, deny on any sensitive path. Best-effort — a merge of branches
   #     the loop itself produced can't contain sensitive paths (the commit gate
   #     blocks them), so an unparseable/unknown ref is allowed to proceed here.
@@ -948,16 +1463,12 @@ EOF
   return 0
 }
 
-# `git rebase` is a SOFT gate (ADR 0006): allowed only at full-autonomy, and only
-# when rebasing a NON-main branch. Interactive rebase (`-i`) rewrites history and
-# stays a hard gate at every level. Below full-autonomy this denies as before.
+# `git rebase` is a SOFT gate (ADR 0006): allowed only when rebasing a NON-main
+# branch. Interactive rebase (`-i`) rewrites history and is always a hard gate.
 check_rebase_policy() {
   local cmd="$1"
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])(-i|--interactive)([^[:alnum:]]|$)'; then
     deny "git-history-rewrite" "rebase --interactive" "$cmd"
-  fi
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "rebase-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
   fi
   resolve_branch_or_deny rebase-gate:branch "$cmd"
   case "$CURRENT_BRANCH" in
@@ -966,20 +1477,16 @@ check_rebase_policy() {
   return 0
 }
 
-# `git push` is a SOFT gate (ADR 0006): allowed only at full-autonomy, only for a
-# NON-main target, and never forced. Pushing main/master (or a forced push) stays
-# a hard gate at every level. Below full-autonomy this denies as before. Fails
-# CLOSED when the target ref cannot be determined.
+# `git push` is a SOFT gate (ADR 0006): allowed only for a NON-main target, and
+# never forced. Pushing main/master (or a forced push) is always a hard gate.
+# Fails CLOSED when the target ref cannot be determined.
 check_push_policy() {
   local cmd="$1"
-  # Forced push is history destruction on the remote — deny at every level.
+  # Forced push is history destruction on the remote — always denied.
   # (The DENY_BASH_PATTERNS `--force` rule catches most of these first; this is a
   #  belt-and-suspenders check that also covers `-f` / `--force-with-lease`.)
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]])(--force([^[:alnum:]]|$)|--force-with-lease|-[[:alnum:]]*f[[:alnum:]]*([[:space:]]|$))'; then
     deny "push-gate:force" "forced push" "$cmd"
-  fi
-  if [ "$(autonomy_rank "$ORCH_AUTONOMY")" -lt "$(autonomy_rank full-autonomy)" ]; then
-    deny "push-gate:autonomy" "autonomy=${ORCH_AUTONOMY} (needs full-autonomy)" "$cmd"
   fi
   # Explicit main/master target anywhere in the refspec (e.g. `push origin main`,
   # `push origin HEAD:main`, `push origin develop main`) -> deny.
@@ -1001,8 +1508,8 @@ check_push_policy() {
 # between `git` and the subcommand via GIT_PREFIX. Used to route the git soft gates.
 # The trailing boundary EXCLUDES `-` (ADR 0014 §6): otherwise `grep_Eq_git merge`
 # fires on the read-only plumbing command `git merge-base` (and merge-tree/-file,
-# commit-tree), routing it into the merge soft-gate and denying it below
-# full-autonomy. A real subcommand is followed by whitespace, EOL, or a separator —
+# commit-tree), routing it into the merge soft-gate and denying it on a
+# main/master HEAD. A real subcommand is followed by whitespace, EOL, or a separator —
 # never a hyphen — so `git merge orch/x` still routes while `git merge-base` does not.
 grep_Eq_git() { grep -Eq "${GIT_PREFIX}$1([^[:alnum:]-]|\$)"; }
 
@@ -1016,7 +1523,7 @@ grep_Eq_git() { grep -Eq "${GIT_PREFIX}$1([^[:alnum:]-]|\$)"; }
 # if it targets `main`. Honoring the tree the command names closes that bypass in
 # both directions. Only the GLOBAL `git -C` (before the subcommand) is treated as a
 # directory — `git commit -C <ref>` reuses a message and must not be mistaken for a
-# path. Config (autonomy, ceiling, guard-extra) resolves from CONFIG_ROOTS instead:
+# path. Config (guard-extra, bypass-ask-tier) resolves from CONFIG_ROOTS instead:
 # the tree a command TARGETS and the project whose rules bind it are independent.
 GIT_CWD="$SHELL_CWD"
 _unquote() { local s="$1"; s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"; printf '%s' "$s"; }
@@ -1047,7 +1554,7 @@ case "$TOOL" in
     [ -n "${CMD:-}" ] || deny_unreadable "tool_input.command"
     # (0) read-only fast-path: allow unambiguous searches/inspection immediately,
     #     so grepping FOR a risky string isn't mistaken for RUNNING it. Runs BEFORE
-    #     any config-root discovery or autonomy resolution (the expensive per-call
+    #     any config-root discovery (the expensive per-call
     #     work): the common case — grep/ls/cat/git status — pays none of it. Its
     #     matching uses only the static lists above, so nothing here needs the
     #     per-repo config we skip.
@@ -1063,21 +1570,19 @@ case "$TOOL" in
         deny "risky-bash" "$pat" "$CMD"
       fi
     done
-    # git soft gates (commit/merge/rebase/push). Only these consult the autonomy
-    # level and the target tree, so resolve both LAZILY behind a cheap prefilter —
-    # a non-git write (deps, deploys, file edits) never pays for autonomy
-    # resolution or tree resolution.
+    # git soft gates (commit/merge/rebase/push). Only these consult the target
+    # tree, so resolve it LAZILY behind a cheap prefilter — a non-git write
+    # (deps, deploys, file edits) never pays for tree resolution.
     if printf '%s' "$CMD" | grep -Eq "${GIT_PREFIX}(commit|merge|rebase|push)([^[:alnum:]-]|\$)"; then
-      ensure_autonomy
       # Resolve which tree the git soft gates should inspect (the tree the command
       # actually names via `cd`/`git -C`, not just the payload cwd).
       resolve_git_dir "$CMD"
-      # (a2) git commit — soft gate, delegable above `interactive` (ADR 0004).
+      # (a2) git commit — soft gate, delegable onto a NON-main branch (ADR 0004).
       if printf '%s' "$CMD" | grep_Eq_git commit; then
         check_commit_policy "$CMD"
       fi
-      # (a3) git merge / rebase / push — soft gates, delegable only at
-      #      full-autonomy and only onto NON-main targets (ADR 0006).
+      # (a3) git merge / rebase / push — soft gates, delegable only onto
+      #      NON-main targets (ADR 0006).
       if printf '%s' "$CMD" | grep_Eq_git merge; then
         check_merge_policy "$CMD"
       fi
@@ -1095,6 +1600,18 @@ case "$TOOL" in
       if printf '%s' "$CMD" | grep -Eq "$wp"; then
         if cmd_hits_path "$CMD" "${SECRET_PATH_PATTERNS[@]}"; then
           deny "secret-path-via-bash" "$MATCHED_SENSITIVE" "$CMD"
+        # Driver mode (ADR 0028 T5): checked after the secret floor, before the
+        # REVIEW ask below. The command is sanitized (quotes/heredoc body/
+        # comments blanked, benign /dev/null and fd-dup redirects removed)
+        # before it is re-matched and its write targets extracted, so a
+        # commit message, heredoc body or quoted arg that merely CONTAINS a
+        # write-shaped word never trips this. Every extracted target must
+        # anchor inside .agents/ or resolve outside the driven repository
+        # altogether (it cannot reach a packet's commit there); an unrecognised
+        # write shape (no target could be determined) or a dangerous construct
+        # ($( ` eval xargs sh -c) refuses conservatively rather than guessing.
+        elif driver_mode_active && _driver_mode_bash_refuses "$CMD"; then
+          deny "driver-mode-via-bash" "session ${SESSION_ID} is in driver mode (no agent_id)" "$CMD"
         elif cmd_hits_path "$CMD" "${REVIEW_PATH_PATTERNS[@]}"; then
           ask "review-path-via-bash" "$MATCHED_SENSITIVE" "$CMD"
         fi
@@ -1116,9 +1633,8 @@ case "$TOOL" in
     [ -z "${PATH_VAL:-}" ] && PATH_VAL="$(json_field "$INPUT" tool_input path)"
     # An edit tool always names a target -> empty means unreadable, not absent.
     [ -n "${PATH_VAL:-}" ] || deny_unreadable "tool_input.file_path"
-    # Path writes need the guard-extra SECRET/REVIEW unions (autonomy is irrelevant
-    # here — SECRET hard-denies and REVIEW asks at every level), so resolve config
-    # but not autonomy.
+    # Path writes need the guard-extra SECRET/REVIEW unions — SECRET always
+    # hard-denies and REVIEW always asks — so resolve config here.
     discover_config
     # Match on a SEPARATOR-NORMALIZED copy. Every pattern here — built-in and
     # per-repo alike — spells path segments with `/`, but on Windows the harness
@@ -1135,6 +1651,14 @@ case "$TOOL" in
         deny "secret-path" "$pat" "$PATH_VAL"
       fi
     done
+    # Driver mode (ADR 0028 T5): after the secret floor, before the REVIEW ask.
+    # Anchored, not a substring test -- _driver_mode_path_ok rejects a ".."
+    # segment, admits an absolute path either under a discovered config root's
+    # .agents/ or resolving outside every root (it cannot reach a packet's
+    # commit), and requires a relative path's cwd to BE that root.
+    if driver_mode_active && ! _driver_mode_path_ok "$PATH_VAL"; then
+      deny "driver-mode" "session ${SESSION_ID} is in driver mode (no agent_id)" "$PATH_VAL"
+    fi
     for pat in "${REVIEW_PATH_PATTERNS[@]}"; do
       if printf '%s' "$PATH_MATCH" | grep -Eiq "$pat"; then
         ask "review-path" "$pat" "$PATH_VAL"

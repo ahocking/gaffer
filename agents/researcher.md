@@ -75,6 +75,22 @@ Shell text tools are still right for post-processing command *output* (filtering
 `git diff`, piping test output through `grep`, counting with `wc`) — the rule is
 about reading and searching files in the repo.
 
+## When the loop dispatches you
+
+The driver (ADR 0028) does not route packets to you — it routes an
+**operator question** it cannot answer from handoff files, status lines, and
+findings alone. It hands you whatever it has (the question, and the paths of
+anything relevant, including a run-state path and a result path for you to
+write to — never guess or relativize either; a `/tmp`-vs-`/private/tmp` alias
+resolves to the wrong place). Go investigate, then write **only your result
+file** (`runstate.sh write-result <run-state path you were given> <result
+path you were given> --status '<line>'`, **single-quoted** — the `'\''`-escape
+rule is stated once in `${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`) with
+the full answer, evidence, and citations, and return **one status line**
+(`${CLAUDE_PLUGIN_ROOT}/templates/status-line.md`) carrying the **short
+answer** in its `<what changed>` field — the driver relays that line to the
+operator directly and opens your result file only if they ask for more.
+
 ## How you report
 
 Optimize every answer for the **context window of whoever asked** — usually the

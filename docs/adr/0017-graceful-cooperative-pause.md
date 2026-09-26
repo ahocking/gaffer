@@ -142,3 +142,26 @@ die with the session — git reconcile is still the floor); and **(d)** adds tas
 bookkeeping and correlation failure modes. It is the *only* path to interrupting a
 long-running command mid-execution — revisit it if drain-to-checkpoint latency proves
 too coarse; until then the cooperative pause above is sufficient and far cheaper.
+
+## Relocated from skills (2026-09-25) — why the pause skill clears the sentinel
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps the
+rule (clear the sentinel once run-state is written, so the fulfilled request cannot
+re-halt a later resume); the further reason it gave is recorded here:
+
+> The durable record is now `status: paused` in run-state; the transient request
+> has served its purpose (ADR 0017).
+
+## Relocated from skills (2026-09-25) — the run-loop skill's periodic-pause reason
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Advance** step by `skill-prompt-trim`.
+No ADR owns the periodic pause (`runstate.sh periodic-pause`, keyed by
+`pause_every_packets`); this is the closest, the ADR that owns the pause itself. The
+skill keeps the rule — `EVERY=off` means `DUE` is always `no`, "so a periodic pause
+never fires on its own" — without this reason:
+
+> since it halts an unattended run until a human resumes it.
+
+The skill also named the fallback `periodic-pause` applies when the key is unset; that
+was a value, not a reason, and is removed rather than relocated — the skill now names
+the key and its file, and `EVERY=` is where the value in effect is read.

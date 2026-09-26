@@ -3,8 +3,8 @@
 A reusable **Claude Code plugin** that installs a small orchestration layer into
 any application repo: a coordinated subagent team, workflow chains, a
 task-packet template, a **single-checkout feature-branch workflow** (a `develop`
-integration branch with `orch/*` packet branches), a **graduated autonomy dial**
-with a pausable/resumable guided loop, an MCP config, and an
+integration branch with `orch/*` packet branches), a **pausable/resumable guided
+loop**, an MCP config, and an
 **approval guardrail hook** that gates the risks common to *any* codebase (auth,
 secrets, DB schema/migrations, dependency installs, deploys, and git history).
 Domain-specific risk (money movement, PHI, grading, …) is not baked in — each
@@ -13,8 +13,7 @@ repo declares its own in `.agents/guard-extra-paths` / `.agents/guard-extra-bash
 It is a portable "global orchestration layer":
 you act as technical lead and the agents handle research, architecture,
 implementation, testing, and review — with a human approval gate on anything
-risky, and (when you opt in) unattended commits of routine green work on a
-feature branch. Built generic and reusable for any kind of application; the
+risky, and unattended commits of routine green work on a feature branch. Built generic and reusable for any kind of application; the
 first consumer repo is a .NET / React / Postgres app.
 
 ## Spec-driven development with gspec
@@ -34,7 +33,7 @@ rather than an error.
 
 The seam is deliberate ([ADR 0020](docs/adr/0020-gspec-boundary-and-version-pin.md)):
 **gspec owns *what to build and in what order*; gaffer owns *how a unit of work is
-safely executed*** — guardrail, autonomy, branch isolation, checkpointing, and
+safely executed*** — guardrail, branch isolation, checkpointing, and
 measurement. Every gspec read goes through the single adapter
 `scripts/gspec-backlog.sh`; nothing else in the plugin parses `gspec/`, so an upstream
 format change lands in one file. Because gspec does not stamp its version into a
@@ -46,46 +45,47 @@ would stop the loop on a repo whose backlog the adapter reads perfectly well. Th
 pin exists to catch a format the code *cannot parse*, not to nag a repo into
 migrating.
 
-**gspec is optional.** Four and a half of the five pillars — the guardrail, the
-autonomy dial, the pause/resume checkpointing, worktree-isolated parallelism, and
-run-metrics — have no spec dependency at all. A backlog may equally come from
-`.agents/run-state.yaml` or from an explicit argument to `/gaffer:run-loop`, and a repo
-with no `gspec/` directory loses only the spec-derived backlog, not the execution
-layer.
+**gspec is optional.** The guardrail, the pause/resume checkpointing, and
+run-metrics have no spec dependency at all. A backlog may
+equally come from `.agents/run-state.yaml` or from an explicit argument to
+`/gaffer:run-loop`, and a repo with no `gspec/` directory loses only the
+spec-derived backlog, not the execution layer. (A fifth pillar,
+worktree-isolated parallelism under `--parallel`, existed here too — ADR 0016 —
+but is retired; see `retire-unused-loop-modes`.)
 
 ## Components
 
 | Path | What it is |
 | --- | --- |
 | `.claude-plugin/plugin.json` | Plugin manifest (name, version, author). |
-| `agents/chief-engineer.md` | **opus** orchestrator: interprets intent, routes work, delegates, gates risk, owns routine commits above `interactive`. |
+| `agents/loop-driver.md` | **inherit** — the role the session *driving* the loop takes (ADR 0028). Passes paths, reads one status line per agent, never opens a result file, routes every verdict through `runstate.sh route`. Declares no `tools:` restriction, so `claude --agent gaffer:loop-driver` keeps `Task`/`Bash`/`Read` for the run and `Edit`/`Write` for after the stop report. |
+| `agents/chief-engineer.md` | **opus** — the loop's **escalation decider**, dispatched on `ACTION=decider` to return exactly one of five next steps for one packet on exclusive triggers, and between packets for the **periodic review** that merges, routes and expires findings; outside a loop packet, the orchestrator that interprets intent, routes work, delegates, gates risk, and owns routine commits on non-`main` branches. Holds no `Edit`/`Write`: every write is a `runstate.sh` subcommand, a `git` call, or an agent it dispatches. |
 | `agents/architect.md` | **opus** read-mostly design authority and spec author; writes design/spec prose under `docs/**`, `adr/**`, and any doc/spec paths the repo declares in `.agents/project-overrides.yaml` (`allowed_paths.docs`/`.specs`, e.g. `gspec/**`) — never code; flags security/auth/financial concerns. |
 | `agents/ux-designer.md` | **opus** visual/UX design specialist; iterates against the rendered UI via a **context-adaptive** preview loop — a web DOM preview or a live Unity Editor (via the Unity MCP), selected by `ux.preview_mode` in `.agents/project-overrides.yaml` (auto-detected, **web** default; ADR 0010) — and researches comparable products; writes presentation only under `allowed_paths.frontend` + `.agents/ux-references.md` + `.claude/launch.json` (web). Opt-in for repos with a user-facing surface. |
-| `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. |
+| `agents/reviewer.md` | **opus** read-only reviewer: diff vs acceptance criteria, spec↔code drift, security. Returns one of three verdicts on exclusive triggers — `pass` / `fix` / `escalate` — which is what the loop routes on. |
 | `agents/implementer.md` | **sonnet** scoped code writer; escalates on auth/schema/secrets and any domain risk the repo declares in `.agents/domain-rules.md`. |
 | `agents/researcher.md` | **sonnet** read-only investigator; researches libraries/APIs, compares options, sweeps in-repo context, and returns a compact cited brief — offloads retrieval so the opus reasoners' context stays clean. Never edits. |
 | `agents/doc-writer.md` | **haiku** documentation/summarization agent; writes README/setup/usage docs and changelog-style summaries from established fact under `allowed_paths.docs`. Never touches code, tests, ADRs, or design decisions. |
 | `skills/new-project/SKILL.md` | Chain: bootstrap a spec-driven repo — generic overlay + **version-pinned** gspec + a seeded `.agents/roadmap.yaml` — stops before the initial commit. |
 | `skills/review-change/SKILL.md` | Chain: review uncommitted changes → ready/issues/risks/next-step. |
-| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). Runs **inline** on a small backlog, or **relays** one dispatch per packet on a big one (≥ 40 packets — ADR 0012). |
+| `skills/run-loop/SKILL.md` | The guided loop: drive a backlog of packets — isolate, implement→test→review, commit on branch if green, check in, repeat (ADR 0004). One sequential mode; backlog size no longer switches execution modes (ADR 0012, superseded). The session running it is in **driver mode** (ADR 0028) — it dispatches rather than edits, and no packet is implemented inline. |
 | `skills/pause/SKILL.md` | Pause the loop at a safe checkpoint: roll to the last green commit, persist run-state, emit a check-in, stop. |
-| `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session; picks relay vs inline from what **remains** (ADR 0012). |
-| `skills/set-autonomy/SKILL.md` | Show or set the autonomy level in-session by writing `.agents/autonomy` — the Desktop-native equivalent of `ORCH_AUTONOMY=… claude` (ADR 0004). |
-| `skills/rate-limit-pause/SKILL.md` | Show or set rate-limit auto-pause (ADR 0018): `on` wires the status-line sensor into `settings.json` + enables it here; `off` disables per-repo; `off --teardown` removes the global sensor; `status` reports state. |
-| `skills/build-packet-dependency-tree/SKILL.md` | Build `.agents/packet-graph.yaml` — packet nodes from the gspec backlog, ordering edges from task deps, mutual-exclusion edges from computed `allowed_files` overlap, grouped into waves. Prerequisite for `--parallel` (ADR 0016). |
-| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), then **verify the backlog actually parses**. |
+| `skills/resume/SKILL.md` | Resume a run from `.agents/run-state.yaml` in a fresh session, from wherever it left off. |
+| `skills/migrate/SKILL.md` | Retrofit a consumer repo from an older plugin layout to the current one, and sequence the upgrade to pinned gspec: convert `gspec/roadmap.md` → `.agents/roadmap.yaml`, stamp missing spec frontmatter, order the gspec 3.x relocation (which `/gspec-migrate` performs, not this), clean up the retired parallel-mode/rate-limit-pause footprint, then **verify the backlog actually parses**. |
 | `skills/metrics/SKILL.md` | Assemble / show / analyze a run-metrics packet (ADR 0019): where a run's compute went, per packet, agent, model, tool, and skill. |
 | `scripts/migrate.sh` | Deterministic half of `/gaffer:migrate`: detect / plan / apply / verify. Refuses a dirty tree, never deletes, never overwrites, and ends by counting packets. |
-| `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, and the fingerprint-guarded file-scope sidecar. Nothing else may parse `gspec/`. |
-| `templates/task-packet.yaml` | Fillable contract handed to a specialist agent (includes the packet `autonomy` level). |
+| `scripts/gspec-backlog.sh` | **The one place this plugin reads gspec** (ADR 0020): version-pin assertion, derived feature completion, next-feature selection, packet nodes, the two-drivers interlock, the fingerprint-guarded file-scope sidecar, and `handoff` — a packet's whole brief, including the acceptance criteria its `covers:` names. Nothing else may parse `gspec/`. |
+| `templates/task-packet.yaml` | Fillable contract handed to a specialist agent. |
 | `templates/run-state.yaml` | Schema for the durable `.agents/run-state.yaml` checkpoint file. |
-| `templates/check-in.md` | The two check-in shapes the loop emits: status update, severity-tagged blocking question. |
+| `templates/status-line.md` | The one line every loop-dispatched agent returns (ADR 0028): status · what changed · whether the result file needs reading · its path. The same line opens the result file. |
+| `templates/check-in.md` | The two check-in shapes — status update, severity-tagged blocking question. **The loop no longer uses them** (ADR 0028); they are for a Chief Engineer dispatched for self-contained work outside a loop packet. |
 | `templates/spec-driven-base/` | The stack-agnostic overlay `new-project` copies into a fresh repo. |
-| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; autonomy-aware soft gates for `git commit` (≥ supervised) and `git merge`/`rebase`/`push` onto non-`main` (full-autonomy). |
-| `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005). |
+| `hooks/hooks.json` + `hooks/guard.sh` | PreToolUse guardrail: hard-denies high-risk actions; refuses a driver-mode session's own main-thread writes outside `.agents/` (ADR 0028); one fixed set of git gates — `git commit` on a non-`main` branch with no secret path staged, and `git merge`/`rebase`/`push` onto a non-`main` target, never forced — with everything onto `main`/`master` denied. |
+| `hooks/session-start.sh` | SessionStart hook: on reopen, surfaces an in-flight guided run (crash-safe resume, ADR 0005), and clears the reopened session's own driver-mode mark. |
+| `hooks/driver-mode-compact.sh` | SessionStart hook on `compact` only: if the compacted session still holds a driver-mode mark, points it back at `agents/loop-driver.md` so it keeps driving (ADR 0028). Silent otherwise. |
 | `hooks/report-conventions.sh` | SessionStart hook: injects the report-format card so reports follow the house format without being asked each session — silent when the repo's own `CLAUDE.md` already carries it (ADR 0023). Advisory, never enforcement. |
-| `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. |
-| `scripts/statusline-pause-sensor.sh` | A `statusLine` command that reads the 5-hour + 7-day usage percentages and arms the ADR 0017 pause sentinel when either crosses its threshold (ADR 0018). Opt-in, Pro/Max only. |
+| `scripts/runstate.sh` | Durable run-state I/O (atomic writes) + the crash-recovery `reconcile` decision. Also the driver-mode core (ADR 0028): `driver-mode`, `begin-run`, `handoff`, `write-result`, `route`, `run-digest`, `periodic-pause`, `compact-threshold`. |
+| `scripts/report-lint.sh` | Checks a rendered stop report or kickoff against the `run-digest` it was rendered from: `--shape <B\|C> <report> <digest>` prints `REPORT_LINT=clean`, `findings` with one `FINDING=` per broken mechanical rule, or `unjudged` with a `REASON=`. Glyph vocabulary and section order are derived from `templates/report-conventions.md`. Writes nothing and always exits 0. A clean result means no mechanical rule was broken, not that the report is good. |
 | `.mcp.json` | Stubbed git / github / filesystem MCP servers (tokens via env vars only). |
 
 ### Model routing intent
@@ -93,6 +93,8 @@ layer.
 - **opus** — reasoning, architecture, security, review (`chief-engineer`, `architect`, `ux-designer`, `reviewer`).
 - **sonnet** — narrow implementation (`implementer`) and retrieval-heavy research (`researcher`).
 - **haiku** — summarization / documentation (`doc-writer`).
+- **inherit** — `loop-driver`, which is not dispatched but *adopted* by the session
+  already running the loop, so it runs on whatever model that session runs on.
 
 ### The guardrail
 
@@ -111,10 +113,9 @@ as before.
 **Ask tier — routine-but-notable (`permissionDecision:"ask"`):** dependency
 installs/upgrades, DB migrations (EF/flyway/alembic/prisma), and deploys (docker/
 kubectl/terraform/fly/vercel/cloud CLIs) surface Claude Code's native one-click
-approval instead of a dead end. An *ask* is never auto-approved by autonomy — an
-unattended loop still stops at the prompt.
+approval instead of a dead end. An unattended loop still stops at the prompt.
 
-**Hard gates — denied at every autonomy level (exit 2, matched rule on stderr):**
+**Hard gates — always denied (exit 2, matched rule on stderr):**
 
 - **Irreversible Bash:** git history destruction — `force`-push/`reset --hard`/
   `clean -f`/`--amend`/interactive rebase (including `git -C … ` and `git -c … `
@@ -127,14 +128,24 @@ unattended loop still stops at the prompt.
   financial app) via `.agents/guard-extra-paths` (appended to the hard-deny tier)
   without editing the plugin.
 
-**Soft gates — autonomy-aware git (ADR 0004 / 0006).** `git commit` is allowed when
-**all** hold: the resolved level is ≥ `supervised`, the branch is not `main`/`master`,
-and the staged diff touches no sensitive path. **At `full-autonomy` only,
-`git merge` / `rebase` / `push` are likewise allowed** — but only onto a **non-`main`**
-target, never forced, and a merge carrying a sensitive path re-escalates. Anything
-else denies with an explanation and fails **closed** on any error (not a repo,
-detached HEAD, unreadable diff). At the default `interactive` level every commit
-still requires the human — the conservative posture is opt-out, not opt-in.
+**Driver-mode writes — the one rule keyed to *who* is calling (ADR 0028).** While a
+session is driving the loop, the guard refuses that session's **own main-thread**
+`Edit`/`Write`/`MultiEdit`/`NotebookEdit` and the shell write forms it recognises,
+unless the target is under `.agents/`. The refusal names driver mode as the reason and
+`/gaffer:pause` as the way out. Its subagents are unaffected, and so are `git`, gaffer's
+own scripts, and any command with no recognised write form. It is checked **after** the
+secret floor and **before** the ask tier, and it is a hard deny — `bypass-ask-tier` does
+not skip it. See ["Driver mode"](#driver-mode-the-loop-session-stops-editing-adr-0028)
+below for what it is for.
+
+**Soft gates — one fixed git rule set (ADR 0004 / 0006, levels retired).** `git commit`
+is allowed when **both** hold: the branch is not `main`/`master`, and the staged diff
+(plus what `-a` sweeps in) touches no sensitive path. **`git merge` / `rebase` / `push`
+are likewise allowed** — but only onto a **non-`main`** target, never forced or
+interactive, and a merge carrying a sensitive path re-escalates. Anything else denies
+with an explanation and fails **closed** on any error (not a repo, detached HEAD,
+unreadable diff). The same rules apply in every repository and every session; there
+is no level to set and nothing to opt into (`retire-autonomy-levels`).
 
 Everything else is allowed (exit 0). The built-in patterns live in labeled arrays
 (`DENY_BASH_PATTERNS`, `ASK_BASH_PATTERNS`, `BASH_WRITE_PATTERNS`,
@@ -167,97 +178,59 @@ repo at runtime and appends them to its arrays, so risk **declared** in
 `.agents/domain-rules.md` becomes risk **enforced** by the hook. The template
 ships commented example files.
 
-## Autonomy & the guided loop
+## The guided loop
 
-The autonomy level decides how much the Chief Engineer may do without you
-(ADR 0004 / 0006). Resolution order: env **`ORCH_AUTONOMY`** → **`.agents/autonomy`**
-→ default **`interactive`** — then clamped down to `autonomy_ceiling:` in
-`.agents/project-overrides.yaml` if the repo sets one.
+What the Chief Engineer may do without you is the same in every repository and
+every session (ADR 0004 / 0006, whose level definitions are superseded in part by
+`retire-autonomy-levels`): it commits routine green work on a feature branch, and
+the loop merges, rebases and pushes onto **non-`main`** branches — integrating
+feature branches into the integration branch and pushing them for CI on its own.
+There is no level to set — the levels and the controls that selected them are
+retired (`retire-autonomy-levels`), and `/gaffer:migrate` removes their leftovers
+from a consumer repo.
 
 *Which* `.agents/` is consulted is not simply "the repo you are in" (ADR 0011). The
 guard walks up from both `CLAUDE_PROJECT_DIR` and the shell's cwd, collecting every
 ancestor that declares an `.agents/` directory — so a command run from a
 subdirectory, a submodule, or a package cache still finds the project's rules. When
-that walk finds more than one root, they are merged **restrictively**: the
-**lowest** autonomy any root declares wins, the lowest `autonomy_ceiling` clamps,
-and `guard-extra-*` patterns are **unioned**. Adding a root can only tighten the
-guard, never loosen it — so ambiguity fails closed by construction.
-
-| Level | What it means |
-| --- | --- |
-| `interactive` (default) | Human approves every mutation gate — the original block-everything posture. |
-| `supervised` | The Chief Engineer commits routine green work on a feature branch itself; checks in between packets. |
-| `autonomous` | Same, and it drives across the whole backlog without stopping between green landings. |
-| `full-autonomy` | Same, **plus** merge/rebase/push onto **non-`main`** branches — the loop integrates feature branches into the integration branch and pushes them for CI on its own. |
+that walk finds more than one root, they are merged **restrictively**:
+`guard-extra-*` patterns are **unioned**, and `bypass-ask-tier` applies only when
+every root opts in. Adding a root can only tighten the guard, never loosen it — so
+ambiguity fails closed by construction.
 
 Hard gates (commit/merge/push to **`main`**, migrations, secrets, deploys,
-dependency installs, sensitive paths, history rewrite) require the human at
-**every** level, including `full-autonomy`. Below `full-autonomy` the loop stops at
-"branch ready for review"; at `full-autonomy` it integrates onto a non-`main` branch
-and stops at "ready for the human to release." **Merging to `main`, releasing, and
-opening a PR are never automated.**
+dependency installs, sensitive paths, history rewrite) always require the human.
+The loop integrates onto a non-`main` branch and stops at "ready for the human to
+release." **Merging to `main`, releasing, and opening a PR are never automated.**
 
 A semi-attended run looks like:
 
 ```bash
 cd ~/workspace/your-app
-ORCH_AUTONOMY=supervised claude
+claude
 #   ...then inside the session:
 #   /gaffer:run-loop        # drive the backlog (gspec features or run-state)
 #   /gaffer:pause           # stop at a safe green checkpoint, any time
 #   /gaffer:resume          # pick the run back up in a later session
 ```
 
-### How the loop runs: inline or relayed (ADR 0012)
+### The loop runs one sequential mode (ADR 0012, superseded)
 
-`run-loop` and `resume` count the backlog first and pick how to execute it. You do
-not have to choose, and the mode is announced in one line before the run starts.
+`run-loop` and `resume` run a single sequential mode — backlog size no longer
+switches execution modes, and no run dispatches a per-packet coordinator
+subagent. `--relay`/`--inline`/`--parallel` are still accepted on the command
+line for compatibility; they print a one-line notice that the mode they name is
+retired and the loop runs its one mode regardless.
 
-| Backlog | Mode | Why |
-| --- | --- | --- |
-| **< 40 packets** | **inline** — the session runs the loop itself | The default, and the only mode any production run has needed. Relaying costs more here and prevents nothing. |
-| **≥ 40 packets** | **relay** — a fresh Chief Engineer is dispatched per packet; the session only relays each check-in | Inline's coordinator grows and hits a forced, lossy compaction near packet ~28, so past that a relay is the only mode that finishes a long run. |
-
-> **On the numbers:** the crossover was **raised from 20 to 40 on 2026-08-10**, when the
-> first real production comparison (62 packets across two repos) measured relay at
-> **1.84x inline per packet** — the opposite direction to the token extrapolation that
-> set the original 20. Relay is *retained rather than deleted* because that figure is
-> not clean: 65–96% of tool duration in those runs sits in the coordinator's own
-> context, much of it busy-wait polling, and each poll re-caches the standing context
-> being measured. A clean two-arm A/B is the open question, and **deleting relay is a
-> legitimate outcome of it**. Do not treat relay as the cheaper mode at any size.
-
-Override either way with **`--relay`** or **`--inline`**:
-
-```bash
-/gaffer:run-loop --relay     # flat context cost, even on a short backlog
-/gaffer:run-loop --inline    # cheapest per packet; also for debugging the loop
-```
-
-`resume` counts what **remains**, not the run's original size — a 40-packet run with
-4 left is a small backlog now and finishes inline.
-
-**20 is a measured crossover, not a preference**, and it was measured on small
-packets — heavier packets grow the coordinator faster and move the real crossover
-down. See [ADR 0012](docs/adr/0012-delegated-loop-driver.md) for the method, the
-numbers, and what would change them.
-
-**Setting autonomy on Claude Desktop (no terminal).** The `ORCH_AUTONOMY=… claude`
-form above is terminal-only — the Desktop app launches from Finder/Dock and
-cannot take an inline env var. Two Desktop-native ways to set the level instead:
-
-- **In-session:** run **`/gaffer:set-autonomy supervised`** (or
-  `interactive` / `autonomous`, or no argument to just show the current level). It
-  writes the repo's `.agents/autonomy` and reports the effective level after any
-  `autonomy_ceiling` clamp. This is the direct equivalent of the env-var launch.
-- **Persistently, per project:** add `"env": { "ORCH_AUTONOMY": "supervised" }` to
-  the repo's `.claude/settings.json`. Claude Code injects it into the session
-  environment, and the guard already reads `ORCH_AUTONOMY` first — so this works
-  with no plugin change, and env still wins over the file.
-
-Note this only affects the *soft* commit gate: a commit to **main**/master is a
-hard gate and always requires you to run it yourself, at every autonomy level —
-raising autonomy does not change that.
+> **On the numbers, why relay was retired rather than kept as an option:** the
+> one real production comparison (62 packets across two repos) measured relay at
+> **1.84x inline per packet** — the opposite direction from the token
+> extrapolation that originally set its 20-packet crossover (later raised to
+> 40). The regime relay was built for was **never reached**: the largest real
+> run observed across this repo's own history is **9–14 packets**, well under
+> even the original threshold. This is a scope decision, not a retraction of
+> that measurement — see [ADR 0012](docs/adr/0012-delegated-loop-driver.md) for
+> the full record, including the v2 measurement revision.
 
 Each packet runs on its own feature branch (`orch/<task-id>`) in the single local
 checkout ([ADR 0009](docs/adr/0009-single-directory-feature-branch-workflow.md) —
@@ -269,52 +242,106 @@ no worktrees), cut from the integration branch (`.agents/project-overrides.yaml`
 and sets any scratch aside with `git stash`, and even a crash mid-loop is
 recovered — the SessionStart hook surfaces the in-flight run when you reopen
 Claude, and `runstate.sh reconcile` adopts or discards whatever the crash left
-behind (ADR 0005). Check-ins are **produced** by the plugin and **delivered** by
+behind (ADR 0005). Loop reports are **produced** by the plugin and **delivered** by
 the frontend (Claude Desktop / Dispatch) — there is no notification transport
 here.
 
-### Auto-pause before a usage limit (ADR 0018)
+### Driver mode: the loop session stops editing (ADR 0028)
 
-A long unattended run — especially a wide `--parallel` one — can exhaust the
-account's **rolling usage limits** (a fast **5-hour** window and a slower, costlier
-**7-day/weekly** one) mid-flight. When either trips, Claude Code stops serving
-responses **server-side**, and a lane blocked on that cutoff is stranded on a
-mid-edit tree — exactly the loss the cooperative pause exists to avoid. This feature
-**sees the limit coming and drains to a green checkpoint first.**
+The most expensive context in a long run is the session **driving** it, not the agents
+it dispatches — everything the driver reads is re-cached on every later turn for the
+rest of the run. So while `/gaffer:run-loop` or `/gaffer:resume` is running, that
+session takes the `loop-driver` role: it passes **paths**, reads **one status line** per
+agent, and never opens a result file.
 
-The catch is *sensing* it: the usage percentages are delivered to **exactly one
-place** — the `statusLine` command's stdin JSON (`rate_limits.five_hour` /
-`.seven_day`), only after the first API response and only on **Pro/Max**. No hook
-payload carries them and nothing persists them to disk. So the plugin ships a
-`statusLine` **sensor** (`scripts/statusline-pause-sensor.sh`): it renders the
-percentages *and*, when either window crosses its threshold, writes the **same
-`.agents/pause` sentinel** a human would — after which it is the ordinary ADR 0017
-cooperative pause, byte-for-byte (the prompt-poll is still the authoritative stop).
+**The mark and the refusal.** Entering driver mode writes a file —
+`.agents/driver-mode/<session-id>`, managed only by `runstate.sh driver-mode`. Its
+existence is the whole signal. While it is there, the guard refuses that session's own
+main-thread writes outside `.agents/` (above). It is keyed to **one session**: it never
+blocks another, a subagent's writes are never refused, and a mark left behind by a
+session that crashed blocks nothing — it names an id nothing will reuse, and reopening
+that session clears it. Compaction keeps it, and a compacted session is pointed back at
+its driver instructions. The way out is a **pause**: `/gaffer:pause` ends the run at a
+green checkpoint and hands the keyboard back.
 
-Turn it on with the toggle skill — it resolves the installed sensor path and wires
-`settings.json` for you (a plugin cannot, and `${CLAUDE_PLUGIN_ROOT}` does **not**
-expand in the `statusLine` context, so the entry needs a resolved absolute path):
+**What the driver reads instead of the repo.** Each packet gets a **handoff file** under
+`.agents/loop/<run_id>/<packet-id>/` — its task text, its file scope, and the acceptance
+criteria its `covers:` names, assembled by `gspec-backlog.sh handoff`. Every dispatched
+agent takes that path as its whole brief, writes its detail to a **result file** through
+`runstate.sh write-result` (which refuses any path outside the run directory), and
+returns a single line: `<status> · <what changed> · result: <needs-reading|no> ·
+<path>`. Because the result files are written by a *script*, the read-only agents stayed
+read-only — the reviewer, researcher and chief-engineer gained no `Edit` or `Write` tool.
 
-```bash
-/gaffer:rate-limit-pause on      # wire settings.json + enable here
-/gaffer:rate-limit-pause status  # what's wired + effective thresholds
-/gaffer:rate-limit-pause off     # per-repo disable (status line stays)
-/gaffer:rate-limit-pause off --teardown   # also remove the GLOBAL sensor
+**Routing is mechanical.** The reviewer returns `pass`, `fix` or `escalate` on exclusive
+triggers, and `runstate.sh route` — not a judgment call — turns that into an action,
+logging every decision to `.agents/loop/<run_id>/routing.jsonl`:
+
+| Verdict / decision | Action |
+| --- | --- |
+| `pass` | **land** — commit the packet green |
+| `fix` | **attempt** a fresh agent while attempts remain, else **decider** |
+| `retry` | **attempt** while attempts remain; past the limit it is refused as a **stop**, never looped |
+| `escalate` | **decider** |
+| `reorder`, `append-task`, `hand-off-feature` | **discard-advance** — roll back to the last green checkpoint and move on |
+| `ask-operator` | **stop** |
+
+Attempts count `fix` and `retry` together since the packet's latest start, against
+`packet_attempts` in `.agents/project-overrides.yaml` (default **1**). **On `decider`
+the driver dispatches the `chief-engineer` as the escalation decider** with the
+packet's handoff and review paths and the `ATTEMPTS=`/`LIMIT=` the `route` call
+printed, and nothing else. The decider reads that packet's handoff, result and review
+files and the findings naming it, plus what its triggers test —
+`escalate_to_human_on` in `.agents/project-overrides.yaml`, the backlog's PRDs and
+plans, `.agents/roadmap.yaml` — and returns exactly one decision on exclusive
+triggers; when more than one fits, the first of `ask-operator` → `hand-off-feature`
+→ `append-task` → `reorder` → `retry` wins. It carries out `reorder`, `append-task`
+and `retry` itself through `runstate.sh reorder-pending`, an `architect` it dispatches
+to append the one task line, and `runstate.sh amend-handoff`, each followed by a
+finding naming the packet and a `runstate.sh record-decision` record in
+`.agents/metrics/decisions/<session>.jsonl` — outside `.agents/loop/`, which
+`begin-run` prunes. `ask-operator` stops the loop on its status line; `hand-off-feature`
+takes the packet out of the run and leaves a question for the operator, who runs
+`/gspec-feature` (ADR 0026). The same agent is dispatched between packets, when
+`runstate.sh review-due` says so, for a **periodic review** of the findings index —
+merging duplicates losslessly, routing backlog-in-disguise findings through the two
+arm decisions, and dropping entries only on positive completion evidence. The full
+contract is `agents/chief-engineer.md` §Escalation decider and §Periodic review.
+
+**Run directories are per run and pruned.** `runstate.sh begin-run` mints a `run_id`
+into run-state once — a resume keeps it, so a run spans sessions — and keeps the current
+run's directory plus the newest previous one, removing older ones. Human-facing reports
+are assembled from `runstate.sh run-digest` over those files, so a stop report is
+correct even in a session that resumed someone else's run or has compacted since it
+started.
+
+**Two lines your repo needs.** Add both to the consumer repo's `.gitignore`:
+
+```
+.agents/driver-mode/
+.agents/loop/
 ```
 
-Thresholds default to **5-hour 90% / 7-day 85%** (the weekly one lower on purpose —
-exhausting the 7-day window strands the account for *days*, not the couple of hours a
-5-hour reset costs). Configure per repo in `.agents/project-overrides.yaml` under
-`rate_limit_pause:`, with an `ORCH_RATE_PAUSE` / `ORCH_RATE_PAUSE_PCT` /
-`ORCH_RATE_PAUSE_7D_PCT` env fast-path. It is **best-effort early-warning, not a hard
-stop**: both cutoffs are server-side; if one outruns the drain, crash-reconcile
-`restart` is still the floor (which is why packets are commit-sized). Under API-key
-auth there is no `rate_limits` payload and the sensor is inert. See
-[ADR 0018](docs/adr/0018-rate-limit-aware-cooperative-pause.md).
+Unignored, a pause's `git stash --include-untracked` sweeps the run's own files and
+`reconcile` reads them as scratch to discard. `/gaffer:migrate` reports a repo missing
+either entry.
+
+### Auto-pause before a usage limit (ADR 0018, superseded)
+
+The plugin used to ship a `statusLine` sensor that watched Claude Code's rolling
+5-hour/7-day usage percentages and armed a pause before either limit hit. It
+never worked reliably in practice and is retired: the sensor script, the
+`/gaffer:rate-limit-pause` toggle skill, and the `rate_limit_pause:` overrides
+block are all deleted. The cooperative whole-run pause it amended is
+unaffected — `/gaffer:pause` and `/gaffer:resume` still work exactly as
+described above. `/gaffer:migrate` cleans up a leftover `rate_limit_pause:`
+block or a stale `statusLine` entry in a repo that had adopted it. See
+[ADR 0018](docs/adr/0018-rate-limit-aware-cooperative-pause.md) for the
+historical record.
 
 ### Measuring runs (ADR 0019)
 
-To find where a run — especially a wide `--parallel` one — spends its compute, the
+To find where a run spends its compute, the
 plugin captures a **run-metrics packet**: one self-contained
 `.agents/metrics/<run-id>/run-metrics.json` per run, built to be read by a human or
 **handed to Claude for optimization advice**. Collection is automatic and costs zero
@@ -322,8 +349,8 @@ tokens: a `PostToolUse` hook logs tool events (metadata + low-sensitivity labels
 per-tool `duration_ms`, the running skill, the dispatched `subagent_type`, and a Bash
 command **head** only; never full command text, arguments, or paths) as the run goes,
 and `scripts/metrics.sh collect` joins that event spine with
-packet boundaries derived from the `[orch packet:<id>]` commit trailers, the
-`packet-graph.yaml` wave map, and best-effort token/cost from the session transcripts:
+packet boundaries derived from the `[orch packet:<id>]` commit trailers and
+best-effort token/cost from the session transcripts:
 
 ```bash
 /gaffer:metrics collect   # assemble the packet for the current run
@@ -337,7 +364,9 @@ cacheCreation, the biggest hidden cost when subagents re-load context), **per-ro
 per-packet, per-skill, and per-command-class spend** (which skill/process costs most,
 and which commands dump the most output — the "where an output filter like RTK helps"
 map), **model-per-agent** (so opus/sonnet/haiku tokens are cost-comparable), per-tool
-**duration**, an **active/idle wall split**, and **per-wave parallel efficiency**. Tokens come from the
+**duration**, an **active/idle wall split**, and same-file concurrent-edit
+counts (`totals.same_file_overlaps` — the observability that replaces the
+retired parallel scheduler's file-disjointness guarantee). Tokens come from the
 transcripts by default (a **version-fragile** source, so the collector **fails soft** to
 structural-only and stamps `token_source` — a partial run is never misread as complete);
 **Tier 0 OpenTelemetry** is an optional, deferred richer source, not required. Enable/
@@ -347,18 +376,19 @@ run by copying its `run-metrics.json` out. See
 [ADR 0019](docs/adr/0019-run-metrics-observability.md).
 
 **Tests.** `scripts/test-guard.sh` is the guardrail regression sweep (allow/deny
-pairs for every category, the closed cross-tree bypasses, the autonomy×branch×diff
-commit matrix, and the `guard-extra` loading); run it after any change to
+pairs for every category, the closed cross-tree bypasses, the branch×diff commit
+matrix, and the `guard-extra` loading); run it after any change to
 `guard.sh`. `scripts/test-runstate.sh` is the pause/resume + crash-recovery sweep
 (the reconcile decision table, atomic writes, the SessionStart hook; ADR
-0004/0005/0009); `scripts/test-pause.sh` covers the cooperative-pause sentinel/hook
-(ADR 0017) **and the rate-limit sensor's threshold/reason/idempotency/YAML-config
-behavior** (ADR 0018) — run it after any change to `runstate.sh`, `pause-check.sh`,
-`statusline-pause-sensor.sh`, or the loop skills. `scripts/test-metrics.sh` covers
-the run-metrics core (ADR 0019) — the event-log → trailer/wave/token join, fail-soft
-to structural-only, the skill/command-class/duration enrichment and its head-only
-command classifier (leak-tested), and the logger hook's no-`permissionDecision`
-contract — against a synthetic git repo and fake transcripts (no live agent). CI runs
+0004/0005/0009 — plus read-only compatibility cases proving a legacy
+`mode: parallel` run-state still parses now that the lane-writing subcommands
+are gone); `scripts/test-pause.sh` covers the cooperative-pause sentinel/hook
+(ADR 0017) — run it after any change to `runstate.sh` or `pause-check.sh`.
+`scripts/test-metrics.sh` covers the run-metrics core (ADR 0019) — the
+event-log → trailer/token join, fail-soft to structural-only, the
+skill/command-class/duration enrichment and its head-only command classifier
+(leak-tested), and the logger hook's no-`permissionDecision` contract —
+against a synthetic git repo and fake transcripts (no live agent). CI runs
 them on every push.
 
 ## Develop it (working on the plugin itself)
@@ -442,15 +472,14 @@ migrates toward the layout you are trying to leave — reporting success as it d
 
 The full sequence, with the hazards and the two checks that tell a broken
 migration from a finished backlog, is
-**[docs/gspec-3.1.1-migration.md](docs/gspec-3.1.1-migration.md)**.
+**[docs/gspec-migration.md](docs/gspec-migration.md)**.
 
 Try it out inside the session:
 
 - Skills are **namespaced by plugin**: `/gaffer:new-project`,
   `/gaffer:review-change`, `/gaffer:run-loop`,
-  `/gaffer:pause`, `/gaffer:resume`, `/gaffer:set-autonomy`,
-  `/gaffer:rate-limit-pause`, `/gaffer:metrics`,
-  `/gaffer:build-packet-dependency-tree`.
+  `/gaffer:pause`, `/gaffer:resume`,
+  `/gaffer:metrics`, `/gaffer:migrate`.
 - Agents appear as `chief-engineer`, `architect`, `ux-designer`, `reviewer`,
   `implementer` (delegate to them via the Task tool or let a skill drive them).
 - To sanity-check the guardrail directly:

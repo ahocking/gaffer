@@ -125,6 +125,22 @@ subtype="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_inpu
 # back to cksum, which is POSIX and therefore always present. Truncated to 12 chars:
 # collision risk is irrelevant when the comparison set is the files touched in one run.
 fh=""
+# `agents_dir` / `driver_mode` (thin-loop-driver T20) — the main-session-edits
+# success metric (ADR 0019 / thin-loop-driver PRD) needs to know whether a driver
+# session edited outside `.agents/`, but the path itself must stay OFF the log
+# (same rule as `fh` above): agents_dir is WHETHER the target sits under `.agents/`,
+# never the path. driver_mode is "this session is marked as the driver AND this
+# call carries no agent_id" — the exact main-thread-in-driver-mode test guard.sh's
+# `driver_mode_active` uses (hooks/guard.sh), so a leak this stamps is the same
+# leak the guard would have refused had the target not been under `.agents/`.
+# Both are stamped for the same four tool types as `fh`, and independently of it:
+# agents_dir needs only the file path (already extracted below as `_fp`);
+# driver_mode needs the session's driver-mode mark, which lives beside the events
+# dir under the MAIN checkout (`$main_root`, resolved above) and is therefore
+# left OMITTED — not falsely "false" — when `$main_root` is unknown (the
+# `ORCH_METRICS_DIR` fast-path some callers use has no main checkout to check).
+agents_dir=""
+driver_mode=""
 case "$tool" in
   # Keep this list identical to guard.sh's registered write surface
   # (Bash|Edit|Write|MultiEdit|NotebookEdit, minus Bash which has no single file_path)
@@ -140,6 +156,18 @@ case "$tool" in
       else _h="$(printf '%s' "$_fp" | cksum 2>/dev/null)"; fi
       # first field of every one of those tools is the digest; keep 12 chars
       fh="$(printf '%s' "${_h%% *}" | cut -c1-12)"
+      # WHETHER only -- `${_fp}` never reaches the event line.
+      case "${_fp//\\//}" in
+        .agents/*|*/.agents/*) agents_dir="true" ;;
+        *)                     agents_dir="false" ;;
+      esac
+    fi
+    if [ -n "$main_root" ]; then
+      if [ -z "$aid" ] && [ -f "${main_root}/.agents/driver-mode/${sid}" ]; then
+        driver_mode="true"
+      else
+        driver_mode="false"
+      fi
     fi
     ;;
 esac
@@ -157,6 +185,34 @@ esac
 # (`tool_response.resolvedModel` exists but PROBED empty on this version — version-
 # fragile, deliberately not used.)
 model="$(printf '%s' "$input" | jq -r 'if .tool_name=="Agent" then (.tool_input.model // empty) else empty end' 2>/dev/null)"
+
+# `routing_resolved` / `routing_table` (per-agent-model-routing, ### Rule:
+# DispatchStamping) — what `routing.sh` said this dispatch SHOULD pass, recorded at
+# dispatch time so metrics.sh counts an override as "passed model != resolved", not
+# "a model was passed". Stamped only on an Agent event with a non-empty
+# subagent_type. BOTH fields or NEITHER: if the script is missing / not executable,
+# or either call exits non-zero, both are omitted — an absent stamp reads as
+# UNMEASURED, whereas a wrong one would be silently miscounted. `routing_resolved`
+# is written as an explicit "" when the agent is unmapped, so "" never means absent.
+# All call output is captured: the hook still prints nothing and exits 0.
+rstamp=""; rres=""; rtab=""
+if [ "$tool" = "Agent" ] && [ -n "$subtype" ]; then
+  _hook_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+  _rs="${CLAUDE_PLUGIN_ROOT:-${_hook_dir}/..}/scripts/routing.sh"
+  if [ -f "$_rs" ] && [ -x "$_rs" ]; then
+    _rargs=()
+    [ -n "$main_root" ] && _rargs=(--root "$main_root")
+    if rres="$("$_rs" ${_rargs[@]+"${_rargs[@]}"} resolve "$subtype" 2>/dev/null | tr -d '\r')" \
+      && _rt="$("$_rs" ${_rargs[@]+"${_rargs[@]}"} table 2>/dev/null | tr -d '\r')" \
+      && rtab="$(printf '%s\n' "$_rt" | jq -Rnc \
+           '[inputs | select(length > 0) | split(" ") | select(length >= 3) | {(.[0]): .[2]}] | add // {}' 2>/dev/null)" \
+      && [ -n "$rtab" ]; then
+      rstamp="1"
+    else
+      rres=""; rtab=""
+    fi
+  fi
+fi
 
 # `ok` — did the call succeed? PROBED (2026-07-22): the payload carries NO exit code
 # and no is_error field. The RESPONSE SHAPE is the signal: a successful call returns
@@ -222,10 +278,24 @@ else
   skill="$(head -1 "${evdir}/_state/${sid}.skill" 2>/dev/null || true)"
 fi
 
+# --- fixed-rules marker (retire-autonomy-levels T6) ---------------------------
+# A zero-byte sentinel saying "this session ran under a plugin with ONE fixed rule
+# set", i.e. after autonomy levels were retired. metrics.sh reads it instead of
+# ORCH_AUTONOMY / `.agents/autonomy`, so a window collected from sessions that
+# predate this install re-collects as `unknown` rather than inheriting a level from
+# a file that is no longer the thing in force. It lives beside the per-session
+# skill-state file, is written with the same `mkdir -p … && … || true` discipline,
+# adds NO field to the event line and no growth to the log, and — like everything
+# else here — prints nothing and cannot fail the call it observes.
+mkdir -p "${evdir}/_state" 2>/dev/null \
+  && : >> "${evdir}/_state/${sid}.fixed-rules" 2>/dev/null || true
+
 line="$(jq -cn \
   --arg ts "$ts" --arg sid "$sid" --arg aid "$aid" --arg at "$atype" --arg tool "$tool" \
   --arg dur "$dur" --arg tuid "$tuid" --arg skill "$skill" --arg subtype "$subtype" --arg cc "$cmd_class" \
   --arg lane "$lane" --arg model "$model" --arg ok "$ok" --arg fh "$fh" \
+  --arg ad "$agents_dir" --arg dm "$driver_mode" \
+  --arg rstamp "$rstamp" --arg rres "$rres" --arg rtab "$rtab" \
   '{ts:$ts,session_id:$sid,agent_id:$aid,agent_type:$at,tool:$tool}
    + (if $dur!=""     then {duration_ms:($dur|tonumber?)} else {} end)
    + (if $tuid!=""    then {tool_use_id:$tuid}            else {} end)
@@ -235,7 +305,10 @@ line="$(jq -cn \
    + (if $lane!=""    then {lane_id:$lane}                else {} end)
    + (if $model!=""   then {model:$model}                 else {} end)
    + (if $ok!=""      then {ok:($ok=="true")}             else {} end)
-   + (if $fh!=""      then {file_hash:$fh}                else {} end)' 2>/dev/null)" || exit 0
+   + (if $fh!=""      then {file_hash:$fh}                else {} end)
+   + (if $ad!=""      then {agents_dir:($ad=="true")}     else {} end)
+   + (if $dm!=""      then {driver_mode:($dm=="true")}    else {} end)
+   + (if $rstamp!=""  then {routing_resolved:$rres, routing_table:($rtab|fromjson)} else {} end)' 2>/dev/null)" || exit 0
 [ -n "$line" ] || exit 0
 
 # Append. Concurrent parallel lanes may be subagents that SHARE the parent session

@@ -32,6 +32,17 @@
 #   apply   [root]   perform the MECHANICAL moves (git mv where the repo is a git
 #                    repo, else mv), then verify. Refuses on a dirty tree unless
 #                    --force: a migration you cannot `git diff` is not reviewable.
+#                    Also cleans up the retired parallel-mode / rate-limit-pause
+#                    footprint (retire-unused-loop-modes T5) -- see the
+#                    "retire-unused-loop-modes cleanup" section below -- and the
+#                    retired autonomy-level footprint (retire-autonomy-levels T5):
+#                    `.agents/autonomy` is deleted, `autonomy_ceiling` is stripped
+#                    from project-overrides.yaml, and the human's own level
+#                    references are REPORTED, never edited.
+#                    --remove-statusline additionally removes a user-level
+#                    statusLine ONLY when it points at the plugin's now-deleted
+#                    scripts/statusline-pause-sensor.sh; omit it and apply only
+#                    reports the finding (removal needs the operator's say-so).
 #   verify  [root]   post-migration checks: paths, adapter parse, packet counts.
 #   findings-audit [root]   READ-ONLY (run-state-cleanup T18): per findings-index
 #                    entry, without ever opening a body — whether it names
@@ -624,6 +635,53 @@ _findings() {
     n=$((n+1))
   fi
 
+  # 6c. Missing .agents/loop/ or .agents/driver-mode/ ignores (thin-loop-driver
+  #     T1/T3/T9, ADR 0028). `.agents/loop/<run_id>/` holds the handoff files and
+  #     the script-written result files a dispatched agent reads and writes;
+  #     `.agents/driver-mode/<session>` is the session-keyed mark that records
+  #     when a session is driving the loop. Neither is ever committed. A
+  #     .gitignore that predates this feature shows both untracked in
+  #     `git status`, and the pause path's `git stash --include-untracked` sweeps
+  #     them while reconcile discards them as scratch on the green checkpoint --
+  #     same failure mode as the pause/write-backup findings above. Reported,
+  #     not auto-fixed: apply never edits a consumer's .gitignore.
+  if [ -f "$root/.gitignore" ]; then
+    local miss_loop=0 miss_dm=0
+    grep -q 'agents/loop/' "$root/.gitignore" 2>/dev/null || miss_loop=1
+    grep -q 'agents/driver-mode/' "$root/.gitignore" 2>/dev/null || miss_dm=1
+    if [ "$miss_loop" = 1 ] || [ "$miss_dm" = 1 ]; then
+      local missing_what
+      if [ "$miss_loop" = 1 ] && [ "$miss_dm" = 1 ]; then
+        missing_what=".agents/loop/ and .agents/driver-mode/"
+      elif [ "$miss_loop" = 1 ]; then
+        missing_what=".agents/loop/"
+      else
+        missing_what=".agents/driver-mode/"
+      fi
+      printf 'FINDING=driver-mode-ignore\t.gitignore does not ignore %s\thandoff/result files under .agents/loop/ and the session-keyed .agents/driver-mode/ mark would show untracked in git status, and the pause path'"'"'s stash/reconcile would sweep or discard them -- add the missing line(s) by hand\n' "$missing_what"
+      n=$((n+1))
+    fi
+  fi
+
+  # 6d. Per-repo compaction entry -- T4's carrier (thin-loop-driver, ADR 0028
+  #     result 3). T4 verified exactly one carrier: a flat `autoCompactWindow`
+  #     (tokens) key in a Claude Code settings JSON file. `runstate.sh
+  #     compact-threshold` never writes one -- whether a plugin default can
+  #     coexist with a repo/operator value without overriding it was left
+  #     unprobed, so it is a pure reader. Guarded on the settings file
+  #     existing, same as every other check in this function: a repo carrying
+  #     no committed .claude/settings.json at all has not opted into a
+  #     committed, team-shared value and gaffer's default is exactly the
+  #     supported state for it (PRD: "a loop session where neither the repo
+  #     nor the operator has set one uses gaffer's default") -- firing here
+  #     would make FINDINGS=0 unreachable for that repo forever. Reported like
+  #     the pause/write-backup findings above: apply never writes a consumer's
+  #     .claude/settings.json.
+  if [ -f "$root/.claude/settings.json" ] && ! grep -qE '"autoCompactWindow"[[:space:]]*:[[:space:]]*[0-9]+' "$root/.claude/settings.json" 2>/dev/null; then
+    printf 'FINDING=compact-threshold\tno per-repo autoCompactWindow entry in .claude/settings.json\tT4'"'"'s carrier for a per-repo compaction threshold; no COMMITTED, team-shared value exists here, so sessions fall back to an operator-scope value (CLAUDE_CODE_AUTO_COMPACT_WINDOW, settings.local.json, or the user-wide settings file) if one is set, else gaffer'"'"'s default -- add "autoCompactWindow": <tokens> by hand if you want the team to share one value (an operator-scope value still takes precedence over it)\n'
+    n=$((n+1))
+  fi
+
   # 7. CLAUDE.md missing the report conventions — why reports come out as free prose.
   if [ -f "$root/CLAUDE.md" ] && ! grep -q 'gaffer:report-conventions' "$root/CLAUDE.md" 2>/dev/null; then
     printf 'FINDING=report-conventions\tCLAUDE.md does not carry the report conventions\twithout them every turn outside a gaffer skill reports in free prose; the skills read the full contract, but nothing else does\n'
@@ -688,6 +746,35 @@ _findings() {
   printf 'FINDINGS=%s\n' "$n"
 }
 
+# The gspec last installed here, against the plugin's pin. gspec stamps
+# `gspecVersion` into .gspec/config.json at install (3.1.1 onward). This is
+# INFORMATIONAL and never a FINDING: the pin exists to catch a format the
+# adapter cannot parse, and a stale install parses fine -- what it runs is the
+# OLD writer/validator/orchestrator briefs, so every gain a gspec release puts
+# into its agents and skills is absent until someone re-emits. A repo already
+# on the 3.x folder layout is otherwise indistinguishable from an up-to-date
+# one, which is how 3.2.0 would have gone unnoticed here. Parsed with jq when
+# it works, else a one-shot awk match -- no `head -1` on a live pipe (SIGPIPE
+# under pipefail reads a true answer as a failure; see runstate.sh trim-note).
+_installed_gspec_line() { # <root>
+  local cfg="$1/.gspec/config.json" pin installed=""
+  pin="$("$ADAPTER" pin 2>/dev/null | sed -n 's/^GSPEC_PINNED_VERSION=//p' | tr -d '\r')"
+  if [ -f "$cfg" ]; then
+    if command -v jq >/dev/null 2>&1 && jq -e . "$cfg" >/dev/null 2>&1; then
+      installed="$(jq -r '.gspecVersion // empty' "$cfg" 2>/dev/null | tr -d '\r')"
+    else
+      installed="$(awk 'match($0, /"gspecVersion"[[:space:]]*:[[:space:]]*"[^"]*"/) { s = substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", s); sub(/"$/, "", s); print s; exit }' "$cfg" 2>/dev/null)"
+    fi
+  fi
+  if [ -z "$installed" ]; then
+    printf 'GSPEC_INSTALLED=unknown\tno gspecVersion stamp in .gspec/config.json (a pre-3.1.1 install, or gspec is not installed in this repo)\n'
+  elif [ "$installed" = "$pin" ]; then
+    printf 'GSPEC_INSTALLED=%s\n' "$installed"
+  else
+    printf 'GSPEC_INSTALLED=%s\tdiffers from the plugin pin %s: the installed commands, agents, skills and hook floors are the %s briefs; re-emit with: npx --yes gspec@%s --target claude\n' "$installed" "$pin" "$installed" "$pin"
+  fi
+}
+
 cmd_detect() {
   local root; root="$(_root "${1:-}")"
   [ -d "$root" ] || die "no such directory: $root"
@@ -696,6 +783,7 @@ cmd_detect() {
   ls "$root"/gspec/features/*.plan.md >/dev/null 2>&1 && state='pre-2.0'
   [ -d "$root/gspec" ] || state='no-gspec'
   printf 'ROOT=%s\nFROM=%s\n' "$root" "$state"
+  _installed_gspec_line "$root"
   local out; out="$(_findings "$root")"
   printf '%s\n' "$out"
   local n; n="$(printf '%s\n' "$out" | sed -n 's/^FINDINGS=//p')"
@@ -791,8 +879,8 @@ _convert_roadmap() {
     printf '#\n'
     printf '# Converted automatically: slug/order/why/depends_on are carried over.\n'
     printf '# `status` and `parallel_group` were DROPPED on purpose — completion is derived\n'
-    printf '# from each PRD s capability checkboxes, and concurrency is computed per run by\n'
-    printf '# packet-graph.sh. Storing either is how they drift.\n'
+    printf '# from each PRD s capability checkboxes, and storing it is how it drifts.\n'
+    printf '# `parallel_group` has no replacement: the loop runs one packet at a time.\n'
     printf '#\n'
     printf '# REVIEW THIS FILE: any prose in the old roadmap (## Notes, ## Unsequenced,\n'
     printf '# rationale in comments) was NOT translated. It is still in the original file.\n'
@@ -818,10 +906,175 @@ _convert_roadmap() {
   } > "$dest"
 }
 
+# --- retire-unused-loop-modes cleanup (T5) ------------------------------------
+# Parallel mode (ADR 0016) and the rate-limit auto-pause sensor (ADR 0018) were
+# retired from the shipped plugin. A consumer repo that had adopted either still
+# carries artifacts the plugin no longer creates or reads: the
+# `rate_limit_pause:` / `max_parallel_packets:` entries in its own
+# project-overrides.yaml (both this plugin's own copy and the template shipped
+# them), a user-level `statusLine` pointing at the now-deleted sensor script,
+# leftover per-lane pause files, and a TRACKED `.agents/packet-graph.yaml`.
+# `apply` cleans up what is safe to clean up mechanically and only ever REPORTS
+# the rest: a foreign statusLine (never touched), extra git worktrees (may hold
+# unmerged work -- listed, never deleted), and the consumer's own CLAUDE.md
+# (the human's standing instruction -- reported, never edited).
+
+# Every top-level section in project-overrides.yaml -- both this plugin's own
+# copy and templates/spec-driven-base's -- is a comment block plus a key,
+# separated from its neighbours by exactly one blank line, with no blank line
+# INSIDE a section. Paragraph removal is therefore exact: drop whichever whole
+# paragraphs match a target key, rejoin what remains with exactly one blank
+# line, and nothing else in the file moves.
+_strip_key_paragraphs() { # <file> <bare-key> [<bare-key> ...]
+  local f="$1"; shift
+  local pat; pat="$(printf '%s|' "$@")"; pat="${pat%|}"
+  awk -v pat="$pat" '
+    BEGIN { n = 0; p = 0 }
+    { lines[++n] = $0 }
+    END {
+      i = 1
+      while (i <= n) {
+        if (lines[i] ~ /^[[:space:]]*$/) { i++; continue }
+        content = ""; keep = 1
+        while (i <= n && lines[i] !~ /^[[:space:]]*$/) {
+          stripped = lines[i]
+          gsub(/^[[:space:]]*#?[[:space:]]*/, "", stripped)
+          if (stripped ~ ("^(" pat "):")) keep = 0
+          content = content lines[i] "\n"
+          i++
+        }
+        if (keep) { p++; para[p] = content }
+      }
+      for (k = 1; k <= p; k++) {
+        if (k > 1) printf "\n"
+        printf "%s", para[k]
+      }
+    }
+  ' "$f"
+}
+
+# The retired project-overrides keys, in report order. ONE list, read by both
+# the stripper and the CLEANED= line that names what it dropped, so a key can
+# never be removed without being named -- or named without being removed.
+#   rate_limit_pause      -- ADR 0018, retired (retire-unused-loop-modes)
+#   max_parallel_packets  -- ADR 0016, retired (retire-unused-loop-modes)
+#   autonomy_ceiling      -- autonomy levels retired (retire-autonomy-levels);
+#                            the guard no longer resolves a level, so a ceiling
+#                            here caps nothing and only misleads its reader.
+OVERRIDES_RETIRED_KEYS="rate_limit_pause max_parallel_packets autonomy_ceiling"
+
+# Which of OVERRIDES_RETIRED_KEYS actually head a paragraph in <file> -- active
+# (`key:`) or commented-out (`# key:`), one per line, in list order. The test is
+# deliberately the same shape as _strip_key_paragraphs' own (leading whitespace,
+# one optional `#`, whitespace, then `key:`) so the CLEANED= line cannot name a
+# key the stripper did not drop. Call it BEFORE the strip -- it reads the file.
+_overrides_retired_keys_in() {
+  local f="$1" k
+  [ -f "$f" ] || return 0
+  for k in $OVERRIDES_RETIRED_KEYS; do
+    grep -qE "^[[:space:]]*#?[[:space:]]*${k}:" "$f" 2>/dev/null && printf '%s\n' "$k"
+  done
+  return 0
+}
+
+# Rewrites <file> in place, dropping every OVERRIDES_RETIRED_KEYS paragraph
+# (active OR commented-out example, and their introducing comment lines -- both
+# live in the same paragraph), each only where present. Returns 0 and mutates
+# the file if something was dropped, 1 (file byte-identical) otherwise.
+# Mode-preserving and atomic, same discipline as _drop_backlog_done above.
+_strip_overrides_retired_keys() {
+  local f="$1" tmp
+  [ -f "$f" ] || return 1
+  tmp="$(mktemp "$(dirname "$f")/.migrate-overrides.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$f" "$tmp"
+  # Unquoted on purpose: OVERRIDES_RETIRED_KEYS is a space-separated list of
+  # bare keys and each must arrive as its own argument.
+  # shellcheck disable=SC2086
+  _strip_key_paragraphs "$f" $OVERRIDES_RETIRED_KEYS > "$tmp"
+  if cmp -s "$f" "$tmp"; then
+    rm -f "$tmp"; trap - EXIT
+    return 1
+  fi
+  mv "$tmp" "$f"
+  trap - EXIT
+  return 0
+}
+
+# --- retire-autonomy-levels cleanup (T5) -------------------------------------
+# Autonomy levels are retired: the guard resolves no level, so `ORCH_AUTONOMY`,
+# `.agents/autonomy` and `autonomy_ceiling` change no decision anywhere. `apply`
+# deletes the two artifacts the PLUGIN owns (`.agents/autonomy`, the
+# `autonomy_ceiling` paragraph) and only ever REPORTS what the HUMAN owns --
+# their `CLAUDE.md`, their `spec-setup.md`, their `.claude/settings.json` --
+# exactly as a foreign `statusLine` is left alone above.
+
+# Retired modes and commands, for the CLAUDE.md routing report
+# (retire-unused-loop-modes T5). Split out of cmd_apply so it can be combined
+# with the autonomy pattern below in one grep.
+RETIRED_ROUTES_RE='relay mode|--parallel|worktree lane|packet-graph|build-packet-dependency-tree|rate-limit-pause|statusline-pause-sensor'
+
+# A reference to a retired autonomy level, for the read-only reports.
+#
+# `interactive`, `supervised` and `autonomous` are ordinary English, so matching
+# them bare would flag a sentence about an interactive prompt or an autonomous
+# agent -- in a report a human is asked to act on, a false line is worse than a
+# missed one. They therefore count ONLY on a line that also says "autonomy";
+# every other alternative here (`ORCH_AUTONOMY`, `.agents/autonomy`,
+# `autonomy_ceiling`, `set-autonomy`, `full-autonomy`, "autonomy level") names
+# the retired setting unambiguously on its own. Matched case-insensitively.
+AUTONOMY_REPORT_RE='ORCH_AUTONOMY|\.agents/autonomy|autonomy_ceiling|set-autonomy|full-autonomy|autonomy level|autonomy.*(interactive|supervised|autonomous)|(interactive|supervised|autonomous).*autonomy'
+
+# Report -- never edit -- every line of <file> matching <extended-regex>, under
+# <label>=<preamble> with the matches indented beneath it. Read-only by
+# construction: it opens the file with grep and writes nothing. Silent when the
+# file is absent or nothing matches, so a repo with none of these artifacts
+# emits none of these lines at all.
+_report_stale_lines() { # <file> <label> <extended-regex> <preamble>
+  local f="$1" label="$2" re="$3" preamble="$4" hits line
+  [ -f "$f" ] || return 0
+  hits="$(grep -niE "$re" "$f" 2>/dev/null || true)"
+  [ -n "$hits" ] || return 0
+  printf '%s=%s\n' "$label" "$preamble"
+  printf '%s\n' "$hits" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '  %s\n' "$line"
+  done
+  return 0
+}
+
+# The configured `.statusLine.command`, or empty (no statusLine key, or the
+# file doesn't exist). jq when available; otherwise a textual fallback scoped
+# to the "statusLine" object only, so a `"command"` key belonging to some
+# OTHER top-level block is never picked up by accident. Handles both the
+# common pretty-printed shape and a minified single-line settings.json.
+_statusline_command() {
+  local settings="$1"
+  [ -f "$settings" ] || return 0
+  if command -v jq >/dev/null 2>&1 && jq -e . "$settings" >/dev/null 2>&1; then
+    jq -r '.statusLine.command // empty' "$settings" 2>/dev/null
+    return 0
+  fi
+  awk '
+    /"statusLine"[[:space:]]*:/ { inblock = 1 }
+    inblock && match($0, /"command"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      s = substr($0, RSTART, RLENGTH)
+      sub(/^"command"[[:space:]]*:[[:space:]]*"/, "", s)
+      sub(/"$/, "", s)
+      print s
+      exit
+    }
+    inblock && /\}/ { exit }
+  ' "$settings"
+}
+
 cmd_apply() {
-  local root force=0 a
+  local root force=0 remove_statusline=0 a
   root="$(_root "${1:-}")"
-  for a in "$@"; do [ "$a" = "--force" ] && force=1; done
+  for a in "$@"; do
+    [ "$a" = "--force" ] && force=1
+    [ "$a" = "--remove-statusline" ] && remove_statusline=1
+  done
   [ -d "$root" ] || die "no such directory: $root"
 
   # A migration you cannot `git diff` is not a migration you can review.
@@ -915,6 +1168,161 @@ cmd_apply() {
         "$ustart4" "$uend4" "$ureason4"
     fi
   fi
+
+  # 5. project-overrides.yaml -- drop every retired key's paragraph
+  #    (rate_limit_pause, max_parallel_packets, autonomy_ceiling), active or
+  #    commented-out example, plus the comment lines introducing each.
+  #    Everything else in the file -- in particular bypass-ask-tier,
+  #    integration_branch and escalate_to_human_on -- is a different paragraph
+  #    and survives untouched.
+  #
+  #    The keys PRESENT are read before the strip and named in CLEANED=, rather
+  #    than the line reciting all three: "each only where present" is the whole
+  #    contract, so a report naming a key this file never carried is a false
+  #    statement about a change that did not happen.
+  if [ -f "$root/.agents/project-overrides.yaml" ]; then
+    local ovf="$root/.agents/project-overrides.yaml" ovkeys
+    ovkeys="$(_overrides_retired_keys_in "$ovf" \
+      | awk '{ printf "%s%s:", (NR>1 ? ", " : ""), $0 } END { printf "\n" }')"
+    if _strip_overrides_retired_keys "$ovf"; then
+      printf 'CLEANED=%s removed from .agents/project-overrides.yaml -- all retired (ADR 0016/0018 superseded; autonomy levels retired); every other line is unchanged\n' "$ovkeys"
+      did=1
+    fi
+  fi
+
+  # 6. A user-level statusLine pointing at the plugin's now-deleted
+  #    scripts/statusline-pause-sensor.sh. Global, not repo-scoped, so the path
+  #    is resolved the same way the (now-retired) rate-limit-pause skill did --
+  #    never anything under $root. A statusLine pointing anywhere else is not
+  #    ours and is never even mentioned, let alone touched. Removal happens
+  #    only with --remove-statusline (the operator's confirmation) and only
+  #    when jq is available -- hand-editing JSON without a real parser risks
+  #    corrupting a file this script does not own.
+  local settings; settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  if [ -f "$settings" ]; then
+    local sl_cmd; sl_cmd="$(_statusline_command "$settings")"
+    case "$sl_cmd" in
+      *statusline-pause-sensor.sh)
+        if [ "$remove_statusline" = 1 ]; then
+          if command -v jq >/dev/null 2>&1; then
+            local stmp; stmp="$(mktemp "$(dirname "$settings")/.migrate-settings.XXXXXX")"
+            if jq 'del(.statusLine)' "$settings" > "$stmp" 2>/dev/null; then
+              mv "$stmp" "$settings"
+              printf 'REMOVED=statusLine removed from %s -- it pointed at the retired statusline-pause-sensor.sh\n' "$settings"
+              did=1
+            else
+              rm -f "$stmp"
+              printf 'SKIP=could not parse %s as JSON -- statusLine left untouched\n' "$settings"
+            fi
+          else
+            printf 'SKIP=jq is required to safely remove a key from settings.json -- statusLine left untouched (install jq and re-run apply --remove-statusline)\n'
+          fi
+        else
+          printf 'FOUND=statusLine in %s still points at the retired statusline-pause-sensor.sh -- re-run apply with --remove-statusline to remove it\n' "$settings"
+        fi
+        # Whether declined, removed just now, or removal failed: the status
+        # line is only re-read at session START, so this run cannot promise
+        # the sensor is inert yet -- never assert the removal already "took".
+        printf 'NOTE=the status line is re-read at session start, so a declined removal -- or one made but not yet reloaded -- may still arm a pause until the next session\n'
+        ;;
+      "") : ;;   # no statusLine configured -- nothing to do
+      *) : ;;    # a statusLine that is not ours -- never touched, never mentioned
+    esac
+  fi
+
+  # 7. Leftover per-lane pause files (`.agents/pause.<task-id>`, ADR 0017's
+  #    per-lane variant, matching this repo's own .gitignore pattern
+  #    `.agents/pause.*`). Nothing writes these any more -- parallel mode is
+  #    retired -- so they are safe to delete outright. The whole-run
+  #    `.agents/pause` sentinel itself does NOT match this glob (no trailing
+  #    dot-suffix) and is never touched; it is ADR 0017 and is not retired.
+  if ls "$root"/.agents/pause.* >/dev/null 2>&1; then
+    local pf pn=0
+    for pf in "$root"/.agents/pause.*; do
+      [ -f "$pf" ] || continue
+      rm -f "$pf"
+      pn=$((pn+1))
+    done
+    if [ "$pn" -gt 0 ]; then
+      printf 'REMOVED=%s leftover per-lane pause file(s) deleted from .agents/ (parallel mode is retired; .agents/pause itself is untouched)\n' "$pn"
+      did=1
+    fi
+  fi
+
+  # 8. .agents/packet-graph.yaml -- unlike the metrics/pause bookkeeping, this
+  #    one is TRACKED (ADR 0016), so deleting it is a change the operator must
+  #    commit themselves; apply never commits anything.
+  if [ -f "$root/.agents/packet-graph.yaml" ]; then
+    if _is_git "$root"; then
+      git -C "$root" rm -q -f ".agents/packet-graph.yaml" >/dev/null 2>&1 || rm -f "$root/.agents/packet-graph.yaml"
+    else
+      rm -f "$root/.agents/packet-graph.yaml"
+    fi
+    printf 'REMOVED=.agents/packet-graph.yaml deleted -- parallel mode is retired. It was TRACKED, so this is a change YOU need to commit.\n'
+    did=1
+  fi
+
+  # 8b. .agents/autonomy -- the per-repo autonomy level (retire-autonomy-levels).
+  #     The guard resolves no level any more, so whatever this file says changes
+  #     no decision; leaving it in place only tells its next reader that a
+  #     setting exists which does not. Deleted wherever present.
+  #
+  #     Unlike packet-graph.yaml above, whether it is TRACKED is checked rather
+  #     than assumed: a repo that gitignored it (this plugin's own .gitignore
+  #     does) has NOTHING to commit, and telling its operator otherwise sends
+  #     them looking for a change that is not in `git status`. Tracked ->
+  #     `git rm` so the deletion is staged and named as theirs to commit;
+  #     untracked -> plain `rm`, reported as deleted with no commit claimed.
+  if [ -f "$root/.agents/autonomy" ]; then
+    local aut_tracked=0
+    if _is_git "$root" \
+       && git -C "$root" ls-files --error-unmatch ".agents/autonomy" >/dev/null 2>&1; then
+      aut_tracked=1
+    fi
+    if [ "$aut_tracked" = 1 ]; then
+      git -C "$root" rm -q -f ".agents/autonomy" >/dev/null 2>&1 || rm -f "$root/.agents/autonomy"
+      printf 'REMOVED=.agents/autonomy deleted -- autonomy levels are retired and the guard no longer reads it. It was TRACKED, so this is a change YOU need to commit.\n'
+    else
+      rm -f "$root/.agents/autonomy"
+      printf 'REMOVED=.agents/autonomy deleted -- autonomy levels are retired and the guard no longer reads it. It was untracked, so there is nothing to commit.\n'
+    fi
+    did=1
+  fi
+
+  # 9. Extra git worktrees. Parallel mode is retired, but a worktree may still
+  #    hold unmerged work -- deleting one is destructive and irreversible from
+  #    this script's side, so it is only ever LISTED, never removed.
+  if _is_git "$root"; then
+    local wt_list; wt_list="$(git -C "$root" worktree list 2>/dev/null | tail -n +2)"
+    if [ -n "$wt_list" ]; then
+      printf 'WORKTREES=extra git worktree(s) found -- parallel mode is retired, but a worktree may hold unmerged work, so these are only LISTED, never deleted:\n'
+      printf '%s\n' "$wt_list" | while IFS= read -r wline; do
+        [ -n "$wline" ] || continue
+        printf '  %s\n' "$wline"
+      done
+    fi
+  fi
+
+  # 10. Three files that belong to the HUMAN, not to this script: their
+  #     CLAUDE.md (the standing instruction every session reads), their
+  #     spec-setup.md (the setup narrative), and their repo .claude/settings.json
+  #     (harness config). Each is REPORTED and never rewritten -- the same rule
+  #     that leaves a foreign statusLine alone. None of them sets `did`: a
+  #     read-only finding is not a change.
+  _report_stale_lines "$root/CLAUDE.md" 'CLAUDEMD_ROUTES' \
+    "$RETIRED_ROUTES_RE|$AUTONOMY_REPORT_RE" \
+    'CLAUDE.md has line(s) routing to a removed mode or command, or naming a retired autonomy level -- reported only, never edited (it is your standing instruction):'
+
+  _report_stale_lines "$root/spec-setup.md" 'SPECSETUP_ROUTES' \
+    "$AUTONOMY_REPORT_RE" \
+    'spec-setup.md has line(s) naming a retired autonomy level -- reported only, never edited (it is yours to reword):'
+
+  # ORCH_AUTONOMY only: this is the repo's own settings.json, and the one thing
+  # in it this feature retired is that env entry. Anything else there is the
+  # human's harness config and is not even mentioned.
+  _report_stale_lines "$root/.claude/settings.json" 'SETTINGS_AUTONOMY' \
+    'ORCH_AUTONOMY' \
+    '.claude/settings.json carries an ORCH_AUTONOMY entry -- the guard no longer reads it, so it sets nothing; reported only, never edited (it is your harness config):'
 
   [ "$did" = "1" ] || printf 'NOCHANGE=nothing mechanical left to move\n'
   printf '\n'
@@ -1019,5 +1427,5 @@ case "${1:-}" in
   apply)          shift; cmd_apply          "$@" ;;
   verify)         shift; cmd_verify         "$@" ;;
   findings-audit) shift; cmd_findings_audit "$@" ;;
-  *) die "usage: migrate.sh {detect|plan|apply [--force]|verify|findings-audit} [root]" ;;
+  *) die "usage: migrate.sh {detect|plan|apply [--force] [--remove-statusline]|verify|findings-audit} [root]" ;;
 esac

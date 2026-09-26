@@ -1,5 +1,64 @@
 # Changelog
 
+## 3.0.0 — 2026-09-15
+
+Driver mode: the session running the loop stops editing. It passes file paths,
+reads one status line per agent, routes each reviewer verdict mechanically, and
+the guard refuses its own main-thread writes outside `.agents/` until the run
+stops. The point is cost — a long run's most expensive context is the session
+driving it, and this keeps that session small.
+
+Major, because this release *removes* things a 2.x repo may rely on and needs a
+manual step per repo.
+
+### Upgrading — two lines per repo, then a fresh session
+
+Add both to each consumer repo's `.gitignore`:
+
+```
+.agents/driver-mode/
+.agents/loop/
+```
+
+Unignored, a pause stash sweeps the loop's own run files and `reconcile` reads
+them as scratch to discard. `/gaffer:migrate` does **not** report this yet —
+that check is in the deferred tail below, so it is on you until then.
+
+Then start a **fresh session**. The new SessionStart hook and the `loop-driver`
+agent register at session start, so driver mode first takes effect in the next
+session, not the one that updated the plugin.
+
+### Removed since 2.7.0
+
+- **Relay and parallel worktree modes.** `--relay`, `--inline` and `--parallel`
+  are still accepted and do nothing; the loop runs one sequential mode.
+- **`/gaffer:rate-limit-pause`** and its `rate_limit_pause:` overrides block.
+  The cooperative pause is unaffected.
+
+### What is new
+
+- `gspec-backlog.sh handoff` prints a packet's whole brief — task body, file
+  scope, and the acceptance criteria its `covers:` names. ADR 0020's consumed
+  contract widens to capability sub-bullets.
+- `runstate.sh driver-mode | begin-run | handoff | write-result | route`: the
+  per-session mark, per-run directories, writers confined to the run directory,
+  and verdict routing with an attempt limit (`packet_attempts`, default 1).
+- The guard refuses a marked session's main-thread `Edit`/`Write`/`MultiEdit`/
+  `NotebookEdit` and recognised shell writes whose target is not provably under
+  the repo's own `.agents/`. It also closes an older bypass: a multi-line
+  command no longer takes the read-only fast path, so the secret floor sees it.
+- Agents take a handoff path as their whole brief and return one status line
+  (`templates/status-line.md`), writing everything else through a script. The
+  reviewer returns `pass`/`fix`/`escalate` on exclusive triggers.
+- `agents/loop-driver.md`, plus an interim stand-in escalation decider on the
+  chief-engineer until `escalation-decider` ships.
+
+### Deferred to a later release
+
+Digest-built reports, the periodic pause, the compaction-threshold default,
+driver-mode metrics, the `/gaffer:migrate` checks for the two ignore entries,
+and the docs pass.
+
 ## 2.7.0 — 2026-08-23
 
 gspec 3.1.1: the adapter learns gspec's new feature-folder layout, the pin moves

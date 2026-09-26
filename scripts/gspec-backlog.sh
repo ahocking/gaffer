@@ -3,7 +3,7 @@
 # gspec-backlog.sh — THE gspec adapter (ADR 0020 D2)
 # =============================================================================
 # The ONE place this plugin reads gspec. Every other component (run-loop §2,
-# resume, build-packet-dependency-tree, new-project) goes through here, so a
+# resume, new-project) goes through here, so a
 # gspec format change is one file to fix rather than seven skills and two agents.
 # That is the whole point: the 2026-08 breakage was not caused by gspec moving
 # `features/<slug>.plan.md` to `tasks/<slug>.md` — it was caused by nothing
@@ -19,16 +19,43 @@
 #                              WRITTEN as well as read (ADR 0025 D1): `check-task`
 #                              flips ONE task line's `[ ]` to `[x]` and nothing
 #                              else — never the text, never any other line. This
-#                              is the adapter's one write; it records that a unit
-#                              of work executed, not what to build (ADR 0020 D2).
+#                              is the plan file's only write; it records that a
+#                              unit of work executed, not what to build (ADR 0020 D2).
 #   <prd>                      the PRD. Capability lines
 #                              `- [ ] **P<n>**: <text>`; completion is DERIVED
 #                              from them (ADR 0020 D2 — never stored). Optional
 #                              frontmatter `depends_on:` (forward-compat with U5).
+#                              A capability's indented acceptance-criteria
+#                              sub-bullets (`  - <criterion>`, verbatim, a
+#                              wrapped multi-line one included whole) are ALSO
+#                              consumed — the D2 amendment (2026-09-15) that
+#                              widened this contract for `handoff` below, the
+#                              ONE reader of them (`_prd_capability`).
+#                              ALSO WRITTEN, since capability-auto-complete-t1:
+#                              `complete-capabilities` flips a capability's own
+#                              `[ ]` to `[x]` once its covering tasks are all
+#                              checked, in the same read-only-lookup-then-`sub()`
+#                              shape as `check-task` — never the text, never a
+#                              checked box unflipped. Completion stays DERIVED,
+#                              never a second stored flag: this write only ever
+#                              makes the checkbox agree with what the plan
+#                              already showed to be true.
+#                              `runstate.sh` still never reads gspec/.
+#   <arch> / <design>          `arch.md` and `design.html`, READ-ONLY and only
+#                              in part (handoff-spec-inlining): `handoff` reads
+#                              the section each `- arch:` anchor names (the
+#                              H2/H3 heading shape, `_arch_section`) and, for an
+#                              inlined `### Screen:` section, its
+#                              `<section id="screen-<kebab>">` element
+#                              (`_design_section`), and inlines that text. The
+#                              rest of either file is not consumed. `next`
+#                              reports the two files' paths and reads nothing
+#                              in them.
 #
 # ...where <plan> and <prd> are LAYOUT-DEPENDENT and resolved in exactly one
 # place each — `_resolve_plan_path` / `_resolve_prd_path`, enumerated by
-# `_plan_paths` / `_prd_paths`. See LAYOUTS below.
+# `_plan_paths` / `_prd_paths`; <arch> and <design> likewise, through
+# `_resolve_arch_path` / `_resolve_design_path`. See LAYOUTS below.
 #   .agents/roadmap.yaml       PLUGIN-OWNED sequencing (order/why, interim
 #                              depends_on, and `deferred` — a human "not now",
 #                              which is NOT the derived `status` D2 prohibits;
@@ -78,8 +105,12 @@
 #                            goes through this adapter, and a layout census is a
 #                            gspec read like any other. Prints nothing when there
 #                            is no gspec project (D4).
-#   nodes <slug> [root]      emit packet-graph NODES TSV for one feature's UNCHECKED
-#                            tasks (feed to `packet-graph.sh build`).
+#   nodes <slug> [root]      emit a packet NODES TSV for one feature's UNCHECKED
+#                            tasks — one row per packet (id, feature, files,
+#                            consumes, produces, feature deps), read directly by
+#                            the loop for ordering and file scope. (Formerly also
+#                            fed to `packet-graph.sh build`, the parallel-mode
+#                            scheduler retired in retire-unused-loop-modes T2.)
 #   nodes-all [root]         the same for every incomplete, unblocked feature.
 #   interlock [root]         INTERLOCK=clear|busy|unknown — is a `gspec build`
 #                            driving this repo right now? (ADR 0020 D5.)
@@ -97,16 +128,320 @@
 #                            EXISTING plan is genuine drift and exits 4.
 #   task-status <id[,id...]> [root]   READ-ONLY (run-state-cleanup T2): for each
 #                            packet id, one `<id>\t<state>\t<task-ref-or-reason>`
-#                            line, state one of finished|unchecked|unknown, then
-#                            one trailing `FINISHED=<comma-sep ids>` line fed
+#                            line, state one of finished|unchecked|gone|unknown,
+#                            then one trailing `FINISHED=<comma-sep ids>` line fed
 #                            VERBATIM to `runstate.sh findings --stale --finished`.
+#                            `gone` (loop-measurement T2) is DISTINCT from
+#                            `unknown`: it means the id's feature plan exists,
+#                            PARSES (at least one task line this adapter
+#                            recognizes -- see `_plan_task_line_count`, counted
+#                            with the SAME regex `_task_lookup` matches against,
+#                            never a second pattern), unambiguously resolved to
+#                            that plan, no longer names that task, AND the id
+#                            can be confirmed via `_task_history_probe` to have
+#                            been a task line in that plan's git history at
+#                            some earlier commit -- positive evidence the task
+#                            was re-decomposed away, which `sweep-open --gone`
+#                            (T3) records as `abandoned`. That history check is
+#                            the last gate, not a replacement for the ones
+#                            before it: a plan-id collision alone is not
+#                            enough, because a NON-gspec packet id can happen
+#                            to prefix-match a live feature's slug
+#                            (`ts-fix-login-bug` against feature `ts`) without
+#                            ever having been a task there -- without positive
+#                            evidence that id reads `unknown`, never `gone`.
+#                            `unknown` stays every case with no such positive
+#                            evidence: no gspec/, unresolvable id, no plan file
+#                            at all, a plan file with ZERO parseable task lines
+#                            (empty, truncated, or a format this adapter cannot
+#                            read -- an unreadable plan must never be reported
+#                            as "yes, that task is gone"), an AMBIGUOUS
+#                            packet-id resolution (the `<feature>-<id>`
+#                            collision documented at `_resolve_task_id` --
+#                            longest-slug-wins is safe for check-task, which
+#                            only ever gets a loud not-found, but the same
+#                            guess reported here as `gone` would silently claim
+#                            a live task in the OTHER matching feature was
+#                            abandoned, so an ambiguous resolution can only
+#                            ever read `unknown` here, never `gone`), the id
+#                            never appearing in the plan's git history (it was
+#                            never a gspec task here), or that history being
+#                            UNAVAILABLE (not a git repo, git missing, the plan
+#                            file untracked, or a shallow clone whose "not
+#                            found" could be truncated rather than genuine) --
+#                            `sweep-open` records `unknown` as `interrupted`,
+#                            the safe direction when absence of evidence is not
+#                            evidence of absence. `gone` is excluded from
+#                            `FINISHED=`, same as `unchecked` and `unknown`.
 #                            Accepts the same two id forms as check-task and
 #                            resolves them via the SAME shared function
 #                            (`_resolve_task_id`) so the two can never drift.
 #                            Every "gspec is optional" case reads `unknown`,
 #                            mirroring check-task's `CHECKED=none`; exit 0 for all
 #                            of them, non-zero only for a genuine usage error (no
-#                            ids, or an unreadable root).
+#                            ids, an unreadable root, or the REFUSED path shared
+#                            with check-task).
+#   handoff <packet-id[,packet-id...]> [root]   print everything an agent
+#                            needs to start a packet: the task text; its file
+#                            scope, resolved by calling `_nodes_for` and
+#                            reading its row for this packet id — the SAME
+#                            precedence `nodes` uses (plan `files:` >
+#                            fingerprint-matched sidecar > empty), never a
+#                            second copy of it; each `covers:` capability
+#                            (split on the `' · '` separator) with that
+#                            capability's PRD acceptance-criteria sub-bullets
+#                            verbatim (ADR 0020's D2 amendment); the PRD
+#                            path; and, per `- arch:` anchor, the `arch.md`
+#                            section it names inlined under `ARCH-SECTION=`,
+#                            or `UNMATCHED-ARCH=<anchor>` (handoff-spec-
+#                            inlining-t2 — no arch.md path line is printed).
+#                            Inlining stops at a word budget
+#                            (`handoff_inline_word_budget`, default 6000):
+#                            from the section that would cross it on, each
+#                            resolved section prints `ARCH-HEADING=<anchor>
+#                            lines=<n>` with its heading only, then one
+#                            `BUDGET-REACHED=<budget> words` line (t3).
+#                            For a bundle the budget spans the whole
+#                            handoff, `BUDGET-REACHED=` prints once after the
+#                            last member, and a section already inlined by
+#                            an earlier member prints `ARCH-SEEN=<anchor>
+#                            packet=<that member's packet id>` instead (t4).
+#                            An inlined `### Screen: <Name>` section is
+#                            followed by its design.html element
+#                            `<section id="screen-<kebab>">` under
+#                            `DESIGN-SECTION=screen-<kebab>`, or
+#                            `UNMATCHED-DESIGN=screen-<kebab>`; same budget,
+#                            `ARCH-HEADING=` past it, `DESIGN-SEEN=` in a
+#                            bundle; no screen or no design.html, the file is
+#                            never named (t6).
+#                            A task with anchors ends with one `SPEC=` line
+#                            (t5): the fixed "inlined" statement, which
+#                            carries no path, when every section was inlined;
+#                            otherwise the spec file paths to read the named
+#                            or unmatched sections from by heading — the only
+#                            place an arch.md/design.html path appears in
+#                            `handoff` output.
+#                            A `covers:` quote matching no PRD
+#                            capability prints `UNMATCHED=<quote>`, never
+#                            guessed. `<packet-id>` accepts the same two forms
+#                            as check-task/task-status, resolved by the SAME
+#                            `_resolve_task_id`. A CHECKED task still prints —
+#                            handoff is a read — but its `FILES=` is always
+#                            empty, since `nodes` never computes scope for a
+#                            checked task (it emits no row for one); a `NOTE=`
+#                            line says so. A packet id that cannot be resolved
+#                            to a real task prints `HANDOFF=unknown` plus
+#                            `REASON=`, exit 0 (mirrors task-status's `unknown`,
+#                            not check-task's rc=4 — handoff never writes, so
+#                            there is no "genuine drift" to report loudly here).
+#                            Only a real usage error (no packet id, or a
+#                            REFUSED unsafe canonical-form slug) is non-zero.
+#                            Output is line-oriented (`KEY=value` lines, plus
+#                            `COVERS=`/`UNMATCHED=` blocks with indented
+#                            sub-bullet lines under a `COVERS=`) so a caller can
+#                            pipe it straight into `runstate.sh handoff`'s
+#                            stdin without reparsing it into another shape.
+#                            BUNDLING (packet-bundling-t5): a comma-joined
+#                            `<packet-id,packet-id,...>` prints each member's
+#                            block UNCHANGED (exactly the single-id shape
+#                            above, one per member, self-delimiting on its own
+#                            `PACKET=`), in PLAN ORDER — never the order the
+#                            caller listed them in — preceded by
+#                            `BUNDLE=<id,id,...>` (the members, plan-order) and
+#                            `BUNDLE_FILES=` (their scopes' union, through the
+#                            SAME `_nodes_for` precedence `group` uses, so the
+#                            two can never disagree about a packet's scope).
+#                            A single id (no comma) takes the ORIGINAL code
+#                            path unchanged and never prints either header
+#                            line — byte-identical to before bundling existed.
+#                            Every member is validated BEFORE anything is
+#                            printed, so a refusal never leaves partial
+#                            output: any member that does not resolve or
+#                            carries no task reuses the `HANDOFF=unknown` +
+#                            `REASON=` shape, naming that member; a list
+#                            spanning more than one feature is refused the
+#                            same way (grouping across features is out of
+#                            scope); and a member whose LATEST routing record
+#                            in this run's `routing.jsonl` is `hand-off-feature`
+#                            (ADR 0028 T9) is refused with the SAME
+#                            `HANDOFF=refused`/`REASON=hand-off-feature`/
+#                            `PACKET=<id>` shape `runstate.sh handoff` already
+#                            uses for the single-id case — read directly here
+#                            (this adapter's FILES scope for T5 is itself
+#                            alone), fail-soft exactly like `interlock`'s
+#                            `.gspec/build/status.json` read: outside the
+#                            pinned gspec contract, so a missing run-state,
+#                            run_id or routing.jsonl always means "not
+#                            routed", never a reason to refuse. `check-task`
+#                            stays at exactly one id — the plugin's one write
+#                            into `gspec/` is unwidened.
+#   group <packet-id> [--cap <n>] [root]   form the bundle the loop would
+#                            submit as ONE packet, starting from <packet-id>
+#                            as the cursor: the cursor plus the UNCHECKED
+#                            tasks consecutive after it in the same feature's
+#                            plan order (a checked task between two members
+#                            does not break consecutiveness -- `nodes`
+#                            already emits no node for one, so this reads
+#                            that same list rather than re-deriving it). A
+#                            later task joins only when its declared file
+#                            scope shares >=1 file with the union of the
+#                            scopes already in the group AND every task its
+#                            `deps:` names is either earlier in the same
+#                            group or already checked; an empty scope shares
+#                            nothing with anything, so an empty-scope task
+#                            always ends the group right after it, whether it
+#                            is the cursor itself or a rejected neighbour.
+#                            Stops at `--cap` (default 1, so the command is
+#                            inert unless a caller raises it), at the first
+#                            disqualified task (`scope`|`deps`), or at the
+#                            end of the feature's unchecked tasks (`end`) --
+#                            never crossing into another feature, since the
+#                            node list this reads from is already scoped to
+#                            one. Scope comes from the SAME `_nodes_for`
+#                            files: > fingerprint-matched sidecar > empty
+#                            precedence `nodes`/`handoff` already use, read
+#                            through that function, never re-derived. Output:
+#                              GROUP=<packet-id>
+#                              MEMBER=<node-id><TAB><title>  (one per member,
+#                                                             plan order)
+#                              FILES=<union, pipe-separated>
+#                              STOP=<cap|scope|deps|end>
+#                            An id resolving to no plan, no such task, or an
+#                            already-checked task reuses `handoff`'s
+#                            `HANDOFF=unknown` + `REASON=` refusal shape,
+#                            exit 0 (gspec is optional, same as every other
+#                            read here). A REFUSED canonical-form slug is the
+#                            only non-zero exit, same as
+#                            handoff/check-task/task-status. Never writes;
+#                            `nodes` and every other subcommand are
+#                            unaffected -- grouping is an execution-time
+#                            decision on gaffer's side of ADR 0020's seam,
+#                            not a change to what the backlog is.
+#   capability-drift [root]  READ-ONLY (completion-record-drift-t1): walk
+#                            every feature whose PRD AND plan both resolve
+#                            (no plan is out of scope, not unjudgeable) and
+#                            report each unchecked capability whose covering
+#                            `covers:` tasks are ALL checked as
+#                            `DRIFT=<slug>\t<capability text>` — the record a
+#                            feature's own PRD checkbox never caught up to.
+#                            Anything the scan cannot judge prints
+#                            `UNJUDGEABLE=<class>\t<slug>\t<detail>` instead
+#                            of drift, one of three classes: `unmatched-quote`
+#                            (a `covers:` quote matches no PRD capability,
+#                            reported per TASK rather than per capability —
+#                            it is evidence about the task, not about any
+#                            one capability, and is not deduplicated against
+#                            an earlier occurrence), `uncovered-capability`
+#                            (an unchecked capability no task's covers
+#                            references), or `unrecognized-capability` (an
+#                            unchecked capability line the verbatim matcher
+#                            declines). A checked capability is never
+#                            reported, drift or unjudgeable — the box being
+#                            checked already answers "should this be
+#                            checked?". Ends with one
+#                            `CAPABILITY_DRIFT=ok|attention drift=<n>
+#                            unjudgeable=<m>` line (the two counts are
+#                            separate fields on purpose — a single zero could
+#                            mean either "nothing drifted" or "nothing could
+#                            be judged", the exact failure this report
+#                            exists to close), or `CAPABILITY_DRIFT=none`
+#                            plus a `NOTE=` line when there is no gspec/ at
+#                            all (D4). Never writes; exits 0 on every path —
+#                            a report, not a gate.
+#   complete-capabilities <slug> [root]   WRITE (capability-auto-complete-t1):
+#                            flip a feature's finished capabilities to `[x]`.
+#                            Walks the same derivation `capability-drift`
+#                            walks -- `_prd_capabilities` / `_plan_task_covers`
+#                            / `_split_covers` / `_prd_capability` -- so a
+#                            capability flips here iff it would have printed
+#                            `DRIFT=<slug>\t<capability text>` there; never a
+#                            second guess at the same question, and
+#                            `capability-drift` itself is unchanged by this
+#                            (same functions, same output, still read-only).
+#                            Never flips an uncovered or unrecognized
+#                            capability, and never unflips a checked one -- a
+#                            checked capability is never even considered.
+#                            A feature with an UNCHECKED task whose `covers:`
+#                            quote matches no capability holds EVERY flip,
+#                            never a partial one: a typo'd quote may be
+#                            evidence against a capability that would
+#                            otherwise flip, and a flip is never undone once
+#                            applied. The same quote on an already-CHECKED
+#                            task holds nothing -- stale evidence about a task
+#                            that is itself already done. Output:
+#                              COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#                              COMPLETED=<slug>\t<capability text>  (n lines, PRD order)
+#                              FILE=<relprd>          (present whenever the feature resolved)
+#                              REASON=...             (blocked / none / unresolved)
+#                            Exit codes mirror check-task (ADR 0025 D1): 0
+#                            where there is no gspec/ at all (skipped, D4) or
+#                            the feature resolved (whether or not anything
+#                            flipped); 1 for a malformed slug (a path
+#                            separator or '..' component -- REFUSED, `die`d,
+#                            same as check-task's canonical-form guard); 4
+#                            for a slug with no resolvable PRD+plan pair in
+#                            any layout, distinguishable from the skip. Writes
+#                            with check-task's read-only-lookup-then-`sub()`
+#                            shape -- only the flipped lines' checkbox
+#                            characters change. `check-task` remains the
+#                            adapter's only writer of a TASK line; this is the
+#                            only writer of a CAPABILITY line.
+#   record-completion --tasks <id[,id...]> [--feature <slug>] --restore index|head [root]
+#   record-completion --drift --restore index|head [root]
+#                            (skill-prompt-trim-t2) the landing and scan
+#                            decisions, held here instead of in each skill
+#                            site: CALLS `check-task` and
+#                            `complete-capabilities` (changing neither) and
+#                            reads their exit codes, so no caller carries a
+#                            copy of that table. LANDING form: `check-task`
+#                            per member, in the order given --
+#                              exit 0  TASK=<id>\t<CHECKED value>
+#                              exit 4  TASK_DRIFT=<id>\t<REASON>  (reported,
+#                                      never a halt)
+#                              exit 1  HALT=<id>\t<reason>, then the summary
+#                                      line and exit 1: nothing further is
+#                                      called and no STAGE= line is printed
+#                                      (any other non-zero exit halts too)
+#                            then ONE `complete-capabilities` call, for the
+#                            slug of the first `CHECKED=<feature>#T<n>`, else
+#                            `--feature`. That call is skipped -- REASON= plus
+#                            `RECORD_COMPLETION=skipped` -- when every member
+#                            read `CHECKED=none` at exit 0 (even with
+#                            `--feature`), or when there is neither a slug nor
+#                            `--feature`. SCAN form: reads `capability-drift`
+#                            output on stdin, passes every line through
+#                            unchanged, then calls `complete-capabilities`
+#                            once per distinct `DRIFT=` slug, first-seen
+#                            order -- no `check-task`, no `--feature` (refused
+#                            with `--drift`). BOTH forms, per call:
+#                              CAPABILITIES=<slug>\t<ok|blocked|failed>\tcompleted=<n>
+#                              COMPLETED=<slug>\t<capability text>  (its lines)
+#                              HELD=<slug>\t<REASON>        (a blocked call)
+#                              RESTORED=<relprd>\tfrom=<index|head>  (any
+#                                      non-zero exit: the PRD
+#                                      `_resolve_prd_path` gives is restored
+#                                      -- index: `git checkout -- <prd>`;
+#                                      head: `git checkout HEAD -- <prd>`,
+#                                      which resets the index copy too)
+#                              RESTORED=none\t<reason>      (instead, when the
+#                                      slug fails the path-separator/'..'
+#                                      guard, no PRD resolves, or git fails:
+#                                      no path is touched)
+#                            then, once each and in first-queued order,
+#                              STAGE=<path>   every plan file an exit-0
+#                                             `CHECKED=<feature>#T<n>` or
+#                                             `CHECKED=already` names, and
+#                                             every PRD whose call completed
+#                                             more than 0
+#                            and LAST, always:
+#                              RECORD_COMPLETION=<ok|halt|skipped> staged=<n> completed=<n> held=<n> failed=<n>
+#                            A failed `complete-capabilities` call is reported
+#                            and restored, never a halt (still `ok`).
+#                            Never stages, never commits, never infers the
+#                            restore source: a missing or unknown `--restore`
+#                            is a usage error (exit 1), as is a missing
+#                            `--tasks`/`--drift` or an empty member. Exit 0
+#                            otherwise, except 1 on a halt.
 #
 # FILE SCOPE, AND WHY IT IS FINGERPRINT-GUARDED (ADR 0020 U1-local). `allowed_files`
 # is the field that decides which packets may run CONCURRENTLY, so a wrong value
@@ -114,8 +449,9 @@
 #   1. a plan-authored `files:` sub-bullet (the upstream U1-up shape) — always wins;
 #   2. a `.agents/task-files.yaml` entry whose FINGERPRINT still matches the task's
 #      current text;
-#   3. empty — packet-graph.sh then treats the packet as overlapping everything and
-#      serializes it.
+#   3. empty — no scope recorded. (Parallel mode and its packet-graph.sh scheduler,
+#      which used to read this field to decide concurrency, are retired; the loop
+#      is sequential-only, so an empty scope has no behavioral effect today.)
 # The fingerprint is REQUIRED for an entry to be used, and that is the whole point:
 # gspec's `plan-decomposer` preserves task IDs on regenerate but RE-DECOMPOSES
 # unchecked work, so an unchecked `T5` can keep its id while its text becomes
@@ -125,11 +461,13 @@
 # Comparison is normalized (case, markdown emphasis, whitespace) so reformatting a
 # task does not invalidate its entry.
 #
-# HOW TASK DEPS BECOME GRAPH EDGES. packet-graph.sh derives ordering from
-# consumes/produces signature matching, so an intra-feature `deps: T1` is encoded
-# as produces `<feature>#T<n>` / consumes `<feature>#T<d>`. A dep on an ALREADY
-# CHECKED task simply finds no producer (checked tasks are not nodes) and yields
-# no edge — which is correct: done work must not block anything.
+# HOW TASK DEPS BECOME NODE EDGES. `nodes` encodes ordering as a
+# consumes/produces signature match, so an intra-feature `deps: T1` is emitted
+# as produces `<feature>#T<n>` / consumes `<feature>#T<d>`. (This is the same
+# encoding the retired packet-graph.sh scheduler used to derive concurrency
+# from; the loop reads it directly now.) A dep on an ALREADY CHECKED task
+# simply finds no producer (checked tasks are not nodes) and yields no edge —
+# which is correct: done work must not block anything.
 #
 # LAYOUTS (ADR 0020 D3, gspec 3.x). gspec 3.0 moved everything about a feature
 # into ONE folder, and the adapter reads all three shapes it has ever shipped:
@@ -153,10 +491,14 @@
 # resolving to the destination is what makes re-running it idempotent. A shadowed
 # flat file is skipped by the enumerators, never read twice under two names.
 #
-# The 3.x feature folder also holds `arch.md` and `design.html`. Neither is in
-# the consumed contract: they say what to build and how it should look, which is
-# gspec's half of the seam — the loop hands their PATHS to an implementer, and
-# this adapter never parses them.
+# The 3.x feature folder is also where `arch.md` and `design.html` live, resolved
+# through `_resolve_arch_path` / `_resolve_design_path` (their own layout lists,
+# `_ARCH_LAYOUTS` / `_DESIGN_LAYOUTS`). Their anchored sections are inside the
+# consumed contract (see <arch> / <design> above): `handoff` inlines the text of
+# each section a task's `- arch:` anchors name, and prints no ARCH/DESIGN path
+# line. A file path appears in handoff output only on the `SPEC=read by heading`
+# line, for a section that was named by heading or unmatched rather than inlined
+# (`_handoff_spec_line`). The rest of either file stays gspec's half of the seam.
 #
 # LEGACY TASK-LINE SHAPES (migration compatibility — /gaffer:migrate).
 # gspec's canonical task line is `- [ ] **T<n>** ...`. Real pre-2.0 consumer repos
@@ -174,9 +516,11 @@
 #
 # WHAT IS DELIBERATELY NOT INFERRED. gspec task lines carry no file scope, so
 # `allowed_files` is empty unless an (upstream-proposal-U1) `files:` line is
-# present. packet-graph.sh treats empty scope as "overlaps everything" and
-# serializes conservatively. That costs parallelism and never costs correctness;
-# guessing a narrow scope is how two lanes collide on an unlisted shared file.
+# present. An empty scope is never widened by a guess here — guessing a narrow
+# scope from task text is how two packets would end up colliding on an
+# unlisted shared file, which mattered when packet-graph.sh (now retired) used
+# this field to decide concurrency and still matters for `allowed_files`
+# itself, whatever consumes it.
 #
 # Exit codes: 0 = ok; 1 = usage / bad input; 3 = version-pin mismatch;
 #             4 = a required gspec artifact is missing.
@@ -190,10 +534,9 @@ die() { printf 'gspec-backlog.sh: %s\n' "$1" >&2; exit "${2:-1}"; }
 # Raising these is a deliberate, reviewed change: bump, extend, re-run the
 # sweeps, amend ADR 0020. Env overrides exist for testing and for a consumer repo
 # that has deliberately moved ahead of the plugin.
-GSPEC_PINNED_VERSION="${ORCH_GSPEC_PINNED_VERSION:-3.1.1}"
-# BOTH artifact versions are supported, and that is the deliberate half of the
-# 3.1.1 bump: v2 is what gspec writes now, v1 is what every unmigrated consumer
-# repo still has on disk. Narrowing this to `v2` would make `check` fail — rc=3,
+GSPEC_PINNED_VERSION="${ORCH_GSPEC_PINNED_VERSION:-3.2.0}"
+# BOTH artifact versions are supported, and that is deliberate: v2 is what gspec
+# writes now, v1 is what every unmigrated consumer repo still has on disk. Narrowing this to `v2` would make `check` fail — rc=3,
 # the loop stops — on a repo whose backlog this adapter can read perfectly well.
 # The version pin exists to catch a format this code CANNOT parse; it is not a
 # lever for nagging a repo into migrating. `/gaffer:migrate` reports the layout
@@ -207,6 +550,60 @@ cmd_pin() {
 }
 
 # --- shared helpers ----------------------------------------------------------
+
+# The one task-line shape every parser in this file must agree on
+# (loop-measurement T2 Important 3): a checkbox followed by a bold-opened id,
+# with the id ending at the closing bold (canonical/shape B) or running on
+# into a space (shape A, where the bold spans id+description together). Split
+# into building blocks so a match against a SPECIFIC id (the history probe)
+# and a match against ANY id (lookup/count) derive from the same source
+# instead of five copies that can silently drift apart -- which is exactly
+# what let `_plan_task_line_count` and `_task_lookup` disagree before this.
+# `_task_lookup`/`_plan_task_line_count`/`_task_history_probe` derive from
+# these; `_nodes_for` (:714) and `cmd_plans` (:641) still carry their own
+# copies of the full pattern -- migrating them is welcome but not required
+# here (they agree with `_TASK_LINE_RE` today).
+_TASK_LINE_PREFIX='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*'
+_TASK_ID_CLASS='[A-Za-z][A-Za-z0-9_-]*[0-9]+'
+_TASK_LINE_SUFFIX='(\*\*|[[:space:]])'
+_TASK_LINE_RE="${_TASK_LINE_PREFIX}${_TASK_ID_CLASS}${_TASK_LINE_SUFFIX}"
+
+# The capability-line shape `_feature_done` tests -- extracted to a shared
+# constant (completion-record-drift-t1) so `capability-drift` below tests the
+# SAME thing `_feature_done` counts, never a second guess at what a
+# capability line looks like. Canonical `**P0**: text`, and the legacy shape
+# `**P0 — text**` where priority and description share one bold span
+# (observed in production repos) -- both match here, exactly as they did
+# inline before this extraction; only the pattern moved, not its meaning.
+_CAPABILITY_LINE_RE='^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+([^0-9]|\*\*)'
+
+# Anchoring divergence from `_prd_capability` below, recorded rather than
+# aligned (completion-record-drift-gaps-t6): this pattern admits leading
+# whitespace (`^[[:space:]]*-`), but `_prd_capability`'s verbatim quote
+# matcher is anchored `^-` -- column 0 only, no leading whitespace at all. An
+# indented but otherwise canonical capability line is therefore enumerated
+# HERE (via `_prd_capabilities`, which drives the capability-drift walk) and
+# declined THERE (via `_prd_capability`, which every `covers:` quote is
+# checked against) -- so such a line is always reported
+# `uncovered-capability` (nothing ever registers a MATCH against it) plus one
+# `unmatched-quote` per task whose `covers:` names it (that quote never
+# matches either), and never a `DRIFT=` line, regardless of whether its
+# covering tasks are all checked. Safe direction: an indented capability line
+# can never be misread as delivered when it is not.
+#
+# Why the divergence stands rather than being aligned: widening
+# `_prd_capability`'s `^-` anchor to admit leading whitespace, to match this
+# pattern, would move the indentation-based block boundary it uses to
+# extract a capability's acceptance-criteria sub-bullets (see its comment
+# below) -- that boundary works only because the capability header is always
+# at column 0, so ANY indented line unambiguously belongs to it as a
+# sub-bullet; once the header itself can sit at some indent N, a sibling line
+# at that same indent N (not a sub-bullet of it at all) would satisfy the
+# identical "is this line indented" test and get swallowed into the block.
+# `_prd_capability`'s match also feeds `cmd_handoff`'s `COVERS=` output --
+# the acceptance criteria a packet is told is "done" -- so a widening here is
+# judged against that caller too, not just this one, and a corrupted
+# criteria block is worse than a declined quote. Neither pattern changes.
 
 # Print a file's YAML frontmatter body (between the first `---` and the next),
 # or nothing when the file has none.
@@ -318,6 +715,37 @@ _resolve_prd_path() {
   fi
 }
 
+# The layouts `arch.md` and `design.html` have existed in, newest first, one
+# printf pattern per line with `%s` standing for the slug. Today that is only
+# the 3.x feature folder - neither file existed before it - but a list, not a
+# literal, so a future relocation is one line here and not a hunt through
+# every caller (the lesson `_resolve_plan_path` paid for).
+_ARCH_LAYOUTS='gspec/features/%s/arch.md'
+_DESIGN_LAYOUTS='gspec/features/%s/design.html'
+
+# _resolve_layout <slug> <root> <layouts> - "<abs>\t<rel>" for the first
+# pattern in <layouts> that exists on disk, or nothing when none does.
+_resolve_layout() {
+  local slug="$1" root="$2" layouts="$3" pat rel
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    # shellcheck disable=SC2059  # the pattern IS the format string, by design
+    rel="$(printf "$pat" "$slug")"
+    if [ -f "$root/$rel" ]; then
+      printf '%s\t%s\n' "$root/$rel" "$rel"
+      return 0
+    fi
+  done <<EOF
+$layouts
+EOF
+}
+
+# _resolve_arch_path / _resolve_design_path <slug> <root> - "<abs>\t<rel>", or
+# nothing when the feature has no such file. Callers test for emptiness, the
+# same contract as `_resolve_prd_path` / `_resolve_plan_path`.
+_resolve_arch_path()   { _resolve_layout "$1" "$2" "$_ARCH_LAYOUTS"; }
+_resolve_design_path() { _resolve_layout "$1" "$2" "$_DESIGN_LAYOUTS"; }
+
 # --- check: the ARTIFACT pin (ADR 0020 D3) -----------------------------------
 
 cmd_check() {
@@ -357,13 +785,12 @@ cmd_check() {
 _feature_done() {
   local prd="$1"
   [ -f "$prd" ] || { printf '0'; return 0; }
-  # Canonical `**P0**: text`, and the legacy shape `**P0 — text**` where priority
-  # and description share one bold span (observed in production repos). Getting
-  # this wrong is not cosmetic: an unrecognized capability line means the feature
-  # can NEVER read as done, so every feature depending on it stays blocked forever
-  # and the backlog quietly reports nothing to do.
+  # `_CAPABILITY_LINE_RE` (see its definition above) is the shape this
+  # recognizes; getting it wrong is not cosmetic: an unrecognized capability
+  # line means the feature can NEVER read as done, so every feature depending
+  # on it stays blocked forever and the backlog quietly reports nothing to do.
   awk '
-    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+([^0-9]|\*\*)/ {
+    /'"$_CAPABILITY_LINE_RE"'/ {
       total++
       if ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) checked++
     }
@@ -378,7 +805,8 @@ _feature_done() {
 # `deferred: true` is NOT the `status` field ADR 0020 D2 prohibits, and the
 # distinction is the rule's own reasoning rather than a loophole. That prohibition
 # names two fields and says why: completion is DERIVED from the PRD's capability
-# checkboxes and concurrency is DERIVED by packet-graph.sh, so storing either is a
+# checkboxes and concurrency was DERIVED by packet-graph.sh (retired along with
+# parallel mode), so storing either is a
 # drift source. `deferred` is derived from neither — it is a HUMAN planning
 # decision, which is precisely what this file owns. It answers "should the loop
 # pick this up yet?", never "is this done?".
@@ -534,14 +962,30 @@ cmd_next() {
     # is how "the loop has stopped picking work up" gets misread as "the backlog
     # is finished" — the deferred case in particular is a human decision that can
     # be reversed by editing one line, and the reader has to be told which it is.
-    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1"' | grep -q .; then
+    #
+    # Each state is a CAPTURED value tested with `[ -n ... ]`, never
+    # `printf … | awk … | grep -q .` used directly as a condition. `grep -q`
+    # exits on its first match and closes the pipe; the awk still writing takes
+    # the signal, and the file-wide `pipefail` reports that signal in place of
+    # grep's success — so a TRUE condition reads as FALSE and control falls
+    # through to `all features complete`, reporting a finished backlog over work
+    # nobody built. Measured, not theorised: 235 and 241 misreports in 400
+    # iterations against this repository's own 18,756-byte payload. Command
+    # substitution reads to end of file, so no reader can close before its
+    # writer finishes. The captured rows then feed the per-feature lines through
+    # the same formatting awk — which reads to EOF and so cannot misfire — so
+    # each state is filtered once instead of twice and the output is unchanged.
+    local blocked deferred
+    blocked="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1"')"
+    if [ -n "$blocked" ]; then
       printf 'NEXT=none\nREASON=every incomplete feature is blocked by an unfinished dependency\n'
-      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7!="1" {printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
+      printf '%s\n' "$blocked" | awk -F'\t' '{printf "BLOCKED=%s depends_on=%s\n", $1, $5}'
       return 0
     fi
-    if printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1"' | grep -q .; then
+    deferred="$(printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1"')"
+    if [ -n "$deferred" ]; then
       printf 'NEXT=none\nREASON=every remaining feature is deferred in .agents/roadmap.yaml\n'
-      printf '%s\n' "$rows" | awk -F'\t' '$3=="0" && $7=="1" {printf "DEFERRED=%s why=%s\n", $1, $6}'
+      printf '%s\n' "$deferred" | awk -F'\t' '{printf "DEFERRED=%s why=%s\n", $1, $6}'
       printf 'HINT=remove `deferred: true` from an entry to bring it back into the backlog\n'
       return 0
     fi
@@ -563,10 +1007,11 @@ cmd_next() {
     # these PATHS to an implementer so it needs nothing else. Absent is normal
     # (a feature with no UI gets no design; an unmigrated repo has neither) and
     # never an error - /gspec-architect writes them.
-    [ -f "$root/gspec/features/$pick/arch.md" ] \
-      && printf 'ARCH=gspec/features/%s/arch.md\n' "$pick"
-    [ -f "$root/gspec/features/$pick/design.html" ] \
-      && printf 'DESIGN=gspec/features/%s/design.html\n' "$pick"
+    local sib
+    sib="$(_resolve_arch_path "$pick" "$root")"
+    [ -n "$sib" ] && printf 'ARCH=%s\n' "$(printf '%s' "$sib" | cut -f2)"
+    sib="$(_resolve_design_path "$pick" "$root")"
+    [ -n "$sib" ] && printf 'DESIGN=%s\n' "$(printf '%s' "$sib" | cut -f2)"
   else
     printf 'PLAN=none\n'
     printf 'HINT=run /gspec-plan %s to decompose the PRD before the loop can execute it\n' "$pick"
@@ -604,7 +1049,7 @@ cmd_plans() {
   done < <(_plan_paths "$root") | sort -t"$(printf '\t')" -k1,1
 }
 
-# --- nodes: gspec tasks -> packet-graph NODES TSV ----------------------------
+# --- nodes: gspec tasks -> packet NODES TSV ----------------------------------
 
 _nodes_for() {
   local root="$1" slug="$2"
@@ -690,7 +1135,7 @@ _nodes_for() {
       l=$0; sub(/^[[:space:]]+-[[:space:]]*deps[[:space:]]*:[[:space:]]*/,"",l); deps=l; next
     }
     # files: is NOT emitted by gspec today — forward-compat with upstream
-    # proposal U1. Absent => empty scope => packet-graph serializes conservatively.
+    # proposal U1. Absent => empty scope in the TSV; unwidened, per the header note.
     id != "" && /^[[:space:]]+-[[:space:]]*files[[:space:]]*:/ {
       l=$0; sub(/^[[:space:]]+-[[:space:]]*files[[:space:]]*:[[:space:]]*/,"",l)
       gsub(/^\[|\]$/,"",l); gsub(/[[:space:]]*,[[:space:]]*/,"|",l)
@@ -788,16 +1233,25 @@ cmd_files_status() {
 #                               command substitution, where `exit` would only
 #                               kill the subshell capturing it, not the script.
 #                               Every caller must `die` on a REFUSED line itself.
-#   RESOLVED\t<slug>\t<id>      resolved to a real plan file. Whether <id>
+#   RESOLVED\t<slug>\t<id>\t<ambiguous>
+#                               resolved to a real plan file. Whether <id>
 #                               actually EXISTS in that plan -- and its checked
 #                               state -- is NOT determined here: check-task and
 #                               task-status each need a different answer to
 #                               that (flip-or-already-or-notfound vs.
 #                               finished/unchecked/unknown), so it stays out of
-#                               the shared part. See `_task_lookup`.
+#                               the shared part. See `_task_lookup`. <ambiguous>
+#                               is `1` when the packet-id form matched MORE THAN
+#                               ONE candidate slug (the `phase` / `phase-t2`
+#                               collision below) and `0` otherwise -- ADDITIVE,
+#                               field 4 on a line only ever read via `cut -f2`/
+#                               `-f3` by every existing caller, so this cannot
+#                               disturb check-task. Only task-status consumes
+#                               it, and only to keep a collision from reading as
+#                               `gone` (loop-measurement T2 Critical 2).
 _resolve_task_id() {
   local task="$1" root="$2"
-  local slug="" id=""
+  local slug="" id="" ambiguous=0
   case "$task" in
     *'#'*)
       slug="${task%%#*}"
@@ -847,7 +1301,7 @@ _resolve_task_id() {
     # also means the resolved slug is always a real basename on disk, so --
     # unlike the canonical form above -- it is structurally incapable of
     # containing a path separator or '..'; no separate check needed here.
-    local best="" f cand
+    local best="" f cand matches=0
     while IFS=$'\t' read -r f cand; do
       [ -n "$cand" ] || continue
       case "$task" in
@@ -855,14 +1309,20 @@ _resolve_task_id() {
           # Prefer the LONGEST matching slug, so a feature whose slug itself
           # ends in -t<digits> (e.g. phase-t2, task phase-t2-t1) still
           # resolves to the right plan and id instead of the shorter decoy.
-          # This is also why the ambiguity is safe: `nodes` emits
-          # <feature>-<tolower(id)>, so feature `phase` task `t2-t1` and
-          # feature `phase-t2` task `T1` both produce the node id
+          # This is also why the ambiguity is safe for check-task: `nodes`
+          # emits <feature>-<tolower(id)>, so feature `phase` task `t2-t1`
+          # and feature `phase-t2` task `T1` both produce the node id
           # `phase-t2-t1` -- a pre-existing namespace collision. Longest-wins
           # always picks the longer slug here; when the live task is
           # actually in the shorter-slug plan, resolution against that
-          # slug's id then fails and the result is a loud rc=4 "no such
-          # task", never a wrong flip.
+          # slug's id then fails and check-task's result is a loud rc=4 "no
+          # such task", never a wrong flip. That argument does NOT transfer
+          # to task-status, which has a silent success state (`gone`) that
+          # check-task lacks -- so every candidate slug that matches is
+          # counted, not just the longest, and the caller is told when more
+          # than one did (see `ambiguous` below / loop-measurement T2
+          # Critical 2).
+          matches=$((matches + 1))
           if [ "${#cand}" -gt "${#best}" ]; then best="$cand"; fi
           ;;
       esac
@@ -871,6 +1331,7 @@ _resolve_task_id() {
       slug="$best"
       id="${task#"$best"-}"
     fi
+    [ "$matches" -gt 1 ] && ambiguous=1
   fi
 
   if [ -z "$slug" ] || [ -z "$id" ]; then
@@ -878,7 +1339,7 @@ _resolve_task_id() {
     return 0
   fi
 
-  printf 'RESOLVED\t%s\t%s\n' "$slug" "$id"
+  printf 'RESOLVED\t%s\t%s\t%s\n' "$slug" "$id" "$ambiguous"
 }
 
 # _resolve_plan_path <slug> <root> — the plan-file location every caller shares,
@@ -911,10 +1372,10 @@ _resolve_plan_path() {
 _task_lookup() {
   local plan="$1" want="$2"
   awk -v want="$want" '
-    /^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*[A-Za-z][A-Za-z0-9_-]*[0-9]+(\*\*|[[:space:]])/ {
+    /'"$_TASK_LINE_RE"'/ {
       desc = $0
-      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*/, "", desc)
-      match(desc, /^[A-Za-z][A-Za-z0-9_-]*[0-9]+/)
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
       lid = substr(desc, 1, RLENGTH)
       if (tolower(lid) == want) {
         checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
@@ -926,6 +1387,2011 @@ _task_lookup() {
       if (!found && checked_id != "") print "already " checked_id
     }
   ' "$plan"
+}
+
+# _plan_task_line_count <plan> — how many task lines this adapter can actually
+# PARSE in a plan file (loop-measurement T2 Critical 1). Uses `_TASK_LINE_RE`,
+# the exact same pattern `_task_lookup` matches an id against -- NOT a second
+# copy, per this repo's standing rule that a count from a different regex
+# lies about precisely what it is asked to certify (see `cmd_plans`'s own
+# counter, which duplicates this same pattern for the same reason). Zero means
+# the plan is empty, truncated, mid-migration, or in a task-line shape this
+# adapter has never learned -- every one of those is "we cannot tell", never
+# positive evidence that a named task is gone.
+_plan_task_line_count() {
+  local plan="$1"
+  awk '
+    /'"$_TASK_LINE_RE"'/ { c++ }
+    END { print c+0 }
+  ' "$plan"
+}
+
+# _task_history_probe <relplan> <root> <idlc> <slug> — has a task line for
+# <idlc> EVER existed anywhere in <slug>'s plan history, in ANY gspec layout
+# (loop-measurement T2 "gone must require positive evidence")? Reuses
+# `_TASK_LINE_PREFIX`/`_TASK_LINE_SUFFIX` -- the exact structural shape
+# `_task_lookup`/`_plan_task_line_count` match, checkbox + bold id -- with the
+# generic id class replaced by this call's literal, case-folded id, so a
+# historical PROSE mention of the id text (a note, an acceptance criterion,
+# "see also T77") can never read as positive evidence; only that exact shape,
+# searched with `git log -i -G`, does. ONE `git log`, `--max-count=1` so the
+# walk stops at the first hit rather than scanning full history -- this runs
+# once per open packet id NOT found in its current plan, every sweep: 4 git
+# invocations (is-inside-work-tree, ls-files, is-shallow-repository, log) for
+# a genuinely missing id, and 0 for an id `_task_lookup` already resolved (the
+# probe is never reached), so the cost is bounded to the case that actually
+# needs it.
+#
+# Probes EVERY layout path for the slug in ONE `git log` invocation (3.x/2.x/
+# pre-2.0 -- the same three paths `_resolve_plan_path` tries, newest first)
+# rather than `git log --follow`, which was measurably WRONG here: `--follow`
+# is similarity-based rename detection, and gspec plan files are boilerplate-
+# heavy by construction (identical frontmatter, `# Plan:`, `## Plan`,
+# `- [ ] **Tn** **P0** …`, `- deps: —`), so a commit that deletes ONE
+# feature's plan and adds a DIFFERENT feature's plan gets paired as a rename
+# well under 100% similarity -- reporting positive history for an id that was
+# never a task in the plan actually being asked about. Multi-path probing has
+# no such heuristic: every candidate path is only ever this SAME slug's plan
+# under a different gspec layout, so a genuine 3.x relocation still resolves
+# (its own commit touched that exact path) while a same-commit cross-feature
+# swap does not (the id's pattern never touched the OTHER feature's path). Do
+# not "fix" this with `-M100%` instead of dropping `--follow` -- this repo's
+# own relocations are recorded R097-R099, not R100 (links were repaired
+# during the move), so a 100% threshold would stop following the very rename
+# it exists to handle. Prints exactly one of:
+#   FOUND         a commit's diff added or removed a task line for this id,
+#                 under any layout path for this slug
+#   NEVER         history for every layout path is readable and holds no such
+#                 line
+#   UNAVAILABLE   not a git repo, git missing, the CURRENTLY RESOLVED plan
+#                 file is untracked, or the repo is shallow (a "not found"
+#                 there could be truncated rather than genuine) -- every one
+#                 of these is "we cannot tell", never positive evidence
+#                 either way.
+# Every pathspec passed to git here is ROOT-RELATIVE (`gspec/...`, never
+# `$root/gspec/...`) and matched under `git -C "$root"`: `-C` already moves
+# git's effective cwd to `$root`, so a pathspec that re-prepends `$root` is
+# resolved a SECOND time against that same directory whenever `$root` itself
+# is relative (loop-measurement T2 Minor) -- `task-status ts#T99 ./sub`
+# silently read `unknown` instead of `gone` because the old `$plan` argument
+# carried the `$root/` prefix into the pathspec. An absolute `$root` masked
+# this, which is how it shipped.
+# Never lets a non-zero git exit escape under `set -euo pipefail` -- every
+# invocation is guarded with `|| true` or an explicit early return.
+_task_history_probe() {
+  local relplan="$1" root="$2" idlc="$3" slug="$4"
+  command -v git >/dev/null 2>&1 || { printf 'UNAVAILABLE\n'; return 0; }
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { printf 'UNAVAILABLE\n'; return 0; }
+
+  # Untracked (never committed) reads UNAVAILABLE, not NEVER: an empty `git
+  # log` result for a file with no history at all is not evidence the id was
+  # never there, it is evidence there is no history to check. Tested against
+  # the CURRENTLY RESOLVED plan path (the one this call already knows is
+  # real), not the other layouts' candidate paths below, which may never have
+  # existed for this slug at all.
+  git -C "$root" ls-files --error-unmatch -- "$relplan" >/dev/null 2>&1 \
+    || { printf 'UNAVAILABLE\n'; return 0; }
+
+  local shallow
+  shallow="$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null || true)"
+
+  # `-G` takes an EXTENDED regex, not the BRE the old class assumed (loop-
+  # measurement T2 Important 1): an unescaped `( ) | + ? { }` changes what the
+  # pattern MATCHES rather than erroring, which is the dangerous direction --
+  # `pr#T5|T77` and `pr#T(5)` both misread a still-live line as `gone` before
+  # this class covered them.
+  local esc pattern hit
+  esc="$(printf '%s' "$idlc" | sed 's/[][\.*^$/(){}|+?]/\\&/g')"
+  pattern="${_TASK_LINE_PREFIX}${esc}${_TASK_LINE_SUFFIX}"
+  hit="$(git -C "$root" log -i -G"$pattern" --max-count=1 --format=%H -- \
+    "gspec/features/$slug/tasks.md" \
+    "gspec/tasks/$slug.md" \
+    "gspec/features/$slug.plan.md" 2>/dev/null || true)"
+
+  if [ -n "$hit" ]; then
+    printf 'FOUND\n'
+  elif [ "$shallow" = "true" ]; then
+    printf 'UNAVAILABLE\n'
+  else
+    printf 'NEVER\n'
+  fi
+}
+
+# --- handoff: everything an agent needs to start a packet --------------------
+# (thin-loop-driver T2 / ADR 0020 D2 amendment, 2026-09-15; hardened in review,
+# 2026-09-15.) Three helpers, read-only, each reusing a shared piece rather
+# than copying it:
+#   _task_record     the task-line shape, via the SAME `_TASK_LINE_RE` family
+#                     `_task_lookup`/`_plan_task_line_count` already share —
+#                     never a second regex for "what is a task line". Captures
+#                     the FULL multi-line task body, not just the header's
+#                     inline text — the handoff is the implementer's whole
+#                     brief, so a nested bullet or a trailing paragraph must
+#                     not be silently dropped.
+#   _prd_capability   an exact (trimmed, unguessed) match of a `covers:` quote
+#                     against a PRD capability line, plus that capability's
+#                     sub-bullet block, verbatim.
+#   _split_covers     the `' · '` (U+00B7) separator `covers:` uses for more
+#                     than one capability, matched by its UTF-8 octal escape
+#                     (`\302\267`) rather than a literal multibyte character in
+#                     source — the same reason `_nodes_for` matches the em dash
+#                     as `\342\200\224` rather than `—` (:719).
+# Every value that can hold arbitrary plan/PRD text (a covers quote, task
+# text) is passed to awk through `ENVIRON`, never `awk -v` — this repo's
+# standing rule (see runstate.sh's `cmd_set`): `-v` runs escape-sequence
+# processing on the VALUE, so a quote containing `\d` or similar reads as
+# something other than what is on disk, corrupting a match silently rather
+# than loudly.
+# File SCOPE is deliberately not reparsed here at all: `cmd_handoff` calls
+# `_nodes_for` itself and reads the row it already computes for this packet
+# id, which is what "share the code path, do not copy it" means for the
+# files: > sidecar > empty precedence — there is no second copy of that
+# precedence anywhere in this section.
+
+# _task_record <plan> <idlc> — everything `handoff` needs about the first task
+# line whose id, case-folded, equals <idlc>: checked state, the plan's own
+# literal id text (not <idlc>, so a caller gets the real casing regardless of
+# how it typed the lookup), the header line's own inline text (marker-stripped
+# exactly as `_nodes_for` strips it — [P] / **P<n>** / [GATE:...] — the same
+# clean description `_nodes_for` uses for its fingerprint comparison), the raw
+# `- covers:` value and the raw `- arch:` value (both unsplit —
+# `_split_covers` is the one place that ' · '-splits either), and the task's FULL BODY: every line between the header
+# and the next task line, EXCLUDING the `- deps:` / `- covers:` / `- arch:` /
+# `- files:` / `- supersedes:` metadata lines. Nested bullets and a trailing
+# paragraph are body, not metadata, and are captured verbatim, in order.
+# Prints nothing when <idlc> is not a task in <plan>.
+#
+# Output is line-oriented, NEVER one row split with `cut`: one `KEY<TAB>value`
+# line per header field (CHECKED, ID, COVERS, ARCH, TEXT), then a bare `BODY` line,
+# then the task's body lines verbatim, one per output line. A `cut -f<n>`
+# against a single joined row is exactly what a tab embedded in free text (a
+# task's own text, or a covers quote) would silently corrupt — shifting every
+# later field — so this shape makes that structurally impossible instead of
+# merely unlikely; `cmd_handoff` reads each header line with a first-tab
+# split, whose remainder half keeps any further embedded tab in the value
+# intact.
+_task_record() {
+  local plan="$1" want="$2"
+  WANT="$want" awk '
+    /'"$_TASK_LINE_RE"'/ {
+      if (found) exit
+      desc = $0
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
+      lid = substr(desc, 1, RLENGTH)
+      if (tolower(lid) != ENVIRON["WANT"]) { in_target = 0; next }
+      in_target = 1; found = 1; realid = lid
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      desc = substr(desc, RLENGTH + 1)
+      sub(/^\*\*/, "", desc)                  # canonical/B: bold closed after the id
+      sub(/^[[:space:]]*\[P\][[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*\*\*P[0-9]+\*\*[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*\*\*\[GATE:[^]]*\]\*\*[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]*`?\[GATE:[^]]*\]`?[[:space:]]*/, "", desc)
+      sub(/^[[:space:]]+/, "", desc)
+      taskdesc = desc
+      next
+    }
+    in_target && /^[[:space:]]+-[[:space:]]*covers[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*covers[[:space:]]*:[[:space:]]*/, "", l); covers = l
+      next
+    }
+    in_target && /^[[:space:]]+-[[:space:]]*arch[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*arch[[:space:]]*:[[:space:]]*/, "", l); arch = l
+      next
+    }
+    # Everything else this plan line-shape uses is metadata, not body.
+    in_target && /^[[:space:]]+-[[:space:]]*(deps|files|supersedes)[[:space:]]*:/ { next }
+    # Any other line while inside the target task -- a nested bullet, its
+    # wrapped continuation, a blank separator, or a trailing paragraph -- is
+    # body, captured verbatim and in order. A markdown heading ends the task
+    # (the same rule _prd_capability uses): a `## Phase 2` or `## Notes` section
+    # after a task is plan structure, never part of the task body.
+    in_target && /^#/ { in_target = 0; next }
+    in_target { bn++; body[bn] = $0 }
+    END {
+      if (!found) exit
+      while (bn > 0 && body[bn] ~ /^[[:space:]]*$/) bn--   # trailing blanks are separators
+      printf "CHECKED\t%s\n", checked
+      printf "ID\t%s\n", realid
+      printf "COVERS\t%s\n", covers
+      printf "ARCH\t%s\n", arch
+      printf "TEXT\t%s\n", taskdesc
+      print "BODY"
+      for (i = 1; i <= bn; i++) print body[i]
+    }
+  ' "$plan"
+}
+
+# _prd_capability <prd> <text> — is <text> (outer whitespace trimmed) the
+# verbatim text of some `- [ ] **P<n>**: <text>` capability line in <prd>? No
+# other normalization: a `covers:` quote is expected to be copied verbatim
+# from the PRD, and a near-match is exactly the guess AC2 forbids. Prints
+# "MATCH" followed by every physical line of that capability's sub-bullet
+# block, verbatim — a wrapped multi-line bullet reproduces whole, across as
+# many output lines as it has in the source — or "NOMATCH" alone. Recognizes
+# only the canonical `**P<n>**:` capability shape (what `/gspec-feature`
+# writes); the legacy `**P0 — text**` shape `_feature_done` also accepts has
+# no reliable sub-bullet shape of its own to reproduce, so a quote against a
+# legacy PRD correctly reads NOMATCH rather than guessing at one.
+#
+# Block-boundary rule (deliberately precise, not "blank line ends it"): the
+# block ends at the NEXT capability line, at a heading (`^#`), or at the
+# first line that is neither blank nor indented. A blank line is buffered,
+# not decided on immediately — if the next line is still indented, the blank
+# was interior to a wrapped multi-paragraph bullet and is flushed back in; if
+# the next line is unindented (a stray top-level bullet, a new section, EOF),
+# the buffered blank is discarded and the block ends there without ever
+# printing that top-level line. This is also why `if (found) exit` on the
+# NEXT capability-line match matters and is covered by a sweep case: `found`
+# is sticky (never reset once a match is made), so without that `exit`,
+# `inblock` would stay 1 across a later NON-matching capability line and its
+# body would bleed into this one's block.
+#
+# Anchoring divergence from `_CAPABILITY_LINE_RE` above, recorded rather than
+# aligned (completion-record-drift-gaps-t6): this matcher's opening pattern is
+# anchored `^-` -- column 0 only -- while `_CAPABILITY_LINE_RE`
+# (`_feature_done`'s and `_prd_capabilities`'s pattern) admits leading
+# whitespace. An indented but otherwise canonical capability line is
+# therefore enumerated by `_prd_capabilities` and declined here, so in the
+# capability-drift walk it is always reported `uncovered-capability` plus one
+# `unmatched-quote` per covering task, never `DRIFT=`, whichever way its
+# covering tasks are checked. Widening this anchor to admit leading
+# whitespace, to match `_CAPABILITY_LINE_RE`, would move the
+# indentation-based block boundary above: it assumes the capability header
+# sits at column 0, so any indented line is unambiguously a sub-bullet of it;
+# letting the header itself sit at some indent N breaks that assumption,
+# since a sibling line at that same indent N -- not a sub-bullet at all --
+# would satisfy the same "is this line indented" test and get swallowed into
+# the block, corrupting the criteria `cmd_handoff` reads to tell a packet
+# what done means. Neither pattern changes here.
+_prd_capability() {
+  local prd="$1" want="$2"
+  if [ ! -f "$prd" ]; then printf 'NOMATCH\n'; return 0; fi
+  WANT="$want" awk '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+\*\*:/ {
+      if (found) exit
+      t = $0
+      sub(/^-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+\*\*:[[:space:]]*/, "", t)
+      if (trim(t) == ENVIRON["WANT"]) { found = 1; print "MATCH" }
+      inblock = found
+      pend = 0
+      next
+    }
+    inblock && /^#/ { exit }
+    inblock && /^[[:space:]]*$/ { pend++; next }
+    inblock && /^[[:space:]]+/ {
+      while (pend > 0) { print ""; pend-- }
+      print
+      next
+    }
+    inblock { exit }   # unindented, non-blank, non-heading: the block ends here, unabsorbed
+    END { if (!found) print "NOMATCH" }
+  ' "$prd"
+}
+
+# _split_covers <covers> — one trimmed capability quote per line, splitting on
+# `' · '` (U+00B7, matched by its UTF-8 octal escape \302\267 rather than a
+# literal multibyte character in source — see the section header). Prints
+# nothing for an empty value or the "no covers" sentinels `_nodes_for` already
+# recognizes for `deps:` (`-`, the octal-escaped em dash) — `cmd_handoff`
+# prints `COVERS=none` for that case, since nothing here reads that as
+# distinct from a real, single, empty-after-split quote.
+_split_covers() {
+  local s="$1"
+  [ -n "$s" ] || return 0
+  S="$s" awk '
+    BEGIN {
+      s = ENVIRON["S"]
+      gsub(/^[ \t]+|[ \t]+$/, "", s)
+      if (s == "" || s == "-" || s == "\342\200\224") exit
+      n = split(s, a, " \302\267 ")
+      for (i = 1; i <= n; i++) {
+        v = a[i]
+        gsub(/^[ \t]+|[ \t]+$/, "", v)
+        if (v != "") print v
+      }
+    }
+  '
+}
+
+# _arch_section <arch> <anchor> — the `arch.md` block one `- arch:` anchor
+# names. Prints "MATCH" followed by every physical line of the block, from its
+# H3 heading through the line before the next H1/H2/H3 (trailing blank lines
+# dropped, as separators), or "NOMATCH" alone — never a nearest match, the
+# `_prd_capability` rule for covers quotes. A missing <arch> is NOMATCH.
+#
+# The anchor is accepted in the three forms gspec's plan floor treats as one
+# anchor — `#entity-order`, `### Entity: Order`, `Entity: Order` — by
+# comparing SLUGS: lowercased, with every ASCII punctuation and whitespace
+# character removed (the leading `#`s and the hyphens included), so
+# `Entity: OrderLine`, `### Entity: OrderLine` and `#entity-order-line` are one
+# anchor.
+# LC_ALL=C keeps `[:punct:]` to the ASCII set, so a non-ASCII name keeps its
+# bytes rather than collapsing onto a different name.
+#
+# Only a heading in the gspec-conventions anchor grammar is a candidate: an H3
+# of the exact form `### <Kind>: <Name>`, where <Kind> is owned by the H2
+# section it sits under (`## Data` -> Entity, `## API` -> Endpoint, `## UI` ->
+# Screen/Component, `## Logic` -> Rule/Machine), an Entity name is PascalCase
+# and an Endpoint is `<UPPERCASE METHOD> /<path>`. Any other H3 — a wrong-case
+# kind, a kind under another section's H2, free prose — resolves to nothing,
+# so the caller reports it unmatched rather than guessing. It still ENDS the
+# block before it, being an H3. Lines inside a ``` / ~~~ fence are never
+# headings. Everything else between headings — `####` sub-headings, and the
+# `- **route:**` status line gspec 3.2.0 writes into a `### Screen:` block —
+# is block text, never a boundary. No regex interval (`{m,n}`) is used: not
+# every awk this runs under supports one.
+_arch_section() {
+  local arch="$1" want="$2"
+  if [ ! -f "$arch" ]; then printf 'NOMATCH\n'; return 0; fi
+  LC_ALL=C WANT="$want" awk '
+    function slug(s) { s = tolower(s); gsub(/[[:punct:][:space:]]/, "", s); return s }
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    function owns(sec, kind) {
+      return (sec == "Data" && kind == "Entity") ||
+             (sec == "API" && kind == "Endpoint") ||
+             (sec == "UI" && (kind == "Screen" || kind == "Component")) ||
+             (sec == "Logic" && (kind == "Rule" || kind == "Machine"))
+    }
+    # the anchor slug of a grammar H3 under section <sec>, or "" when <h>
+    # (the heading text after "### ") is not in the grammar
+    function anchor_of(h, sec,    kind, name, p) {
+      h = trim(h)
+      p = index(h, ": ")
+      if (p == 0) return ""
+      kind = substr(h, 1, p - 1); name = trim(substr(h, p + 2))
+      if (name == "" || !owns(sec, kind)) return ""
+      if (kind == "Entity" && name !~ /^[A-Z][A-Za-z0-9]*$/) return ""
+      if (kind == "Endpoint" && name !~ /^[A-Z]+ \/[^ \t]*$/) return ""
+      return slug(kind name)
+    }
+    BEGIN { want = slug(ENVIRON["WANT"]) }
+    /^[ \t]*(```|~~~)/ { fence = !fence }
+    !fence && /^(#|##|###)([ \t]|$)/ {
+      if (found) exit
+      if ($0 ~ /^##([ \t]|$)/) { sec = $0; sub(/^##[ \t]*/, "", sec); sec = trim(sec) }
+      else if ($0 ~ /^#([ \t]|$)/) { sec = "" }
+      else if (want != "") {
+        h = $0; sub(/^###[ \t]*/, "", h)
+        if (anchor_of(h, sec) == want) { found = 1; n = 1; blk[1] = $0 }
+      }
+      next
+    }
+    found { n++; blk[n] = $0 }
+    END {
+      if (!found) { print "NOMATCH"; exit }
+      while (n > 1 && blk[n] ~ /^[[:space:]]*$/) n--
+      print "MATCH"
+      for (i = 1; i <= n; i++) print blk[i]
+    }
+  ' "$arch"
+}
+
+# _screen_kebab <heading line> — `screen-<kebab>` for an `arch.md` block whose
+# heading is `### Screen: <Name>` (handoff-spec-inlining-t6), or nothing for
+# any other heading (a Component, an Entity, ...). The name is slugified by
+# splitting CamelCase (a hyphen before an uppercase letter that follows a
+# lowercase letter or digit, and before the last capital of an acronym run
+# that a lowercase letter follows: `HTMLPage` -> `html-page`), lowercasing,
+# and turning each run of non-alphanumerics into one hyphen, with none at
+# either end. LC_ALL=C keeps the classes to ASCII.
+_screen_kebab() {
+  LC_ALL=C H="$1" awk '
+    BEGIN {
+      h = ENVIRON["H"]
+      if (h !~ /^###[ \t]*Screen:[ \t]/) exit
+      sub(/^###[ \t]*Screen:[ \t]*/, "", h)
+      sub(/[ \t]+$/, "", h)
+      out = ""; n = length(h)
+      for (i = 1; i <= n; i++) {
+        c = substr(h, i, 1); p = (i > 1) ? substr(h, i - 1, 1) : ""
+        q = (i < n) ? substr(h, i + 1, 1) : ""
+        if (c ~ /[A-Z]/ && ((p ~ /[a-z0-9]/) || (p ~ /[A-Z]/ && q ~ /[a-z]/))) out = out "-"
+        out = out c
+      }
+      out = tolower(out)
+      gsub(/[^a-z0-9]+/, "-", out)
+      gsub(/^-+|-+$/, "", out)
+      if (out != "") print "screen-" out
+    }
+  '
+}
+
+# _design_section <design> <id> — the `design.html` element
+# `<section id="<id>">` (handoff-spec-inlining-t6). Prints "MATCH" followed
+# by the element's markup from the `<` of its opening tag through the `>` of
+# its MATCHING `</section>` — nested `<section` opens and closes are counted,
+# so an inner section's close never ends it — or "NOMATCH" alone: no such
+# element, an element never closed, or a missing <design>. The id is matched
+# exactly, in either quote style; tag names match case-insensitively (the
+# scan runs over a lowercased copy of the same length, the markup printed is
+# the original). The file is read whole, since an element's bounds need not
+# fall on line boundaries.
+_design_section() {
+  local design="$1" want="$2"
+  if [ ! -f "$design" ]; then printf 'NOMATCH\n'; return 0; fi
+  LC_ALL=C WANT="$want" awk '
+    { text = (NR > 1) ? text "\n" $0 : $0 }
+    # position (in low, from <from>) of the next "<section" / "</section" that
+    # is a whole tag name — followed by whitespace, ">" or "/" — or 0
+    function next_tag(pfx, from,    rest, p, c, off) {
+      off = from - 1
+      while (1) {
+        rest = substr(low, off + 1)
+        p = index(rest, pfx)
+        if (p == 0) return 0
+        c = substr(rest, p + length(pfx), 1)
+        if (c == "" || c ~ /[ \t\n\r>\/]/) return off + p
+        off = off + p
+      }
+    }
+    END {
+      want = ENVIRON["WANT"]
+      low = tolower(text)
+      start = 0; from = 1
+      while ((s = next_tag("<section", from)) > 0) {
+        e = index(substr(low, s), ">")
+        if (e == 0) break
+        tag = substr(text, s, e)
+        if (tag ~ ("[ \t\n\r][iI][dD][ \t\n\r]*=[ \t\n\r]*(\"" want "\"|'"'"'" want "'"'"')")) { start = s; break }
+        from = s + 1
+      }
+      if (!start) { print "NOMATCH"; exit }
+      depth = 0; cur = start; stop = 0
+      while (1) {
+        o = next_tag("<section", cur); c = next_tag("</section", cur)
+        if (c == 0) break
+        if (o > 0 && o < c) { depth++; cur = o + 1; continue }
+        depth--
+        e = index(substr(low, c), ">")
+        if (e == 0) break
+        if (depth == 0) { stop = c + e - 1; break }
+        cur = c + 1
+      }
+      if (!stop) { print "NOMATCH"; exit }
+      print "MATCH"
+      print substr(text, start, stop - start + 1)
+    }
+  ' "$design"
+}
+
+# --- capability-drift: has a finished plan outrun its own PRD checkbox? -----
+# (completion-record-drift-t1.) Read-only. A capability is DRIFT when every
+# plan task covering it is checked while the capability's own box is not --
+# the state a feature enters the instant its last covering task lands and
+# nothing flips the capability. Built entirely from the existing seam:
+# `_prd_paths` to enumerate features, `_resolve_prd_path`/`_resolve_plan_path`
+# to locate one feature's PRD/plan pair (a feature with no plan is OUT OF
+# SCOPE, not unjudgeable -- the intended state for undecomposed work),
+# `_CAPABILITY_LINE_RE` (`_feature_done`'s own pattern, so this tests the
+# SAME thing that function counts), `_TASK_LINE_RE`, and `_split_covers` /
+# `_prd_capability` for the plan side -- no new parser, no fourth copy of an
+# existing pattern.
+#
+# Anything the scan cannot judge is UNJUDGEABLE, never drift -- never folded
+# into a clean-looking zero:
+#   unmatched-quote          a `covers:` quote matches no PRD capability at
+#                            all. The adapter already refuses to guess at the
+#                            nearest capability for an unmatched quote
+#                            (`cmd_handoff`'s `UNMATCHED=`); reading one as
+#                            drift would turn that same guess back on.
+#   uncovered-capability     an unchecked capability that no task's covers
+#                            references, in a plan the adapter DID resolve --
+#                            no covering task means no positive evidence of
+#                            delivery, so absence of evidence is not read as
+#                            completion.
+#   unrecognized-capability  an unchecked capability line `_prd_capability`'s
+#                            verbatim matcher declines (the legacy
+#                            `**P0 — text**` shape `_feature_done` still
+#                            counts toward completion but this matcher does
+#                            not, since it has no reliable verbatim text of
+#                            its own to reproduce).
+# A capability with at least one UNCHECKED covering task is reported as
+# NEITHER: a feature legitimately sitting part-ticked mid-flight is the
+# likelier shape, and it is exactly what a per-feature test (no unchecked
+# task lines and no checked capabilities) cannot see.
+
+# _prd_capabilities <prd> — one line per capability line matched by
+# `_CAPABILITY_LINE_RE`: <checked>\t<canonical>\t<text>. <canonical> is 1
+# when the line also matches `_prd_capability`'s stricter `**P<n>**:` shape,
+# and <text> is then that capability's own verbatim text -- the same string
+# a `covers:` quote must equal, verbatim, to MATCH it there. <canonical> is 0
+# for the legacy `**P0 — text**` shape, and <text> is then only a DISPLAY
+# label (there is no verbatim text to match a quote against, which is
+# exactly why `_prd_capability` declines it).
+_prd_capabilities() {
+  local prd="$1"
+  [ -f "$prd" ] || return 0
+  awk '
+    /'"$_CAPABILITY_LINE_RE"'/ {
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+/, "", rest)
+      canonical = 0
+      text = rest
+      if (rest ~ /^\*\*:/) {
+        canonical = 1
+        sub(/^\*\*:[[:space:]]*/, "", text)
+      } else {
+        sub(/^[[:space:]]*/, "", text)
+        sub(/\*\*[[:space:]]*$/, "", text)
+      }
+      sub(/[[:space:]]+$/, "", text)
+      printf "%s\t%s\t%s\n", checked, canonical, text
+    }
+  ' "$prd"
+}
+
+# _plan_task_covers <plan> — one line per task line matched by
+# `_TASK_LINE_RE`: <checked>\t<covers-raw>, unsplit -- `_split_covers` is the
+# one place that separates a multi-capability `covers:` value. The same
+# `- covers:` sub-line shape `_task_record` already extracts, reused rather
+# than re-derived.
+_plan_task_covers() {
+  local plan="$1"
+  [ -f "$plan" ] || return 0
+  awk '
+    function flush() { if (started) printf "%s\t%s\n", checked, covers }
+    /'"$_TASK_LINE_RE"'/ {
+      flush()
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      covers = ""
+      started = 1
+      next
+    }
+    started && /^[[:space:]]+-[[:space:]]*covers[[:space:]]*:/ {
+      l = $0; sub(/^[[:space:]]+-[[:space:]]*covers[[:space:]]*:[[:space:]]*/, "", l); covers = l
+      next
+    }
+    END { flush() }
+  ' "$plan"
+}
+
+# _capability_drift_for <root> <slug> <prd> <plan> — the per-feature scan.
+# Prints only `DRIFT=`/`UNJUDGEABLE=` lines, in the output contract fixed by
+# `gspec/features/completion-record-drift/tasks.md` (binding on all five
+# tasks in that plan):
+#   DRIFT=<slug>\t<capability text>
+#   UNJUDGEABLE=<class>\t<slug>\t<detail>
+# `cmd_capability_drift` counts by grepping its own accumulated output rather
+# than threading counters back through a subshell (this runs inside a pipe
+# to `tee`).
+_capability_drift_for() {
+  local root="$1" slug="$2" prd="$3" plan="$4"
+
+  local caps; caps="$(mktemp)"
+  _prd_capabilities "$prd" > "$caps"
+
+  local matched; matched="$(mktemp)"
+
+  # `unmatched-quote` stays per TASK, deliberately not deduplicated against
+  # earlier quotes in this feature: it is evidence about the task that wrote
+  # a covers: quote matching nothing, not about any one capability, and the
+  # two per-capability classes below already get their natural one-row-per-
+  # capability shape from `_prd_capabilities`'s own enumeration.
+  local tchecked craw q capout first
+  while IFS=$'\t' read -r tchecked craw; do
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      capout="$(_prd_capability "$prd" "$q")"
+      first="${capout%%$'\n'*}"
+      if [ "$first" = "MATCH" ]; then
+        printf '%s\t%s\n' "$q" "$tchecked" >> "$matched"
+      else
+        printf 'UNJUDGEABLE=unmatched-quote\t%s\t%s\n' "$slug" "$q"
+      fi
+    done < <(_split_covers "$craw")
+  done < <(_plan_task_covers "$plan")
+
+  local ccapchecked ccanonical ctext bits
+  while IFS=$'\t' read -r ccapchecked ccanonical ctext; do
+    [ "$ccapchecked" = "0" ] || continue
+    if [ "$ccanonical" != "1" ]; then
+      printf 'UNJUDGEABLE=unrecognized-capability\t%s\t%s\n' "$slug" "$ctext"
+      continue
+    fi
+    bits="$(TXT="$ctext" awk -F'\t' '$1==ENVIRON["TXT"]{print $2}' "$matched")"
+    if [ -z "$bits" ]; then
+      printf 'UNJUDGEABLE=uncovered-capability\t%s\t%s\n' "$slug" "$ctext"
+    elif ! grep -qx '0' <<< "$bits"; then
+      printf 'DRIFT=%s\t%s\n' "$slug" "$ctext"
+    fi
+  done < "$caps"
+
+  rm -f "$caps" "$matched"
+  return 0
+}
+
+# cmd_capability_drift [root] — walk every feature whose PRD AND plan both
+# resolve and report the capability-level drift described above, ending with
+# `CAPABILITY_DRIFT=ok|attention drift=<n> unjudgeable=<m>` (the same
+# `<status> field=value...` shape `files-status`'s `FILES=` line already
+# uses; `attention` whenever either count is nonzero). `CAPABILITY_DRIFT=none`
+# plus a `NOTE=` line only for the no-`gspec/` case (D4: gspec is optional,
+# the same `<KEY>=none`/`NOTE=` shape `files-status` uses) -- every other
+# path, including a clean scan, prints the counted summary. Exits 0 always:
+# this is a report, never a gate.
+cmd_capability_drift() {
+  local root; root="$(_root "${1:-}")"
+  if ! _has_gspec "$root"; then
+    printf 'CAPABILITY_DRIFT=none\n'
+    printf 'NOTE=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    return 0
+  fi
+
+  local acc; acc="$(mktemp)"
+  local prd slug pp plan prdpp prdabs
+  while IFS= read -r prd; do
+    [ -n "$prd" ] && [ -f "$prd" ] || continue
+    case "$prd" in
+      */prd.md) slug="$(basename "$(dirname "$prd")")" ;;
+      *)        slug="$(basename "$prd" .md)" ;;
+    esac
+
+    pp="$(_resolve_plan_path "$slug" "$root")"
+    [ -n "$pp" ] || continue   # no plan: out of scope, not unjudgeable
+    plan="$(printf '%s' "$pp" | cut -f1)"
+
+    prdpp="$(_resolve_prd_path "$slug" "$root")"
+    prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+    [ -n "$prdabs" ] || prdabs="$prd"
+
+    # A feature that reads as complete under the SAME derivation the rest of
+    # this adapter already applies (`_feature_done`: >=1 recognized capability
+    # line, none unchecked) contributes nothing to the scan: a checked box IS
+    # the reconciled state, so the scan's question — should this box be
+    # checked — is already answered for every capability the feature has. No
+    # `DRIFT=` finding is lost by skipping, since the drift condition
+    # (`ccapchecked = "0"`, gating only the SECOND loop in
+    # `_capability_drift_for`) is reachable only from an unchecked capability.
+    # `UNJUDGEABLE=unmatched-quote` rows from the FIRST loop carry no such
+    # gate and ARE suppressed by this skip — intended, per this capability's
+    # own wording ("no `UNJUDGEABLE=` line of any class"), not an oversight.
+    # This is deliberately the SAME test `cmd_features` uses for completion,
+    # not a second guess or a fourth copy of the capability pattern — the
+    # justification is that property alone, never how many rows this happens
+    # to remove in any one repository.
+    [ "$(_feature_done "$prdabs")" = "1" ] && continue
+
+    _capability_drift_for "$root" "$slug" "$prdabs" "$plan" | tee -a "$acc"
+  done < <(_prd_paths "$root")
+
+  local drift unjudgeable
+  drift="$(grep -c '^DRIFT=' "$acc" 2>/dev/null || true)"
+  unjudgeable="$(grep -c '^UNJUDGEABLE=' "$acc" 2>/dev/null || true)"
+  rm -f "$acc"
+  drift="${drift:-0}"; unjudgeable="${unjudgeable:-0}"
+  printf 'CAPABILITY_DRIFT=%s drift=%d unjudgeable=%d\n' \
+    "$([ "$drift" -eq 0 ] && [ "$unjudgeable" -eq 0 ] && printf ok || printf attention)" \
+    "$drift" "$unjudgeable"
+}
+
+# --- complete-capabilities: flip a feature's finished capabilities ----------
+# (capability-auto-complete-t1). WRITE -- a second write site alongside
+# check-task's task-line flip (ADR 0025 D1): `check-task` remains the only
+# writer of a TASK line, and this is the only writer of a CAPABILITY line; the
+# two never touch the same line of the same file.
+#
+# Walks the SAME derivation `_capability_drift_for` walks -- built from
+# `_prd_capabilities` / `_plan_task_covers` / `_split_covers` / `_prd_capability`
+# -- rather than calling `_capability_drift_for` itself: that function's own
+# `UNJUDGEABLE=unmatched-quote` line drops the covering task's checked state
+# (a read-only report has no need of it -- an unmatched quote is unjudgeable
+# either way), but the flip rule below needs exactly that bit, so this
+# rebuilds the same walk from its four low-level pieces rather than widen
+# `_capability_drift_for`'s own output shape for one caller.
+# `_capability_drift_for`/`cmd_capability_drift` are UNTOUCHED by this --
+# same functions, same output, still read-only, same checksum-pinned
+# no-write guarantee its own sweep case already covers.
+#
+# Flip rule:
+#   - flips a capability iff `_capability_drift_for` would print
+#     `DRIFT=<slug>\t<capability text>` for it: >=1 covering task, all
+#     checked, canonical (`**P<n>**:`) text. Never an uncovered-capability or
+#     unrecognized-capability row -- neither ever reaches the flip branch.
+#   - never unflips a checked capability -- only an UNCHECKED capability
+#     (`ccapchecked=="0"`) is ever considered, so this is structural, not a
+#     second check.
+#   - a feature with an UNCHECKED task whose `covers:` quote matches no
+#     capability holds EVERY flip, never a partial one: a typo'd quote may be
+#     evidence against a capability that would otherwise flip, and a flip is
+#     never undone once applied. The SAME quote on an already-CHECKED task
+#     holds nothing -- it is stale evidence about a task that is itself
+#     already done, not a live signal about what is still in flight.
+#
+# Output:
+#   COMPLETE_CAPABILITIES=<ok|blocked|none> completed=<n>
+#   COMPLETED=<slug>\t<capability text>     (n lines, PRD order)
+#   FILE=<relprd>                           (present whenever the feature resolved)
+#   REASON=...                              (blocked / none / unresolved)
+#
+# Exit codes mirror check-task (ADR 0025 D1):
+#   0   no gspec/ at all (skipped, D4 -- gspec is optional), or a resolved
+#       feature with zero or more capabilities flipped (blocked or ok)
+#   1   a malformed slug -- a path separator or '..' component, which would
+#       interpolate into a DIRECTORY name under gspec 3.x -- REFUSED, `die`d
+#   4   the slug has no resolvable PRD+plan pair in any gspec layout: genuine
+#       drift in the caller's own argument, distinguishable from the skip
+#
+# Writes with check-task's read-only-lookup-then-`sub()` shape: every flip
+# target is decided by the read-only walk above, and the mutating awk pass
+# re-confirms each target is still an unchecked, canonical capability line
+# before touching it -- so only the flipped lines' checkbox characters
+# change, byte-identical otherwise, through the same atomic
+# temp-file-then-`mv` write check-task uses.
+cmd_complete_capabilities() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "complete-capabilities: need a feature slug"
+  local root; root="$(_root "${2:-}")"
+
+  if ! _has_gspec "$root"; then
+    printf 'COMPLETE_CAPABILITIES=none completed=0\n'
+    printf 'REASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+    return 0
+  fi
+
+  # Same guard `_resolve_task_id`'s canonical-form branch applies to a
+  # caller-supplied slug (ADR 0025 D1): gspec 3.x interpolates it into a
+  # DIRECTORY name (gspec/features/<slug>/...), so a path separator or '..'
+  # component is refused before any file test. Runs AFTER the gspec-optional
+  # early return, for the same reason that ordering holds there: every
+  # gspec-optional case must still exit 0 regardless of what was passed.
+  case "$slug" in
+    */*|*'..'*)
+      die "complete-capabilities: refusing a feature slug containing a path separator or '..' component (ADR 0025 D1)"
+      ;;
+  esac
+
+  local prdpp prdabs relprd
+  prdpp="$(_resolve_prd_path "$slug" "$root")"
+  prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+  relprd="$(printf '%s' "$prdpp" | cut -f2)"
+
+  local pp plan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  plan="$(printf '%s' "$pp" | cut -f1)"
+
+  if [ -z "$prdabs" ] || [ -z "$plan" ]; then
+    printf 'COMPLETE_CAPABILITIES=none completed=0\n'
+    printf 'REASON=feature %s has no resolvable PRD and plan pair in any gspec layout\n' "$slug"
+    return 4
+  fi
+
+  # A feature already fully done (`_feature_done` -- ADR 0020 D2, never a
+  # second guess) has nothing unchecked left to flip. Skipped entirely, same
+  # as `cmd_capability_drift`'s own skip and for the same reason: the walk
+  # below would otherwise raise a hold from a long-checked task's unmatched
+  # quote with nothing left to flip anything against.
+  if [ "$(_feature_done "$prdabs")" = "1" ]; then
+    printf 'COMPLETE_CAPABILITIES=ok completed=0\n'
+    printf 'FILE=%s\n' "$relprd"
+    return 0
+  fi
+
+  local caps; caps="$(mktemp)"
+  _prd_capabilities "$prdabs" > "$caps"
+  local matched; matched="$(mktemp)"
+
+  local hold=0 tchecked craw q capout first
+  while IFS=$'\t' read -r tchecked craw; do
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      capout="$(_prd_capability "$prdabs" "$q")"
+      first="${capout%%$'\n'*}"
+      if [ "$first" = "MATCH" ]; then
+        printf '%s\t%s\n' "$q" "$tchecked" >> "$matched"
+      elif [ "$tchecked" = "0" ]; then
+        hold=1
+      fi
+    done < <(_split_covers "$craw")
+  done < <(_plan_task_covers "$plan")
+
+  if [ "$hold" = "1" ]; then
+    printf 'COMPLETE_CAPABILITIES=blocked completed=0\n'
+    printf 'REASON=%s has an unchecked task whose covers: quote matches no capability — holding every flip until it is fixed\n' "$slug"
+    printf 'FILE=%s\n' "$relprd"
+    rm -f "$caps" "$matched"
+    return 0
+  fi
+
+  local texts; texts="$(mktemp)"
+  local ccapchecked ccanonical ctext bits
+  while IFS=$'\t' read -r ccapchecked ccanonical ctext; do
+    [ "$ccapchecked" = "0" ] || continue
+    [ "$ccanonical" = "1" ] || continue
+    bits="$(TXT="$ctext" awk -F'\t' '$1==ENVIRON["TXT"]{print $2}' "$matched")"
+    [ -n "$bits" ] || continue
+    grep -qx '0' <<< "$bits" && continue
+    printf '%s\n' "$ctext" >> "$texts"
+  done < "$caps"
+  rm -f "$caps" "$matched"
+
+  local n; n="$(wc -l < "$texts" | tr -d '[:space:]')"
+  n="${n:-0}"
+  if [ "$n" -eq 0 ]; then
+    printf 'COMPLETE_CAPABILITIES=ok completed=0\n'
+    printf 'FILE=%s\n' "$relprd"
+    rm -f "$texts"
+    return 0
+  fi
+
+  # Atomic write, same shape as check-task: build into a temp file beside the
+  # PRD, then `mv` over it so a reader never observes a partial write.
+  # GLOBALS, deliberately -- see check-task's own comment on the bash
+  # 3.2-vs-5.2 EXIT-trap scoping difference this guards against; do not make
+  # these `local` again.
+  _cc_tmp=""; _cc_tmp2=""
+  _cc_tmp="$(mktemp "$(dirname "$prdabs")/.gspec-complete-cap.XXXXXX")"
+  trap 'for _f in "${_cc_tmp:-}" "${_cc_tmp2:-}"; do [ -n "$_f" ] && rm -f "$_f"; done; :' EXIT
+  local tmp; tmp="$_cc_tmp"
+  cp -p "$prdabs" "$tmp"
+
+  # Re-derives, for the write pass only, exactly the checked/canonical/text
+  # triple `_prd_capabilities` already computed above -- the same duplication
+  # check-task accepts between its own read (`_task_lookup`) and write
+  # passes, so the write re-confirms a target is still unchecked immediately
+  # before flipping it rather than trusting a stale read.
+  awk -v targetsfile="$texts" '
+    BEGIN {
+      while ((getline line < targetsfile) > 0) if (line != "") want[line]++
+      close(targetsfile)
+    }
+    /'"$_CAPABILITY_LINE_RE"'/ {
+      checked = ($0 ~ /^[[:space:]]*-[[:space:]]*\[[xX]\]/) ? 1 : 0
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*\*\*P[0-9]+/, "", rest)
+      canonical = 0; text = rest
+      if (rest ~ /^\*\*:/) { canonical = 1; sub(/^\*\*:[[:space:]]*/, "", text) }
+      else { sub(/^[[:space:]]*/, "", text); sub(/\*\*[[:space:]]*$/, "", text) }
+      sub(/[[:space:]]+$/, "", text)
+      if (!checked && canonical == 1 && (text in want) && want[text] > 0) {
+        line = $0
+        sub(/\[ \]/, "[x]", line)
+        print line
+        want[text]--
+        next
+      }
+    }
+    { print }
+  ' "$prdabs" > "$tmp"
+
+  # Same no-trailing-newline guard as check-task: awk's print always
+  # terminates the record it writes, so a PRD lacking a final newline would
+  # otherwise gain one byte here.
+  if [ -n "$(tail -c1 "$prdabs")" ]; then
+    local sz; sz="$(wc -c < "$tmp")"; sz=$((sz - 1))
+    _cc_tmp2="$(mktemp "$(dirname "$prdabs")/.gspec-complete-cap.XXXXXX")"
+    head -c "$sz" "$tmp" > "$_cc_tmp2"
+    cat "$_cc_tmp2" > "$tmp"
+    rm -f "$_cc_tmp2"; _cc_tmp2=""
+  fi
+
+  mv "$tmp" "$prdabs"
+  trap - EXIT
+
+  printf 'COMPLETE_CAPABILITIES=ok completed=%d\n' "$n"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    printf 'COMPLETED=%s\t%s\n' "$slug" "$t"
+  done < "$texts"
+  printf 'FILE=%s\n' "$relprd"
+  rm -f "$texts"
+}
+
+# --- record-completion: the landing and scan decisions, in one place --------
+# (skill-prompt-trim-t2). Holds what four skill sites used to spell out in
+# prose -- which exit code of which command means what, which slug to
+# complete, the `--feature` fallback, what to stage and what to restore -- by
+# CALLING `cmd_check_task` and `cmd_complete_capabilities` and changing
+# neither: `check-task` stays the only writer of a task line and
+# `complete-capabilities` the only writer of a capability line. This function
+# writes nothing into gspec/ itself; its one side effect is the PRD restore
+# after a failed `complete-capabilities` call, from the source the caller
+# names. It never stages or commits -- it prints `STAGE=` paths for the caller.
+# See the header's Subcommands entry for the full output contract.
+
+# _recc_run <out> <err> <fn> [args...] -- run one existing subcommand function
+# in a subshell with its own `set -e` (so it behaves exactly as when dispatched
+# directly: errexit is ignored in a `||`/`&&`/`if` context, which is why the
+# exit code is captured with errexit off in THIS shell instead), stdout and
+# stderr to files, and leave its exit code in the global `_RECC_RC`.
+_recc_run() {
+  local o="$1" e="$2"; shift 2
+  set +e
+  ( set -e; "$@" ) > "$o" 2> "$e"
+  _RECC_RC=$?
+  set -e
+}
+
+# _recc_val <KEY> <file> -- the value after the first `KEY=` line, or nothing.
+_recc_val() {
+  K="$1" awk 'index($0, ENVIRON["K"] "=") == 1 { print substr($0, length(ENVIRON["K"]) + 2); exit }' "$2"
+}
+
+# _recc_stage <path> -- queue one STAGE= path, once. `_RECC_STAGE` holds them
+# newline-separated, in first-queued order.
+_recc_stage() {
+  local p="$1" q
+  [ -n "$p" ] || return 0
+  while IFS= read -r q; do
+    [ "$q" = "$p" ] && return 0
+  done <<< "$_RECC_STAGE"
+  _RECC_STAGE="${_RECC_STAGE}${p}"$'\n'
+}
+
+# _recc_finish <ok|halt|skipped> -- print the queued STAGE= lines, then the
+# summary line, which is always the last line of output.
+_recc_finish() {
+  local p staged=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf 'STAGE=%s\n' "$p"
+    staged=$((staged + 1))
+  done <<< "$_RECC_STAGE"
+  printf 'RECORD_COMPLETION=%s staged=%d completed=%d held=%d failed=%d\n' \
+    "$1" "$staged" "$_RECC_COMPLETED" "$_RECC_HELD" "$_RECC_FAILED"
+}
+
+# _recc_restore <slug> <root> <index|head> -- put a slug's PRD back after a
+# failed `complete-capabilities` call. The path is `_resolve_prd_path`'s, and
+# only for a slug that passes the same guard `complete-capabilities` and
+# `_resolve_task_id` apply (a path separator or '..' component is refused);
+# otherwise no path is touched.
+_recc_restore() {
+  local slug="$1" root="$2" src="$3" relprd
+  case "$slug" in
+    ''|*/*|*'..'*)
+      printf 'RESTORED=none\tslug %s refused: empty, or a path separator or '"'"'..'"'"' component (ADR 0025 D1)\n' "$slug"
+      return 0
+      ;;
+  esac
+  relprd="$(_resolve_prd_path "$slug" "$root" | cut -f2)"
+  if [ -z "$relprd" ]; then
+    printf 'RESTORED=none\tfeature %s has no PRD in any gspec layout\n' "$slug"
+    return 0
+  fi
+  local rc=0
+  if [ "$src" = "index" ]; then
+    git -C "$root" checkout -- "$relprd" >/dev/null 2>&1 || rc=$?
+  else
+    git -C "$root" checkout HEAD -- "$relprd" >/dev/null 2>&1 || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    printf 'RESTORED=%s\tfrom=%s\n' "$relprd" "$src"
+  else
+    printf 'RESTORED=none\tgit could not restore %s from %s (exit %d)\n' "$relprd" "$src" "$rc"
+  fi
+}
+
+# _recc_capabilities <slug> <root> <index|head> -- one `complete-capabilities`
+# call, reported as CAPABILITIES= plus its COMPLETED= lines; HELD= for a
+# blocked call; the PRD queued for staging when it completed above 0; and the
+# PRD restored on ANY non-zero exit, which is reported and never a halt.
+_recc_capabilities() {
+  local slug="$1" root="$2" src="$3" o e summary status n
+  o="$(mktemp)"; e="$(mktemp)"
+  _recc_run "$o" "$e" cmd_complete_capabilities "$slug" "$root"
+  if [ "$_RECC_RC" -ne 0 ]; then
+    printf 'CAPABILITIES=%s\tfailed\tcompleted=0\n' "$slug"
+    _RECC_FAILED=$((_RECC_FAILED + 1))
+    rm -f "$o" "$e"
+    _recc_restore "$slug" "$root" "$src"
+    return 0
+  fi
+  summary="$(_recc_val COMPLETE_CAPABILITIES "$o")"
+  status="${summary%% *}"
+  n="${summary##*completed=}"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$status" = "blocked" ]; then
+    printf 'CAPABILITIES=%s\tblocked\tcompleted=0\n' "$slug"
+    printf 'HELD=%s\t%s\n' "$slug" "$(_recc_val REASON "$o")"
+    _RECC_HELD=$((_RECC_HELD + 1))
+  else
+    printf 'CAPABILITIES=%s\tok\tcompleted=%d\n' "$slug" "$n"
+    awk 'index($0, "COMPLETED=") == 1' "$o"
+    _RECC_COMPLETED=$((_RECC_COMPLETED + n))
+    [ "$n" -gt 0 ] && _recc_stage "$(_recc_val FILE "$o")"
+  fi
+  rm -f "$o" "$e"
+  return 0
+}
+
+cmd_record_completion() {
+  local tasks="" feature="" restore="" drift=0 root_arg="" tasks_given=0 feature_given=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --tasks)   [ "$#" -ge 2 ] || die "record-completion: --tasks needs a value"
+                 tasks="$2"; tasks_given=1; shift 2 ;;
+      --feature) [ "$#" -ge 2 ] || die "record-completion: --feature needs a value"
+                 feature="$2"; feature_given=1; shift 2 ;;
+      --restore) [ "$#" -ge 2 ] || die "record-completion: --restore needs a value (index|head)"
+                 restore="$2"; shift 2 ;;
+      --drift)   drift=1; shift ;;
+      --*)       die "record-completion: unknown option $1" ;;
+      *)         [ -z "$root_arg" ] || die "record-completion: unexpected argument $1"
+                 root_arg="$1"; shift ;;
+    esac
+  done
+  case "$restore" in
+    index|head) ;;
+    '') die "record-completion: --restore index|head is required -- the caller states the restore source; it is never inferred" ;;
+    *)  die "record-completion: --restore must be index or head, not '$restore'" ;;
+  esac
+  if [ "$drift" = "1" ]; then
+    { [ "$tasks_given" = "0" ] && [ "$feature_given" = "0" ]; } \
+      || die "record-completion: --drift takes no --tasks and no --feature (the scan form has no fallback)"
+  else
+    [ -n "$tasks" ] || die "record-completion: need --tasks <id[,id...]> (landing form) or --drift (scan form)"
+    case ",$tasks," in *,,*) die "record-completion: --tasks has an empty member: $tasks" ;; esac
+  fi
+  local root; root="$(_root "$root_arg")"
+
+  _RECC_STAGE=""; _RECC_COMPLETED=0; _RECC_HELD=0; _RECC_FAILED=0
+
+  # --- scan form: capability-drift output on stdin, passed through ----------
+  if [ "$drift" = "1" ]; then
+    local line s slugs="" seen q
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf '%s\n' "$line"
+      case "$line" in
+        DRIFT=*)
+          s="${line#DRIFT=}"; s="${s%%$'\t'*}"
+          seen=0
+          while IFS= read -r q; do
+            [ "$q" = "$s" ] && { seen=1; break; }
+          done <<< "$slugs"
+          [ "$seen" = "1" ] || slugs="${slugs}${s}"$'\n'
+          ;;
+      esac
+    done
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      _recc_capabilities "$s" "$root" "$restore"
+    done <<< "$slugs"
+    _recc_finish ok
+    return 0
+  fi
+
+  # --- landing form: check-task per member, then one complete-capabilities --
+  local -a members
+  IFS=',' read -r -a members <<< "$tasks"
+  local o e id val reason slug="" allnone=1
+  o="$(mktemp)"; e="$(mktemp)"
+  for id in "${members[@]}"; do
+    _recc_run "$o" "$e" cmd_check_task "$id" "$root"
+    case "$_RECC_RC" in
+      0)
+        val="$(_recc_val CHECKED "$o")"
+        printf 'TASK=%s\t%s\n' "$id" "$val"
+        case "$val" in
+          none) ;;
+          already)
+            allnone=0
+            _recc_stage "$(_recc_val FILE "$o")" ;;
+          *'#'*)
+            allnone=0
+            [ -n "$slug" ] || slug="${val%%#*}"
+            _recc_stage "$(_recc_val FILE "$o")" ;;
+          *) allnone=0 ;;
+        esac
+        ;;
+      4)
+        allnone=0
+        printf 'TASK_DRIFT=%s\t%s\n' "$id" "$(_recc_val REASON "$o")"
+        ;;
+      *)
+        # exit 1 (a refused id) -- or any other failure -- is returned to the
+        # caller: nothing more is called, and no STAGE= line is printed, so a
+        # caller staging every STAGE= path stages nothing from a halted call.
+        reason="$(awk 'NF { l = $0 } END { print l }' "$e")"
+        reason="${reason#gspec-backlog.sh: }"
+        [ -n "$reason" ] || reason="check-task exited $_RECC_RC"
+        printf 'HALT=%s\t%s\n' "$id" "$reason"
+        rm -f "$o" "$e"
+        _RECC_STAGE=""
+        _recc_finish halt
+        return 1
+        ;;
+    esac
+  done
+  rm -f "$o" "$e"
+
+  if [ "$allnone" = "1" ]; then
+    printf 'REASON=every member read CHECKED=none at exit 0 -- no gspec task to record\n'
+    _recc_finish skipped
+    return 0
+  fi
+  [ -n "$slug" ] || slug="$feature"
+  if [ -z "$slug" ]; then
+    printf 'REASON=no CHECKED=<feature>#T<n> line and no --feature -- no feature slug to complete\n'
+    _recc_finish skipped
+    return 0
+  fi
+  _recc_capabilities "$slug" "$root" "$restore"
+  _recc_finish ok
+}
+
+# _handoff_one <packet-id> [root] — the block for exactly ONE task id, byte-
+# identical to what `cmd_handoff` printed before bundling existed (packet-
+# bundling-t5 renamed this function; its body is otherwise untouched). See the
+# `handoff` entry in the header Subcommands list for the full output-shape and
+# exit-code contract. Output:
+#   PACKET=<feature>-<id>
+#   FEATURE=<slug>
+#   ID=<the plan's own literal task id>
+#   CHECKED=<0|1>
+#   TEXT=<the task header's own inline text>
+#     <body line, 2-space indented, one per following output line>
+#     ...                                    (present only when the task has
+#                                              a body beyond its header line)
+#   FILES=<pipe-separated, or empty>
+#   NOTE=...                                 (present only when CHECKED=1)
+#   COVERS=<capability 1 text>
+#     <criterion line, 2-space indented, verbatim, possibly several>
+#   COVERS=<capability 2 text>
+#     ...
+#   COVERS=none                              (in place of the COVERS= blocks
+#                                              above, when the task declares
+#                                              no covers: at all)
+#   UNMATCHED=<covers quote matching no PRD capability>   (zero or more)
+#   PRD=<relpath, or "none">
+#   ARCH-SECTION=<anchor>                    (one per `- arch:` anchor that
+#     <arch.md block line, 2-space indented>  resolves, in anchor order; see
+#     ...                                     `_arch_section`)
+#   UNMATCHED-ARCH=<anchor>                  (in place of ARCH-SECTION= for an
+#                                              anchor matching no heading)
+#   ARCH-HEADING=<anchor> lines=<n>          (in place of ARCH-SECTION= for a
+#     <the section's heading line, indented>   resolved section at or past the
+#                                              word budget)
+#   ARCH-SEEN=<anchor> packet=<packet id>    (bundle only: in place of
+#                                              ARCH-SECTION= for a section an
+#                                              earlier member already inlined)
+#   DESIGN-SECTION=screen-<kebab>            (after an inlined `### Screen:`
+#     <design.html element markup, indented>   block's ARCH-SECTION=, when
+#                                              design.html holds its element;
+#                                              see `_handoff_design`)
+#   UNMATCHED-DESIGN=screen-<kebab>          (in its place: design.html
+#                                              present, no such element)
+#   ARCH-HEADING=screen-<kebab> lines=<n>    (in its place: past the budget)
+#   DESIGN-SEEN=screen-<kebab> packet=<id>   (bundle only: already inlined)
+#   BUDGET-REACHED=<budget> words            (once, only when some
+#                                              section was named by heading;
+#                                              in a bundle, printed by
+#                                              `_handoff_bundle` instead)
+#   SPEC=<statement>                         (once, last, only when the task
+#                                              has anchors: the fixed "inlined"
+#                                              line, or the spec file paths to
+#                                              read named sections from by
+#                                              heading; in a bundle, printed by
+#                                              `_handoff_bundle` instead)
+_handoff_one() {
+  local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
+  local root; root="$(_root "${2:-}")"
+
+  local resolved; resolved="$(_resolve_task_id "$task" "$root")"
+  case "$resolved" in
+    NOGSPEC)
+      printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+      return 0
+      ;;
+    UNRESOLVED)
+      printf 'HANDOFF=unknown\nREASON=not a gspec task id — no plan resolves this packet\n'
+      return 0
+      ;;
+    REFUSED\ *)
+      die "handoff: ${resolved#REFUSED }"
+      ;;
+  esac
+
+  local slug id
+  slug="$(printf '%s' "$resolved" | cut -f2)"
+  id="$(printf '%s' "$resolved" | cut -f3)"
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  local rec; rec="$(_task_record "$plan" "$idlc")"
+  if [ -z "$rec" ]; then
+    printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$slug" "$id" "$relplan"
+    return 0
+  fi
+
+  # Parse _task_record's line-oriented output: header KEY<TAB>value lines,
+  # then a bare BODY line, then the task's body lines verbatim. Never `cut`
+  # against a joined row — see _task_record's own comment for why. Splitting
+  # on the FIRST tab (parameter expansion, not a second `read`) keeps any
+  # further embedded tab in a value intact, the same remainder-capture
+  # `_resolve_task_id`'s callers already rely on `read` for elsewhere.
+  local checked="" realid="" covers="" archv="" text="" mode="header" line key val body=""
+  while IFS= read -r line; do
+    if [ "$mode" = "header" ]; then
+      if [ "$line" = "BODY" ]; then
+        mode="body"
+        continue
+      fi
+      key="${line%%$'\t'*}"
+      val="${line#*$'\t'}"
+      case "$key" in
+        CHECKED) checked="$val" ;;
+        ID)      realid="$val" ;;
+        COVERS)  covers="$val" ;;
+        ARCH)    archv="$val" ;;
+        TEXT)    text="$val" ;;
+      esac
+    else
+      body="${body}${line}"$'\n'
+    fi
+  done <<EOF
+$rec
+EOF
+
+  # Share the code path: ask `nodes` itself for this packet's row rather than
+  # a second copy of its files: > sidecar > empty precedence. Reads the whole
+  # stream to END rather than an early `exit` on match — an early-closing
+  # consumer on the right of a pipe can SIGPIPE a still-writing producer
+  # under `pipefail`, the exact shape this repo has been bitten by before
+  # (see the `trim-note` flake in CLAUDE.md). `nodes` never emits a row for a
+  # CHECKED task (it is not a backlog node), so a checked task's scope is
+  # always empty here — documented below via NOTE=, not silently
+  # indistinguishable from "an unchecked task with no scope".
+  local files=""
+  if [ "$checked" = "0" ]; then
+    files="$(_nodes_for "$root" "$slug" | WANT="${slug}-${idlc}" awk -F'\t' '
+      $1 == ENVIRON["WANT"] { f = $3 }
+      END { print f }
+    ')"
+  fi
+
+  local prdpp prdrel prdabs
+  prdpp="$(_resolve_prd_path "$slug" "$root")"
+  prdabs="$(printf '%s' "$prdpp" | cut -f1)"
+  prdrel="$(printf '%s' "$prdpp" | cut -f2)"
+  [ -n "$prdrel" ] || prdrel="none"
+
+  # The arch.md path is resolved (never a literal), used to READ sections and
+  # never printed: no arch.md path line of any form is part of this output.
+  local archabs="" archrel=""
+  local archpp; archpp="$(_resolve_arch_path "$slug" "$root")"
+  if [ -n "$archpp" ]; then
+    archabs="$(printf '%s' "$archpp" | cut -f1)"
+    archrel="$(printf '%s' "$archpp" | cut -f2)"
+  fi
+  # design.html likewise (handoff-spec-inlining-t6): read only for the screen
+  # sections an inlined `### Screen:` block names, never printed as a path
+  # line, and named in the SPEC= line only once a screen consulted it.
+  local designabs="" designrel=""
+  local designpp; designpp="$(_resolve_design_path "$slug" "$root")"
+  if [ -n "$designpp" ]; then
+    designabs="$(printf '%s' "$designpp" | cut -f1)"
+    designrel="$(printf '%s' "$designpp" | cut -f2)"
+  fi
+
+  printf 'PACKET=%s-%s\n' "$slug" "$idlc"
+  printf 'FEATURE=%s\n' "$slug"
+  printf 'ID=%s\n' "$realid"
+  printf 'CHECKED=%s\n' "$checked"
+  printf 'TEXT=%s\n' "$text"
+  if [ -n "$body" ]; then
+    printf '%s' "$body" | while IFS= read -r line; do
+      printf '  %s\n' "$line"
+    done
+  fi
+  printf 'FILES=%s\n' "$files"
+  if [ "$checked" = "1" ]; then
+    printf 'NOTE=task is checked; nodes never computes file scope for a checked task (it emits no row for one), so FILES is always empty here regardless of any plan files: line or sidecar entry\n'
+  fi
+
+  local unmatched="" q capout first_line any_quote=0
+  while IFS= read -r q; do
+    [ -n "$q" ] || continue
+    any_quote=1
+    capout="$(_prd_capability "$prdabs" "$q")"
+    first_line="${capout%%$'\n'*}"
+    if [ "$first_line" = "MATCH" ]; then
+      printf 'COVERS=%s\n' "$q"
+      printf '%s\n' "$capout" | tail -n +2 | sed 's/^/  /'
+    else
+      unmatched="${unmatched}${q}"$'\n'
+    fi
+  done < <(_split_covers "$covers")
+
+  [ "$any_quote" = "1" ] || printf 'COVERS=none\n'
+
+  if [ -n "$unmatched" ]; then
+    printf '%s' "$unmatched" | while IFS= read -r q; do
+      [ -n "$q" ] && printf 'UNMATCHED=%s\n' "$q"
+    done
+  fi
+
+  printf 'PRD=%s\n' "$prdrel"
+
+  # One marker per `- arch:` anchor, in the task's own order, after every
+  # COVERS=/UNMATCHED= block so `runstate.sh handoff`'s appended REQUIRED
+  # block still follows them. A resolved anchor's block is indented two
+  # spaces, the way COVERS= indents criteria; an unresolved one is reported,
+  # never replaced by a nearest heading -- on a checked task too, where a
+  # frozen anchor may name a superseded heading. No anchors, no marker.
+  #
+  # The word budget (handoff-spec-inlining-t3): sections inline in anchor order
+  # until the next would carry the running count past the budget; from that
+  # section on, every remaining RESOLVED section is named by its heading and
+  # line count instead (`ARCH-HEADING=`), even one small enough to fit, and a
+  # single `BUDGET-REACHED=` line follows the markers. Only inlined section
+  # text is counted — the COVERS= criteria above are outside the budget. An
+  # unmatched anchor inlines nothing, so it counts nothing and is still
+  # reported as before.
+  #
+  # Inside a bundle (handoff-spec-inlining-t4) the running count, the reached
+  # flag and the seen-anchor set are the `_HB_*` globals `_handoff_bundle`
+  # resets once and carries across every member, so the budget spans the
+  # whole bundle handoff; a distinct anchor — keyed by the heading line it
+  # resolves to, so two anchor forms naming one heading are one anchor — is
+  # inlined once, at the first member that inlines it, and a later naming
+  # prints `ARCH-SEEN=<anchor> packet=<that member's packet id>` with no text
+  # and no count. `BUDGET-REACHED=` is then printed once, by the bundle, after
+  # its last member. On the single-id path all three are reset here and the
+  # seen set is never consulted, so a single id's output is unchanged.
+  local anchor secout block nwords nlines heading firstpkt
+  local budget; budget="$(_handoff_word_budget "$root")"
+  if [ "$_HB_BUNDLE" != "1" ]; then
+    _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
+    _HB_INLINED=0; _HB_NAMED=0; _HB_FILES=""
+  fi
+  while IFS= read -r anchor; do
+    [ -n "$anchor" ] || continue
+    [ -n "$archrel" ] && _handoff_note_file "$archrel"
+    secout="$(_arch_section "$archabs" "$anchor")"
+    if [ "${secout%%$'\n'*}" = "MATCH" ]; then
+      block="$(printf '%s\n' "$secout" | tail -n +2)"
+      heading="${block%%$'\n'*}"
+      if [ "$_HB_BUNDLE" = "1" ] && [ -n "$_HB_SEEN" ]; then
+        firstpkt="$(printf '%s\n' "$_HB_SEEN" | WANT="$heading" awk -F'\t' '
+          $1 == ENVIRON["WANT"] && !got { p = $2; got = 1 }
+          END { print p }
+        ')"
+        if [ -n "$firstpkt" ]; then
+          _HB_INLINED=$((_HB_INLINED + 1))
+          printf 'ARCH-SEEN=%s packet=%s\n' "$anchor" "$firstpkt"
+          _handoff_design_seen "$heading"
+          continue
+        fi
+      fi
+      nwords="$(printf '%s\n' "$block" | awk '{ n += NF } END { print n + 0 }')"
+      if [ "$_HB_REACHED" = "0" ] && [ $((_HB_USED + nwords)) -gt "$budget" ]; then
+        _HB_REACHED=1
+      fi
+      if [ "$_HB_REACHED" = "0" ]; then
+        _HB_USED=$((_HB_USED + nwords))
+        _HB_INLINED=$((_HB_INLINED + 1))
+        if [ "$_HB_BUNDLE" = "1" ]; then
+          _HB_SEEN="${_HB_SEEN}${heading}"$'\t'"${slug}-${idlc}"$'\n'
+        fi
+        printf 'ARCH-SECTION=%s\n' "$anchor"
+        printf '%s\n' "$block" | sed 's/^/  /'
+        _handoff_design "$heading" "$designabs" "$designrel" "$budget" "${slug}-${idlc}"
+      else
+        _HB_NAMED=$((_HB_NAMED + 1))
+        nlines="$(printf '%s\n' "$block" | awk 'END { print NR + 0 }')"
+        printf 'ARCH-HEADING=%s lines=%s\n' "$anchor" "$nlines"
+        printf '%s\n' "$block" | head -n 1 | sed 's/^/  /'
+      fi
+    else
+      _HB_NAMED=$((_HB_NAMED + 1))
+      printf 'UNMATCHED-ARCH=%s\n' "$anchor"
+    fi
+  done < <(_split_covers "$archv")
+  if [ "$_HB_BUNDLE" != "1" ]; then
+    if [ "$_HB_REACHED" = "1" ]; then
+      printf 'BUDGET-REACHED=%s words\n' "$budget"
+    fi
+    _handoff_spec_line
+  fi
+}
+
+# _handoff_design <heading line> <design abs> <design rel> <budget> <packet id>
+# — the design block an INLINED `### Screen:` arch section names
+# (handoff-spec-inlining-t6), printed right after that section's
+# ARCH-SECTION= block. Not a screen, or no design.html: nothing at all — the
+# file is not noted, so the SPEC= line never names it. Otherwise design.html
+# is noted and the element `<section id="screen-<kebab>">` is either inlined
+# under `DESIGN-SECTION=screen-<kebab>` (indented two spaces, counted against
+# the same budget, and — in a bundle — added to the seen set under a key no
+# arch heading line can equal), named past the budget as
+# `ARCH-HEADING=screen-<kebab> lines=<n>` with its first line, exactly as an
+# arch section is, or reported `UNMATCHED-DESIGN=screen-<kebab>` with
+# nothing inlined. Called directly (never in a subshell) so the `_HB_*`
+# updates survive.
+_handoff_design() {
+  local heading="$1" dabs="$2" drel="$3" budget="$4" pkt="$5" did dout dblock dwords dlines
+  did="$(_screen_kebab "$heading")"
+  [ -n "$did" ] || return 0
+  [ -n "$drel" ] || return 0
+  _handoff_note_file "$drel"
+  dout="$(_design_section "$dabs" "$did")"
+  if [ "${dout%%$'\n'*}" != "MATCH" ]; then
+    _HB_NAMED=$((_HB_NAMED + 1))
+    printf 'UNMATCHED-DESIGN=%s\n' "$did"
+    return 0
+  fi
+  dblock="$(printf '%s\n' "$dout" | tail -n +2)"
+  dwords="$(printf '%s\n' "$dblock" | awk '{ n += NF } END { print n + 0 }')"
+  if [ "$_HB_REACHED" = "0" ] && [ $((_HB_USED + dwords)) -gt "$budget" ]; then
+    _HB_REACHED=1
+  fi
+  if [ "$_HB_REACHED" = "0" ]; then
+    _HB_USED=$((_HB_USED + dwords))
+    _HB_INLINED=$((_HB_INLINED + 1))
+    if [ "$_HB_BUNDLE" = "1" ]; then
+      _HB_SEEN="${_HB_SEEN}design:${did}"$'\t'"${pkt}"$'\n'
+    fi
+    printf 'DESIGN-SECTION=%s\n' "$did"
+    printf '%s\n' "$dblock" | sed 's/^/  /'
+  else
+    _HB_NAMED=$((_HB_NAMED + 1))
+    dlines="$(printf '%s\n' "$dblock" | awk 'END { print NR + 0 }')"
+    printf 'ARCH-HEADING=%s lines=%s\n' "$did" "$dlines"
+    printf '%s\n' "$dblock" | head -n 1 | sed 's/^/  /'
+  fi
+}
+
+# _handoff_design_seen <heading line> — bundle only: when an arch screen
+# section prints ARCH-SEEN=, its design block, if an earlier member inlined
+# it, prints `DESIGN-SEEN=screen-<kebab> packet=<that member>` and counts as
+# inlined, as ARCH-SEEN= does. A design block the earlier member named by
+# heading or reported unmatched is already reported in this handoff, so
+# nothing is printed again.
+_handoff_design_seen() {
+  local did firstpkt
+  did="$(_screen_kebab "$1")"
+  [ -n "$did" ] || return 0
+  firstpkt="$(printf '%s\n' "$_HB_SEEN" | WANT="design:${did}" awk -F'\t' '
+    $1 == ENVIRON["WANT"] && !got { p = $2; got = 1 }
+    END { print p }
+  ')"
+  [ -n "$firstpkt" ] || return 0
+  _HB_INLINED=$((_HB_INLINED + 1))
+  printf 'DESIGN-SEEN=%s packet=%s\n' "$did" "$firstpkt"
+}
+
+# _handoff_note_file <relpath> — add a spec file the handoff drew sections
+# from to `_HB_FILES`, once (handoff-spec-inlining-t5). Literal line match, so
+# a metacharacter in a path cannot widen it.
+_handoff_note_file() {
+  local f="$1" l
+  while IFS= read -r l; do
+    [ "$l" = "$f" ] && return 0
+  done <<EOF
+$_HB_FILES
+EOF
+  _HB_FILES="${_HB_FILES}${f}"$'\n'
+}
+
+# _handoff_spec_line — the statement line (handoff-spec-inlining-t5), printed
+# once per handoff after the last section marker (and after BUDGET-REACHED=):
+# by `_handoff_one` on the single-id path, by `_handoff_bundle` after its last
+# member. No anchor at all: no line. Every section inlined (an ARCH-SEEN=
+# counts — its text is in this handoff, at an earlier member) and none named
+# by heading or reported unmatched: the fixed line, which carries no path.
+# Otherwise the line names each spec file the handoff drew sections from,
+# once each, and says to read the named sections there by heading — the only
+# place a section marker's source file path surfaces in `handoff` output.
+_handoff_spec_line() {
+  if [ "$_HB_NAMED" = "0" ]; then
+    [ "$_HB_INLINED" = "0" ] && return 0
+    printf 'SPEC=inlined: the specification text this task needs is inlined under the section markers above; there is no spec file to open for it\n'
+    return 0
+  fi
+  local list="" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -z "$list" ]; then list="$f"; else list="${list}, ${f}"; fi
+  done <<EOF
+$_HB_FILES
+EOF
+  if [ -n "$list" ]; then
+    printf 'SPEC=read by heading: %s -- read each section named above by ARCH-HEADING=, UNMATCHED-ARCH= or UNMATCHED-DESIGN= there by its heading, not the whole file (a screen-<name> is found by its section id)\n' "$list"
+  else
+    printf 'SPEC=not inlined: no spec file resolves for this feature, so the anchors reported unmatched above have nothing to be read from\n'
+  fi
+}
+
+# Bundle-wide inlining state (handoff-spec-inlining-t4): set by
+# `_handoff_bundle`, read and advanced by each `_handoff_one` it calls. The
+# members are called directly (never in a subshell), which is what lets the
+# updates survive from one member to the next. `_HB_SEEN` holds one
+# "<heading line>\t<packet id>" line per section already inlined.
+_HB_BUNDLE=0
+_HB_USED=0
+_HB_REACHED=0
+_HB_SEEN=""
+# Statement-line state (handoff-spec-inlining-t5), reset and carried exactly
+# as the three above: sections inlined, sections named by heading or reported
+# unmatched, and the spec files drawn from (one relpath per line).
+_HB_INLINED=0
+_HB_NAMED=0
+_HB_FILES=""
+
+# _handoff_word_budget <root> — the most words of spec-section text one
+# handoff inlines (handoff-spec-inlining-t3), from `handoff_inline_word_budget`
+# in <root>/.agents/project-overrides.yaml — the repository's own file only: a
+# numeric limit has no restrictive union across config roots. Same token-
+# scanning shape as `runstate.sh`'s `_rs_packet_attempts_limit`: the remainder
+# after the key is split on whitespace, each token has one matching pair of
+# quotes stripped, and the first all-digit token wins, so a trailing comment
+# or `'8000'` still reads. A missing file, missing key, empty, non-numeric or
+# zero value reads as 6000 — never as unbounded, and never as a budget of 0.
+_handoff_word_budget() {
+  local root="$1" ov v
+  ov="${root}/.agents/project-overrides.yaml"
+  v=""
+  if [ -f "$ov" ]; then
+    v="$(awk '
+      /^handoff_inline_word_budget:[[:space:]]*/ {
+        line = $0
+        sub(/^handoff_inline_word_budget:[[:space:]]*/, "", line)
+        n = split(line, a, " ")
+        for (i = 1; i <= n; i++) {
+          tok = a[i]
+          gsub(/^"/, "", tok); gsub(/"$/, "", tok)
+          gsub(/^'"'"'/, "", tok); gsub(/'"'"'$/, "", tok)
+          if (tok ~ /^[0-9]+$/) { print tok; exit }
+        }
+      }
+    ' "$ov" 2>/dev/null)"
+  fi
+  # A zero with leading zeros (`000`) is still zero: strip them before the
+  # test so it cannot slip past the `0` arm as a digit string.
+  case "$v" in *[!0-9]*) v="" ;; esac
+  while [ "${v#0}" != "$v" ]; do v="${v#0}"; done
+  case "$v" in '') echo 6000 ;; *) echo "$v" ;; esac
+}
+
+# --- group: bundle the cursor with the unchecked tasks that safely follow it -
+# (packet-bundling-t4.) Read-only. Four small helpers, each reused rather than
+# copied from what already exists.
+
+# _pipe_has <list> <item> — is <item> one element of the '|'-separated <list>?
+_pipe_has() {
+  case "|$1|" in *"|$2|"*) return 0 ;; *) return 1 ;; esac
+}
+
+# _pipe_overlap <a> <b> — do the two '|'-separated file lists share >=1
+# element? Prints "1" or "0". An empty list shares nothing with anything,
+# including another empty list — that single property is the whole mechanism
+# behind "an empty scope overlaps nothing and runs alone" below; nothing else
+# in `cmd_group` special-cases it.
+_pipe_overlap() {
+  A="$1" B="$2" awk 'BEGIN{
+    n=split(ENVIRON["A"],a,"|")
+    for(i=1;i<=n;i++) if(a[i]!="") seen[a[i]]=1
+    m=split(ENVIRON["B"],b,"|")
+    for(i=1;i<=m;i++) if(b[i]!="" && (b[i] in seen)) { print "1"; exit }
+    print "0"
+  }'
+}
+
+# _pipe_union <a> <b> — the two '|'-separated lists, deduplicated, in
+# first-seen order.
+_pipe_union() {
+  A="$1" B="$2" awk 'BEGIN{
+    out=""
+    n=split(ENVIRON["A"],a,"|")
+    for(i=1;i<=n;i++) if(a[i]!="" && !(a[i] in seen)) { seen[a[i]]=1; out=(out==""?a[i]:out "|" a[i]) }
+    m=split(ENVIRON["B"],b,"|")
+    for(i=1;i<=m;i++) if(b[i]!="" && !(b[i] in seen)) { seen[b[i]]=1; out=(out==""?b[i]:out "|" b[i]) }
+    print out
+  }'
+}
+
+# _deps_ok <consumes> <slug> <plan> <members-pipe> — true (rc0) when every
+# `feature#<dep>` token in <consumes> (the same field `_nodes_for` already
+# computes from a task's `deps:`) is either already admitted into the group
+# (present in the '|'-separated <members-pipe> of node ids) or already
+# checked in <plan> — via `_task_lookup`, the same duplicate-id-safe lookup
+# check-task/task-status already share, never a second one. Empty <consumes>
+# is trivially satisfied.
+_deps_ok() {
+  local consumes="$1" slug="$2" plan="$3" members="$4"
+  [ -n "$consumes" ] || return 0
+  local tok depraw depidlc depnode lookup
+  local IFS='|'
+  for tok in $consumes; do
+    [ -n "$tok" ] || continue
+    depraw="${tok#*#}"
+    depidlc="$(printf '%s' "$depraw" | tr '[:upper:]' '[:lower:]')"
+    depnode="${slug}-${depidlc}"
+    _pipe_has "$members" "$depnode" && continue
+    lookup="$(_task_lookup "$plan" "$depidlc")"
+    case "$lookup" in
+      already\ *) continue ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# _rowfield <file> <row> <col> — one TSV column from one 1-based row number.
+# awk, never `read -r a b c ...`, on THIS particular TSV — `_nodes_for`'s own
+# output, whose empty `consumes` column is common and whose later columns
+# must not silently shift left because of it (see the comment on this same
+# gotcha in `cmd_nodes_all`, and `cmd_group`'s use of this helper below).
+_rowfield() {
+  R="$2" C="$3" awk -F'\t' 'NR==ENVIRON["R"]{print $(ENVIRON["C"]+0)}' "$1"
+}
+
+# _member_title <plan> <idlc> — a member's header inline text, via
+# `_task_record` (the SAME marker-stripped description `handoff`'s TEXT= is
+# built from), never a second reader of the header line.
+_member_title() {
+  local plan="$1" idlc="$2" line key val
+  while IFS= read -r line; do
+    key="${line%%$'\t'*}"
+    [ "$key" = "BODY" ] && break
+    val="${line#*$'\t'}"
+    [ "$key" = "TEXT" ] && { printf '%s' "$val"; return 0; }
+  done < <(_task_record "$plan" "$idlc")
+}
+
+# cmd_group <packet-id> [--cap <n>] [root] — see the `group` entry in the
+# header Subcommands list for the full contract.
+cmd_group() {
+  local task="${1:-}"; [ -n "$task" ] || die "group: need a packet id"
+  shift
+  local cap="1" root=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cap)
+        [ $# -ge 2 ] || die "group: --cap needs a value"
+        cap="$2"; shift 2
+        ;;
+      *)
+        [ -z "$root" ] || die "group: unexpected argument: $1"
+        root="$1"; shift
+        ;;
+    esac
+  done
+  case "$cap" in
+    ''|*[!0-9]*) die "group: --cap must be a positive whole number, got '$cap'" ;;
+  esac
+  [ "$cap" -ge 1 ] || die "group: --cap must be at least 1, got $cap"
+  root="$(_root "$root")"
+
+  local resolved; resolved="$(_resolve_task_id "$task" "$root")"
+  case "$resolved" in
+    NOGSPEC)
+      printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+      return 0
+      ;;
+    UNRESOLVED)
+      printf 'HANDOFF=unknown\nREASON=not a gspec task id — no plan resolves this packet\n'
+      return 0
+      ;;
+    REFUSED\ *)
+      die "group: ${resolved#REFUSED }"
+      ;;
+  esac
+
+  local slug id
+  slug="$(printf '%s' "$resolved" | cut -f2)"
+  id="$(printf '%s' "$resolved" | cut -f3)"
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$slug"
+    return 0
+  fi
+
+  local idlc; idlc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  local cursor_key="${slug}-${idlc}"
+
+  # The node list for this ONE feature, in plan order. `_nodes_for` already
+  # skips checked tasks — so a checked task between two members simply never
+  # appears here, and consecutiveness reuses that rather than re-deriving it
+  # — and already resolves file scope via the files: > sidecar > empty
+  # precedence `nodes`/`handoff` share. Never crosses into another feature,
+  # since this call is scoped to one slug.
+  #
+  # Read by ROW NUMBER via `_rowfield`, never by `read -r a b c ...` on this
+  # TSV — the same bug `cmd_nodes_all`'s own comment documents: tab is an IFS
+  # *whitespace* character, so `read` silently collapses an empty middle
+  # field (a task with no consumes:) and shifts every later column left, even
+  # with IFS set to tab alone. `awk -F'\t'` never does that.
+  local rowsfile; rowsfile="$(mktemp)"
+  _nodes_for "$root" "$slug" > "$rowsfile"
+  local n; n="$(awk 'END{print NR+0}' "$rowsfile")"
+
+  local cidx=0 r idatcol
+  r=1
+  while [ "$r" -le "$n" ]; do
+    idatcol="$(_rowfield "$rowsfile" "$r" 1)"
+    if [ "$idatcol" = "$cursor_key" ]; then cidx="$r"; break; fi
+    r=$((r + 1))
+  done
+
+  if [ "$cidx" -eq 0 ]; then
+    rm -f "$rowsfile"
+    local lookup; lookup="$(_task_lookup "$plan" "$idlc")"
+    case "$lookup" in
+      already\ *)
+        printf 'HANDOFF=unknown\nREASON=%s task %s is already checked; nothing to group\n' "$slug" "$id"
+        ;;
+      *)
+        printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$slug" "$id" "$relplan"
+        ;;
+    esac
+    return 0
+  fi
+
+  local -a gidx=("$cidx")
+  local union; union="$(_rowfield "$rowsfile" "$cidx" 3)"
+  local members; members="$(_rowfield "$rowsfile" "$cidx" 1)"
+  local stop=""
+  if [ "${#gidx[@]}" -ge "$cap" ]; then
+    stop="cap"
+  else
+    local j=$((cidx + 1)) overlap cfiles cconsumes
+    while :; do
+      if [ "$j" -gt "$n" ]; then stop="end"; break; fi
+      cfiles="$(_rowfield "$rowsfile" "$j" 3)"
+      overlap="$(_pipe_overlap "$union" "$cfiles")"
+      if [ "$overlap" != "1" ]; then stop="scope"; break; fi
+      cconsumes="$(_rowfield "$rowsfile" "$j" 4)"
+      if ! _deps_ok "$cconsumes" "$slug" "$plan" "$members"; then stop="deps"; break; fi
+      gidx+=("$j")
+      union="$(_pipe_union "$union" "$cfiles")"
+      members="${members}|$(_rowfield "$rowsfile" "$j" 1)"
+      if [ "${#gidx[@]}" -ge "$cap" ]; then stop="cap"; break; fi
+      j=$((j + 1))
+    done
+  fi
+
+  printf 'GROUP=%s\n' "$cursor_key"
+  local k midlc mid mproduces
+  for k in "${gidx[@]}"; do
+    mid="$(_rowfield "$rowsfile" "$k" 1)"
+    mproduces="$(_rowfield "$rowsfile" "$k" 5)"
+    midlc="$(printf '%s' "${mproduces#*#}" | tr '[:upper:]' '[:lower:]')"
+    printf 'MEMBER=%s\t%s\n' "$mid" "$(_member_title "$plan" "$midlc")"
+  done
+  printf 'FILES=%s\n' "$union"
+  printf 'STOP=%s\n' "$stop"
+  rm -f "$rowsfile"
+}
+
+# --- handoff bundling (packet-bundling-t5) -----------------------------------
+# `cmd_handoff` below is the real dispatcher `handoff` invokes; it does
+# nothing itself beyond picking `_handoff_one` (no comma — the original,
+# unchanged path) or `_handoff_bundle` (a comma-joined list). The comma split
+# itself is inlined at the top of `_handoff_bundle`, exactly mirroring
+# `runstate.sh`'s own `_rs_split_pkt_ids` (same malformed-shape checks: a
+# leading, trailing, or doubled comma is a usage error, before anything
+# prints) rather than factored into its own function -- a helper that `die`s
+# must be called DIRECTLY, never through a process-substitution `< <(...)`
+# feeding a `while read` loop, which runs it in a DETACHED subshell whose
+# `exit` is invisible to the caller's `set -e` (the read loop just sees the
+# pipe close early and continues as if nothing happened — this shipped once,
+# was caught by `test-gspec-backlog.sh`'s malformed-comma-list cases reading
+# `rc=0`, and is exactly the same class of subshell trap CLAUDE.md's
+# `trim-note` SIGPIPE story warns about). Two more small helpers, reused
+# rather than copied: `_plan_order` gives the plan's OWN id order (both
+# checked and unchecked — unlike `_nodes_for`, which only emits unchecked
+# rows — because a bundle member's position in the file is what "plan order"
+# means here, not its presence in the backlog); `_routed_hand_off_feature` is
+# documented at the `handoff` header entry above.
+
+# _plan_order <plan> — every task id in <plan>, lowercased, FIRST occurrence
+# only, in plan (file) order. Same `_TASK_LINE_RE` family every other reader
+# in this file shares — never a second pattern for "what is a task line".
+_plan_order() {
+  local plan="$1"
+  awk '
+    /'"$_TASK_LINE_RE"'/ {
+      desc = $0
+      sub(/'"$_TASK_LINE_PREFIX"'/, "", desc)
+      match(desc, /^'"$_TASK_ID_CLASS"'/)
+      lid = tolower(substr(desc, 1, RLENGTH))
+      if (!(lid in seen)) { seen[lid] = 1; print lid }
+    }
+  ' "$plan"
+}
+
+# _routed_hand_off_feature <root> <pkt> — has <pkt>'s LATEST routing record in
+# THIS run's `.agents/loop/<run_id>/routing.jsonl` already recorded token
+# `hand-off-feature`? Mirrors `runstate.sh`'s own
+# `_rs_latest_routing_token`/`cmd_handoff` check (ADR 0028 T9) rather than
+# calling into `runstate.sh` — packet-bundling-t5's FILES scope is this
+# adapter alone, and this read sits OUTSIDE the pinned gspec contract, exactly
+# like `interlock`'s `.gspec/build/status.json` read: FAIL-SOFT. No
+# run-state.yaml, no `run_id:` line, an unsafe run_id, or no routing.jsonl all
+# mean "not routed" — never a reason to refuse a bundle. Returns 0 (true)
+# only on a positive `hand-off-feature` match; 1 (false) otherwise, including
+# every fail-soft case above.
+_routed_hand_off_feature() {
+  local root="$1" pkt="$2" rsfile run_id routing_file line token
+  rsfile="$root/.agents/run-state.yaml"
+  [ -f "$rsfile" ] || return 1
+  run_id="$(awk '
+    /^run_id:[[:space:]]*/ {
+      sub(/^run_id:[[:space:]]*/, "")
+      gsub(/^["'"'"']|["'"'"']$/, "")
+      print; exit
+    }' "$rsfile")"
+  [ -n "$run_id" ] || return 1
+  # Validated before use as a path component -- the same discipline ADR
+  # 0028's driver-mode mark applies to a session id, for the same reason: an
+  # unvalidated value must never be trusted to build a filesystem path.
+  case "$run_id" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  routing_file="$root/.agents/loop/$run_id/routing.jsonl"
+  [ -f "$routing_file" ] || return 1
+  line="$(grep -F "\"packet\":\"${pkt}\"" "$routing_file" 2>/dev/null | tail -1 || true)"
+  [ -n "$line" ] || return 1
+  token="$(printf '%s' "$line" | sed -E 's/.*"token":"([^"]*)".*/\1/')"
+  [ "$token" = "hand-off-feature" ]
+}
+
+# _handoff_bundle <raw-ids> <root> — see the `handoff` entry in the header
+# Subcommands list. Validates every member BEFORE printing anything, so a
+# refusal never leaves partial output: pass 1 resolves each id and confirms
+# every member names the SAME feature; pass 2 confirms each member actually
+# names a task in that feature's plan and has not already been routed
+# `hand-off-feature` this run. Only once every member clears both passes does
+# it print `BUNDLE=`/`BUNDLE_FILES=` and each member's block, UNCHANGED from
+# `_handoff_one`'s own output, in PLAN ORDER — never the order the caller
+# listed them in.
+_handoff_bundle() {
+  local raw="$1" root="$2"
+  # Splits on a bare comma only (no whitespace form), duplicates kept -- the
+  # three malformed shapes a comma list can take (leading, trailing, doubled)
+  # are rejected up front, called DIRECTLY (no subshell) so `die`'s `exit`
+  # terminates the whole script under `set -e`, exactly as it does everywhere
+  # else in this file.
+  case "$raw" in
+    ,*|*,|*,,*) die "handoff: packet id list must not contain an empty member" ;;
+  esac
+  local -a raw_ids
+  IFS=',' read -r -a raw_ids <<<"$raw"
+  local n="${#raw_ids[@]}"
+
+  # --- pass 1: resolve every member; confirm one shared feature -------------
+  local -a idlcs
+  local bundle_slug="" i=0 tid resolved slug id
+  while [ "$i" -lt "$n" ]; do
+    tid="${raw_ids[$i]}"
+    resolved="$(_resolve_task_id "$tid" "$root")"
+    case "$resolved" in
+      NOGSPEC)
+        printf 'HANDOFF=unknown\nREASON=no gspec/ directory — gspec is optional (ADR 0020 D4)\n'
+        return 0
+        ;;
+      UNRESOLVED)
+        printf 'HANDOFF=unknown\nREASON=%s does not resolve to a gspec task id — no plan resolves this packet\n' "$tid"
+        return 0
+        ;;
+      REFUSED\ *)
+        die "handoff: ${tid}: ${resolved#REFUSED }"
+        ;;
+    esac
+    slug="$(printf '%s' "$resolved" | cut -f2)"
+    id="$(printf '%s' "$resolved" | cut -f3)"
+    if [ -z "$bundle_slug" ]; then
+      bundle_slug="$slug"
+    elif [ "$slug" != "$bundle_slug" ]; then
+      printf 'HANDOFF=unknown\nREASON=%s resolves to feature %s, but this bundle is feature %s — grouping across features is out of scope\n' "$tid" "$slug" "$bundle_slug"
+      return 0
+    fi
+    idlcs[i]="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+    i=$((i + 1))
+  done
+
+  local pp plan relplan
+  pp="$(_resolve_plan_path "$bundle_slug" "$root")"
+  if [ -n "$pp" ]; then
+    plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
+  else
+    printf 'HANDOFF=unknown\nREASON=no plan file for feature %s in any gspec layout\n' "$bundle_slug"
+    return 0
+  fi
+
+  # --- pass 2: confirm each member is a real task and not already routed ----
+  # --- away as hand-off-feature ----------------------------------------------
+  local rec pkt
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    rec="$(_task_record "$plan" "${idlcs[$i]}")"
+    if [ -z "$rec" ]; then
+      printf 'HANDOFF=unknown\nREASON=%s has no task %s in %s\n' "$bundle_slug" "${raw_ids[$i]}" "$relplan"
+      return 0
+    fi
+    pkt="${bundle_slug}-${idlcs[$i]}"
+    if _routed_hand_off_feature "$root" "$pkt"; then
+      printf 'HANDOFF=refused\nREASON=hand-off-feature\nPACKET=%s\n' "$pkt"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+
+  # --- every member clears both passes: determine PLAN order ---------------
+  # Walk the plan's own id order once and claim each member's FIRST unclaimed
+  # occurrence -- `_plan_order` dedups by first sighting, so a duplicated
+  # member id in the caller's list claims its slot once and any repeat is
+  # simply not re-emitted, never a second copy of the same block.
+  local -a order_idx claimed
+  i=0
+  while [ "$i" -lt "$n" ]; do claimed[i]=0; i=$((i + 1)); done
+  local pid m_i
+  while IFS= read -r pid; do
+    m_i=0
+    while [ "$m_i" -lt "$n" ]; do
+      if [ "${claimed[$m_i]}" = "0" ] && [ "${idlcs[$m_i]}" = "$pid" ]; then
+        order_idx+=("$m_i")
+        claimed[m_i]=1
+        break
+      fi
+      m_i=$((m_i + 1))
+    done
+  done < <(_plan_order "$plan")
+
+  local bundle_ids="" oi
+  for oi in "${order_idx[@]}"; do
+    bundle_ids="${bundle_ids}${bundle_ids:+,}${bundle_slug}-${idlcs[$oi]}"
+  done
+  printf 'BUNDLE=%s\n' "$bundle_ids"
+
+  # BUNDLE_FILES: the union of each member's own scope, through the SAME
+  # `_nodes_for` files: > sidecar > empty precedence `group` uses -- ONE
+  # `_nodes_for` call for the whole feature, read per member, never
+  # re-derived.
+  local nodesfile; nodesfile="$(mktemp)"
+  _nodes_for "$root" "$bundle_slug" > "$nodesfile"
+  local bundle_files="" mfiles
+  for oi in "${order_idx[@]}"; do
+    mfiles="$(WANT="${bundle_slug}-${idlcs[$oi]}" awk -F'\t' '$1 == ENVIRON["WANT"] { f = $3 } END { print f }' "$nodesfile")"
+    bundle_files="$(_pipe_union "$bundle_files" "$mfiles")"
+  done
+  rm -f "$nodesfile"
+  printf 'BUNDLE_FILES=%s\n' "$bundle_files"
+
+  # One seen-anchor set and one running word count across every member
+  # (handoff-spec-inlining-t4): reset once here, advanced by each member, and
+  # the single `BUDGET-REACHED=` line printed after the last one.
+  _HB_BUNDLE=1; _HB_USED=0; _HB_REACHED=0; _HB_SEEN=""
+  _HB_INLINED=0; _HB_NAMED=0; _HB_FILES=""
+  for oi in "${order_idx[@]}"; do
+    _handoff_one "${raw_ids[$oi]}" "$root"
+  done
+  _HB_BUNDLE=0
+  if [ "$_HB_REACHED" = "1" ]; then
+    printf 'BUDGET-REACHED=%s words\n' "$(_handoff_word_budget "$root")"
+  fi
+  _handoff_spec_line
+}
+
+# cmd_handoff <packet-id[,packet-id...]> [root] — the real dispatcher; see the
+# `handoff` entry in the header Subcommands list. A comma anywhere in the
+# first argument selects the bundling path; its absence takes the ORIGINAL,
+# unwrapped single-id path, so a single id's output is byte-identical to
+# before bundling existed.
+cmd_handoff() {
+  local task="${1:-}"; [ -n "$task" ] || die "handoff: need a packet id"
+  local root; root="$(_root "${2:-}")"
+  case "$task" in
+    *,*) _handoff_bundle "$task" "$root" ;;
+    *)   _handoff_one "$task" "$root" ;;
+  esac
 }
 
 cmd_check_task() {
@@ -1076,9 +3542,10 @@ cmd_task_status() {
         die "task-status: ${resolved#REFUSED }"
         ;;
       *)
-        local slug tid plan="" relplan="" pp
+        local slug tid ambiguous plan="" relplan="" pp
         slug="$(printf '%s' "$resolved" | cut -f2)"
         tid="$(printf '%s' "$resolved" | cut -f3)"
+        ambiguous="$(printf '%s' "$resolved" | cut -f4)"
         pp="$(_resolve_plan_path "$slug" "$root")"
         if [ -n "$pp" ]; then
           plan="$(printf '%s' "$pp" | cut -f1)"; relplan="$(printf '%s' "$pp" | cut -f2)"
@@ -1086,14 +3553,66 @@ cmd_task_status() {
         if [ -z "$plan" ]; then
           state="unknown"; reason="no plan file for feature $slug in any gspec layout"
         else
-          local idlc lookup
+          local idlc lookup tcount
           idlc="$(printf '%s' "$tid" | tr '[:upper:]' '[:lower:]')"
-          lookup="$(_task_lookup "$plan" "$idlc")"
-          case "$lookup" in
-            flip\ *)    state="unchecked"; reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
-            already\ *) state="finished";  reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
-            *)          state="unknown";   reason="no task $tid in $relplan" ;;
-          esac
+          # Critical 1: a plan file that resolved but has NO task lines this
+          # adapter can parse (empty, truncated, mid-migration, or an
+          # unrecognized task-line shape) must read `unknown`, not `gone` --
+          # `_task_lookup` printing nothing means either "no such id" or "no
+          # ids at all here", and only the first is positive evidence.
+          tcount="$(_plan_task_line_count "$plan")"
+          if [ "$tcount" -eq 0 ]; then
+            state="unknown"
+            reason="plan file $relplan has no task lines this adapter can parse"
+          else
+            lookup="$(_task_lookup "$plan" "$idlc")"
+            case "$lookup" in
+              flip\ *)    state="unchecked"; reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+              already\ *) state="finished";  reason="${relplan}#$(printf '%s' "$lookup" | cut -d' ' -f2)" ;;
+              *)
+                # Critical 2: the packet-id form's longest-slug-wins guess is
+                # safe for check-task (a wrong guess is a loud rc=4), but NOT
+                # here -- reporting `gone` on an ambiguous resolution would
+                # silently claim a task that is actually live in the OTHER
+                # colliding feature was abandoned. An ambiguous resolution
+                # can only ever read `unknown`.
+                if [ "$ambiguous" = "1" ]; then
+                  state="unknown"
+                  reason="packet id $id is ambiguous -- its feature slug collides with another feature's ($slug matched among others); cannot confirm the task no longer exists"
+                else
+                  # The plan file itself resolved and parsed (we got this
+                  # far), and no longer names this id -- but that absence is
+                  # only positive evidence of re-decomposition if the id
+                  # actually WAS a task here at some point (loop-measurement
+                  # T2 "gone requires positive evidence" gate). Without this
+                  # check, a non-gspec packet id that merely happens to
+                  # prefix-match a live feature's slug (`ts-fix-login-bug`
+                  # against feature `ts`) would misread as `gone` and
+                  # `sweep-open --gone` would record it `abandoned` -- the
+                  # PLAN preamble (loop-measurement) is explicit that a
+                  # non-gspec id with no plan is `unknown`/`interrupted`, the
+                  # safe direction; this is that same rule applied to a
+                  # prefix-collision id whose feature DOES have a plan.
+                  local hist
+                  hist="$(_task_history_probe "$relplan" "$root" "$idlc" "$slug")"
+                  case "$hist" in
+                    FOUND)
+                      state="gone"
+                      reason="no task $tid in $relplan (confirmed removed: $tid appears earlier in $relplan's git history)"
+                      ;;
+                    NEVER)
+                      state="unknown"
+                      reason="no task $tid in $relplan; $tid never appears in $relplan's git history -- it was never a gspec task here"
+                      ;;
+                    *)
+                      state="unknown"
+                      reason="no task $tid in $relplan; $relplan's git history is unavailable, so this cannot be confirmed either way"
+                      ;;
+                  esac
+                fi
+                ;;
+            esac
+          fi
         fi
         ;;
     esac
@@ -1117,8 +3636,8 @@ cmd_nodes_all() {
   _has_gspec "$root" || return 0
   local slug
   # Deferred features emit no nodes, for the same reason `next` skips them:
-  # otherwise /gaffer:build-packet-dependency-tree schedules waves of work the
-  # human has explicitly decided not to start.
+  # otherwise the loop queues work the human has explicitly decided not to
+  # start.
   #
   # The filter is awk, NOT `while IFS=$'\t' read -r a b c ...`, and that is a bug
   # fix rather than a style choice. TAB is an IFS *whitespace* character, so bash
@@ -1175,5 +3694,10 @@ case "${1:-}" in
   files-status) shift; cmd_files_status "$@" ;;
   check-task) shift; cmd_check_task "$@" ;;
   task-status) shift; cmd_task_status "$@" ;;
-  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>} [root]" ;;
+  handoff)    shift; cmd_handoff "$@" ;;
+  group)      shift; cmd_group "$@" ;;
+  capability-drift) shift; cmd_capability_drift "$@" ;;
+  complete-capabilities) shift; cmd_complete_capabilities "$@" ;;
+  record-completion) shift; cmd_record_completion "$@" ;;
+  *) die "usage: gspec-backlog.sh {pin|check|features|next|plans|nodes <slug>|nodes-all|interlock|files-status|check-task <task>|task-status <id[,id...]>|handoff <packet-id>|group <packet-id> [--cap <n>]|capability-drift|complete-capabilities <slug>|record-completion --tasks <id[,id...]> [--feature <slug>] --restore index|head|record-completion --drift --restore index|head} [root]" ;;
 esac

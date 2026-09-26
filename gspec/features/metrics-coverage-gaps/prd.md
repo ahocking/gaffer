@@ -1,6 +1,6 @@
 ---
 spec-version: v2
-depends_on: [run-metrics]
+depends_on: [run-metrics, loop-measurement]
 ---
 
 # Feature: metrics-coverage-gaps
@@ -21,13 +21,8 @@ feature exists rather than the note being quietly dropped.
   - so how often the guard prompts, and for what, is currently invisible
   - needs a different sensor than the existing hook — establish which event carries it before designing the field
 
-- [ ] **P1**: Failed and uncommitted packets appear in the run packet
-  - a packet exists only via its green-commit trailer, so work that failed or was rolled back leaves no row at all
-  - `record-outcome` (v3.4) attests the outcome of packets that DID commit; it does not create rows for those that did not
-  - without this, packet counts remain survivorship — the more work is discarded, the better a run looks
-
 - [ ] **P2**: Edit overlap distinguishes correction from division of labour within a packet
   - `packets[].edits` and `contended_files` (v3.4) give per-role counts and same-file overlap by hash
-  - what is still missing is a derived rework rate by editor role, which needs both this and failed-packet rows above
-  - depends on P1 failed-packet capture to avoid computing a rate over green work only
+  - what is still missing is a derived rework rate by editor role, which needs both this and the failed-packet rows `loop-measurement` now owns
+  - depends on `loop-measurement`'s outcome rows to avoid computing a rate over green work only
 </content>

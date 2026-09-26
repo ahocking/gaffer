@@ -48,9 +48,20 @@ logs/
 # for the same ADR 0009 reasons as run-state above. The assembled run-metrics.json
 # is a portable single file — archive a run by copying it out, not by committing
 # this live directory. The bare-prefix glob also covers an archived copy named
-# `.agents/metrics-<id>/`.
+# `.agents/metrics-<id>/`, and also covers
+# .agents/metrics/driver-mode/<session>.jsonl (plugin thin-loop-driver T3).
 .agents/metrics/
 .agents/metrics*
+
+# The loop driver's own run directories (plugin thin-loop-driver T3/T7): the
+# session-keyed driver-mode mark (.agents/driver-mode/<session-id>) and
+# .agents/loop/<run_id>/ (handoff files, script-written result files, the
+# routing log). Local run bookkeeping, NOT product history; same reasons as
+# run-state.yaml above, including that an unignored entry here would be swept
+# by the pause path's `git stash --include-untracked` and read by `reconcile`
+# as scratch sitting on the green checkpoint.
+.agents/driver-mode/
+.agents/loop/
 
 # Orchestration pause sentinel(s) — the cooperative-pause REQUEST channel (ADR
 # 0017). Transient, machine-local, and NOT product history: a running loop/lanes

@@ -1,5 +1,20 @@
 # Check-in shapes — what the guided loop PRODUCES (ADR 0004)
 # -----------------------------------------------------------------------------
+#
+# ## The LOOP no longer uses this file (ADR 0028)
+#
+# Every agent `/gaffer:run-loop` and `/gaffer:resume` dispatch returns **one status
+# line**, not a check-in — see `status-line.md` in this directory. The driver reads
+# that line and nothing else; the agent's detail goes to its own result file, which
+# the driver never opens. Nothing in the loop parses the shapes below, and the human-
+# facing loop reports (`report-templates.md`) are assembled from
+# `runstate.sh run-digest`, not from a check-in.
+#
+# What is left for this file is a Chief Engineer dispatched for SELF-CONTAINED work
+# outside a loop packet — no run-state of its own, so it cannot record findings
+# itself and states them here instead (see `Findings:` below). If you are driving a
+# packet backlog, you want `status-line.md`.
+#
 # The plugin produces well-formed check-ins at the right moments; it does NOT
 # deliver them. Delivery is the frontend's job — Claude Desktop on the MacBook
 # (synced to Claude Dispatch on the phone) or direct interaction. Build no
@@ -10,12 +25,14 @@
 # a genuine ambiguity the loop cannot resolve on its own. Keep both short and
 # action-oriented. Copy a shape and fill it in.
 #
-# THIS IS THE AGENT-TO-AGENT WIRE FORMAT, not what the human reads. A lane or a
-# dispatched Chief Engineer returns this shape to the scheduler, which parses it and
+# THIS IS THE AGENT-TO-AGENT WIRE FORMAT, not what the human reads. A dispatched
+# Chief Engineer returns this shape to whoever dispatched it, which parses it and
 # records run-state from it — so keep it machine-shaped and keep the keys stable.
-# Whoever holds the main context window renders it into the human-facing shapes in
-# `report-templates.md` before it reaches the human; that rendering is a pure transform
-# of the text below, never a reason to go back to the repo.
+# Whoever holds the main context window renders it into human-facing prose before it
+# reaches the human, obeying `report-conventions.md`; that rendering is a pure
+# transform of the text below, never a reason to go back to the repo. It does NOT
+# render into a loop shape — the loop's shapes are built from
+# `runstate.sh run-digest` (ADR 0028), and this file is not one of their inputs.
 
 # --- Status update (checkpoint) ----------------------------------------------
 # Emitted when a packet lands green, or when the run pauses/completes.
@@ -30,14 +47,16 @@
   - packets: <id[,id...]> — <one line: a gotcha, a constraint, or a decision AND why>
 - stale-findings: <N>                  # omit unless the index exceeds ORCH_FINDINGS_INDEX_MAX_BYTES
 
-# `Findings:` is how a PARALLEL LANE reports something worth keeping past its packet.
-# A lane must not call `runstate.sh add-finding` itself — it has no run-state in its
-# worktree and it is not run-state's writer (ADR 0022 / ADR 0016) — so it states the
-# line here and the scheduler records it on collection, and each line MUST carry the
-# packet id(s) it scopes to (`add-finding --packets` is now mandatory — ADR 0024 —
-# and there is no run-wide finding, so the scheduler has nothing to pass without it).
-# In sequential mode the loop records findings directly and this key is usually
-# unnecessary.
+# `Findings:` is how a DISPATCHED CHIEF ENGINEER with no run-state of its own
+# (self-contained work in an isolated worktree, not a loop packet — see the
+# Concurrency guidance in agents/chief-engineer.md) reports something worth
+# keeping past its packet. It must not call `runstate.sh add-finding` itself in
+# that case — there is no run-state to write to, and it is not run-state's
+# writer (ADR 0022) — so it states the line here and whoever dispatched it
+# records it on collection, and each line MUST carry the packet id(s) it scopes
+# to (`add-finding --packets` is mandatory — ADR 0024 — and there is no
+# run-wide finding, so nothing can be recorded without it). The loop records
+# findings directly and this key is usually unnecessary there.
 #
 # What does NOT go here: "this should be built/fixed". That is backlog — a gspec
 # task/feature ordered via .agents/roadmap.yaml (the ADR 0020 seam). A findings list

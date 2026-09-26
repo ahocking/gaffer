@@ -7,6 +7,14 @@
   autonomy + the hard/soft gate split). This ADR adds a fourth level above
   `autonomous` and moves three more git operations from hard gates to soft gates;
   it does not change any level at or below `autonomous`.
+- Superseded in part by: the `retire-autonomy-levels` feature (2026-09-20), which
+  removes the fourth level this ADR added — `full-autonomy` no longer exists as a
+  level, and neither do its rank, the resolution order and `autonomy_ceiling`
+  clamp in §1, or the "vs lower" cases in `scripts/test-guard.sh`. The decision it
+  carried **stands and is now unconditional**: `git merge`, `git rebase` and
+  `git push` are delegated onto **non-`main`** branches (§2) in every repository
+  and every session, under the preserved danger floor (§3) and the design-doc-driven
+  escalation (§4). Read "at `full-autonomy`" below as "always".
 
 ## Context
 

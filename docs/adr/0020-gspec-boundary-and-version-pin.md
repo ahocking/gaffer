@@ -258,6 +258,50 @@ ADR 0013's "one roadmap" standing rule is unchanged and now easier to hold: ther
 one sequencing source, it is smaller, and two of its former fields cannot drift
 because they are no longer written down.
 
+#### D2 amendment (2026-09-15) — capability acceptance-criteria bullets, for `handoff`
+
+**The consumed contract widens by exactly one thing: a capability's indented
+acceptance-criteria sub-bullets** (`  - <criterion>`, including a wrapped
+multi-line one, kept whole) **are now read, not just the capability line
+itself.** Everything else D2 says about the PRD is unchanged — completion is
+still derived only from the checkbox, never from a criterion's text or count.
+
+`gspec-backlog.sh handoff <packet-id>` is the reason and the **only** reader.
+`thin-loop-driver` (T8, T16) needs a self-contained handoff file it can pipe
+straight into an implementer's brief — task text, file scope, and *what "done"
+means for this task*, which for a capability-level PRD lives one level below
+the checkbox, in its sub-bullets. Nothing else in this plugin reads them:
+`_feature_done` still stops at the checkbox, `nodes`/`nodes-all` still never
+open the PRD for anything but `depends_on`, and **`runstate.sh` still never
+reads `gspec/` at all** — the handoff file is gspec-backlog.sh's output, piped
+in by the loop, not a second gspec reader growing inside run-state.
+
+**The match is exact, never fuzzy, by the same reasoning as every other lookup
+in this file.** `handoff` matches a task's `covers:` quote (split on the
+`' · '` separator already in use for more than one capability) against a
+capability's text with only outer-whitespace trimmed — no normalization, no
+partial match. A quote that matches nothing is reported as `UNMATCHED=`, the
+same shape as an unresolved id elsewhere in this adapter: loud and specific,
+never guessed at. This is what keeps the widened contract from becoming a
+second, softer place completion could be inferred from — a criterion's
+*wording* is never load-bearing here, only whether the quote naming it exists
+verbatim.
+
+**Scope stays narrow on purpose.** `arch.md` and `design.html` are inside the
+contract only by their anchored sections (amended by `handoff-spec-inlining`):
+both are resolved through `_resolve_arch_path` / `_resolve_design_path`, and
+`handoff` inlines the `arch.md` section each `- arch:` anchor names and, for a
+`### Screen:` section, its `design.html` element, so no path to either file
+surfaces as an ARCH/DESIGN line in a handoff. A path appears only on the
+`SPEC=read by heading` line, for a section past the word budget or unmatched.
+The rest of either file is still not consumed, and `next` still only reports
+their paths. The legacy `**P0 — text**` capability
+shape `_feature_done` accepts for completion has no sub-bullet shape reliable
+enough to reproduce, so a quote against a legacy-shaped PRD correctly reads
+`UNMATCHED=` rather than guessing at one; regenerating with `/gspec-feature`
+remains the remedy, as it is everywhere else legacy shapes surface in this
+adapter.
+
 ### D3 — Pin gspec, on two independent axes
 
 gspec is published to npm (all releases 1.0.0 → 2.7.0; `latest` = 2.7.0), so
@@ -300,8 +344,10 @@ gspec 3.0 relocated everything about a feature into one folder:
 > `gspec/features/<slug>/tasks.md` — was `gspec/tasks/<slug>.md`
 > `gspec/features/<slug>/arch.md` and `design.html` — **new**, written by
 > `/gspec-architect`, and deliberately **outside the consumed contract**: they say
-> what to build, which is gspec's half of the seam. The loop hands an implementer
-> their paths; the adapter never parses them.
+> what to build, which is gspec's half of the seam. The loop handed an implementer
+> their paths, and the adapter read nothing in them *(amended 2026-09-22,
+> `handoff-spec-inlining`: anchored sections are now inside the contract; see
+> "Scope stays narrow on purpose" above)*.
 
 Plus `spec-version: v1` → **`v2`**, `deployable:` → `module:` in architecture specs,
 and `gspec/design/` retired as a concept.
@@ -368,6 +414,69 @@ blocks editing them, and it is right to.
 
 Sweeps re-run for this revision: `test-gspec-backlog.sh` (257) and
 `test-migrate.sh` (234), plus the other eight, all green.
+
+### D3 revision (2026-09-20) — raised to gspec 3.2.0; nothing in the consumed contract moved
+
+gspec 3.2.0 ("cut build time and tokens end to end", upstream PR #17) is pinned
+as of this revision. Before bumping, the four things this adapter and
+`/gaffer:migrate` actually touch were checked at the tag, not from the release
+notes:
+
+- **Layout and `spec-version`: unchanged.** `_plan_paths`/`_prd_paths` and
+  `GSPEC_SPEC_VERSIONS=v1 v2` stand as they are.
+- **`.gspec/build/status.json`: unchanged.** Same file, same keys, same five
+  `state` values (`running`, `complete`, `paused_review`, `failed`, `crashed`),
+  still carries `pid`. The new `paused_limit` is a `--notify` hook state only; a
+  usage-limit stop still writes `failed`. `cmd_interlock` needs no change.
+- **`templates/preamble.md`: byte-identical** to 3.1.1, so the `gspec:preamble`
+  markers, the conventions-card stamp and `_report_stale_lines` are unaffected.
+- **New on-disk things all fall under existing ignores** (`.gspec/build/screens/`,
+  extra `run.json` fields) or are installer-owned (`.claude/hooks/floors/
+  named-paths.mjs`, `render-lint.mjs`, revised agent and skill briefs).
+
+So the bump is the pin, the runbook rename, the migrate skill's strings, and one
+addition: **`migrate.sh detect` now prints `GSPEC_INSTALLED=`**, read from the
+`gspecVersion` stamp gspec writes into `.gspec/config.json` at install. That
+corrects a premise D3 stated — "gspec does not stamp its version into a project"
+— which has been false since 3.1.1 (the D9 note that the adapter *ignores* the
+stamp still holds for the version pin itself; a stamp says which tool was last
+installed, not which format the specs on disk carry). The line is informational
+and never a `FINDING=`: the pin exists to catch a format the adapter cannot
+parse, and a stale install parses fine — what it runs is the old writer,
+validator and orchestrator briefs. That is exactly why it is worth printing: a
+repo already on the 3.x folder layout is otherwise indistinguishable from an
+up-to-date one, and every gain 3.2.0 puts into its agents and skills is absent
+there until someone re-emits.
+
+*(Amended 2026-09-22: the runbook no longer carries a version in its name or its
+text. It is `docs/gspec-migration.md`, and it and `skills/migrate/SKILL.md` send
+the reader to `scripts/gspec-backlog.sh pin` for the value, whose only home is
+`GSPEC_PINNED_VERSION` in `scripts/gspec-backlog.sh`. A pin bump therefore no
+longer includes a runbook rename or a migrate-skill string change.)*
+
+**What 3.2.0 changes for a gaffer consumer, and what it does not.** Nearly all
+of its measured saving (−27% cost, −54% implementer input per run, upstream
+figures) lives in the `gspec build` driver — a 120-turn implementer cap with
+continuation, continuation briefs that inline only the cited spec blocks (spec
+reads per continuation ~14 → 1.4), a first slice briefed on dependency group 1
+only, mechanical auto-repair of lint findings, anchored revision briefs, and a
+proof-based parallel merge. gaffer does not run that driver (D1, D5), so none of
+that fires in a `/gaffer:run-loop` packet. What a consumer gets from the bump is
+the shared brief text (`gspec-engineer`'s plan floors, `gspec-qa`'s `anchor:`
+contract, the writer self-checks), which makes `/gspec-feature` and
+`/gspec-plan` revision rounds cheaper. The three driver-side mechanisms whose
+finding gaffer's own metrics independently reproduced (an implementer taking most
+of the input; uncapped runs; re-reads on continuation) are filed as features to
+port into the handoff and implementer, not adopted by switching drivers:
+`handoff-spec-inlining`, `implementer-continuation`, `dispatch-progress-metrics`.
+The `- **route:**` convention 3.2.0 adds to `arch.md` Screen blocks is invisible
+to this adapter today (`arch.md` is outside the consumed contract) and becomes
+relevant only when `handoff-spec-inlining` pulls anchored sections of it inside —
+at which point it gets a resolver and a sweep case like the other two files.
+*(Amended 2026-09-22: that has now happened. `handoff-spec-inlining` resolves
+`arch.md` through `_resolve_arch_path`, and a `- **route:**` line inside a
+screen block is carried without ending it; see the sweep case in
+`scripts/test-gspec-backlog.sh`.)*
 
 ### D4 — gspec is the only supported spec source, but is not required
 
@@ -640,8 +749,288 @@ report about `Promise.all`, not as a feature request) and a suggested order.
   agent has no `Skill` tool, so briefs must carry file paths
 - gspec 2.7.0: `README.md`, `docs/gspec-v2-design.md`, `docs/harness-parity.md`,
   `lib/build.js`, `plugin/hooks/floors/`, `plugin/skills/personas/gspec-engineer.md`
-- gspec 3.1.1 (the D3 revision): `lib/spec-version.js` (`SPEC_VERSION = 'v2'`),
+- gspec 3.2.0 (the 2026-09-20 D3 revision): `lib/build.js` (`STATUS_PATH`, `STATE_LABEL`, unchanged from 3.1.1), `lib/notify.js` (`paused_limit` is a notify state), `templates/preamble.md` (byte-identical), upstream PR #17 and `website/src/pages/releases.astro` (the measured figures)
+- gspec 3.1.1 (the 2026-08-23 D3 revision): `lib/spec-version.js` (`SPEC_VERSION = 'v2'`),
   `plugin/hooks/floors/paths.mjs` (the layout vocabulary, and its own both-layouts
   rationale), `dist/claude/commands/gspec-migrate.md` (the relocation it performs),
   `dist/claude/commands/gspec-plan.md` and `agents/feature-architect.md` (where the
   new artifacts are written), `templates/preamble.md`
+
+## Relocated from skills (2026-09-25) — the resume skill's driver-claim reason
+
+Moved out of `skills/resume/SKILL.md` §2 by `skill-prompt-trim`. The skill keeps
+"so the next session does not read this live run as a crash (ADR 0020 D5)". It used
+to read:
+
+> The claim is not bookkeeping: `status: running` alone cannot tell a crashed
+> session from *this* one, so without it the next session reads your live run as a
+> crash and starts driving too (ADR 0020 D5).
+
+## Relocated from skills (2026-09-25) — the run-loop skill's bundle-forming reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** step by
+`skill-prompt-trim`. No ADR owns bundle formation; this one, which owns the adapter
+whose `group` subcommand forms a bundle, is the closest. The skill keeps each rule
+with at most a one-clause reason; the fuller wording is recorded here.
+
+- **What a non-zero `group` exit means.** The skill keeps "(stderr only, no
+  `HANDOFF=`/`GROUP=` line) leaves no group to read". It used to read:
+
+  > **A non-zero exit** (`group`'s own `die` paths — a refused id, ADR 0025 D1, or a
+  > malformed argument — write to stderr only, with no `HANDOFF=`/`GROUP=` line at
+  > all) means the command produced no group to read
+
+- **Why a `HANDOFF=unknown` packet's tier is judged as for any single packet.** The
+  skill keeps the rule without this reason:
+
+  > (nothing about that judgment depended on `group`'s output to begin with — a
+  > non-gspec packet never had it)
+
+- **Why a multi-member bundle's tier has three possible values.** The skill keeps "a
+  multi-member `MEMBERS` is never `design-heavy`". It used to read:
+
+  > a multi-member `MEMBERS` is never `design-heavy` by construction, so this can only
+  > land on `mechanical`, `integration`, or `docs`.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's landing and driver-claim reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the cursor advances past every member, wherever each sits.** The skill keeps
+  "never assume the members are a consecutive prefix of `pending`, whose order is not
+  the plan's". It used to read:
+
+  > the same rule §3.5's `discard-advance` uses, and for the same reason: `group`
+  > forms `$MEMBERS` from the plan in plan order, but `pending` is the loop's own
+  > chosen order, so never assume the members are a consecutive prefix of it.
+
+- **Why every `driver_*` key is carried.** The skill keeps "the driver claim (ADR 0020
+  D5), which `claim-driver` makes once at §2 and never re-makes". It used to read:
+
+  > Together they are the driver claim (ADR 0020 D5), what tells a crashed run apart
+  > from another session driving right now; `claim-driver` runs once at §2, so a key
+  > dropped here is not re-made, and `driver-status` reads the run as never claimed
+  > from that point on.
+
+## Relocated from skills (2026-09-25) — the migrate skill's layout, sequencing and verify reasons
+
+Moved out of `skills/migrate/SKILL.md` by `skill-prompt-trim`. This ADR owns the
+migration (the gspec boundary, the layouts the adapter reads, and `verify`'s packet
+count). The skill keeps each rule with at most a one-clause reason; the fuller wording
+is recorded here.
+
+- **Why a migration is done only when packets come out.** The skill keeps "a plan
+  whose task lines cannot be parsed reads as "nothing to do", not as "unreadable"".
+  It used to read:
+
+  > Every layout change here is a file move, and a file move *looks* migrated the
+  > instant it finishes. If the moved plans' task lines cannot be parsed, the backlog
+  > reads as **"nothing to do"** rather than as "unreadable", and the loop cheerfully
+  > reports a finished project.
+  > Measured on two production repos: a pure rename yielded **0 packets from 31 plan files**.
+
+  The report section repeated it:
+
+  > A migration is not done when the files have moved; it is done when packets come
+  > out the other end, so lead with that number rather than the file count.
+
+- **Why §2b is read before anything runs.** The skill keeps "the wrong order makes
+  the repo worse". It used to read:
+
+  > Doing both in the wrong order is the one way to make this worse rather than better, so
+  > read §2b before running anything. The human-facing version of the same sequence,
+  > for a person driving it across sessions, is the runbook
+
+- **Why the tree must be clean.** The skill keeps "so the migration reads as one
+  reviewable, revertable `git diff`". It used to read:
+
+  > and that is deliberate: a migration you cannot read as one `git diff` is not one you can review or revert.
+
+- **Why never on `main`.** The skill keeps the rule without this reason:
+
+  > You are about to move a lot of files; that belongs on a branch.
+
+- **Why an install-version mismatch is never a finding, and why the `why` is
+  relayed.** The skill keeps "since a stale install reads fine" and "since several
+  findings look cosmetic and are not". It used to read:
+
+  > because a stale install reads fine and merely runs the old briefs
+
+  > (a roadmap left under `gspec/` trips gspec's own spec-integrity floor on every write,
+  > and hard-blocks every turn on Codex)
+
+- **Why a flat layout is not breakage.** The skill keeps "the adapter reads all three
+  gspec layouts". It used to add:
+
+  > so the loop works exactly as before. What has changed is that the repo's *gspec commands* have moved on without it
+
+- **Why a half-moved feature is reported.** The skill keeps the next-`/gspec-plan`
+  consequence. It used to add:
+
+  > Unambiguous, because both files exist: one moved and one did not.
+
+  > (the adapter reads the plan where it is)
+
+- **Why a plan without a PRD is not diagnosed.** The skill keeps "it may be an
+  interrupted `/gspec-migrate` or a deliberate infra plan". It used to read:
+
+  > It is equally an interrupted `/gspec-migrate` *and* a deliberate infra plan that was
+  > never a product capability — one real consumer repo documents exactly that in its
+  > `.agents/roadmap.yaml`, with every task already checked and nothing depending on it.
+
+- **Why the feature-folder move is gspec's.** The skill keeps "gspec owns spec
+  **format and layout**, this plugin owns **execution**". It used to read:
+
+  > and that is a decision rather than a gap
+  > Three things make it gspec's move to make. It has to repair the relative links the
+  > relocation breaks — in *both* directions, including inbound links from specs that
+  > did not move, which is a judgment no glob makes. It has to reformat each file to the
+  > v2 body, which gspec does per file through its own `spec-migrator` agent. And it
+  > edits the files gspec's `task-immutability` floor is watching, so a shell `mv` racing that
+  > floor is a fight this plugin would lose loudly and intermittently.
+
+  > **Run these in order. The order is the whole point:**
+
+- **Why gspec is upgraded before `/gspec-migrate` runs.** The skill keeps "an old
+  gspec's `/gspec-migrate` migrates **toward `gspec/tasks/`**, the layout you are
+  leaving, and reports success". It used to read:
+
+  > A repo on old gspec has the *old* `/gspec-migrate` sitting in `.claude/commands/`,
+  > and that version migrates **toward `gspec/tasks/`** — the exact layout you are trying
+  > to leave. It will report success. You would then have to migrate twice, the second
+  > time over files the first pass had already rewritten.
+  > Reinstalling first re-stamps the command, the agents, the skills and the hook floors to the pinned version so `/gspec-migrate`
+  > means the right thing when you call it.
+
+- **Why `/gspec-migrate` writes no `arch.md` or `design.html`.** The skill keeps the
+  rule and the `/gspec-architect` pointer. It used to add:
+
+  > A v2 feature folder holds four files and migration relocates only the two that already existed; the other two
+  > are a judgment call, not a reformat.
+
+- **Why placeholder `arch:` lines are declined.** The skill keeps "with no `arch.md`
+  yet, gspec's own `plan-lint` floor rejects every such anchor". It used to read:
+
+  > The v2 plan bar adds one required field to a task — an `arch:` line naming anchors
+  > in the feature's `arch.md`. Migration never writes `arch.md`, so those anchors do
+  > not exist yet, and gspec's own `plan-lint` floor rejects an `arch:` whose anchor
+  > does not resolve. If the migrator offers to add placeholder `arch:` lines
+  > (its brief tells it to add placeholders "where the current format requires them"), decline:
+  > it produces files gspec itself then refuses.
+
+  > because "migrated" and "v2-conformant" are not the same state and a reader will assume they are.
+
+- **Why architecture altitude is only relayed.** The skill keeps "splitting it is
+  `/gspec-architect`'s job on a later pass". It used to read:
+
+  > but splitting it rewrites specs the user has already reviewed, so it is
+
+- **Why the spec relocation is committed before §3.** The skill keeps
+  "`migrate.sh apply` refuses on a dirty tree". It used to add:
+
+  > and you want the spec relocation readable as its own diff regardless.
+
+- **Why `apply` usually finds the plan move done.** The skill keeps "in one hop". It
+  used to add:
+
+  > rather than via the intermediate `gspec/tasks/` this plugin's own retrofit used.
+
+- **Why approval is awaited, and why two keys are dropped.** The skill keeps "this
+  rewrites a repo's spec layout" and "so a stored copy drifts". It used to add:
+
+  > it is not a routine edit.
+
+  > — storing either is how they drift
+
+- **Why a converted roadmap entry needs its `why`.** The skill keeps "`why` is what a
+  human needs to re-sequence later". It used to read:
+
+  > `why` is required precisely because it is the one thing a human needs when
+  > re-sequencing later.
+
+- **Why a vestigial `gspec/tasks/**` allow-path is dropped.** The skill keeps the
+  rule. It used to add:
+
+  > — PRD, plan, `arch.md`, `design.html` —
+
+  > an allow-path for a directory that no longer exists is the kind of line nobody removes later because nobody remembers what it was for.
+
+- **Why the repo's `CLAUDE.md` describes one layout only.** The skill keeps "since an
+  agent trusts this file without checking". It used to read:
+
+  > This one outlives the file move and matters most:
+
+  > since the whole value of this file is that an agent can trust it without checking.
+
+- **Why `verify`'s figures read as they do.** The skill keeps each rule. It used to
+  add:
+
+  > The plans moved but nothing can read them.
+
+  > , so a mostly-finished repo legitimately yields few packets.
+
+  > and making it a failure would mean refusing to pass a repo with nothing wrong. It is
+  > there so a half-finished `/gspec-migrate` is visible rather than silent.
+
+  > is the fastest way to see *which* features were left behind.
+
+- **Why legacy task lines are never rewritten.** The skill keeps "that edits
+  **checked** tasks, which gspec's immutability floor blocks". It used to add:
+
+  > not by `/gspec-plan`
+
+  > (that is what makes migration a safe move)
+
+  > and which destroys the record of what was built.
+
+- **Why the report's ⚠️ items are alerts, and why it has no tally.** The skill keeps
+  "an unrecognized capability line leaves a feature, and everything depending on it,
+  blocked forever" and "a migration is not a run". It used to read:
+
+  > an unrecognized capability line means a feature can never read as done, so
+  > everything depending on it stays blocked forever and the backlog quietly reports nothing to do.
+
+  > a migration is not a run and has nothing to count.
+
+## Relocated from skills (2026-09-25) — the new-project skill's pin and sequencing-overlay reasons
+
+Moved out of `skills/new-project/SKILL.md` (its preamble, §3 and §4) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here. The skill also said the skill that used to populate
+`.agents/task-files.yaml` "for `--parallel` mode is retired along with that mode
+(ADR 0016)"; that is history and is deleted, not relocated.
+
+- **Why gspec is version-pinned.** The skill keeps "since it changes rapidly". It used
+  to add:
+
+  > a fixed known-good target means each upstream change is adapted to deliberately rather than arriving as a silent breakage.
+
+- **Why an empty `PIN` stops the install.** The skill keeps "an unpinned install is the
+  failure mode ADR 0020 D3 exists to prevent". It used to add:
+
+  > and it will not announce itself.
+
+- **Why the pin is recorded in the new repo.** The skill keeps "so a human can see it
+  without reading the plugin". It used to add the premise below, which this ADR records
+  above as false since gspec 3.1.1 (gspec writes a `gspecVersion` stamp into
+  `.gspec/config.json` at install):
+
+  > gspec does not stamp its own version into a project (that is upstream proposal `U4`), so this is the only durable local record of which gspec produced the specs.
+
+- **Why `.agents/roadmap.yaml` lives outside `gspec/`.** The skill keeps "since gspec's
+  `spec-integrity` floor flags a file under `gspec/` that gspec does not own (ADR 0020
+  D2)". It used to read:
+
+  > anything under `gspec/` is governed by gspec's `spec-integrity` floor, which would flag a file gspec does not own
+
+- **Why a roadmap entry carries no `status` or `parallel_group`.** The skill keeps
+  "storing either is a drift source". It used to add:
+
+  > completion is derived from the PRD's capability checkboxes, and `parallel_group` named a scheduling mechanism (ADR 0016) that is now retired
+
+- **Why `.agents/task-files.yaml` is not seeded.** The skill keeps "an absent file
+  already means "no scope known"". It used to add:
+
+  > which serializes conservatively, so leaving it unseeded costs nothing.

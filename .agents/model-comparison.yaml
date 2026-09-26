@@ -1,0 +1,31 @@
+# Model-comparison experiment settings for this repository.
+# Annotated reference: templates/model-comparison.yaml.
+# Run: /gaffer:compare-models .agents/model-comparison.yaml
+
+role: implementer
+
+models:
+  - fable
+  - opus
+  - sonnet
+
+reviewer_model: opus
+
+model_ids:
+  fable: claude-fable-5-1
+  opus: claude-opus-5-5
+  sonnet: claude-sonnet-5
+
+effort: high
+
+per_class: 8
+
+code_files:
+  - scripts/
+  - hooks/
+prose_files:
+  - agents/
+  - skills/
+  - templates/
+  - docs/
+  - CLAUDE.md

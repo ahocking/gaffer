@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-08-10
+- Amended (2026-09-21): **a periodic review inside the loop may merge two entries
+  through the lossless `merge-findings` and may route a finding that proposes work,
+  then drop it as the D3 capture; it may not drop on judgment** (`escalation-decider`
+  T5, T10, T12). See
+  [Amendment (2026-09-21)](#amendment-2026-09-21--a-periodic-review-may-merge-and-route-inside-the-loop-it-still-may-not-prune)
+  below; D5 and the Consequences it feeds are unchanged as the record of that date.
 - Deciders: user (tech lead), orchestration plugin
 - Amends: [ADR 0022](0022-findings-index-not-content.md) — its index-hot/body-cold split
   is retained unchanged; its retention model and its "durable and reviewable" framing are
@@ -340,3 +346,178 @@ entry without `packets:` still parses — it just reads as `LIVE=unknown`. So sc
   relevance — 0022's own objection to `trim-note` as a substitute for findings.
 - **Automatic pruning inside `migrate apply`.** Rejected: `apply` is non-interactive, and
   the material being deleted includes the only copy of things nobody has decided about yet.
+
+## Amendment (2026-09-21) — a periodic review may merge and route inside the loop; it still may not prune
+
+`escalation-decider` landed (`3390e49` `merge-findings`, `e996163` the review section of
+`agents/chief-engineer.md`, `7763178` the boundary check in `skills/run-loop/SKILL.md`
+§3.8). Two sentences above are now incomplete, and this section amends them without
+rewriting them: D5's *"never an LLM-judgment prune over the whole index inside the
+loop"*, and the Consequences entry that lists *"no unattended judgment prune in the loop
+(D5)"* as one of the three things replacing the zero-orphan guarantee.
+
+### What changed
+
+Between packets — never while one is open — the loop driver dispatches the
+`chief-engineer` for a **periodic review** of the whole findings index, unattended, when
+`runstate.sh review-due` prints `DUE=yes`: 2 non-green endings or 10 beginnings since the
+last completed review (`review_after_non_green_endings` / `review_after_beginnings` in
+`.agents/project-overrides.yaml`), and also whenever either count reads `unmeasured`. The
+review reads the outcomes log and the index and makes two judgments D5 kept out of the
+loop: whether two entries say the same thing, and whether an entry proposes work rather
+than recording a constraint. On the first it calls `runstate.sh merge-findings
+<survivor> <removed>`; on the second it routes through ADR 0026's two arms (`append-task`
+or `hand-off-feature`), records the routing with `record-decision`, and then
+`drop-finding`s the entry. Its last write is `record-review`, carrying `INDEX_BYTES`
+before and after and the three action counts, to `.agents/metrics/decisions/`.
+
+### Why a merge is admitted where a prune was refused
+
+The objection D5 states is that a judgment made over the whole index, with no human in
+the path, destroys the only copy of something. A merge under `merge-findings` cannot: it
+unions both `packets:` lists onto the survivor, appends the removed entry's summary and
+the **whole** of its body to the survivor's body file (creating that file, and the
+entry's `file:` pointer, when the survivor had none), and only then drops the removed
+entry and its body, both-or-neither on `drop-finding`'s own sequence. A failure in the
+middle restores both. So the index shrinks by one entry and the content by zero bytes,
+and being wrong about "duplicate" costs a reader some noise in one body — never a
+sentence that no longer exists anywhere. The union matters for expiry as much as for
+text: the survivor now expires only once every packet **either** entry named has
+finished, so a merge can only widen what must be finished before it expires, never narrow
+it. That is the whole licence, and it is the mechanism's, not the reviewer's: the
+regression case asserts every line of the removed body appears in the survivor's, because
+copying only the summary before deleting the body is the one failure every count would
+read as a complete merge.
+
+Routing is not new permission either. It is D3's capture — filing a gspec task *is* the
+capture, and the finding dies at the moment of filing — performed by an agent that has
+read the finding's body, with the capture on disk before the drop: an `append-task` is
+one appended line committed with an `[orch decider:<finding-id>]` trailer, and a
+`hand-off-feature` is the **whole** operator question in the `record-decision` summary,
+which is the only text the question can be rebuilt from once the body is gone. What D3
+called "the live session at the moment of resolution" is, for a finding parked in the
+index as a backlog item in disguise, the review.
+
+### What it does not license
+
+- **No drop on judgment.** Every drop that is not a routing still needs
+  `findings --stale --finished <set>` to print `STALE=yes`, with the finished set
+  supplied from the outcomes log's `green` records; `unknown` still blocks expiry, and
+  absence from `pending`, age, size, or a summary that reads as done are not grounds.
+  The script's safety property — an unsupplied set expires nothing — is what the review
+  relies on, not a rule it re-derives.
+- **No prune of the index by any path but `merge-findings` and `drop-finding`**, and no
+  edit to a body or a summary: the survivor's summary stays as it was, and a better one on
+  the removed side is a fact for the result file.
+- **An entry whose id begins `decider-` is never the removed side of a merge.** The
+  escalation decider's trigger (b) reads the index for exactly that entry at the packet's
+  next escalation, and merging it away would silence (b) with nobody deciding to.
+- **A finding naming no packet is neither routed nor dropped** by a review; it goes to
+  D7's triage in `/gaffer:migrate`, which still deletes nothing under `apply`.
+- **A review never stops the loop and never returns `ask-operator`.** Where the arm test
+  cannot be settled, the entry stays and the doubt goes to the result file.
+- **D5's packet-boundary drop is unchanged and still the intended path.** The review is
+  the bounded backstop that `findings --stale`'s one-line warning was, now with hands.
+
+### Consequence for the falsifier
+
+The Consequences section says the failure this ADR trades for boundedness — a drop
+without a capture — is invisible in `INDEX_BYTES`, and asks that the ratio of drops to
+captures be watched instead. A review's drops are now each one of two things by
+construction: a routing, whose capture is recorded before the drop, or an evidence drop.
+`record-review` writes `merged`, `routed` and `dropped` beside the bytes before and after,
+and `run-digest`'s `review` line carries them into the next report, so that ratio is a
+recorded figure per review rather than something to reconstruct. A review that reports
+`dropped` far above `routed` with no `STALE=yes` rows to show for it is the shape to look
+for; a byte figure the `findings` call could not produce is recorded as the literal
+`unmeasured`, never `0`.
+
+## Relocated from CLAUDE.md (2026-09-22) — the expiry defect the first implementation shipped
+
+Carried until now only in the repo-root `CLAUDE.md`. The first implementation of expiry
+*asserted* that the closing packet was finished instead of *reading* the task checkbox the
+preceding step had just flipped. That made the flip non-load-bearing — delete it and the
+behaviour was identical — and it would have expired **zero of fifteen** live entries while
+appearing to work. Expiry must read the positive evidence (the checkbox, or an
+`[orch packet:<id>]` trailer), never assume it.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's stale-finding and termination-finding reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step and
+`## 4. Termination` by `skill-prompt-trim`. The skill keeps each rule with at most a
+one-clause reason; the fuller wording is recorded here.
+
+- **Why the stale-finding drop passes `$MEMBERS`.** The skill keeps the rule in its
+  code block (`FINISHED="${FINISHED:+${FINISHED},}$MEMBERS"`) without this note:
+
+  > (`$MEMBERS` in place of a bare `<landed>` — `task-status`/`findings --finished`
+  > already accept a comma list, so a finding naming any member the bundle just
+  > landed, not only the cursor, is caught here too; a single-member packet is
+  > unaffected, `$MEMBERS` being `<cursor>` alone.)
+
+- **Why a termination finding's `--packets` is truthful and adds no expiry rule.** The
+  skill keeps "`--packets` is mandatory, naming the packet(s) the note is about, and
+  expiry stays the positive-evidence rule (ADR 0024)". It used
+  to add:
+
+  > at termination those are landed packets, which is truthful, and expiry stays the
+  > positive-evidence rule (ADR 0024) already governing every finding — this step adds
+  > no expiry behaviour of its own.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's periodic-review reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Advance** step (the periodic review
+checked at the packet boundary, per this ADR's 2026-09-21 amendment) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here. `agents/loop-driver.md` §The periodic review now
+carries the same one-clause reasons as run-loop §3.8; the fuller wording is recorded
+only in this ADR.
+
+- **Why the driver records nothing after a periodic review.** The skill keeps "record
+  nothing yourself, since the review writes its own `record-review` record". It used
+  to add:
+
+  > the `record-review` record that completes the review and resets `review-due`'s
+  > count is already on disk when the line returns, and a review that returned no line
+  > left no record, so `review-due` runs it again at the next boundary.
+
+- **Why a second `check-status` refusal still carries on.** The skill keeps "On a
+  second `check-status` refusal, carry on to the next packet, for the same reason". It
+  used to add:
+
+  > the record, not the line, decides whether the review counted.
+
+## Relocated from skills (2026-09-25) — the migrate skill's finding-triage reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §5f by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why `apply` never deletes a finding.** The skill keeps "since it may hold the only
+  copy of something undecided" (§3) and "since the index may hold the only copy of
+  something undecided" (§5f). It used to read:
+
+  > because a finding may hold the only copy of something nobody has decided about yet
+
+  > the index may hold the only copy of something nobody has decided about, so the triage is a
+  > conversation with the user, not a batch prompt
+
+- **What a spent finding and a gate note are.** The skill keeps each outcome. It used
+  to add:
+
+  > (it turned out to be spent)
+
+  > is not durable knowledge and
+
+- **Why a repaired scope is written in flow form.** The skill keeps "`runstate.sh`
+  reads this key as an inline value only, so a block-form repair silently leaves the
+  entry `unknown`". It used to read:
+
+  > A YAML *block* sequence (`packets:` then indented `- <id>` lines) is valid YAML and parses cleanly, but
+  > `runstate.sh` reads this key as an inline value only, so a block-form repair yields
+  > an empty scope and the entry reads `unknown` forever — the repair fails silently, which is the one
+  > outcome this triage exists to prevent.
+
+- **Why every drop goes through `drop-finding`.** The skill keeps "which removes the
+  index entry and its body together". It used to add:
+
+  > — there is no path that leaves one orphaned.

@@ -114,3 +114,169 @@ one.
   and fail-open unless an in-flight run exists; the guardrail's hard/soft gates
   (ADR 0004) are unchanged — reconcile only ever discards scratch or adopts a
   branch commit, never touches `main` or a hard-gate path.
+
+## Relocated from skills (2026-09-25) — the pause skill's write-ahead and atomic-write reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why the pause's work-in-progress commit carries the trailer** (pause step 1):
+
+  > Put the write-ahead trailer `[orch packet:<cursor>]` in the commit message (its
+  > own line), so that if a crash strikes between this commit and the run-state
+  > write below, a later resume can *adopt* the commit instead of escalating (ADR
+  > 0005).
+
+- **How the run-state write is atomic** (pause step 3):
+
+  > compose the full file and pipe it through the run-state helper (it writes to a
+  > temp file and renames)
+
+## Relocated from skills (2026-09-25) — the resume skill's reconcile and adopt reasons
+
+Moved out of `skills/resume/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here. The
+membership-recovery reason moved with its rule into `skills/run-loop/SKILL.md` §3's
+**Form this packet's members** step, which keeps one clause of it.
+
+- **Why `discard` escalates on doubt instead of stashing** (resume §2). The skill
+  keeps "the checkout is shared, and `reconcile`'s reviewed-output patterns cannot
+  cover everything". It used to read:
+
+  > Because the loop shares this single checkout, that scratch may include
+  > work you did not produce — `reconcile` already escalates instead of `discard`
+  > when it recognizes a reviewed-output path (e.g. `.gspec/memory/pending/`, agent
+  > memories awaiting `/gspec-memorize`), but its pattern list cannot cover
+  > everything: **escalate to the human before stashing if there is any doubt it
+  > is disposable loop scratch** rather than deliberate output someone else
+  > produced, matching the instinct `skills/pause/SKILL.md` carries for the same
+  > shared-checkout risk.
+
+- **Why `adopt` re-reads every trailer, anchored** (resume §2). The skill keeps
+  "`reconcile` checks only that first trailer", "so prose that mentions a trailer is
+  never read as a member", "never loosen the anchor for it" and "`reconcile`'s own
+  match is unanchored". It used to read:
+
+  > (`reconcile` only checks that first trailer — `orphan_packet_tag` reads no
+  > further)
+
+  > — anchored to the whole line so prose elsewhere in the commit body that merely
+  > *mentions* another packet's trailer cannot be read as a member, and
+  > deduplicated so a repeated trailer cannot hand `record-outcome` the same id
+  > twice. [...] That is the intended, safe outcome for a shape this anchored read
+  > cannot confirm, not a regression to loosen the anchor for. **If the first id in
+  > `$MEMBERS` is not `<cursor>` itself, escalate to the human instead of
+  > adopting** — `reconcile`'s own `orphan_packet_tag` match is unanchored and only
+  > reads the first hit it finds, so an orphan whose real first trailer differs from
+  > what `orphan_packet_tag` matched can still reach `DECISION=adopt`; this
+  > re-read, anchored, is what catches that case before anything is attested.
+
+- **Why no adopted member is redone** (resume §2):
+
+  > this is exactly the crash window the task exists to close, so a crash between
+  > a bundled commit and the run-state write can never leave a landed member
+  > unchecked and queued for re-execution.
+
+- **Why a recovered bundle never re-runs `group`** (resume §4, now run-loop §3's
+  **Form this packet's members** step). Run-loop keeps "it could shrink or grow a
+  membership a start record already covers". The consequence it named:
+
+  > the sweep below would then close members the run had started as
+  > `interrupted`, or silently start a member no start record covers
+
+## Relocated from skills (2026-09-25) — the run-loop skill's entry-routing reasons
+
+Moved out of `skills/run-loop/SKILL.md` §2's entry-routing bullet by
+`skill-prompt-trim`. No ADR owns the loop-entry routing rule; this one, which owns
+the resume path it routes into, is the closest. The skill keeps each rule with at
+most a one-clause reason; the fuller wording is recorded here.
+
+- **Why entry routes on the checkpoint's status, not its existence.** The skill keeps
+  "a completed run leaves its checkpoint on disk too". It used to read:
+
+  > a completed run leaves its checkpoint on disk, so existence alone cannot tell a
+  > run to continue from a run already finished.
+
+- **Why exactly `paused`, `blocked` and `running` redirect to resume.** The skill
+  keeps "(it keeps `run_id`; its `driver-mode enter` is idempotent). These are
+  exactly the three statuses resume resolves." It used to read:
+
+  > (it keeps `run_id` via its own `begin-run` call; calling `driver-mode enter`
+  > again there is harmless — idempotent). These are exactly the three that entry
+  > point's own decision table resolves: **`paused`** a run that called
+  > `/gaffer:pause` and verified a clean checkpoint, **`blocked`** the same but
+  > stopped on a blocking question, and **`running`** a run left mid-flight by a
+  > session that did not pause — a crash, which that skill reconciles before it
+  > trusts the tree.
+
+- **Why a `done` checkpoint with a cursor still takes the fresh-run branch.** The
+  skill keeps "the status is the authority". It used to read:
+
+  > A `done` checkpoint that still carries a cursor or pending packets disagrees
+  > with itself; the status is the authority, so it takes that same branch.
+
+- **Why an unrecognised status writes nothing before stopping.** The skill keeps
+  "the checkpoint is untracked, so a guess at it cannot be undone". It used to read:
+
+  > and no kickoff or lint files, since no run directory exists yet. The checkpoint
+  > is not tracked by version control, so guessing at a file whose state you cannot
+  > read is the least recoverable move available at this point in the run.
+
+## Relocated from skills (2026-09-25) — the run-loop skill's membership and sweep reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Form this packet's members** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why the membership is formed before the sweep.** The skill keeps "the sweep below
+  exempts every member of a paused bundle, not just the cursor". It used to read:
+
+  > so the sweep below has to know every member of a paused bundle, not just the
+  > cursor, before it decides what stays exempt — that means forming the membership
+  > comes first.
+
+- **When the membership is recovered rather than formed.** The skill keeps "(a
+  session picking this packet back up, after a compaction or through
+  `/gaffer:resume`)" beside the rule, and "it could shrink or grow a membership a
+  start record already covers" as the reason `group` is not re-run. It used to read:
+
+  > A session is then picking this packet back up (after a compaction, or through
+  > `/gaffer:resume`), and `record-start` already covers the membership an earlier session
+  > decided.
+
+- **Why an empty `--list` skips the real sweep.** The skill keeps the rule — omit
+  `--gone`, skip `task-status` and leave `SWEEP` empty when `--list` printed nothing —
+  without this reason:
+
+  > no open packets means nothing for the real sweep to close either
+
+## Relocated from skills (2026-09-25) — the run-loop skill's land-commit and packet-close reasons
+
+Moved out of `skills/run-loop/SKILL.md` §3's **Land (the `land` action)** step by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here.
+
+- **Why `<cursor>` leads the trailer block.** The skill keeps "because a resume adopts
+  by the FIRST `[orch packet:]` trailer on a commit alone (ADR 0005)". It used to read:
+
+  > The first line is still the write-ahead trailer a resume *adopts* on a crash
+  > between this commit and the run-state write (ADR 0005) — `orphan_packet_tag` reads
+  > only the FIRST `[orch packet:]` trailer on a commit, so `<cursor>` leading the
+  > block is load-bearing, not cosmetic.
+
+- **What dropping `schema` does.** The skill keeps "`write` refuses content without
+  it". It used to add:
+
+  > so dropping this one fails loudly rather than quietly.
+
+- **What dropping `run_id` costs.** The skill keeps "losing it fails nothing at the
+  write, but `run-digest` then refuses (…) and the next `begin-run` mints a second id
+  and creates a second run directory". It used to read:
+
+  > the run's own identity, and the most expensive of these to lose, because nothing
+  > fails at the write itself. Afterwards `run-digest` refuses outright (*run-state
+  > has no run_id (begin-run has not been called)*), so no shape-A, shape-B or
+  > `run-tally` figure can be rendered for the rest of the run; and the next
+  > `begin-run` — this session's or a resuming one's — sees no id, mints a second one
+  > and creates a second run directory, orphaning this run's handoff files, result
+  > files and routing log.

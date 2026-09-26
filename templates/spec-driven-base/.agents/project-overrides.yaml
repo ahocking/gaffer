@@ -54,13 +54,17 @@ allowed_paths:
 #                                         # tool grant (mcp__ai-game-developer__*)
 #                                         # assumes this server name.
 
-# Model-routing overrides (optional). Only list tasks whose default tier you want
-# to change. Tiers: opus (reasoning/architecture/review/security),
-# sonnet (implementation), haiku (summarization/docs).
+# Per-agent model overrides (optional). A map keyed by agent name -- the
+# basenames of the plugin's `agents/*.md` files, with no `gaffer:` prefix --
+# to a model alias, in block form (`model_routing:` then indented
+# `implementer: opus` lines) or flow form (`{implementer: opus}`). An agent
+# you do not list keeps the `model:` in its frontmatter. `loop-driver` is
+# excluded: it is the session itself, so routing never sets its model. An
+# invalid entry falls back to that frontmatter default and is reported at
+# run-loop and resume preflight.
 model_routing: {}
-  # example:
-  # implementation: sonnet
-  # security_review: opus
+# Add model aliases the harness accepts before the plugin's list knows them:
+# extra_models: []
 
 # Extra escalation triggers specific to this project, on top of the plugin's
 # generic defaults (auth, secrets, DB schema/migrations, deps, deploys, git history).
@@ -68,15 +72,6 @@ model_routing: {}
 escalate_to_human_on: []
   # example:
   # - "changes to <domain-critical module>"
-
-# Highest autonomy this repo will EVER allow the Chief Engineer to reach, no
-# matter what a session env var or .agents/autonomy requests (ADR 0004 / 0006). The
-# guardrail clamps the resolved level DOWN to this ceiling. Omit for no cap.
-#   interactive   — every commit is human-gated here (most conservative)
-#   supervised    — CE may auto-commit green work on a feature branch
-#   autonomous    — CE may drive the loop across packets
-#   full-autonomy — CE may also merge/rebase/push onto NON-main branches
-# autonomy_ceiling: supervised
 
 # Opt this repo OUT of the guardrail's ASK tier (ADR 0015). Default false.
 # When true, the guard SKIPS all one-click "ask" prompts — routine-but-notable bash
@@ -91,40 +86,65 @@ escalate_to_human_on: []
 
 # The non-main integration branch for the single-checkout feature-branch workflow
 # (ADR 0009). The guided loop cuts each packet's `orch/<task-id>` branch FROM this
-# base, and at `full-autonomy` merges/rebases those branches back INTO it and pushes
+# base, merges/rebases those branches back INTO it and pushes
 # it for CI (ADR 0006). If unset, the loop falls back to `develop`, then
 # `main`/`master`. main/master merges, releases, and the danger floor ALWAYS stay
 # human, whatever this says. Recommended default for develop-flow repos:
 integration_branch: develop
 
-# Auto-pause the loop just before a Claude Code ROLLING USAGE LIMIT is hit — the
-# 5-hour AND the 7-day (weekly) window (ADR 0018). The plugin ships a status-line
-# SENSOR (scripts/statusline-pause-sensor.sh) that reads both windows' usage
-# percentages (the only place they are exposed) and, when EITHER crosses its
-# threshold, writes the SAME cooperative-pause sentinel a human/frontend would —
-# so a long unattended run drains to a green checkpoint instead of a lane dying
-# mid-packet when the server cuts it off. Everything after the write is ADR 0017.
-#
-# Requires BOTH a Pro/Max account (no rate_limits payload under API-key auth) AND a
-# `statusLine` entry in your user settings.json pointing at the installed sensor —
-# a plugin cannot set that for you. Turn it on (which wires settings.json for you)
-# with `/gaffer:rate-limit-pause on`; this block is the per-repo gate the
-# sensor reads at runtime, so `enabled: false` (or the `off` sub-command) keeps the
-# status line rendering percentages while NOT arming the pause for this repo.
-# Resolution (each knob): env -> this block -> default.  Best-effort early-warning,
-# never a hard stop — both cutoffs are enforced server-side.
-# rate_limit_pause:
-#   enabled: true               # env ORCH_RATE_PAUSE=off overrides; default true
-#   five_hour_threshold_pct: 90 # env ORCH_RATE_PAUSE_PCT;    arm at/above this 5h %
-#   seven_day_threshold_pct: 85 # env ORCH_RATE_PAUSE_7D_PCT; arm at/above this 7d %.
-#                               # Lower than the 5h default ON PURPOSE: the weekly
-#                               # ceiling is slower-moving and far costlier to
-#                               # exhaust (days stranded, not a couple of hours).
+# How many `fix`/`retry` attempts `runstate.sh route` allows a packet before
+# routing to the escalation decider (plugin thin-loop-driver T9). 1 when
+# missing, invalid, or 0.
+# packet_attempts: 1
 
-# Max concurrent packet lanes for PARALLEL mode (`/gaffer:run-loop --parallel`,
-# ADR 0016). The scheduler runs at most this many file-disjoint packets at once, each
-# in its own git worktree, capped further by the harness's own subagent limit and your
-# account limits. Default 5 if unset. Raise it on a big, wide backlog with plenty of
-# independent features; lower it to be gentle on machine/account resources. Sequential
-# mode (the default) ignores this.
-max_parallel_packets: 5
+# Pause the loop, exactly as /gaffer:pause does, once this many packets have
+# ended since the loop last started or resumed (plugin thin-loop-driver T10,
+# ADR 0028 result 2). Off when missing, invalid, or 0 -- a periodic pause
+# stops an unattended run until someone resumes it, so it must never fire
+# unasked.
+# pause_every_packets: 10
+
+# How much has to happen between packets before the loop dispatches the
+# escalation decider for a periodic review of the findings index (plugin
+# escalation-decider T2). Whichever count is reached first triggers the review,
+# and both counts reset only when a review completes and records itself.
+# A non-green ending is a failed, rolled-back, blocked, abandoned or interrupted
+# packet outcome; a beginning is a packet starting for the first time (a
+# continuation of a packet already begun does not count). Each falls back to the
+# default below when its key is missing, invalid or 0 -- 0 would ask for a
+# review at every boundary forever.
+# review_after_non_green_endings: 2
+# review_after_beginnings: 10
+
+# The implementer's budget for one dispatch, in tool calls (plugin
+# implementer-continuation T1). Every `implementer` handoff states it, and no
+# other agent's does. At the budget the implementer stops at a safe boundary,
+# leaves the partial work uncommitted, writes what is done and what remains to
+# its result file, and returns `continue` -- which the driver routes to a
+# continuation, spending no attempt and skipping the reviewer. 120 when
+# missing, invalid, or 0. Lower it to checkpoint more often at the cost of more
+# continuations; raise it to let one dispatch carry a long packet further.
+# implementer_turn_budget: 120
+
+# How many `continue` continuations `runstate.sh route` allows a packet before
+# refusing with a blocking question (plugin implementer-continuation T3).
+# Counted PER ATTEMPT -- a `fix` or `retry` starts the count over -- so this
+# bounds how far one attempt can run without a review, not the packet's whole
+# life. 3 when missing, invalid, or 0.
+# packet_continuations: 3
+
+# The largest number of tasks a bundle may hold (plugin packet-bundling T2).
+# 1 when missing, invalid, zero or negative -- bundling is off until this
+# repository raises it. A recommended starting value is 4; a larger value
+# costs a larger review diff, and more discarded work when a bundle ends
+# non-green.
+# bundle_max_tasks: 4
+
+# The most words of spec-section text one handoff inlines (plugin
+# handoff-spec-inlining T3). Sections past it are named by heading and line
+# count instead of inlined. 6000 when missing, empty, non-numeric or 0 -- never
+# unbounded. Only inlined section text counts; a task's acceptance criteria do
+# not. A larger value costs a larger handoff, up to that many more words, which
+# the implementer reads once and carries in its context for every later turn of
+# the packet.
+# handoff_inline_word_budget: 6000

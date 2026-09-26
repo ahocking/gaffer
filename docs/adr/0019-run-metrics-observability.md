@@ -815,6 +815,224 @@ overlap, a run with no outcomes log reports `outcome: null` rather than green, a
 within budget is left byte-identical with no archive written, and trimming preserves the keys
 both before and after the note.
 
+## v3.5 revision (2026-09-15) — packets from starts; spend is machine-wide; trimmed by operator
+
+Three changes, all shipped before the planned save/combine and cache-cause analysis (T12–T16)
+were deferred by the operator. This section records what actually shipped.
+
+### 1. Packet rows from start records and commit trailers
+
+A packet appears in the collector only via its green-commit trailer — failed, interrupted, and
+uncommitted work produces no row. The first production capture read "42 of 42 green" which was
+survivorship reported as quality, with no record of the discarded work.
+
+`runstate.sh record-start <id> [--continue]` appends to `.agents/metrics/outcomes/<session>.jsonl`,
+the same append-only file `record-outcome` uses. Start and outcome records bracket the packet's
+lifetime, and the collector joins both, so every packet now has a row regardless of terminal
+state. Last record per id wins, so a packet that failed and was retried reads with the final
+outcome.
+
+This is append-only and deliberately **not** in run-state — same reasoning as the outcomes
+file itself: `record-start` must be callable from a lane without contending for the driver's
+single-writer run-state.
+
+### 2. `interrupted` has exactly one writer
+
+`interrupted` is written **only** by `runstate.sh sweep-open`, which closes any packet whose
+latest start has no terminal outcome (a `sweep` finding a stale start when paused or crashed).
+`record-outcome` **refuses** the `interrupted` value — the script enforces the rule rather than
+trusting prompt compliance. The paused cursor is exempt: a pause is a deliberate user signal, not
+a failure of the packet.
+
+Append-only outcomes mean no retraction, so if a packet transitions from started → interrupted →
+green, all three records exist and last-record-wins gives the truth.
+
+### 3. Spend is machine-wide and lives in `scripts/spend.sh`
+
+Spend calculation reads **every** transcript across every project on the host (not scoped to
+one repo like `metrics.sh collect`) and prices them in API-equivalent dollars from a dated
+rate table. `spend.sh` deduplicates assistant rows by `message.id` — a pre-v3.3 inflation source
+that when imported into spend would have overstated cost by ~2.6x — and stamps the table date
+and token source on its output so queries are accountable to the data they consumed.
+
+The rate table shipped with Claude 3-era pricing, overstating Opus **3×** across real sessions.
+Corrected before commit. Cache reads dominate real spend (66–70%), so cache rates are **stated**
+in the table, not derived from the 0.1× input/output ratio: Claude Fable 5.1 reads at 0.025×,
+where the standard formula would give 0.0025× — wrong by 4× — because Fable 5 and Fable 5.1
+differ **only** in their cache-read rate. The table carries `table_date` because the pricing
+page has no version stamp and the rate update interval is undocumented.
+
+### 4. Timestamp handling across precision tiers
+
+The field schema changed: audit trail records now carry sub-second timestamps (`"…:08.311Z"`),
+while older records are whole-second (`"…:08Z"`). As ASCII strings, `.` (0x2E) < `Z` (0x5A),
+so a `"…:08.311Z"` sorts below `"…:08Z"` — backwards. Any join that orders these must
+compare **parsed** times. Both the spend sweep and the metrics collector strip the fractional
+part before any date parse, and `metrics.sh`'s own `epoch()` helper returns **0** on macOS
+(BSD `date -u -d` does not exist; `-d @` is GNU-only and rejects the fraction) while working
+on GNU CI, so it could not be reused — separate handling was written.
+
+An `interrupted` record is written by a **later session's sweep** into that session's own
+`.agents/metrics/outcomes/<session>.jsonl`, but carries the `ts` and `session_id` of the
+**start it closes**, and is attributed to the **run it names** — never the run whose sweep
+physically wrote the record. This was the "collector bug most likely to ship without being
+caught" and was built right first time, verified against a two-session fixture.
+
+Regression cases live under the `v3.5` heading in `scripts/test-spend.sh`, plus imports of
+the v3.3 dedup test and the timestamp-handling sweep cases.
+
+## v3.6 revision (2026-09-23) — one row per implementer dispatch (`dispatch-progress-metrics`)
+
+A packet row counted dispatches (`dispatched[]`, `audit.review_dispatches`) but did not split
+them: no dispatch carried its own kind, cost or progress, so a dispatch that spent its context
+and landed nothing hid behind the one that landed. The `dispatch-progress-metrics` PRD
+(`gspec/features/dispatch-progress-metrics/prd.md`) has the motivation and the baseline. This
+section records what shipped in `scripts/metrics.sh collect`. No existing field changed
+meaning. `scripts/test-metrics.sh` pins that by deleting the new fields and comparing the
+remaining output byte-for-byte.
+
+### 1. The per-dispatch join and its three sources
+
+`packets[].dispatches[]` has one row per implementer-role `Agent` event in the packet window.
+Each row carries `kind`, `tool_calls`, `duration_ms`, `edits`, `tokens` and `progress`. The
+join reads three logs that already existed:
+
+- **the events log**, grouped by `agent_id`: a dispatch's events, and so its `tool_calls`,
+  `duration_ms` and `edits` (the same four write tools the packet-level audit counts);
+- **the outcomes log's start records** (`kind` `start` or `continue`, the two shapes
+  `record-start` writes);
+- **the routing records** in every `.agents/loop/*/routing.jsonl`. These are scoped by parsed
+  `ts` to the run window and by packet id to the run's packets, because routing records
+  carry no session.
+
+`tokens` comes from the dispatch's own subagent transcript turns, taken from the same
+`message.id`-deduplicated turn set and single `token_source` as the packet total.
+
+**Attribution keys on `agent_id` presence and the `Agent` event, never on `agent_type`.** A
+main thread run as an agent carries `agent_type` with no `agent_id` (ADR 0028), and it is
+never attributed to a dispatch. The `Agent` event is logged when the dispatch returns, after
+the subagent's own events, so the dispatch span is back-dated: from the event's `ts` minus its
+`duration_ms` up to the `ts`, with each bound widened by 1 s and inclusive. The dispatch is
+the `agent_id` whose first event falls in that span. When several qualify, the earliest wins.
+A row with no qualifying `agent_id`, or whose `Agent` event has no `duration_ms`, still
+appears, resolved to nothing.
+
+**Addendum (2026-09-24, `session-effort-reporting`): `effort`.** Each row also carries
+`effort`, read from the same `message.id`-deduplicated, run-window-bounded turns whose `aid`
+is the dispatch's resolved `agent_id` (the turn set `tokens` reads). When every such turn
+carries one level, `effort` is that level as a string. When the level changed mid-dispatch,
+it is an array of the distinct levels in first-seen order, meaning the turns sorted by `ts`
+(a turn with no `ts` sorts first). Unlike `tokens`, it is not gated on the run having
+per-turn timestamps, because attribution goes by `agent_id`, not time. `totals.by_effort`
+is unchanged. `scripts/test-metrics.sh` deletes `effort` in the pin and its T2 row check
+before comparing.
+
+### 2. `kind` precedence
+
+The latest start or routing record for the packet strictly before the dispatch's `Agent`
+event decides the kind:
+
+- a start, with or without `--continue`, gives `initial`;
+- a `continue` routing record gives `continuation`;
+- a `fix` or `retry` routing record gives that verdict.
+
+Only those three routing tokens carry a kind. **At a shared boundary the routing record
+wins.** When the latest record is a start and a `continue` routing record comes before it with
+no `Agent` event between the two, the kind is `continuation`. This is the case when
+`implementer-continuation` writes `route continue` and then `record-start --continue` back to
+back. Only `continue` pairs this way. A start after a `fix`/`retry` route is a resume's start
+and reads `initial`. A dispatch with no prior record gets `kind: null`.
+
+A run whose window holds neither record type is **legacy**. Every row's `kind` and `progress`
+is null there, never a guessed `initial`, and re-collecting it gives the same output.
+
+**Pruned routing log.** Sometimes the window holds a start record, but no routing record exists
+for any of the run's packets. `begin-run` keeps only the current and the newest other run
+directory, and every reviewed packet gets at least a `pass` record. So an absent routing log
+means pruned (or never reviewed), not a run without verdicts. Every row's `kind` is null,
+never the `initial` the start record alone would give a `fix` or `retry` dispatch, and a
+`notes[]` line names it routing-unmeasured.
+
+### 3. `progress` order
+
+Exactly one value applies, tested in this order:
+
+1. `null`: the packet's trailer window is unmeasured, the run is legacy, or the dispatch
+   resolved to no `agent_id`.
+2. `landed`: the packet's commit trailer author time falls in this dispatch's interval. The
+   interval runs from the dispatch's start (`Agent` `ts` minus `duration_ms`) to the next
+   implementer dispatch's start. For the last dispatch it runs to the end of the same bounded
+   trailer window the packet row uses.
+3. `advanced`: at least one edit event and no such commit.
+4. `none`: zero edit events.
+
+`landed` goes to one dispatch per trailer. If a later dispatch's commit carries an earlier
+dispatch's edits, the earlier one reads `advanced`.
+
+### 4. Null rules
+
+`null` stays unmeasured, never 0:
+
+- A row resolved to no `agent_id` has null `tool_calls`, `duration_ms`, `edits`, `tokens`
+  and `progress`.
+- `tokens` is null, with no partial figure, when the packet's `tokens` is null or when no
+  transcript turn resolves to the dispatch.
+- A swept or bundle-sibling packet has `dispatches: null`, in the null-field shape those rows
+  already use.
+
+**Addendum (2026-09-24, `session-effort-reporting`): `effort` null rules.** `effort` is null,
+never a guessed level, when:
+
+- the row resolved to no `agent_id`;
+- no transcript turn resolves to the dispatch;
+- any of the dispatch's turns carries no effort. A partial read is unmeasured, so the levels
+  the other turns carried are not reported.
+
+A run collected from transcripts that predate the per-turn `effort` field reads null on
+every row. So does a dispatch on a model that takes no effort, since its turns carry none.
+
+In `totals.dispatch_waste`:
+
+- `zero_progress` is null when any row has a null `progress`.
+- `continuations` is null when any row has a null `kind`.
+- `over_threshold` (count and token share) is null when any counted implementer dispatch
+  has a null `tool_calls` (an unresolved dispatch). The dispatch is not left out: a count
+  over the other rows would read as measured. The `notes[]` reason names each unresolved
+  dispatch by packet id and position.
+- A token sum or share is null when a row it counts has null `tokens`.
+- Every component is null on a legacy run or a run with no implementer dispatch.
+- A `notes[]` line names each unmeasured component and why.
+
+A row with null `progress` or null `tool_calls` counts toward neither per-packet flag
+(`waste:zero-progress-dispatch(<n>)`, `waste:over-budget-dispatch(<n>)`). Both flags are
+suppressed on a legacy run and never emitted on a swept or sibling row. `show` renders a null
+component as unmeasured with its `notes[]` reason.
+
+### 5. The threshold stamp
+
+`over_threshold` and the over-budget flag use one threshold. It is the repository's
+`implementer_turn_budget` from `.agents/project-overrides.yaml` when that is a positive
+integer, read in tool calls, and otherwise the collector's default. `totals.dispatch_waste`
+stamps the threshold as `turn_threshold`: `value`, `unit` (`tool_calls`) and `source`
+(`implementer_turn_budget` or `default`). A reader can see which one applied and re-derive
+the counts.
+
+`implementer_turn_budget` has one strict reader, `_rs_read_turn_budget` in `runstate.sh`,
+exposed as `runstate.sh turn-budget`. `metrics.sh`'s `resolve_turn_threshold` calls that
+subcommand rather than keeping its own copy, and `_rs_implementer_turn_budget` (the handoff's
+budget line) calls the same function, so the two cannot disagree about what the key says.
+The reader applies no fallback; each caller keeps its own. A value counts only when, after a
+trailing comment, surrounding whitespace and one pair of surrounding quotes are removed, it
+is a positive integer.
+
+### 6. No outcomes-log record kind was added
+
+This feature adds no hook, no log, and no new record kind in the outcomes log.
+`_rs_open_packets` reads any outcomes record carrying `kind` as a packet boundary, so a helper
+record there would reopen packets. The join reads only records that already existed. A field
+the join needs but the records lack is a finding for the feature that writes those records.
+It is not something to fake in jq.
+
 ## Consequences
 
 - **First real visibility into the loop, at zero token cost for the always-on part.** The
@@ -864,3 +1082,110 @@ both before and after the note.
 - **Emit metrics as a domain-extensible schema from day one.** Rejected: violates the
   domain-agnostic ground rule and over-builds. Consumers extend via their own config, as with
   guard rules.
+
+## Relocated from CLAUDE.md (2026-09-22) — the evidence behind "do not re-read what you already have"
+
+All seven `agents/*.md` carry a "do not re-read what you already have" block. The block
+states the rule only; this section is the evidence for it, which previously lived in the
+repo-root `CLAUDE.md`.
+
+- **Measured across one production week:** of **5,243 `Read` calls, 1,366 (26%) re-read a
+  file already read in that same context** (~2.4M tokens). That is not a 2.4M problem:
+  content in context is re-read on every later turn, so a token read twice is paid for twice
+  on every subsequent turn for the rest of the session. At the measured ~16 effective tokens
+  per source token, it is ~**11% of that repo's weekly spend**.
+- **Part of the mechanism is confirmed:** **63 occurrences of `Read` immediately after
+  `Edit`/`Write` of the SAME file in just 25 subagent contexts** — verify-after-edit, which
+  is unnecessary because those tools error on failure, so a successful result already is the
+  confirmation.
+- **It has to target the implementer above all:** the implementer is **47.9% of all turns**
+  at 128k average context and does nearly all the reading, whereas the coordinator — which
+  the run-state and read-list work reached — is only **9.5% of turns**.
+- **Keep the evidence out of the prompts.** The first cut shipped a three-line "Measured:"
+  paragraph into all seven agents — **61 tokens each, 427 total**, re-read on every dispatch
+  to justify a rule the agent follows without it. Small, but it was bloat added by the very
+  block telling agents not to waste context. Rule in the prompt, evidence here.
+
+## Relocated from skills (2026-09-25) — the pause skill's metrics and outcome reasons
+
+Moved out of `skills/pause/SKILL.md` by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why a pause snapshots metrics** (pause step 3b):
+
+  > A pause is the natural checkpoint to pin the run's metrics — especially the
+  > **perishable** token data, which is parsed from session transcripts that may
+  > later be rotated or reformatted.
+
+- **Why the work-in-progress commit records no outcome** (pause step 1):
+
+  > The packet's start stays open — the trailer is not a green outcome, and the
+  > sweep must not later read this still-open start as an interruption.
+
+- **Why a blocked pause records one outcome for the whole bundle** (pause step 3):
+
+  > — so a bundle's later tasks share the cursor's own terminal outcome rather than
+  > reading as still-open work a later sweep would close as `interrupted`.
+  > A single-task packet has no `BUNDLE=` line, so `$MEMBERS` is `<cursor>` alone
+  > and this reads exactly as `record-outcome <cursor> blocked` — the single-task
+  > `blocked` record run-loop §3.6 already names, unchanged in shape.
+
+## Relocated from skills (2026-09-25) — the metrics skill's collection and analysis reasons
+
+Moved out of `skills/metrics/SKILL.md` §2, §3 and §5 by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+The skill also carried task ids (loop-measurement T4 and T6, thin-loop-driver T21,
+retire-unused-loop-modes T3, dispatch-progress-metrics T9), a crossover's revision
+history ("raised from 20 in its v2 revision"), the story that a `0` read as clean "is
+the exact failure v3.3 already had to fix once", and the note that before
+loop-measurement T4 failed and rolled-back work was structurally absent from the
+packet. Those are history and are deleted, not relocated. Its `metrics:` example block
+stated the settings' values and defaults; capability 4 removes those rather than
+relocating them (this ADR's Tier 1 section keeps its own example).
+
+- **Why packet boundaries stay within the session's run window.** The skill keeps "so a
+  prior run's committed packets are not folded in". It used to add:
+
+  > (zero-migration; run-state is left untouched — ADR 0019 revision)
+
+- **Why main-session context is measured.** It used to open:
+
+  > **Main-session context is the "Long runs compact" success metric**
+
+- **Why the kickoff baseline disagrees with `run-digest`.** The skill keeps "This
+  run-KICKOFF baseline is expected to disagree with `run-digest`". It used to read:
+
+  > This fixed, run-KICKOFF baseline is deliberately different from `run-digest`'s reading of the same driver-mode logs,
+
+  > `run-digest` answers what setting is in effect *now* for a run that can span sessions, while this measurement judges the run against the number the operator was shown at kickoff, so the two are expected to disagree.
+
+- **Why the report leaves the threshold setting alone.** The skill keeps "whether and
+  what to set is the operator's call". It used to add:
+
+  > not this report's to open.
+
+- **Why a low cache ratio matters.** The skill keeps "means agents are re-loading
+  context instead of reusing it". It used to add:
+
+  > — the loop's biggest suspected hidden cost.
+
+- **Why same-file overlap is measured.** The skill keeps "It tells the operator whether
+  concurrent editing guidance is holding". It used to read:
+
+  > It replaces parallel mode's mechanical file-disjointness guarantee with observability now that the guarantee is gone
+
+- **Why `cc_shape` beats cacheCreation totals.** The skill keeps "which are too noisy to
+  steer by". The measurement behind it (v3.4 §1) used to sit in the skill:
+
+  > (measured: 1.76x spread across untouched same-regime runs, 9x overall)
+
+- **Why `context_invalidations` is worth naming.** The skill keeps "which re-caches the
+  whole prefix" and the packet-boundary fix. The measurement behind it used to sit in
+  the skill:
+
+  > Measured at 16 events / 3.35M cacheC in one repo, ~3.2% of its lifetime cacheCreation, firing in **both** directions and propagating into dispatched subagents.
+
+- **Why self-host and consumer runs are never averaged.** The skill keeps "since the
+  populations are incomparable". It used to add:
+
+  > since this repo's loop feeds the measurement corpus that benchmarks the plugin

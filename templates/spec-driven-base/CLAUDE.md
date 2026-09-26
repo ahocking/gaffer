@@ -94,19 +94,15 @@ actions); it never auto-fixes. Enable it once with
 `/plugin install brooks-lint@brooks-lint-marketplace`, or delete
 `.brooks-lint.yaml` to opt out.
 
-**Stop and get explicit human approval before:** commits, merges, pushes,
-database migrations, destructive filesystem operations, dependency
+**Stop and get explicit human approval before:** commit/merge/push to
+`main`/`master`, database migrations, destructive filesystem operations, dependency
 installs/upgrades, deploys, and any change to auth/authz, secrets, or the risk
-boundaries listed in `.agents/domain-rules.md`. This repo ships at the conservative
-default — per `spec-setup.md`, agents create no automatic commits until the human
-raises the autonomy level. **Which git steps are delegated is governed by the
-autonomy level** (ADR 0004 / 0006, set via `/gaffer:set-autonomy` or
-`ORCH_AUTONOMY`, clamped by `autonomy_ceiling`): `supervised`/`autonomous` delegate
-routine commits on a feature branch; `full-autonomy` additionally delegates
-merge/rebase/push onto **non-`main`** branches. **Commit/merge/push to `main`,
-releases, migrations, secrets, deploys, and the danger floor stay human at every
-level.** The guardrail hook blocks the most dangerous calls, but it is a backstop,
-not your only defense.
+boundaries listed in `.agents/domain-rules.md`. **Which git steps are delegated is
+one fixed rule set, the same in every repository** (ADR 0004 / 0006): routine
+commits on a feature branch are delegated, as are merge, rebase and push onto
+**non-`main`** branches. **Commit/merge/push to `main`, releases, PRs, migrations,
+secrets, deploys, and the danger floor always stay human.** The guardrail hook
+blocks the most dangerous calls, but it is a backstop, not your only defense.
 
 ---
 
@@ -179,7 +175,6 @@ explicitly to force that chain. Default routing:
 | Design / lay out / improve a screen or flow — "make this look right", "the UI feels off", "design the X page" | The **ux-designer**: it studies comparable products, iterates against the rendered UI through a preview loop, and logs decisions in `.agents/ux-references.md`. On a **web** surface it boots the app via `.claude/launch.json`; on a **Unity** surface (`ux.preview_mode: unity`) it drives the already-open Unity Editor through the Unity MCP. |
 | "Review what I changed" / check uncommitted work | `/gaffer:review-change`. |
 | Work through the backlog / "do the next tasks" / an unattended stretch | `/gaffer:run-loop` (reads `.agents/run-state.yaml`, else `.agents/roadmap.yaml` → `gspec/features/<slug>/tasks.md`); `/gaffer:pause` / `/gaffer:resume` at checkpoints. |
-| Run the backlog **in parallel** / "do as much as possible at once" / a wide independent backlog | `/gaffer:build-packet-dependency-tree` then `/gaffer:run-loop --parallel` — runs the max number of file-disjoint packets concurrently in git worktree lanes, integrating green lanes at `full-autonomy` (ADR 0016). Opt-in; the default loop is sequential. |
 | Author a spec / PRD / design — "spec out X", "should we…", "design the…" | Delegate to the **architect**, which drives the spec tooling for you — the `gspec-*` skills — and writes the PRD, the `gspec/features/<slug>/tasks.md` plan, the `.agents/roadmap.yaml` entry, and any ADR in place. The human states intent; they do not hand-run the spec commands. |
 | Ambiguous, multi-step, or cross-cutting | The **chief-engineer**: decompose, decide what needs research / spec / plan / implementation / review, then route. |
 | A quick question, lookup, or explanation | Just answer — no chain needed. |

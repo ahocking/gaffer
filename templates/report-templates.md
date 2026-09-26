@@ -1,99 +1,267 @@
-# Human-facing report SHAPES — what the HUMAN reads (ADR 0012)
+# Human-facing report SHAPES — what the HUMAN reads (ADR 0012, reworked by ADR 0028)
 # -----------------------------------------------------------------------------
 # **Read `report-conventions.md` (this directory) first — this file assumes it.**
 # The glyph vocabulary, the indentation contract, the decision block, the header
-# tally and the four rules live there and are NOT repeated here — except the ✅
-# scope rule, restated at each shape that carries the bucket. They apply to every
+# tally and the four rules live there and are NOT repeated here. They apply to every
 # human-facing report in this plugin; the three shapes below apply only to the loop.
 #
-# `check-in.md` is the AGENT-TO-AGENT wire format. A lane or a dispatched Chief
-# Engineer returns that shape to the scheduler, which parses it and records state
-# from it. It is unchanged and must stay machine-shaped.
+# ## Loop agents return STATUS LINES, not check-ins (ADR 0028)
+#
+# `check-in.md` is the agent-to-agent wire format, and the loop no longer uses it.
+# Every agent `/gaffer:run-loop` and `/gaffer:resume` dispatch returns **one status
+# line** (`status-line.md`) and writes everything else to its own result file, which
+# the driver never opens. `check-in.md` survives for a Chief Engineer dispatched for
+# self-contained work outside a loop packet, and nothing here reads it.
+#
+# So the driver does NOT hold a running narrative of the run to render from, and
+# after a compaction — or in a session that resumed another session's run — it holds
+# nothing at all. Shapes B and C are therefore **assembled from files**, not memory.
+#
+# ## The one source for B and C: `runstate.sh run-digest`
+#
+#   runstate.sh run-digest <run-state> [--since <ts>]
+#
+# It reads the run's handoff files, its routing records (including the routed status
+# recorded for a hand-off, written by that routing call's own --status argument -- an
+# omitted one leaves the hand-off line's status empty), the outcomes log and the driver-
+# mode records, and prints ONLY these, tab-separated, one per line, in no particular
+# order and with no header -- never a result file, which it does not open.
+#
+#   packet\t<id>\t<title>\t<outcome>
+#       one per packet the run BEGAN (a handoff file exists for it). <outcome> is
+#       one of: green · failed · rolled-back · blocked · abandoned · interrupted ·
+#       paused (the run's cursor, paused on it) · open (begun, nothing recorded).
+#   decision\t<id>\t<token>
+#       one per escalation-decider decision: retry · reorder · append-task ·
+#       hand-off-feature · ask-operator. A bare reviewer verdict is never one of
+#       these. `--since <ts>` scopes this section and only this section.
+#   decision\t\treview-routing\t<finding-id>\t<summary>
+#       one per finding a periodic review routed. The packet-id field is EMPTY on
+#       purpose — a review routes a finding, not a packet — so never join this line
+#       to a `packet` line by that field. <finding-id> and <summary> are the routed
+#       finding's id and the summary the review recorded for it, which opens
+#       `review:` and names every packet the finding names. Read the finding's name
+#       from these two fields and from nowhere else. An empty <summary> means the
+#       routing was recorded without one; both fields empty means its record could
+#       not be found — render either as *not recorded*, never a summary you wrote.
+#   review\t<merged>\t<routed>\t<dropped>\t<bytes_before>\t<bytes_after>
+#       one per completed periodic review, scoped by `--since` with its routing
+#       lines. A value may be the literal `unmeasured` — state it as unmeasured,
+#       never as 0. An unmeasured <routed> has no routing lines.
+#   handoff-feature\t<id>\t<status>
+#       one per `hand-off-feature` question the run recorded, for the WHOLE run
+#       regardless of `--since`, carrying that routing call's own status line.
+#   enter\t<model>\t<effort>\t<threshold>
+#       at most one — the model, effort and compaction threshold recorded at the
+#       most recent driver-mode `enter` in this checkout. `unknown` is a legitimate
+#       value for effort and for threshold. The whole line is ABSENT when no session
+#       ever entered driver mode here.
+#
+# **`<title>` is the packet's task text, not a title.** It is the first line of the
+# packet's own handoff file, and it is routinely a whole sentence with backticks and
+# file paths in it. Shorten it to a plain-English title when you render — that is a
+# bounded transform of text you were just handed, which is exactly what ADR 0012's
+# "render, don't relay" permits. Pasting the raw digest field is not rendering.
+#
+# **A packet named inside a review routing's summary takes its title from the
+# digest too**: look the id up among the same digest's `packet` lines and use that
+# line's title. A packet with no `packet` line — one this run never began — renders
+# by its id alone. That lookup is the digest you already hold, not a fourth fact.
+#
+# **A periodic review renders in two parts, and only one of them is a decision.**
+# The escalation decider's periodic review (status word `reviewed`) leaves one
+# `review` line and one `decision\t\treview-routing` line per finding it routed:
+#
+#   routings   each `review-routing` line is ONE decision and renders as a 🔀 line in
+#              shape A and one decision block in shape B. It names the routed finding
+#              by its id and its summary — `<finding-id>` and `<summary>`, exactly as
+#              the digest gives them, or *not recorded* when they are empty — and
+#              every packet that summary names by its id and plain-English title (the
+#              lookup above). The summary holds the routing; write the question, the
+#              two options and the lean from it, as for a `handoff-feature` line.
+#   merges,    the `review` line's `<merged>` and `<dropped>` are COUNTS. They render
+#   drops      as numbers on one line with no glyph — never as 🔀, never as a
+#              decision block, never as a line per finding — and they add nothing to
+#              the 🔀 figure. `<routed>` is stated on the same line as a count; it is
+#              the routing lines, not that number, that become decisions. The index
+#              bytes before and after go on the same line.
+#
+# A value on the `review` line that reads `unmeasured` is written *unmeasured*, never
+# 0 or blank; an unmeasured `<routed>` comes with no routing lines, so it adds no 🔀
+# line and no block, and the counts line is where the reader learns that.
+#
+#   > Findings review — 2 merged · 1 routed · 1 dropped · index 14,210 → 9,880 bytes
+#
+# **Three facts the digest does not carry**, and the only three a shape below may
+# read from anywhere else — each a FILE read at render time, never a memory:
+#
+#   the packets still queued        `runstate.sh summary <run-state>` (`N pending`),
+#                                   or the backlog you resolved moments ago in the
+#                                   kickoff's case
+#   a periodic pause's setting      `runstate.sh periodic-pause` (`EVERY=<N>`)
+#   the branch and the commit       `git` — for the state line only
+#
+# Anything else you want in a report and cannot get from those: leave it out. Going
+# back to the repo to enrich a report is the context growth driver mode exists to
+# avoid, and a fact recalled from memory is the one thing these shapes forbid.
 #
 # Three shapes. The letters are stable identifiers, NOT an order; in time you meet
 # them C → A → B:
 #
-#   A. CHECK-IN     — a packet or a wave of lanes came back. Emitted per landing.
+#   A. PACKET LINE  — a packet ended. One line. No tally, no sections.
 #   B. STOP REPORT  — the loop stopped (done, paused, blocked, or out of gas).
 #   C. KICKOFF      — emitted BEFORE a run starts, and on resume. The cheapest
 #                     moment to correct a wrong assumption.
 #
-# All three open with the header tally and use the shared decision block — both
-# defined in `report-conventions.md`.
+# B and C open with the header tally and use the shared decision block — both
+# defined in `report-conventions.md`. **A does neither**, on purpose: see below.
 
 
-# --- A. CHECK-IN (a packet landed, or a wave of lanes came back) ---------------
-# One line per packet or lane, in the order they landed. Sequential mode is a single
-# line; parallel mode is one per lane. Keep it under roughly eight lines — this is
-# read on a phone, between other things.
+# --- A. PACKET LINE (a packet ended) ------------------------------------------
+# One line per packet that ENDED since your last report, plus one line per decider
+# decision since then. That is the whole shape. No header tally, no sections, no
+# decision block, no `▶ Next`.
 #
-# ✅ N landed is THIS SESSION (report-conventions.md's header-tally rule) — count the
-# check-ins already rendered this run, nothing read from disk.
-
-▶ **RUNNING** · <what this run is> · ✅ **N landed** · 🔀 **N decisions** · ⬚ **N left**
-
-> ✅ **<What is now true, in human words>** — <one clause of outcome> · `<sha>`
-> 🔀 **<Title>** — <what it is asking, one clause>
-> ⛔ **<Title>** — <what failed>. Rolled back to `<sha>`, nothing lost.
-
-> <a decision block, when a lane raised one and the run keeps going>
-
-▶ **Next** — <the next packet by title, or what the other lanes are doing>
-
-# Put the decision block directly under the lanes, not in a separate section — a
-# check-in has at most one or two. Do NOT promote the whole check-in to a stop report
-# for a decision the run does not need answered right now; that is how a still-running
-# loop starts reading as stopped.
+# This replaced a multi-section per-packet check-in (ADR 0023's shape A) because the
+# driver no longer has the material to write one: it holds a status line, not a
+# narrative. A tally on top of one or two lines is longer than what it summarizes,
+# and the run's state is what shape B is for.
 #
-# When something changed the picture — a scope that turned out bigger, an assumption
-# that proved wrong, a dependency discovered — add ONE `⚠️ **Worth knowing** — …`
-# line after the lanes. It is not a place to restate what landed, and it is not the
-# findings index (that lives in run-state and is read on request).
+# Render it from the packet's own `packet` and `decision` lines in
+# `run-digest --since <your last report>`. The status line the agent returned is
+# fine as the wording of the outcome clause — it was written for exactly this.
 
-# Worked example — parallel wave, one lane asking:
+> ✅ **<Title>** (`<id>`) — <one clause of what is now true> · `<sha>`
+> 🔁 **<Title>** (`<id>`) — <one clause>, after a retry · `<sha>`
+> ⛔ **<Title>** (`<id>`) — <what failed>. Rolled back, nothing lost.
+> ⚠️ **<Title>** (`<id>`) — <what it is waiting on>
+> 🔀 **<Title>** (`<id>`) — handed off as a question: <what it is asking>
+
+# Glyph by the digest's `<outcome>`, with no judgment left to you:
 #
-#   ▶ **RUNNING** · Transaction import · ✅ **2 landed** · 🔀 **1 decision** · ⬚ **3 left**
+#   green                             ✅   — 🔁 instead when this packet also has a
+#                                            `decision` line reading `retry`
+#   failed · rolled-back              ⛔
+#   blocked · interrupted · abandoned ⚠️
 #
-#   > ✅ **Category totals cached** — dashboard 4s → 400ms · `9b21e04`
-#   > ✅ **Export respects on-screen filters** — `c40aa11`
-#   > 🔀 **Duplicate detection** — two banks send the same transaction under different ids
+# Every `decision` line gets a 🔀 line of its own EXCEPT `retry`, which is already
+# visible as the 🔁 on the packet's own line and must not be reported twice. So
+# `reorder`, `append-task`, `hand-off-feature` and `ask-operator` always take a line,
+# **including when the decision is what ended the packet it names** — a
+# `hand-off-feature` always ends its packet, so any rule conditioned on "it did not
+# end the packet" would exclude the commonest case in the shape.
 #
-#   > **How do we decide two imports are the same transaction?**
-#   >
-#   > - **A ›** Match on amount + date + description
-#   >   → duplicates vanish silently; ~1 in 500 genuine repeats gets swallowed
-#   > - **B ›** Flag for the user to confirm
-#   >   → nothing is ever lost; ~1,000 prompts on a first big import
-#   >
-#   > **→ Pick A** — recoverable, and confirm-flows are the ones users abandon.
-#   > *Silence = A, matches logged.*
+# That is one packet on two lines, and it is deliberate: the packet's line keeps its
+# own outcome glyph and the 🔀 line says what the human is being asked. It is the one
+# documented exception to `report-conventions.md`'s "a blocked packet whose blocker IS
+# a question takes 🔀" rule — that rule exists so such a packet counts once in each
+# tally, and shape A has no tally.
 #
-#   ▶ **Next** — the other three lanes keep going.
+# A periodic review since your last report adds its lines here too, rendered as the
+# review paragraph at the top of this file says: one 🔀 line per `review-routing`
+# line, naming the finding and the packets its summary names, and one glyphless
+# counts line for the `review` line itself — its merges and drops never take 🔀.
+#
+#   > 🔀 **Finding `<finding-id>`** — <summary, shortened>; names **<Title>** (`<id>`)
+#   > Findings review — <merged> merged · <routed> routed · <dropped> dropped · index <before> → <after> bytes
+#
+# A sweep runs before every start/continuation (loop-measurement T8). A packet it
+# closed reads as `interrupted` in the digest and takes the ⚠️ line above with
+# *swept as interrupted* as its clause — there is no separate sweep line any more.
+
+# Worked example (digest lines, then what they render as):
+#
+#   packet  txn-t3  Cache the category totals so the dashboard…  green
+#   packet  txn-t4  Add a duplicate-detection pass over…         rolled-back
+#   decision txn-t4 hand-off-feature
+#
+#   > ✅ **Category totals cached** (`txn-t3`) — dashboard 4s → 400ms · `9b21e04`
+#   > ⛔ **Duplicate detection** (`txn-t4`) — two banks send one transaction twice. Rolled back, nothing lost.
+#   > 🔀 **Duplicate detection** (`txn-t4`) — handed off as a question: auto-match
+#   >   or confirm-each is a product call
 
 
 # --- B. STOP REPORT (the loop stopped, for any reason) ------------------------
 # Emitted on backlog complete, on pause, on a hard gate, and on a blocking question.
-# This is the one the human reads carefully, so it earns more room than a check-in —
-# but every section still has to survive a ten-second scan.
+# This is the one the human reads carefully, so it earns more room than a packet
+# line — but every section still has to survive a ten-second scan.
 #
-# ✅ N shipped is THIS SESSION, same rule as shape A — the ✅ Shipped enumeration below
-# is exactly that session's list, never a run-cumulative count.
+# **Assemble it from `runstate.sh run-digest <run-state>` with no `--since`**, plus
+# at most the three file reads named at the top of this file. Every packet the run
+# began has a `packet` line, so this report names every one of them with its outcome
+# — or that it is paused — whether or not the session rendering it was there when
+# they ran. That property is the point: a stop report after a compaction, or from a
+# session that resumed someone else's run, is the same report.
+#
+# The tally counts `packet` lines by outcome, and the core does the counting: read
+# each digest-derived figure from `runstate.sh run-tally <run-state>` — ✅ from its
+# `SHIPPED`, ⛔ from `FAILED`, ⚠️ from `UNFINISHED`, 🔀 from `DECISIONS` — and
+# render it as printed, never recounted from the digest. The core groups `packet`
+# outcomes as ✅ green · ⛔ failed and rolled-back · ⚠️ blocked, interrupted,
+# abandoned, open and paused, so a reader checks a figure against that grouping
+# rather than against arithmetic the report did. ⬚ queued is not one of its
+# figures: it is the `N pending` from `runstate.sh summary`; omit the bucket if
+# you did not read it rather than guessing a number.
+#
+# The core's 🔀 figure counts one per `handoff-feature` line, plus one per
+# `decision` line whose token is `hand-off-feature`, plus one per still-awaiting
+# `ask-operator` `decision` line — each EXCEPT one whose id already has a
+# `handoff-feature` line of its own — plus one per still-awaiting
+# retry-past-limit stop: a routing record whose `retry` token was routed `stop`
+# because the packet was already at its attempt limit. **Still awaiting** is
+# defined here, once, and the rules below refer to it: an `ask-operator` line, or
+# a retry-past-limit stop, counts until the same packet has a start, continuation
+# or `abandoned` record in the outcomes log whose parsed timestamp is STRICTLY
+# later than the question's. A tie does not answer (the count fails toward
+# over-reporting), and the `blocked` outcome the pause records for the stop the
+# question itself caused does not answer either — only the `ask-operator` lines
+# and the retry-past-limit stops are aged this way; the other two kinds count for
+# the whole run. A retry-past-limit stop has no digest line of its own (the
+# digest's line kinds are unchanged) and is a distinct question from any
+# `ask-operator` or `hand-off-feature` line for the same packet, so the core
+# counts it directly: it is never excluded by a `handoff-feature` line and never
+# capped against a digest count. The digest's `decision` line carries no
+# timestamp, so this is the core's judgement, not something to re-derive from
+# the digest.
+#
+# The 🔀 figure also counts one per `decision\t\treview-routing` line — a periodic
+# review's routing, counted directly because its empty packet-id field leaves
+# nothing for the hand-off exclusion or the still-awaiting ageing to join on. The
+# `review` line itself counts toward no figure: its merges and drops are numbers,
+# never decisions.
+#
+# A packet routed `hand-off-feature` always
+# emits BOTH records for the same question (the digest's two records — left
+# untouched here, see above), so counting both would tally that one question
+# twice; the core's exclusion of the `decision` line once its `handoff-feature`
+# line is counted is what makes a handed-off packet contribute exactly the one 🔀
+# that the body renders exactly one block for. An `ask-operator` decision has no
+# `handoff-feature` line and so the core never excludes it.
+#
+# The tally is the report's table of contents, not a separate count next to one:
+# every glyph it totals names a section below, and every section the tally counts
+# is headed by that glyph — ✅ Shipped, ⛔ Failed, ⚠️ Unfinished, 🔀 Decisions,
+# ⬚ Queued, in that order. ✅, ⛔ and ⚠️ carry one line per packet counted, and
+# 🔀 Decisions carries exactly as many blocks as the header's 🔀 figure, never
+# more; ⬚ Queued is the one bucket whose count collapses to a single line (see
+# below), and ▶ Next is the one section the tally does not count.
 
-⏸️ **PAUSED** · <what this run was about> · ✅ **N shipped** · ⚠️ **N blocked** · 🔀 **N decisions** · ⬚ **N queued**
+⏸️ **PAUSED** · <what this run was about> · ✅ **N shipped** · ⛔ **N failed** · ⚠️ **N unfinished** · 🔀 **N decisions** · ⬚ **N queued**
 
 <one sentence: why it stopped, and whether anything is at risk right now>
 
 ✅ **Shipped**
 
-> ✅ **<What is now true that wasn't before>** — <one clause of consequence>
+> ✅ **<What is now true that wasn't before>** (`<id>`) — <one clause of consequence>
 
-⚠️ **Blocked**
+⛔ **Failed**
 
-> ⚠️ **<Title>** (`<id>`) — <what it is waiting on, one clause>
+> ⛔ **<Title>** (`<id>`) — <what failed>, rolled back
 
-⬚ **Queued**
+⚠️ **Unfinished**
 
-> ⬚ **<Title>** · ⬚ **<Title>** — <one clause covering them>
+> ⚠️ **<Title>** (`<id>`) — paused here; the run stopped on this one
+> ⚠️ **<Title>** (`<id>`) — swept as interrupted
 
 🔀 **Decisions** — reply `1A 2B`
 
@@ -101,61 +269,118 @@
 
 > <decision block 2>
 
+⬚ **Queued**
+
+> ⬚ **<N> more** — <one clause covering them>
+
 ▶ **Next** — <the single action that unblocks the most>
 
 > `<branch>` @ `<sha>` · tree clean · <how to pick it back up>
 
-# `⬚ Queued` collapses: untouched packets with no blockers are a count and a list of
-# titles on one line, not a section of their own lines. If everything remaining is
-# blocked, omit it entirely.
+# - **The paused packet is named with the word *paused*, under ⚠️ Unfinished.** ⏸️
+#   stays header-only (the glyph vocabulary), so it is the word and not a glyph that
+#   carries this. The digest gives it to you as `<outcome>` = `paused`: that is the
+#   run's cursor, and it is deliberately never swept, so it carries no terminal
+#   record of its own and cannot be inferred any other way.
+# - **Every `handoff-feature` line becomes exactly one decision block**, whatever
+#   else is in the report, and so does every `decision` line with no
+#   `handoff-feature` line of its own that is still awaiting an answer as the 🔀
+#   paragraph above defines it (in practice, `ask-operator` — a
+#   `hand-off-feature` decision line always has one). A hand-off's two digest
+#   records name the same question, so render ONE block for it, matching the
+#   header's 🔀 count above. The digest carries `handoff-feature` lines for the
+#   WHOLE run, not just since the last report, precisely so a stop report cannot
+#   drop an open question the run asked three hours and one compaction ago. Its
+#   `<status>` field is the status line the decider routed — it holds the
+#   question; write the two options and the lean.
+# - **Every `review-routing` line becomes exactly one decision block too**, headed
+#   by the routed finding's id and summary and naming each packet the summary names
+#   by id and title (the review paragraph at the top of this file). **The `review`
+#   line becomes one glyphless counts line** in a `>` quote directly above ▶ Next —
+#   never a block, never under 🔀 — so a review that merged and dropped entries but
+#   routed none adds a line and no decision.
+# - **`⬚ Queued` collapses to a count and one clause**, never a list of its own
+#   lines — the digest does not carry unbegun packets, so there is nothing to name
+#   there anyway. If everything remaining is unfinished, omit the section.
+# - **When a periodic pause stopped the run, say the setting.** Read
+#   `runstate.sh periodic-pause` and name it in the one-sentence reason:
+#   *"Paused after 5 packets — `pause_every_packets: 5` in
+#   `.agents/project-overrides.yaml`."* Without the setting named, an operator
+#   reads a scheduled pause as a failure, and that is the one thing it is not.
+# - **Omit `⛔ Failed` and `⚠️ Unfinished` when the digest has no such lines.** Rule
+#   3 — an empty section is never written as "none".
 
-# Worked example:
+# Worked example of the dedup rule (one handed-off packet, one operator question):
 #
-#   ⏸️ **PAUSED** · Transaction import · ✅ **5 shipped** · ⚠️ **2 blocked** · 🔀 **3 decisions** · ⬚ **2 queued**
+#   packet          txn-t4  Add a duplicate-detection pass over…  rolled-back
+#   decision        txn-t4  hand-off-feature
+#   handoff-feature txn-t4  handed off as a question: auto-match or confirm-each
+#   packet          txn-t9  Pick a retry backoff for the bank API  blocked
+#   decision        txn-t9  ask-operator
 #
-#   Stopped at a green commit after the fifth packet. Nothing at risk, nothing
-#   half-written.
+#   Tally: ⛔ **1 failed** (txn-t4, rolled-back) · ⚠️ **1 unfinished** (txn-t9,
+#   blocked) · 🔀 **2 decisions** — one `handoff-feature` line (txn-t4) plus one
+#   `decision` line with no `handoff-feature` line of its own (txn-t9's
+#   `ask-operator`, still awaiting as the 🔀 paragraph above defines it — its
+#   `blocked` outcome is the pause's own and answers nothing). txn-t4's OWN
+#   `decision` line (token `hand-off-feature`) is excluded, since its `handoff-feature` line already
+#   counted that question. The body renders exactly two blocks under
+#   🔀 **Decisions**, one per counted line above — the header's 🔀 figure and the
+#   section's block count match, which is the table-of-contents property this
+#   correction restores.
+#
+# Worked example of a periodic review (one routing, two merges, one drop):
+#
+#   packet   txn-t4  Add a duplicate-detection pass over…  rolled-back
+#   packet   txn-t5  Record every import in an audit log…  green
+#   decision         review-routing  txn-import-dupes  review: bank retries resend a
+#                                    row; needs a dedup feature (txn-t4)
+#   review   2  1  1  14210  9880
+#
+#   Tally: ✅ **1 shipped** · ⛔ **1 failed** · 🔀 **1 decision** — the one
+#   `review-routing` line.
+#   The `review` line counts toward nothing. The body renders exactly one block
+#   under 🔀 **Decisions**, headed by finding `txn-import-dupes` and its summary and
+#   naming **Duplicate detection** (`txn-t4`) — by id alone if the digest had no
+#   `txn-t4` packet line — and the merges and the drop appear only as numbers:
+#
+#   > Findings review — 2 merged · 1 routed · 1 dropped · index 14,210 → 9,880 bytes
+#
+# Worked example (from a digest with five packets, one paused, one question):
+#
+#   ⏸️ **PAUSED** · Transaction import · ✅ **4 shipped** · ⚠️ **1 unfinished** · 🔀 **1 decision** · ⬚ **2 queued**
+#
+#   Paused after 5 packets — `pause_every_packets: 5` in
+#   `.agents/project-overrides.yaml`. Nothing at risk, nothing half-written.
 #
 #   ✅ **Shipped**
 #
-#   > ✅ **Large imports don't time out** — 50k-row CSV goes through in one pass
-#   > ✅ **Transaction list paginates** — 200 a page, not the whole table
-#   > ✅ **Category totals cached** — dashboard 4s → 400ms
-#   > ✅ **Export respects on-screen filters** — what you see is what exports
-#   > ✅ **Import errors name row and column** — instead of "import failed"
+#   > ✅ **Large imports don't time out** (`txn-t1`) — 50k rows in one pass
+#   > ✅ **Transaction list paginates** (`txn-t2`) — 200 a page, not the whole table
+#   > ✅ **Category totals cached** (`txn-t3`) — dashboard 4s → 400ms
+#   > ✅ **Import errors name row and column** (`txn-t6`) — instead of "import failed"
 #
-#   ⚠️ **Blocked**
+#   ⚠️ **Unfinished**
 #
-#   > ⚠️ **Duplicate detection** (`txn-t8`) — waiting on decision 1
-#   > ⚠️ **Date-range filter** (`txn-t5`) — needs t8's matching logic first
+#   > ⚠️ **Duplicate detection** (`txn-t4`) — paused here; the run stopped on this one
 #
-#   ⬚ **Queued**
-#
-#   > ⬚ **Import audit log** · ⬚ **Bulk re-categorise** — untouched, no blockers
-#
-#   🔀 **Decisions** — reply `1A 2B 3A`
+#   🔀 **Decisions** — reply `1A`
 #
 #   > **1 · How do we decide two imports are the same transaction?**
 #   >
 #   > - **A ›** Match on amount + date + description
-#   >   → duplicates vanish silently; ~1 in 500 genuine same-day repeats swallowed
+#   >   → duplicates vanish silently; ~1 in 500 genuine repeats swallowed
 #   > - **B ›** Flag for the user to confirm
 #   >   → nothing is ever lost; ~1,000 prompts on a first big import
 #   >
 #   > **→ Pick A** — recoverable, and confirm-flows are the ones users abandon.
 #   > *Silence = A, matches logged.*
 #
-#   > **2 · Hold the release for the date filter?**
-#   >
-#   > - **A ›** Hold
-#   >   → ships complete, about two more days
-#   > - **B ›** Ship now
-#   >   → speed fixes land this week, filter follows next release
-#   >
-#   > **→ Pick B** — the five landed packets are what people complained about.
-#   > *Silence = B.*
+#   ⬚ **Queued**
 #
-#   ▶ **Next** — answer decision 1; the other two can wait.
+#   > ⬚ **2 more** — the date filter and the audit log, neither blocked
+#
+#   ▶ **Next** — answer decision 1, then `/gaffer:resume`.
 #
 #   > `orch/txn-import` @ `c40aa11` · tree clean · `/gaffer:resume`
 
@@ -166,21 +391,79 @@
 # and after the backlog resolves, so it states facts rather than intentions. On resume
 # the run-state word is ▶ **RESUMING** and the plan is what is LEFT, not what the
 # original run set out to do.
+#
+# **The session line comes from `run-digest`'s `enter` line, and nothing else.** On a
+# fresh run the digest has no `packet` lines yet — the forward plan is the backlog you
+# resolved moments ago in the same step, which is a file read, not a memory. On resume
+# the digest's `packet` lines are what the run already did; render them as one ⚠️
+# **Picked up** line naming what is unfinished, not as a second stop report.
 
-▶ **STARTING** · <what this run is for, in plain words> · ⬚ **N packets** · <M waves | sequential>
+▶ **STARTING** · <what this run is for, in plain words> · ⬚ **N packets** · <M phases>
 
-> **Wave 1 — <theme>** · ⬚ <Title> · ⬚ <Title> · ⬚ <Title>
-> **Wave 2 — <theme>** · ⬚ <Title> · ⬚ <Title>
+> **Phase 1 — <theme>** · ⬚ <Title> · ⬚ <Title> · ⬚ <Title>
+> **Phase 2 — <theme>** · ⬚ <Title> · ⬚ <Title>
 
 ⚠️ **Assuming** — <the one assumption most likely to be wrong, and what it costs if it is>
+
+⚠️ **Routing config** — <n> entr(y|ies) ignored: <key> (<reason>), …
+
+⚠️ **Effort override** — `CLAUDE_CODE_EFFORT_LEVEL` is set, and overrides the session effort for the driver and every dispatched agent this run
 
 🔀 **Will need you** — <the packets expected to stop for a decision, by title, and why>
 
 > **Won't touch:** <only the hard gates this backlog realistically approaches>
 
-▶ **Autonomy** <level> · **Stops at** <branch ready for review | integrated on <branch>>
+▶ **Session** <model> · effort <effort>, inherited by every dispatched agent as far as its model accepts one · compaction <threshold>
 
-# - **Group by wave or theme, not as a numbered list of every packet.** Up to six
+▶ **Routing** <agent> <frontmatter> → <alias> · …
+
+▶ **Stops at** <branch ready for review | integrated on <branch>>
+
+# - **`▶ Session` states model and effort, and the auto-compaction threshold as a
+#   number only when one is in effect, asking for nothing.** Model and effort are
+#   taken verbatim from the digest's `enter` line. Where effort is `unknown`, say
+#   so in words — *effort unknown* — since effort is always in effect and merely
+#   unrecorded. **The effort element always carries the inheritance clause** —
+#   *inherited by every dispatched agent as far as its model accepts one* — since
+#   every agent the run dispatches inherits the session's effort, and a model that
+#   accepts no effort setting simply runs without one; with `unknown` it reads
+#   *effort unknown, inherited by every dispatched agent as far as its model accepts
+#   one*. Where the whole `enter` line is absent, write *`▶ **Session** —
+#   can't tell: no driver-mode record`*. **Whenever the reader's `SOURCE` named no
+#   value in effect** (`unknown` — not a value the harness enforces), the
+#   threshold element states the absence in exactly the
+#   words the two loop entry points use — *no compaction threshold in effect for
+#   this session — the settings key `autoCompactWindow` supplies one* — in place
+#   of `compaction <threshold>`: never a figure, and never the bare word
+#   `unknown`, since omitting the element would read as a measured run. State a
+#   real number, as `compaction <threshold>`, only when the repo or the operator
+#   set one — the harness enforces those. This line never carries a `SOURCE` slot
+#   of its own; the source decides which form the threshold element takes, not
+#   something rendered alongside it.
+#   **Never ask the operator to raise the effort, switch model or change the
+#   threshold.** It is their setting; the line exists so a surprising run cost is
+#   explainable afterwards, not to open a negotiation at the top of a report. A
+#   run that would genuinely be better on another model is a thing to say once,
+#   in conversation, never as a line in this shape.
+# - **`⚠️ Routing config` and `▶ Routing` are rendered only from `routing.sh
+#   validate` and `routing.sh table` output, run once at preflight — never from the
+#   `model_routing` YAML itself — and neither asks the operator to change anything.**
+#   `⚠️ Routing config` appears only when `validate` printed something: one line
+#   total, naming each ignored entry's key and reason (an ignored entry falls back to
+#   its agent's frontmatter model, and the run continues). `▶ Routing` appears only
+#   when `table` printed something: one line total, each agent the map routes away
+#   from its frontmatter with both models. An empty or all-default map adds no line.
+#   Like `▶ Session`, these explain a run's cost and routing afterwards; they do not
+#   open a negotiation about configuration.
+# - **`⚠️ Effort override` is rendered only when `runstate.sh session-effort`
+#   printed `EFFORT_ENV=set`** at entry — `CLAUDE_CODE_EFFORT_LEVEL` is set to a
+#   non-empty value and overrides the session effort for the driver and every
+#   dispatched agent this run. Where it printed `EFFORT_ENV=unset` (the variable
+#   unset or empty) the line is absent. It asks nothing and never stops the run:
+#   the ⚠️ is because the `▶ Session` effort is not the effort in force, not a
+#   request to unset the variable — the run proceeds exactly as it would without
+#   the line.
+# - **Group by phase or theme, not as a numbered list of every packet.** Up to six
 #   packets may be listed individually; past that, three to five themed lines with
 #   their packets inline. A 30-line numbered list is not a plan the human can check,
 #   it is a wall they scroll past.
@@ -190,13 +473,13 @@
 #   here. If you genuinely have none, omit it rather than inventing a safe-sounding
 #   one.
 # - **`🔀 Will need you` is a forecast, not a promise** — naming the packets you expect
-#   to stop at means a later stop is not a surprise, and it previews the tally the
-#   check-ins will carry. "Nothing expected" is a legitimate and useful value; this is
-#   the one line worth keeping when empty (rule 3's exception).
+#   to stop at means a later stop is not a surprise. "Nothing expected" is a
+#   legitimate and useful value; this is the one line worth keeping when empty
+#   (rule 3's exception).
 # - **`Won't touch:` names only what this backlog actually gets near** — a migration it
 #   borders, the auth code it stops short of. Do not recite the whole danger floor; a
 #   boilerplate list the human learns to skip is worse than no list.
-# - **Do not fabricate a duration.** Packet and wave counts are real; a time estimate
+# - **Do not fabricate a duration.** Packet and phase counts are real; a time estimate
 #   is a guess unless this repo's own history supports one. Say the counts and stop.
 # - **If the plan itself has an open choice** — an ordering that could go two ways, a
 #   packet that may be out of scope — put a decision block here rather than choosing
@@ -204,11 +487,11 @@
 
 # Worked example:
 #
-#   ▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **9 packets** · 3 waves
+#   ▶ **STARTING** · Transaction import: make it survive real bank files · ⬚ **9 packets** · 3 phases
 #
-#   > **Wave 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
-#   > **Wave 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
-#   > **Wave 3 — polish** · ⬚ Date filter · ⬚ Error messages · ⬚ Export filters · ⬚ Bulk re-categorise
+#   > **Phase 1 — speed** · ⬚ Stream large imports · ⬚ Paginate the list · ⬚ Cache totals
+#   > **Phase 2 — correctness** · ⬚ Duplicate detection · ⬚ Import audit log
+#   > **Phase 3 — polish** · ⬚ Date filter · ⬚ Error messages · ⬚ Export filters · ⬚ Bulk re-categorise
 #
 #   ⚠️ **Assuming** — every bank in the sample set sends a stable per-transaction id.
 #   If that's wrong, duplicate detection gets substantially bigger.
@@ -219,4 +502,10 @@
 #   > **Won't touch:** the transactions table schema — totals cache alongside it
 #   > rather than adding a column, so no migration.
 #
-#   ▶ **Autonomy** autonomous · **Stops at** `orch/txn-import` ready for review
+#   ▶ **Session** claude-opus-5[1m] · effort xhigh, inherited by every dispatched
+#   agent as far as its model accepts one · no compaction threshold in effect for
+#   this session — the settings key `autoCompactWindow` supplies one
+#
+#   ▶ **Routing** implementer sonnet → opus
+#
+#   ▶ **Stops at** `orch/txn-import` ready for review

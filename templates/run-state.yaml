@@ -5,7 +5,12 @@
 # Chief Engineer at session start). Because the loop runs inside a Claude Code
 # session that ends when the laptop sleeps or Claude Desktop closes, this file is
 # the ONLY memory that survives the session — keep it truthful and current.
-# See ADR 0004, ADR 0009 (sequential), and ADR 0016 (parallel).
+# See ADR 0004 and ADR 0009. (ADR 0016 added a parallel worktree-lane mode; it
+# was retired by retire-unused-loop-modes — the loop runs one mode, sequential,
+# in the single local checkout. A run-state written before the retirement may
+# still carry `mode: parallel` / `packets:` / `lanes:` fields; they still parse
+# and `resume` reads `lanes:` read-only to name a legacy run's lane branches and
+# worktrees for the operator, but nothing here writes them any more.)
 #
 # WHERE IT LIVES. This file is **gitignored** local bookkeeping, not product
 # history — it lives at `.agents/run-state.yaml` and persists on local disk across
@@ -16,8 +21,7 @@
 # model: it is no longer git-tracked, so it does not travel across machines —
 # resume is same-machine.)
 #
-# Copy this file to `.agents/run-state.yaml`, fill in the real values, keep the
-# ONE block that matches `mode`, and delete the other block + these comments.
+# Copy this file to `.agents/run-state.yaml` and fill in the real values below.
 
 schema: 3
 # Stays 3 for both of ADR 0025 and ADR 0024's changes: they constrain what is
@@ -27,8 +31,8 @@ schema: 3
 # Lifecycle status — the PRIMARY crash-vs-clean signal a resuming session reads.
 #   running  the loop is mid-flight. Seeing this at the start of a FRESH session
 #            means the previous session ended WITHOUT pausing — a crash, reboot,
-#            sleep-death, or hard close. Resume must reconcile before continuing
-#            (sequential: `reconcile`; parallel: `reconcile-parallel`). See ADR 0005.
+#            sleep-death, or hard close. Resume must `reconcile` before continuing.
+#            See ADR 0005.
 #   paused   `/gaffer:pause` brought the run to a clean, verified rest state.
 #   blocked  paused with a `blocking` question the human must answer first.
 #   done     backlog complete; nothing to resume.
@@ -38,17 +42,12 @@ status: running
 # ISO-8601 UTC of the last write. Informational — `status` is the crash signal.
 updated_at: <YYYY-MM-DDThh:mm:ssZ>
 
-# Execution mode (ADR 0016).
-#   sequential  ONE packet in flight, in the single local checkout (ADR 0009).
-#               Uses the `branch` / `last_green_commit` / `backlog` block below.
-#   parallel    up to `max_parallel` file-disjoint packets in flight, each in its
-#               own worktree lane. Uses the `max_parallel` / `graph` / `packets` /
-#               `lanes` block. Requires `--parallel` and a built packet graph.
-mode: sequential
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SEQUENTIAL MODE  (mode: sequential)  — delete this block if mode: parallel
-# ═══════════════════════════════════════════════════════════════════════════
+# The run's own identity (thin-loop-driver T7) — minted ONCE by `runstate.sh
+# begin-run` and kept across a resume or a compaction, since a run spans
+# sessions. It names the run's own directory, .agents/loop/<run_id>/, where
+# handoff files, script-written result files (T8) and the routing log (T9)
+# live. Absent until the first `begin-run` call; never write it by hand.
+run_id: <run-id>
 
 # The feature branch this run lives on, in the single local checkout. Never
 # main/master.
@@ -79,52 +78,21 @@ backlog:
     - <feature-001-scope>
     - <feature-002-scope>
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PARALLEL MODE  (mode: parallel, ADR 0016)  — delete this block if sequential
-# ═══════════════════════════════════════════════════════════════════════════
-# The DRIVER (the top-level scheduler session) is the SINGLE writer of this block;
-# dispatched lane agents NEVER write run-state. `runstate.sh packets-by-status`,
-# `lanes`, and `reconcile-parallel` read it.
-#
-# max_parallel: 5                       # cap on concurrent lanes (project-overrides
-#                                       # max_parallel_packets; default 5)
-# graph: .agents/packet-graph.yaml      # the DAG this run executes (built by
-#                                       # /build-packet-dependency-tree)
-# integration_branch: develop           # base lanes fork from and merge back to
-#
-# packets:                              # every packet in the run, with its state
-#   - id: feature-001-scope
-#     status: done                       # pending | running | done | blocked
-#     depends_on: [feature-000-scope]    # ordering edges (from the graph)
-#     lane: orch/feature-001-scope       # branch (== worktree) when running/done
-#     last_green_commit: <full-sha>      # this packet's green tip
-#     integrated: true                   # merged back into integration_branch yet?
-#   - id: feature-002-scope
-#     status: running
-#     depends_on: []
-#     lane: orch/feature-002-scope
-#     last_green_commit: <full-sha>
-#     integrated: false
-#
-# lanes:                                # the currently-active worktree lanes
-#   - id: feature-002-scope
-#     worktree: ../<repo>-worktrees/feature-002-scope
-#     branch: orch/feature-002-scope
-#     packet: feature-002-scope
-#     last_green_commit: <full-sha>      # empty until the lane commits green
-#     status: running                    # running | green | integrating | done
-
-# ═══════════════════════════════════════════════════════════════════════════
-
 # Questions the human must answer before blocked packets can proceed. Each is a
 # produced check-in (ADR 0004); DELIVERY is the frontend's job, not the plugin's.
 # severity: blocking = the loop cannot continue until answered;
 #           high     = proceed on other packets, but this needs an answer soon;
 #           normal   = informational / can wait.
+# asked_at: the quoted `ts` of the routing.jsonl record that raised the question
+#           (the packet's latest record routed `stop`), stamped by /gaffer:pause
+#           and carried through unchanged afterwards. `runstate.sh
+#           prune-questions` uses it with `packet` to drop answered entries; an
+#           entry without it is always kept.
 pending_questions:
   - id: <q-001>
     severity: <blocking | high | normal>
     packet: <feature-001-scope>
+    asked_at: '<ts of the routing record that raised it>'
     question: <what you need decided, in one or two sentences>
 
 # ═══════════════════════════════════════════════════════════════════════════

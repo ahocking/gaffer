@@ -66,7 +66,7 @@ evidence moves to the ADRs.
 
 ## Capabilities
 
-- [ ] **P0**: The resume skill states only what is unique to resuming, and refers to run-loop for everything else
+- [x] **P0**: The resume skill states only what is unique to resuming, and refers to run-loop for everything else
   - `skills/resume/SKILL.md` carries four things and no others at full length:
     loading the checkpoint, reconstructing state from git when run-state is
     missing or unusable, reconciling the working tree including the adopt path,
@@ -109,7 +109,7 @@ evidence moves to the ADRs.
     the `FEATURE=` fallback, and each case turns the sweep red when the branch
     it pins is reverted
 
-- [ ] **P0**: Rationale in the loop skills is relocated to an ADR or deleted, and each rule keeps at most a one-clause reason
+- [x] **P0**: Rationale in the loop skills is relocated to an ADR or deleted, and each rule keeps at most a one-clause reason
   - in run-loop, resume and pause, a passage that explains why a rule exists
     moves to the ADR that owns the rule — or, where no ADR owns it, the closest
     related ADR; never a PRD, never left in place beyond the one-clause reason below — appended under a dated
@@ -124,7 +124,7 @@ evidence moves to the ADRs.
     and `scripts/test-routing.sh` keep passing under capability 5's rule for a
     changed assertion
 
-- [ ] **P0**: No loop skill states the current value of a configurable setting or code default
+- [x] **P0**: No loop skill states the current value of a configurable setting or code default
   - run-loop, resume and pause name a setting by its key and name the file or
     script output that holds its value, and state no value for it: neither a key
     in `.agents/project-overrides.yaml`, an environment variable, a harness
@@ -135,11 +135,15 @@ evidence moves to the ADRs.
   - capability 5's rule-by-rule review counts a rule that depended on a removed
     value, with no pointer to where that value is read, as a lost rule
 
-- [ ] **P0**: The loop skills together meet the size gate
-  - the combined bytes of run-loop, resume and pause are at or under half the
-    starting figure, which is measured and recorded in a tracked file before
-    the first trimming commit lands; a gate with no figure recorded by then
-    cannot be met
+- [x] **P0**: The loop skills together meet the size gate
+  - the combined bytes of run-loop, resume and pause are at or under the
+    operator-accepted figure of 95957 bytes — the combined `wc -c` shipped
+    after T13, with every rule kept — against a starting figure measured and
+    recorded in a tracked file before the first trimming commit lands; the
+    original target, half the starting figure (71912 bytes), stays on record
+    there with its 24045-byte shortfall. The operator accepted the shipped
+    figure on 2026-09-25, after two trim passes found no further room without
+    cutting rules
   - every sweep passes at the commit that meets the figure; any sweep case whose
     assertion changed during this feature is named in its commit with the
     reason, and none is loosened to pass
@@ -197,8 +201,9 @@ evidence moves to the ADRs.
 
 ## Success Metrics
 
-- **Gate:** capability 5 — the loop skills at or under half their recorded
-  starting bytes, every sweep green, zero lost-rule findings.
+- **Gate:** capability 5 — the loop skills at or under the operator-accepted
+  figure (amended 2026-09-25 from half their recorded starting bytes), every
+  sweep green, zero lost-rule findings.
 - **Reported, never gating:** the driving session's `cc_shape` max and p90
   (ADR 0019) on the first loop run after the trim, against a baseline captured
   from a run before it, stated alongside ADR 0019's noted run-to-run variance

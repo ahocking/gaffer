@@ -149,7 +149,9 @@
 # two ranking sets over different model sets giving a model one rank per set,
 # never their average, and named; the proposal's rank read only from the one
 # set that ranked every tied model (none: unmeasured; one: it decides, named;
-# two: the rule stops, naming both).
+# two: the rule stops, naming both); and that store rendered byte-identical
+# under every other awk on the machine (gawk, mawk, nawk), skipped loudly when
+# there is none.
 # Confinement: every replay, review-view and ranking session given `--settings`
 # holding compare-confine.sh as a PreToolUse hook rooted at its own directory,
 # that command (run as a hook runs) allowing a write inside and refusing one
@@ -4579,6 +4581,20 @@ grr "$GRA"
 assert_has "ranking sets: the one set that ranked every tied model decides, named" \
   "> Decided by mean rank in ranking set {fable, haiku} over both classes: fable 1.00 (n=1) from **fable, code** 1.00 (n=1), **fable, prose** unmeasured (n=0) over haiku 2.00 (n=1)" \
   "$OUT"
+# The same store under every other awk on the machine: the same bytes. A model
+# unranked in some ranking set is a never-assigned rank element, which GNU awk
+# mishandles when it is passed to a function and read again (garbage n=, or an
+# abort leaving the render empty) where BSD awk and mawk read 0.
+GR_AWK_REF="$OUT"; GR_AWKS=""
+for a in gawk mawk nawk; do
+  p="$(command -v "$a" 2>/dev/null)" || continue
+  GR_AWKS="$GR_AWKS $a"
+  mkdir -p "$WORK/awk-$a"; ln -sf "$p" "$WORK/awk-$a/awk"
+  OUT="$(PATH="$WORK/awk-$a:$PATH" ORCH_COMPARE_STORE="$GRSTORE" ORCH_COMPARE_CLAUDE="$GRSTUB" "$COMPARE" report "$GRA" 2>"$WORK/err")"
+  assert_eq "ranking sets: the render under $a is byte-identical to the one under awk" "$GR_AWK_REF" "$OUT"
+done
+[ -n "$GR_AWKS" ] || printf 'skip ranking sets: the render under another awk (no gawk, mawk or nawk on PATH)\n'
+OUT="$GR_AWK_REF"
 # Two sets that each ranked both tied models: the rule stops rather than average them.
 GRG="a00000000007"
 gr_sel "$GRG" implementer haiku /src-one fable opus haiku

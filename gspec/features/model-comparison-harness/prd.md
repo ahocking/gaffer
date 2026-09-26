@@ -249,7 +249,7 @@ varies the implementer, across Fable 5.1, Opus 5.5 and Sonnet 5.
     `.git/` is not writable from a session, and harness-side copies never
     follow a symlink or write through a hard link
 
-- [ ] **P0**: The report renders identically under every awk the sweeps run on
+- [x] **P0**: The report renders identically under every awk the sweeps run on
   - `compare.sh report` prints the same bytes for the same store under BSD awk,
     mawk and GNU awk, with every `n=` figure a real count (0 when nothing was
     measured), never uninitialized memory

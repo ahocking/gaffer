@@ -5368,11 +5368,16 @@ cmd_report() {
     # pooled into the A* globals (sums and their n, never a mean of means). Its
     # rank is read from the one ranking set RSET only (0: none, so unmeasured):
     # ranks from different ranking sets are never averaged together.
-    function agg(m, cl,   n, k, a) {
+    # Rs/Rn are read only through an `in` guard into a plain number (0 when
+    # absent): GNU awk mishandles a never-assigned element passed to a
+    # function and read again, printing garbage or aborting the render.
+    function agg(m, cl,   n, k, a, rs, rn) {
       n = split(cl, a, " ")
       Asc = 0; Apa = 0; Ars = 0; Arn = 0; Atk = 0; Atn = 0; Alo = 0; Ahi = 0; Adn = 0
       for (k = 1; k <= n; k++) {
-        Asc += Csc[m, a[k]]; Apa += Cpa[m, a[k]]; Ars += Rs[m, a[k], RSET]; Arn += Rn[m, a[k], RSET]
+        rs = ((m, a[k], RSET) in Rs) ? Rs[m, a[k], RSET] + 0 : 0
+        rn = ((m, a[k], RSET) in Rn) ? Rn[m, a[k], RSET] + 0 : 0
+        Asc += Csc[m, a[k]]; Apa += Cpa[m, a[k]]; Ars += rs; Arn += rn
         Atk += Ctk[m, a[k]]; Atn += Ctn[m, a[k]]; Alo += Clo[m, a[k]]; Ahi += Chi[m, a[k]]; Adn += Cdn[m, a[k]]
       }
     }
@@ -5654,11 +5659,18 @@ cmd_report() {
         printf " · fix rounds %s (n=%d)", mean(frs, frn, "%.2f"), frn
         # Rank: over the group'"'"'s one ranking set, or, when it has more than one,
         # per set that ranked this model, each named, never averaged together.
-        if (nset <= 1) printf " · rank %s (n=%d)", mean(Rs[m, c, 1], Rn[m, c, 1], "%.2f"), Rn[m, c, 1]
-        else {
+        # Rs/Rn go through an `in` guard into plain numbers first (see agg).
+        if (nset <= 1) {
+          rs = ((m, c, 1) in Rs) ? Rs[m, c, 1] + 0 : 0
+          rn = ((m, c, 1) in Rn) ? Rn[m, c, 1] + 0 : 0
+          printf " · rank %s (n=%d)", mean(rs, rn, "%.2f"), rn
+        } else {
           r = ""
-          for (t = 1; t <= nset; t++) if ((t, m) in SETHAS)
-            r = r (r == "" ? "" : "; ") mean(Rs[m, c, t], Rn[m, c, t], "%.2f") " (n=" Rn[m, c, t] + 0 ") in ranking set " SETNAME[t]
+          for (t = 1; t <= nset; t++) if ((t, m) in SETHAS) {
+            rs = ((m, c, t) in Rs) ? Rs[m, c, t] + 0 : 0
+            rn = ((m, c, t) in Rn) ? Rn[m, c, t] + 0 : 0
+            r = r (r == "" ? "" : "; ") mean(rs, rn, "%.2f") " (n=" rn ") in ranking set " SETNAME[t]
+          }
           printf " · rank %s", (r == "" ? "unmeasured (n=0)" : r)
         }
         printf " · tokens %s (n=%d)", mean(tks, tkn, "%.0f"), tkn

@@ -308,6 +308,13 @@ per `--relay`/`--inline` flag.
 **written out literally** — never `$RUN_DIR` or any other variable, which driver
 mode refuses.
 
+`Read` `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` now, before the first
+handoff is written, as run-loop's `## 2. Enter driver mode` has a fresh run do:
+its REQUIRED rules are what run-loop's **Write the handoff, then start** step
+appends to a handoff conditionally (the matching regression-sweep criterion and
+the `session_boundary` line). A resume reached through the redirect in run-loop's
+`## 2. Enter driver mode` has already read it; a second read is harmless.
+
 **Then run run-loop's `## 3. Loop`** from its **Form this packet's members** step
 — §2 already made the **Branch** step's switch — through its `## 4. Termination`,
 for the cursor packet and every packet after it: recover the cursor's membership

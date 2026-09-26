@@ -155,3 +155,23 @@ size, not by criterion.
   - covers: Agent prompts that restate a rule this trim changed agree with the trimmed skill
   - arch: —
   - files: agents/loop-driver.md, scripts/test-report-conventions.sh, docs/skill-prompt-trim.md
+- [ ] **T16** **P1** [P] Make a `/gaffer:resume` started directly read `templates/task-packet.yaml` before it writes a handoff, the way run-loop §2 has a fresh run read it, so the conditional REQUIRED lines run-loop §3.3 appends (the regression-sweep criterion and the `session_boundary` line) are never left out on that path. State it once in `skills/resume/SKILL.md`, at the step that hands handoff writing to run-loop §3.3, as a `Read` of `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml`; a resume reached through run-loop §2's redirect has already read it, and a second read is harmless. Change nothing else in the file. Filed from the periodic findings review of the `model-comparison-harness` run (finding `standalone-resume-skips-task-packet-read`), at the operator's call. Verify: resume names the template read before its handoff step, and `scripts/test-report-conventions.sh` and `scripts/test-routing.sh` pass.
+  - deps: —
+  - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+  - arch: —
+  - files: skills/resume/SKILL.md
+- [ ] **T17** **P1** [P] In `skills/pause/SKILL.md` step 3, remove the claim that `.agents/run-state.yaml` is tracked and may be committed on the feature branch: it is gitignored (`.gitignore`), which the same skill already says in step 1. Keep the rule that nothing is ever committed on `main`/`master`. Change nothing else in the file. Filed from the periodic findings review of the `model-comparison-harness` run (finding `pause-run-state-tracked-contradiction`), at the operator's call. Verify: no passage in the pause skill calls run-state tracked or committable, and `scripts/test-report-conventions.sh` and `scripts/test-pause.sh` pass.
+  - deps: —
+  - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+  - arch: —
+  - files: skills/pause/SKILL.md
+- [ ] **T18** **P1** In `docs/skill-prompt-trim.md`, correct the new-project figure the T11 paragraph gives (`new-project 8448`) to the size `wc -c skills/new-project/SKILL.md` measures at `1f6bfdf`, and check every other byte figure in the ledger against `wc -c` of its file at the commit it names, correcting any that differ. Figures only: change no rule list, count or verdict. Filed from the periodic findings review of the `model-comparison-harness` run (finding `ledger-new-project-bytes-wrong`), at the operator's call. Verify: every byte figure in the ledger matches `git show <commit>:<path> | wc -c` for the commit and file it names.
+  - deps: —
+  - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+  - arch: —
+  - files: docs/skill-prompt-trim.md
+- [ ] **T19** **P1** [P] In the ADR `Relocated from skills` sections of `docs/adr/0022-findings-index-not-content.md`, `docs/adr/0023-report-conventions-delivered-not-referenced.md` (three sections), `docs/adr/0024-findings-are-packet-scoped-and-expire.md` and `docs/adr/0026-post-completion-findings-route-by-scope.md`, update each quote of a kept skill clause that T13 reworded to the clause as the skill now words it, so a grep from the ADR quote finds the skill text. Change no relocated rationale and no rule. Filed from the periodic findings review of the `model-comparison-harness` run (finding `adr-kept-clause-quotes-stale`), at the operator's call. Verify: every kept-clause quote in those sections is found verbatim in the skill it names.
+  - deps: —
+  - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+  - arch: —
+  - files: docs/adr/0022-findings-index-not-content.md, docs/adr/0023-report-conventions-delivered-not-referenced.md, docs/adr/0024-findings-are-packet-scoped-and-expire.md, docs/adr/0026-post-completion-findings-route-by-scope.md

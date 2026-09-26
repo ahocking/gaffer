@@ -177,6 +177,19 @@ evidence moves to the ADRs.
   - the sweep that extracts either passage keeps passing, under capability 5's
     rule for a changed assertion
 
+- [ ] **P1**: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
+  - a `/gaffer:resume` started directly reads `templates/task-packet.yaml`
+    before it writes a handoff, so the conditional REQUIRED lines run-loop
+    §3.3 appends are never left out on that path
+  - `skills/pause/SKILL.md` never calls `.agents/run-state.yaml` tracked or
+    committable; it agrees with itself and with `.gitignore`
+  - every byte figure in `docs/skill-prompt-trim.md` matches `wc -c` of the
+    file at the commit it names
+  - every ADR `Relocated from skills` section that quotes a kept skill clause
+    quotes it as the skill now words it, so a grep from the quote finds it
+  - the sweep that extracts any changed passage keeps passing, under
+    capability 5's rule for a changed assertion
+
 ## Dependencies
 
 - `loop-prose-consistency-gaps` — **blocking**: edits run-loop and resume

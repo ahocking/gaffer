@@ -145,7 +145,7 @@ size, not by criterion.
   - covers: The loop skills together meet the size gate
   - arch: —
   - files: skills/run-loop/SKILL.md, skills/resume/SKILL.md, skills/pause/SKILL.md, scripts/test-report-conventions.sh, docs/skill-prompt-trim.md
-- [ ] **T14** **P1** [P] In `agents/chief-engineer.md`'s packet-branch bullet, give the integration base the way run-loop §1 **Branch** now does: drop the `else main/master` arm, which T7 removed from run-loop by the operator's decision recorded in `docs/skill-prompt-trim.md` (it contradicts never running on `main`/`master`). Name the setting by key only, never a value or default. Change nothing else in the file. Filed from the end-of-run whole-run review (finding `chief-engineer-integration-base-drift`). Verify: the passage names no `main`/`master` fallback, and `scripts/test-report-conventions.sh`, `scripts/test-routing.sh` and `scripts/test-runstate.sh` pass.
+- [x] **T14** **P1** [P] In `agents/chief-engineer.md`'s packet-branch bullet, give the integration base the way run-loop §1 **Branch** now does: drop the `else main/master` arm, which T7 removed from run-loop by the operator's decision recorded in `docs/skill-prompt-trim.md` (it contradicts never running on `main`/`master`). Name the setting by key only, never a value or default. Change nothing else in the file. Filed from the end-of-run whole-run review (finding `chief-engineer-integration-base-drift`). Verify: the passage names no `main`/`master` fallback, and `scripts/test-report-conventions.sh`, `scripts/test-routing.sh` and `scripts/test-runstate.sh` pass.
   - deps: —
   - covers: Agent prompts that restate a rule this trim changed agree with the trimmed skill
   - arch: —

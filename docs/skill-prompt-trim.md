@@ -287,7 +287,7 @@ group, named under T5 below. Every other sweep is unchanged since the baseline.
   window length and the "default source" label on the transcript token source; each
   setting is now named by its key and file, or by the script output that shows it.
   New-project and review-change stated no setting value. The skills measure, with
-  `wc -c` after T11: metrics 20369 (22028 at the baseline), new-project 8448 (9373),
+  `wc -c` after T11: metrics 20369 (22028 at the baseline), new-project 8486 (9373),
   review-change 6104 (6512).
 - **T15 (`agents/loop-driver.md` §The periodic review follows run-loop §3.8):** no
   existing assertion changed. No sweep extracted that section before this task (T8's

@@ -1479,6 +1479,104 @@ else
   bad 'the migration runbook exists at docs/gspec-migration.md' "missing: $RB"
 fi
 
+# =============================================================================
+printf '\n== the migrate skill: reasons one clause with the rest in their ADRs (skill-prompt-trim T10) ==\n'
+# Capability 3: each rule keeps at most one clause of reason, and the rest moves to a
+# dated `Relocated from skills (<date>)` section of the ADR that owns the rule. Each row
+# pins all three sides of one move -- the clause the skill kept, the moved wording gone
+# from the skill, and that wording present in the migrate relocation section of its
+# ADR -- so a reason pasted back into the skill, or a move that dropped the wording
+# instead of relocating it, turns this red. Needles are read over whitespace-squeezed
+# text, so a markdown wrap does not fail a clause that is present; each ADR needle sits
+# on one blockquote line, since `> ` prefixes survive the squeeze.
+t10_sq() { printf '%s' "$1" | tr -d '\r' | tr '\n' ' ' | tr -s ' '; }
+t10_skill="$(t10_sq "$SKILL_TXT")"
+while IFS='|' read -r t10_label t10_kept t10_moved t10_adr; do
+  [ -n "$t10_label" ] || continue
+  case "$t10_skill" in
+    *"$t10_kept"*) ok "migrate keeps one clause: $t10_label" ;;
+    *) bad "migrate keeps one clause: $t10_label" "missing: $t10_kept" ;;
+  esac
+  case "$t10_skill" in
+    *"$t10_moved"*) bad "migrate carries no copy of the moved reason: $t10_label" "still present: $t10_moved" ;;
+    *) ok "migrate carries no copy of the moved reason: $t10_label" ;;
+  esac
+  t10_adr_file="$(ls "$HERE"/../docs/adr/"$t10_adr"-*.md 2>/dev/null | head -1)"
+  t10_sect="$(sed -n "/^## Relocated from skills ([0-9-]*) — the migrate skill's/,\$p" "$t10_adr_file" 2>/dev/null)"
+  case "$(t10_sq "$t10_sect")" in
+    *"$t10_moved"*) ok "ADR $t10_adr's migrate relocation section holds it: $t10_label" ;;
+    *) bad "ADR $t10_adr's migrate relocation section holds it: $t10_label" "no '$t10_moved' under a migrate relocation heading in ${t10_adr_file:-docs/adr/$t10_adr-*.md}" ;;
+  esac
+done <<'T10_MOVES'
+why done means packets out|reads as "nothing to do", not as "unreadable"|a pure rename yielded **0 packets from 31 plan files**|0020
+why §2b is read first|the wrong order makes the repo worse|the one way to make this worse rather than better|0020
+why the tree must be clean|so the migration reads as one reviewable, revertable `git diff`|is not one you can review or revert|0020
+why never on main|**Never migrate `main`.**|that belongs on a branch|0020
+why an install mismatch is no finding|since a stale install reads fine|merely runs the old briefs|0020
+why the why is relayed|since several findings look cosmetic and are not|hard-blocks every turn on Codex|0020
+why a flat layout is not breakage|the adapter reads all three gspec layouts|have moved on without it|0020
+why a half-moved feature is reported|two plans for one feature|one moved and one did not|0020
+why a plan without a PRD is not diagnosed|it may be an interrupted `/gspec-migrate` or a deliberate infra plan|one real consumer repo documents exactly that|0020
+why the folder move is gspec's|this plugin owns **execution**|a fight this plugin would lose loudly and intermittently|0020
+why gspec is upgraded first|the layout you are leaving, and reports success|You would then have to migrate twice|0020
+why arch.md and design.html are not written|each feature folder is simply incomplete|migration relocates only the two that already existed|0020
+why placeholder arch lines are declined|gspec's own `plan-lint` floor rejects every such anchor|it produces files gspec itself then refuses|0020
+why architecture altitude is only relayed|splitting it is `/gspec-architect`'s job on a later pass|rewrites specs the user has already reviewed|0020
+why the spec move is committed before §3|before returning to §3 — `migrate.sh apply` refuses on a dirty tree|readable as its own diff regardless|0020
+why approval is awaited|this rewrites a repo's spec layout|it is not a routine edit|0020
+why two keys are dropped|so a stored copy drifts|storing either is how they drift|0020
+why a roadmap entry needs its why|`why` is what a human needs to re-sequence later|is required precisely because|0020
+why a vestigial allow-path goes|so a separate `gspec/tasks/**` entry is vestigial|nobody remembers what it was for|0020
+why CLAUDE.md describes one layout|since an agent trusts this file without checking|the whole value of this file|0020
+why a mixed layout still verifies|a mixed repo is a normal state, not a fault|refusing to pass a repo with nothing wrong|0020
+why legacy task lines are not rewritten|which gspec's immutability floor blocks|destroys the record of what was built|0020
+why the report's items are alerts|everything depending on it, blocked forever|the backlog quietly reports nothing to do|0020
+why the conventions are Read|naming the path is not reading it|unread they produce free prose|0023
+why the card is left as inserted|since a paraphrase drifts from the plugin's own contract|This is the layer that makes reports come out in the house format|0023
+why backlog.done is deleted|dead state since completion is derived from the gspec checkbox|with no reader left|0025
+why the done block shows nothing finished|never the `done:` block dropped in step 4|no fresher a signal than the boxes it mirrored|0025
+why apply never deletes a finding|since it may hold the only copy of something undecided|nobody has decided about yet|0024
+why a repaired scope is flow form|a block-form repair silently leaves the entry `unknown`|the repair fails silently, which is the one|0024
+why drops go through drop-finding|removes the index entry and its body together.|leaves one orphaned|0024
+why the driver-mode dirs are ignored|would sweep or discard an untracked file there|same reason as the pause/write-backup findings above|0028
+why compact-threshold needs a settings file|the finding never fires when the repo commits no settings file|has not opted into a committed value|0028
+why the autonomy leftovers go|since the guard resolves no level any more|they only tell their next reader|0004
+why reported autonomy lines are offered a rewrite|offer to rewrite them, since the guard reads no level any more.|a level named in prose is describing a|0004
+T10_MOVES
+
+# Capability 4 and the history rule: the skill states no default value, carries no
+# task id and no retired feature's slug (git and the plan files record those).
+t10_hist="$(printf '%s\n' "$SKILL_TXT" | grep -nE '\(default |\bT[0-9]+\b|retire-(unused-loop-modes|autonomy-levels)' || true)"
+[ -z "$t10_hist" ] && ok 'migrate states no default value, task id or retired-feature slug' \
+  || bad 'migrate states no default value, task id or retired-feature slug' "found: $(printf '%s' "$t10_hist" | head -1)"
+
+# Every instruction, prohibition and trap whose reason moved keeps its rule wording.
+while IFS= read -r t10_rule; do
+  [ -n "$t10_rule" ] || continue
+  case "$t10_skill" in
+    *"$t10_rule"*) ok "migrate keeps the rule: $t10_rule" ;;
+    *) bad "migrate keeps the rule: $t10_rule" "missing from $SKILL_MD" ;;
+  esac
+done <<'T10_RULES'
+**Do not skip this and go straight to `/gspec-migrate`**
+You must be in the **main conversation** to invoke it
+offers to add placeholder `arch:` lines, decline
+The order is migrate → `/gspec-architect` → `/gspec-plan`
+Relay the warning; do not act on it here.
+**This is not breakage, and must not be relayed as breakage**
+**Do not diagnose this one for them**
+never resolve one by deleting
+**Ask the user before re-running with `--remove-statusline`.**
+Never phrase a same-run removal as "now safe."
+never delete a key from their `settings.json` on their behalf
+Leave it exactly as inserted — **do not reword or summarize it**
+**Never the block form** (`packets:` then indented `- <id>` lines)
+Re-run `migrate.sh findings-audit` afterwards
+Do **not** "fix" them by rewriting task lines
+Do not report success.
+**Do not commit it yourself.**
+T10_RULES
+
 printf '\n----------------------------------------\n'
 if [ "$YAML_SKIP_COUNT" -gt 0 ]; then
   printf 'migrate: %d passed, %d failed   (no python3+PyYAML on this host — %d parse assertion(s) could not assert; not asserting vacuously)\n' \

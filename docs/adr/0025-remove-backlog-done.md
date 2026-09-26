@@ -413,3 +413,18 @@ here.
 
   > (an unchecked task's `covers:` quote matches no capability, so every flip for that
   > feature is held until it is fixed)
+
+## Relocated from skills (2026-09-25) — the migrate skill's `backlog.done` reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §5f by `skill-prompt-trim`. The skill
+keeps each rule with at most a one-clause reason; the fuller wording is recorded here.
+
+- **Why `apply` deletes the `backlog.done` block.** The skill keeps "dead state since
+  completion is derived from the gspec checkbox (ADR 0025)". It used to read:
+
+  > completion is derived from the gspec checkbox now (ADR 0025), so the block is dead state with no reader left
+
+- **Why the dropped `done:` block never shows a packet finished.** The skill keeps
+  the rule ("never the `done:` block dropped in step 4"). It used to add:
+
+  > which carried no fresher a signal than the boxes it mirrored.

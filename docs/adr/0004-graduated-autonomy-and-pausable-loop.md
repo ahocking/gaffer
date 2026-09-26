@@ -172,3 +172,26 @@ rule with at most a one-clause reason; the fuller wording is recorded here.
   above:
 
   > (the plugin produces reports; the frontend delivers them — ADR 0004)
+
+## Relocated from skills (2026-09-25) — the migrate skill's autonomy-leftover reasons
+
+Moved out of `skills/migrate/SKILL.md` §3 and §4 by `skill-prompt-trim`. Autonomy
+levels were retired (`retire-autonomy-levels`); this ADR introduced them and is the
+closest owner. The skill keeps each rule with at most a one-clause reason; the fuller
+wording is recorded here.
+
+- **Why `apply` deletes `.agents/autonomy` and strips `autonomy_ceiling:`.** The skill
+  keeps "since the guard resolves no level any more". It used to read:
+
+  > The guard resolves no level any more, so neither changes a decision — they only tell their next reader that a setting
+  > exists which does not.
+
+  Its `REMOVED=` paragraph repeated it:
+
+  > (autonomy levels are retired and the guard no longer reads it —
+
+- **Why `SPECSETUP_ROUTES=` and `SETTINGS_AUTONOMY=` lines are offered for rewriting.**
+  The skill keeps "since the guard reads no level any more". It used to go on:
+
+  > so an `ORCH_AUTONOMY` entry sets nothing and a level named in prose is describing a
+  > setting that no longer exists.

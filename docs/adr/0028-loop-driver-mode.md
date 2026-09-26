@@ -899,3 +899,29 @@ fuller wording is recorded here.
   > — a resume, a decider `reorder`, or an arm-1 `append-task` mid-run can each put a
   > member somewhere other than a consecutive prefix of `pending`, or leave one out of
   > `pending` altogether — so never assume the prefix shape
+
+## Relocated from skills (2026-09-25) — the migrate skill's ignore and compact-threshold reasons
+
+Moved out of `skills/migrate/SKILL.md` §5e by `skill-prompt-trim`. The skill keeps each
+rule with at most a one-clause reason; the fuller wording is recorded here. The skill
+also carried a task id ("T4's per-repo setting"), which is history and is deleted, not
+relocated; its `(ADR 0028)` pointer stays.
+
+- **Why `.agents/loop/` and `.agents/driver-mode/` must be ignored.** The skill keeps
+  "since the pause path's stash and `resume`'s reconcile would sweep or discard an
+  untracked file there". It used to read:
+
+  > (handoff and script-written result files)
+
+  > (the session-keyed driver-mode mark)
+
+  > same reason as the pause/write-backup findings above: an untracked file there would show up in `git
+  > status`, and the pause path's stash and `resume`'s reconcile would sweep or
+  > discard it.
+
+- **Why `FINDING=compact-threshold` never fires without a settings file.** The skill
+  keeps "the finding never fires when the repo commits no settings file". It used to
+  read:
+
+  > (a repo committing no settings file at all has not opted into a committed value, and gaffer's default is the supported state for it —
+  > this finding never fires there)

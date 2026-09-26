@@ -993,3 +993,44 @@ is recorded here.
   > everything depending on it stays blocked forever and the backlog quietly reports nothing to do.
 
   > a migration is not a run and has nothing to count.
+
+## Relocated from skills (2026-09-25) — the new-project skill's pin and sequencing-overlay reasons
+
+Moved out of `skills/new-project/SKILL.md` (its preamble, §3 and §4) by
+`skill-prompt-trim`. The skill keeps each rule with at most a one-clause reason; the
+fuller wording is recorded here. The skill also said the skill that used to populate
+`.agents/task-files.yaml` "for `--parallel` mode is retired along with that mode
+(ADR 0016)"; that is history and is deleted, not relocated.
+
+- **Why gspec is version-pinned.** The skill keeps "since it changes rapidly". It used
+  to add:
+
+  > a fixed known-good target means each upstream change is adapted to deliberately rather than arriving as a silent breakage.
+
+- **Why an empty `PIN` stops the install.** The skill keeps "an unpinned install is the
+  failure mode ADR 0020 D3 exists to prevent". It used to add:
+
+  > and it will not announce itself.
+
+- **Why the pin is recorded in the new repo.** The skill keeps "so a human can see it
+  without reading the plugin". It used to add the premise below, which this ADR records
+  above as false since gspec 3.1.1 (gspec writes a `gspecVersion` stamp into
+  `.gspec/config.json` at install):
+
+  > gspec does not stamp its own version into a project (that is upstream proposal `U4`), so this is the only durable local record of which gspec produced the specs.
+
+- **Why `.agents/roadmap.yaml` lives outside `gspec/`.** The skill keeps "since gspec's
+  `spec-integrity` floor flags a file under `gspec/` that gspec does not own (ADR 0020
+  D2)". It used to read:
+
+  > anything under `gspec/` is governed by gspec's `spec-integrity` floor, which would flag a file gspec does not own
+
+- **Why a roadmap entry carries no `status` or `parallel_group`.** The skill keeps
+  "storing either is a drift source". It used to add:
+
+  > completion is derived from the PRD's capability checkboxes, and `parallel_group` named a scheduling mechanism (ADR 0016) that is now retired
+
+- **Why `.agents/task-files.yaml` is not seeded.** The skill keeps "an absent file
+  already means "no scope known"". It used to add:
+
+  > which serializes conservatively, so leaving it unseeded costs nothing.

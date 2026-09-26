@@ -262,6 +262,33 @@ group, named under T5 below. Every other sweep is unchanged since the baseline.
   baseline). One task id ("T4's per-repo setting") and two retired-feature slugs
   were history and are deleted, not relocated. The skill stated no setting value
   at the baseline, so capability 4 removed nothing from it.
+- **T11 (metrics, new-project and review-change trimmed):** no existing assertion
+  changed. `scripts/test-routing.sh`'s existing reads of these skills — the
+  dispatching-set membership of `skills/review-change/SKILL.md` and the file-level
+  `routing.sh resolve` literal over every dispatching file — are unchanged and pass,
+  because every "delegate to" phrase and every `routing.sh resolve` in the three skills
+  is kept. `test-routing.sh` gains one appended section: for each of the twenty-five
+  moves (nine metrics reasons to ADR 0019; ten report-reason rows to ADR 0023, four
+  from metrics, two from new-project and four from review-change, each skill's copy of
+  the shared conventions reasons counted separately; six new-project reasons to ADR
+  0020), the skill keeps its one clause, carries no
+  copy of the moved wording, and the named relocation section holds it; none of the
+  three states a setting's value, a script's fallback, a task id or a fix-history
+  story; twenty-four rules beside a moved reason keep their wording; and every
+  dispatch keeps `routing.sh resolve <agent>` in its own `##` section (one in
+  metrics, one in new-project, three in review-change), with a fixture proving a
+  resolve in another section does not cover a dispatch. Deleted as history, not
+  relocated: five task ids and a revision note in metrics, the metrics "v3.3 already
+  had to fix once" story, the metrics note on packets before loop-measurement T4, and
+  new-project's note that the `--parallel` skill which populated
+  `.agents/task-files.yaml` was retired. Capability 4 removed from metrics the
+  `metrics:` example block's values (`enabled`, `otel`, `retain_runs`), the
+  enablement chain's "default on", the `ORCH_METRICS=off` value, `spend`'s default
+  window length and the "default source" label on the transcript token source; each
+  setting is now named by its key and file, or by the script output that shows it.
+  New-project and review-change stated no setting value. The skills measure, with
+  `wc -c` after T11: metrics 20369 (22028 at the baseline), new-project 8448 (9373),
+  review-change 6104 (6512).
 
 ## Loop-skill rule review
 

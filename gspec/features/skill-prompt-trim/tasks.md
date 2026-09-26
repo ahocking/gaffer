@@ -130,7 +130,7 @@ size, not by criterion.
   - covers: The one-shot skills get the same relocation and value removal, last
   - arch: —
   - files: skills/migrate/SKILL.md, scripts/test-migrate.sh, docs/skill-prompt-trim.md
-- [ ] **T11** **P1** Apply capability 3's relocation and one-clause rule and capability 4's value rule to `skills/metrics/SKILL.md`, `skills/new-project/SKILL.md` and `skills/review-change/SKILL.md`. Keep review-change's `routing.sh resolve` beside its dispatch. Change a `scripts/test-routing.sh` case only to follow a moved rule, never loosened, listed with its reason under `Changed sweep assertions` in `docs/skill-prompt-trim.md`. Relocations append under a dated `Relocated from skills (<date>)` ADR section. Verify: each rule of the three skills at T1's baseline commit is still in its skill, and `scripts/test-routing.sh` passes, including the `routing.sh resolve` case over review-change.
+- [x] **T11** **P1** Apply capability 3's relocation and one-clause rule and capability 4's value rule to `skills/metrics/SKILL.md`, `skills/new-project/SKILL.md` and `skills/review-change/SKILL.md`. Keep review-change's `routing.sh resolve` beside its dispatch. Change a `scripts/test-routing.sh` case only to follow a moved rule, never loosened, listed with its reason under `Changed sweep assertions` in `docs/skill-prompt-trim.md`. Relocations append under a dated `Relocated from skills (<date>)` ADR section. Verify: each rule of the three skills at T1's baseline commit is still in its skill, and `scripts/test-routing.sh` passes, including the `routing.sh resolve` case over review-change.
   - deps: T9
   - covers: The one-shot skills get the same relocation and value removal, last
   - arch: —

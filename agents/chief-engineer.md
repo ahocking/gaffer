@@ -121,8 +121,9 @@ dispatched with tells you which one you are in:
    (ADR 0009 — no worktrees, no sibling directories). One packet is in flight at
    a time; work it on a dedicated branch, then land it before starting the next:
    - Branch: `git switch -c orch/<task_id> <base>`, where `<base>` is the
-     integration branch (`.agents/project-overrides.yaml` → `integration_branch`,
-     else `develop`, else `main`/`master`). If resuming, `git switch orch/<task_id>`.
+     integration branch `.agents/project-overrides.yaml` names under
+     `integration_branch` (its absent-key fallback as run-loop §1's **Branch**
+     bullet states). If resuming, `git switch orch/<task_id>`.
    - Review: hand the `reviewer` the branch's change set with
      `git diff <base>...HEAD`.
    - Land or abandon: when green, commit on the branch (the soft gate below), and

@@ -190,7 +190,7 @@ evidence moves to the ADRs.
   - the sweep that extracts any changed passage keeps passing, under
     capability 5's rule for a changed assertion
 
-- [ ] **P2**: The follow-ups the T14–T19 packet reviews raised are closed
+- [x] **P2**: The follow-ups the T14–T19 packet reviews raised are closed
   - `agents/chief-engineer.md`'s integration-workflow paragraph names the
     integration base by its setting key alone, with no default value, the same
     way its packet-branch bullet does after T14

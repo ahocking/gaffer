@@ -603,6 +603,27 @@ Preamble, flags, report contract:
   comment's.
 - **Rules gone with nowhere a session would read them: 0.**
 
+## Loop-skill rule changes after the review (2026-09-26)
+
+The loop-skill rule review above is pinned at `e96576e` and is not rewritten: its
+entries, counts and **Result** describe the three skills as they stood there. Two
+later tasks changed a rule it lists or added one it does not. Read each note beside
+the entry it names; where the two differ, this section is current.
+
+- **T16** (`522435b`, merged to `develop` at `2cc3b65`): `skills/resume/SKILL.md`
+  `## 4. Continue from the cursor` now has a resume `Read`
+  `${CLAUDE_PLUGIN_ROOT}/templates/task-packet.yaml` before the first handoff is
+  written, as run-loop's `## 2. Enter driver mode` has a fresh run do (L28). This is
+  a new rule, not a changed one: the resume skill carried no read of that template
+  at the baseline commit or at `e96576e`, so no R entry lists it.
+- **T17** (`45d990e`, merged to `develop` at `8293c73`): **P28 is not current as
+  written.** `skills/pause/SKILL.md` `## 3. Persist run-state` no longer carries
+  "commit run-state only on the feature branch or leave it staged". T17 removed the
+  claim that `.agents/run-state.yaml` is tracked and may be committed on the feature
+  branch, because the file is gitignored (`.gitignore`). The rest of P28 stands:
+  steps 1–2 still come before the write, and the skill now reads "Nothing is ever
+  committed on `main`/`master`."
+
 ## One-shot skill rule review
 
 Every instruction, prohibition and trap in the four skills at the baseline commit

@@ -165,7 +165,7 @@ size, not by criterion.
   - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - arch: —
   - files: skills/pause/SKILL.md
-- [ ] **T18** **P1** In `docs/skill-prompt-trim.md`, correct the new-project figure the T11 paragraph gives (`new-project 8448`) to the size `wc -c skills/new-project/SKILL.md` measures at `1f6bfdf`, and check every other byte figure in the ledger against `wc -c` of its file at the commit it names, correcting any that differ. Figures only: change no rule list, count or verdict. Filed from the periodic findings review of the `model-comparison-harness` run (finding `ledger-new-project-bytes-wrong`), at the operator's call. Verify: every byte figure in the ledger matches `git show <commit>:<path> | wc -c` for the commit and file it names.
+- [x] **T18** **P1** In `docs/skill-prompt-trim.md`, correct the new-project figure the T11 paragraph gives (`new-project 8448`) to the size `wc -c skills/new-project/SKILL.md` measures at `1f6bfdf`, and check every other byte figure in the ledger against `wc -c` of its file at the commit it names, correcting any that differ. Figures only: change no rule list, count or verdict. Filed from the periodic findings review of the `model-comparison-harness` run (finding `ledger-new-project-bytes-wrong`), at the operator's call. Verify: every byte figure in the ledger matches `git show <commit>:<path> | wc -c` for the commit and file it names.
   - deps: —
   - covers: The trimmed skills, their ADR relocation sections and the trim ledger state only what is true
   - arch: —
